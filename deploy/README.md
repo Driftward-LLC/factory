@@ -34,11 +34,12 @@ orders Factory after Hermes, but Dockerized Factory records and fences work
 through the bridge, then reaches Hermes only through an explicit approved
 gateway/command.
 
-The Docker Compose default is safe for source deployment and dry-run intake:
+The Docker worker defaults are safe for source deployment and dry-run intake
+when protected env files are absent:
 
 ```text
-HATCHET_INTAKE_DRY_RUN=true
-DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=0
+HATCHET_INTAKE_DRY_RUN defaults to true
+DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED defaults to disabled
 ```
 
 Before enabling real effects in Docker, provide a container-safe Hermes gateway
@@ -106,7 +107,7 @@ bash deploy/install-docker.sh
 Build and start through systemd:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory build
+docker build -f deploy/Dockerfile -t driftward/factory:local .
 systemctl enable --now driftward-factory.service
 factory-docker-smoke
 ```

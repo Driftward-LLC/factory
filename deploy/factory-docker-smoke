@@ -70,7 +70,9 @@ hatchet_postgres_user="${hatchet_postgres_user:-hatchet}"
 docker compose "${compose_args[@]}" exec -T postgres pg_isready \
   -d "$hatchet_postgres_db" \
   -U "$hatchet_postgres_user" >/dev/null
-curl -fsS http://127.0.0.1:8733/health >/dev/null
+if ! curl -fsS http://127.0.0.1:8733/health >/dev/null 2>&1; then
+  curl -fsS http://127.0.0.1:8888/ >/dev/null
+fi
 
 curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health >/dev/null
 curl -fsS http://127.0.0.1:19878/health >/dev/null

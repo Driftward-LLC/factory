@@ -6,6 +6,9 @@ INTAKE_SERVICE=driftward-hatchet-worker-intake.service
 OPERATOR_ENV_FILE="${FACTORY_OPERATOR_ENV:-/etc/driftward/factory-operator.env}"
 OPERATOR_SOCKET="${FACTORY_OPERATOR_SOCKET:-/run/driftward-factory-operator/operator.sock}"
 BRIDGE_ENV_FILE="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"
+RUNTIME_ROOT="${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}"
+HATCHET_ENV_FILE="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
+FACTORY_SERVICE="${DRIFTWARD_FACTORY_SYSTEMD_SERVICE:-driftward-factory.service}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 FACTORY_SHARE_DIR="${FACTORY_SHARE_DIR:-${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}}"
 
@@ -96,6 +99,24 @@ require_root() {
   if [[ "$(id -u)" != "0" ]]; then
     die "mode changes require root"
   fi
+}
+
+docker_compose() {
+  local args=(--project-directory "$RUNTIME_ROOT")
+  if [[ -r "$HATCHET_ENV_FILE" ]]; then
+    args=(--env-file "$HATCHET_ENV_FILE" "${args[@]}")
+  fi
+  docker compose "${args[@]}" "$@"
+}
+
+factory_docker_runtime_available() {
+  [[ -f "$RUNTIME_ROOT/docker-compose.yml" ]] && command -v docker >/dev/null 2>&1
+}
+
+factory_docker_runtime_active() {
+  systemctl is-active --quiet "$FACTORY_SERVICE" 2>/dev/null && return 0
+  factory_docker_runtime_available || return 1
+  docker_compose ps --services --filter status=running 2>/dev/null | grep -qx 'hatchet-lite'
 }
 
 operator_token() {
@@ -314,6 +335,35 @@ retired_timer_status() {
   fi
 }
 
+docker_service_status() {
+  local label="$1"
+  local service="$2"
+  local required="${3:-required}"
+  local running detail
+
+  if ! factory_docker_runtime_available; then
+    detail="missing compose runtime: $RUNTIME_ROOT/docker-compose.yml"
+    if [[ "$required" == "required" ]]; then
+      status_line FAIL "$label" "$detail"
+      mark_failure
+    else
+      status_line WARN "$label" "$detail"
+    fi
+    return
+  fi
+
+  running="$(docker_compose ps --services --filter status=running 2>/dev/null || true)"
+  detail="compose_service=$service"
+  if grep -qx "$service" <<<"$running"; then
+    status_line OK "$label" "$detail"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "$detail running=no"
+    mark_failure
+  else
+    status_line WARN "$label" "$detail running=no"
+  fi
+}
+
 http_status() {
   local label="$1"
   local url="$2"
@@ -380,16 +430,34 @@ show_status() {
 
   printf '\nRequired runtime\n'
   printf '%s\n' '----------------'
-  unit_status "Hatchet control plane" driftward-hatchet.service required
-  unit_status "Hatchet bridge API" driftward-hatchet-bridge.service required
-  unit_status "Hatchet event ingress" driftward-hatchet-event-ingress.service required
-  unit_status "Hatchet Linear webhook proxy" driftward-hatchet-linear-webhook-proxy.service required
-  unit_status "Hatchet intake worker" driftward-hatchet-worker-intake.service required
-  unit_status "Hatchet execution-dispatch worker" driftward-hatchet-worker-execution-dispatch.service required
-  unit_status "Hatchet bridge-executor worker" driftward-hatchet-worker-bridge-executor.service required
-  unit_status "Hatchet PR-event worker" driftward-hatchet-worker-pr-event.service required
-  unit_status "Factory lifecycle writer" driftward-factory-lifecycle-writer.service required
-  timer_status "Factory Linear token timer" driftward-factory-linear-token.timer required
+  if factory_docker_runtime_active; then
+    unit_status "Factory Docker wrapper" "$FACTORY_SERVICE" required
+    docker_service_status "Factory Postgres" postgres required
+    docker_service_status "Hatchet Lite" hatchet-lite required
+    docker_service_status "Hatchet bridge API" bridge required
+    docker_service_status "Hatchet event ingress" event-ingress required
+    docker_service_status "Hatchet Linear webhook proxy" linear-webhook-proxy required
+    docker_service_status "Hatchet intake worker" intake-worker required
+    docker_service_status "Hatchet execution-dispatch worker" execution-dispatch-worker required
+    docker_service_status "Hatchet bridge-executor worker" bridge-executor-worker required
+    docker_service_status "Hatchet PR-event worker" pr-event-worker required
+    docker_service_status "Hatchet reconciliation worker" reconciliation-worker required
+    docker_service_status "Factory lifecycle writer" factory-lifecycle-writer required
+    docker_service_status "Factory Linear token refresh" factory-linear-token-refresh required
+    docker_service_status "Factory retry operator" factory-operator required
+    docker_service_status "Factory outbox dispatcher" outbox-dispatcher required
+  else
+    unit_status "Hatchet control plane" driftward-hatchet.service required
+    unit_status "Hatchet bridge API" driftward-hatchet-bridge.service required
+    unit_status "Hatchet event ingress" driftward-hatchet-event-ingress.service required
+    unit_status "Hatchet Linear webhook proxy" driftward-hatchet-linear-webhook-proxy.service required
+    unit_status "Hatchet intake worker" driftward-hatchet-worker-intake.service required
+    unit_status "Hatchet execution-dispatch worker" driftward-hatchet-worker-execution-dispatch.service required
+    unit_status "Hatchet bridge-executor worker" driftward-hatchet-worker-bridge-executor.service required
+    unit_status "Hatchet PR-event worker" driftward-hatchet-worker-pr-event.service required
+    unit_status "Factory lifecycle writer" driftward-factory-lifecycle-writer.service required
+    timer_status "Factory Linear token timer" driftward-factory-linear-token.timer required
+  fi
   unit_status "Driftward Hermes service" driftward-hermes.service required
 
   printf '\nRequired endpoints\n'
@@ -410,12 +478,14 @@ show_status() {
 
   printf '\nAdvisory / recovery\n'
   printf '%s\n' '-------------------'
-  unit_status "Hatchet reconciliation worker" driftward-hatchet-worker-reconciliation.service advisory
   retired_timer_status "Retired bridge reconciler" driftward-hatchet-bridge-reconciler.timer driftward-hatchet-bridge-reconciler.service
-  unit_status "Factory retry operator" driftward-factory-operator.service advisory
   socket_status "Factory retry operator socket" "$OPERATOR_SOCKET" advisory
-  oneshot_status "Factory outbox dispatcher service" driftward-factory-outbox-dispatcher.service advisory
-  timer_status "Factory outbox dispatcher timer" driftward-factory-outbox-dispatcher.timer advisory
+  if ! factory_docker_runtime_active; then
+    unit_status "Hatchet reconciliation worker" driftward-hatchet-worker-reconciliation.service advisory
+    unit_status "Factory retry operator" driftward-factory-operator.service advisory
+    oneshot_status "Factory outbox dispatcher service" driftward-factory-outbox-dispatcher.service advisory
+    timer_status "Factory outbox dispatcher timer" driftward-factory-outbox-dispatcher.timer advisory
+  fi
 
   if [[ "$status_result" == "0" ]]; then
     printf '\nFactory required path is healthy.\n'
@@ -423,6 +493,14 @@ show_status() {
     printf '\nFactory required path has failures.\n'
   fi
   return "$status_result"
+}
+
+restart_intake() {
+  if factory_docker_runtime_active; then
+    docker_compose up -d --force-recreate --no-deps intake-worker >/dev/null
+  else
+    systemctl restart "$INTAKE_SERVICE"
+  fi
 }
 
 set_mode() {
@@ -433,7 +511,7 @@ set_mode() {
   case "$mode" in
     dry-run)
       upsert_env HATCHET_INTAKE_DRY_RUN true
-      systemctl restart "$INTAKE_SERVICE"
+      restart_intake
       printf 'factory intake mode: dry-run\n'
       ;;
     real)
@@ -441,12 +519,64 @@ set_mode() {
         die "real mode can create GitHub PRs from Ready Linear issues; rerun: factory mode real --yes"
       fi
       upsert_env HATCHET_INTAKE_DRY_RUN false
-      systemctl restart "$INTAKE_SERVICE"
+      restart_intake
       printf 'factory intake mode: real\n'
       ;;
     *)
       usage
       exit 2
+      ;;
+  esac
+}
+
+docker_services_for_target() {
+  local target="$1"
+  case "$target" in
+    all)
+      printf '%s\n' \
+        event-ingress \
+        intake-worker \
+        bridge-executor-worker \
+        pr-event-worker \
+        reconciliation-worker \
+        bridge \
+        factory-lifecycle-writer \
+        factory-linear-token-refresh \
+        factory-operator \
+        outbox-dispatcher
+      ;;
+    ingress)
+      printf '%s\n' event-ingress
+      ;;
+    intake)
+      printf '%s\n' intake-worker
+      ;;
+    executor)
+      printf '%s\n' bridge-executor-worker
+      ;;
+    bridge)
+      printf '%s\n' bridge
+      ;;
+    pr)
+      printf '%s\n' pr-event-worker
+      ;;
+    reconciliation)
+      printf '%s\n' reconciliation-worker
+      ;;
+    lifecycle)
+      printf '%s\n' \
+        factory-lifecycle-writer \
+        factory-linear-token-refresh
+      ;;
+    linear)
+      printf '%s\n' \
+        event-ingress \
+        intake-worker \
+        bridge-executor-worker \
+        factory-lifecycle-writer
+      ;;
+    *)
+      die "unknown log target: $target"
       ;;
   esac
 }
@@ -529,14 +659,23 @@ show_logs() {
     esac
   done
 
-  mapfile -t units < <(units_for_target "$target")
-  for unit in "${units[@]}"; do
-    args+=(-u "$unit")
-  done
-  if [[ "$follow" == "1" ]]; then
-    journalctl "${args[@]}" -n "$lines" -f
+  if factory_docker_runtime_active; then
+    mapfile -t units < <(docker_services_for_target "$target")
+    args=(--tail="$lines")
+    if [[ "$follow" == "1" ]]; then
+      args+=(-f)
+    fi
+    docker_compose logs "${args[@]}" "${units[@]}"
   else
-    journalctl "${args[@]}" -n "$lines" --no-pager
+    mapfile -t units < <(units_for_target "$target")
+    for unit in "${units[@]}"; do
+      args+=(-u "$unit")
+    done
+    if [[ "$follow" == "1" ]]; then
+      journalctl "${args[@]}" -n "$lines" -f
+    else
+      journalctl "${args[@]}" -n "$lines" --no-pager
+    fi
   fi
 }
 

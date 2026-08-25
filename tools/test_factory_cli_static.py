@@ -25,6 +25,23 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn('service_active=${service_active:-unknown}', source)
         self.assertNotIn('"Hatchet bridge reconciler timer" driftward-hatchet-bridge-reconciler.timer advisory', source)
 
+    def test_cli_prefers_docker_runtime_when_active(self) -> None:
+        source = (ROOT / "factory/factory").read_text(encoding="utf-8")
+
+        self.assertIn("factory_docker_runtime_active()", source)
+        self.assertIn('unit_status "Factory Docker wrapper" "$FACTORY_SERVICE" required', source)
+        self.assertIn('docker_service_status "Hatchet intake worker" intake-worker required', source)
+        self.assertIn("docker_compose up -d --force-recreate --no-deps intake-worker >/dev/null", source)
+        self.assertIn('docker_compose logs "${args[@]}" "${units[@]}"', source)
+
+    def test_compose_honors_protected_worker_mode_env(self) -> None:
+        compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("- path: /etc/driftward/hatchet-workers.env", compose)
+        self.assertIn("- path: /etc/driftward/hatchet-worker-bridge-executor.env", compose)
+        self.assertNotIn("HATCHET_INTAKE_DRY_RUN: ${HATCHET_INTAKE_DRY_RUN", compose)
+        self.assertNotIn("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: ${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED", compose)
+
     def test_attempts_list_accepts_json_option(self) -> None:
         if not hasattr(socket, "AF_UNIX"):
             self.skipTest("Unix sockets are required for the factory operator wrapper")

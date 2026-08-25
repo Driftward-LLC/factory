@@ -6,7 +6,6 @@ x-factory-image: &factory-image
     context: ${FACTORY_SOURCE_ROOT:-/root/driftward/repos/factory}
     dockerfile: deploy/Dockerfile
     target: runtime
-  init: true
   restart: unless-stopped
   extra_hosts:
     - "host.docker.internal:host-gateway"
@@ -24,8 +23,6 @@ x-hatchet-client-env: &hatchet-client-env
   HATCHET_EVENT_PUBLISHER_COMMAND: /usr/local/bin/node /app/hatchet/workers/pr-event-worker/dist/events/push-generic-event.js
   HATCHET_INTAKE_ROUTING_REGISTRY_PATH: /app/hatchet/workers/routing-registry.json
   HATCHET_VERIFIER_POLICY_PATH: /app/hatchet/workers/verifier-policy.json
-  HATCHET_INTAKE_DRY_RUN: ${HATCHET_INTAKE_DRY_RUN:-true}
-  DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: ${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED:-0}
   DRIFTWARD_HERMES_RECEIPT_USE_SYSTEMD: "0"
   DRIFTWARD_HERMES_RECEIPT_REQUIRE_SYSTEMD: "0"
 

@@ -73,10 +73,10 @@ intake mode, and its token is unavailable to Hatchet workers, the bridge,
 ingress, and Hermes.
 
 `factory status` is the one-glance health check for the current factory path.
-It reports intake mode, required Hatchet/Hermes/lifecycle systemd units,
-loopback health endpoints, and advisory recovery/operator components. Required
-failures return a nonzero exit status; advisory warnings are shown without
-failing the command.
+It reports intake mode, the active Docker Compose runtime or legacy systemd
+layout, loopback health endpoints, and advisory recovery/operator components.
+Required failures return a nonzero exit status; advisory warnings are shown
+without failing the command.
 
 `factory doctor hatchet` is a read-only desired-state drift check. It collects
 live Hatchet inventory with `--profile`, or compares a saved sanitized inventory

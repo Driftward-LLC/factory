@@ -7,6 +7,13 @@ runtime_root="${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}"
 service_unit="${DRIFTWARD_FACTORY_SYSTEMD_UNIT:-/etc/systemd/system/driftward-factory.service}"
 hatchet_env_file="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
 legacy_hatchet_unit="${DRIFTWARD_LEGACY_HATCHET_UNIT:-driftward-hatchet.service}"
+factory_cli_source="$repo_root/factory/factory"
+factory_cli_target="${DRIFTWARD_FACTORY_CLI_TARGET:-/usr/local/bin/factory}"
+factory_share_dir="${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}"
+factory_hatchet_doctor_source="$repo_root/tools/factory-hatchet-doctor.py"
+factory_hatchet_doctor_target="$factory_share_dir/factory-hatchet-doctor.py"
+factory_hatchet_desired_state_source="$repo_root/hatchet/desired-state/factory-hatchet.json"
+factory_hatchet_desired_state_target="$factory_share_dir/desired-state/factory-hatchet.json"
 start=0
 
 usage() {
@@ -31,6 +38,13 @@ if [[ "$(id -u)" != "0" ]]; then
   exit 1
 fi
 
+for source in "$factory_cli_source" "$factory_hatchet_doctor_source" "$factory_hatchet_desired_state_source"; do
+  if [[ ! -f "$source" ]]; then
+    echo "missing Factory install source: $source" >&2
+    exit 1
+  fi
+done
+
 install -d -m 0750 -o root -g root "$runtime_root"
 install -d -m 0750 -o root -g root \
   "$runtime_root/data/bridge" \
@@ -51,6 +65,10 @@ install -d -m 0755 -o root -g root /run/driftward-factory-operator
 
 install -m 0644 "$script_dir/docker-compose.yml" "$runtime_root/docker-compose.yml"
 install -D -m 0755 "$script_dir/factory-docker-smoke" /usr/local/bin/factory-docker-smoke
+install -D -m 0755 "$factory_cli_source" "$factory_cli_target"
+install -d -m 0755 -o root -g root "$factory_share_dir/desired-state"
+install -m 0755 "$factory_hatchet_doctor_source" "$factory_hatchet_doctor_target"
+install -m 0644 "$factory_hatchet_desired_state_source" "$factory_hatchet_desired_state_target"
 
 tmp_unit="$(mktemp)"
 sed \
@@ -64,6 +82,8 @@ compose_args=(--project-directory "$runtime_root")
 if [[ -r "$hatchet_env_file" ]]; then
   compose_args=(--env-file "$hatchet_env_file" "${compose_args[@]}")
 fi
+factory_image_tag="${FACTORY_IMAGE_TAG:-local}"
+factory_image="${FACTORY_IMAGE:-driftward/factory:$factory_image_tag}"
 
 FACTORY_SOURCE_ROOT="$repo_root" docker compose "${compose_args[@]}" config >/dev/null
 systemd-analyze verify "$service_unit"
@@ -71,6 +91,7 @@ systemctl daemon-reload
 
 echo "Factory Docker runtime installed: $runtime_root"
 echo "Factory systemd unit installed: $service_unit"
+echo "Factory CLI installed: $factory_cli_target"
 
 if (( start )); then
   if systemctl is-active --quiet "$legacy_hatchet_unit"; then
@@ -95,7 +116,7 @@ if (( start )); then
     exit 1
   fi
 
-  FACTORY_SOURCE_ROOT="$repo_root" docker compose "${compose_args[@]}" build
+  docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"
   systemctl enable --now "$(basename "$service_unit")"
   factory-docker-smoke "$runtime_root"
 else
