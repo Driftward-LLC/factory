@@ -30,6 +30,10 @@ def status_health(source_errors: dict, delivery: dict, outbox_status: dict) -> t
     return (not unhealthy, "source_or_outbox_degraded" if unhealthy else None)
 
 
+def lifecycle_bind_host() -> str:
+    return os.environ.get("FACTORY_LIFECYCLE_HOST", "127.0.0.1")
+
+
 def serve(interval: int) -> int:
     writer, outbox = build_writer()
     state = {"ok": False, "last_error": "starting", "last_scan": None, "source_errors": {}}
@@ -53,7 +57,7 @@ def serve(interval: int) -> int:
             self.send_response(200 if state["ok"] else 503); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
         def log_message(self, format, *args):
             return
-    ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("FACTORY_LIFECYCLE_PORT", "19880"))), Handler).serve_forever()
+    ThreadingHTTPServer((lifecycle_bind_host(), int(os.environ.get("FACTORY_LIFECYCLE_PORT", "19880"))), Handler).serve_forever()
     return 0
 
 

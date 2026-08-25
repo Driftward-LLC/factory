@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_root="${1:-${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}}"
+
+if [[ ! -f "$runtime_root/docker-compose.yml" ]]; then
+  echo "Factory compose file is missing: $runtime_root/docker-compose.yml" >&2
+  exit 1
+fi
+
+required_services=(
+  bridge
+  event-ingress
+  linear-webhook-proxy
+  intake-worker
+  execution-dispatch-worker
+  bridge-executor-worker
+  pr-event-worker
+  reconciliation-worker
+  factory-lifecycle-writer
+  factory-operator
+  outbox-dispatcher
+)
+
+running="$(docker compose --project-directory "$runtime_root" ps --services --filter status=running)"
+for service in "${required_services[@]}"; do
+  if ! grep -qx "$service" <<<"$running"; then
+    echo "Factory Docker service is not running: $service" >&2
+    exit 1
+  fi
+done
+
+bridge_header=()
+if [[ -r /etc/driftward/hatchet-bridge.env ]]; then
+  token="$(awk -F= '$1 == "HATCHET_HERMES_BRIDGE_TOKEN" { print substr($0, length($1) + 2); exit }' /etc/driftward/hatchet-bridge.env)"
+  token="${token%\"}"; token="${token#\"}"
+  token="${token%\'}"; token="${token#\'}"
+  if [[ -n "${token:-}" ]]; then
+    bridge_header=(-H "Authorization: Bearer $token")
+  fi
+fi
+
+curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health >/dev/null
+curl -fsS http://127.0.0.1:19878/health >/dev/null
+curl -fsS http://127.0.0.1:19879/health >/dev/null
+curl -fsS http://127.0.0.1:19880/health >/dev/null
+
+echo "Factory Docker runtime is healthy: $runtime_root"

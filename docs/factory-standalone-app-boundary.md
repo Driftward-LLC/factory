@@ -8,8 +8,9 @@ Linear: ENG-97
 
 Use the dedicated `Driftward-LLC/factory` repository for the
 Factory product and runtime surface. Keep `driftward-host` as the host-level
-bootstrap and deployment owner for VPS-wide prerequisites, systemd publication,
-secret-file placement, and documented recovery commands.
+bootstrap owner for VPS-wide prerequisites, Docker availability, secret-file
+placement, and documented recovery commands. The standalone Factory app should
+deploy through Docker Compose from this repository.
 
 The checked-in Hatchet desired state is
 `hatchet/desired-state/factory-hatchet.json`, and the read-only drift check is
@@ -30,6 +31,7 @@ without active repo-managed workers.
 The standalone Factory repository should own:
 
 - Factory operator CLI behavior and UX.
+- Docker image, Compose runtime, systemd wrapper, smoke test, and deploy docs.
 - Hatchet workflow and task source.
 - Hatchet worker packages, manifests, and worker runbooks.
 - Event ingress normalization, routing policy, and event contract files.
@@ -44,7 +46,7 @@ The standalone Factory repository should own:
 `driftward-host` should keep owning:
 
 - Root-owned bootstrap, package installs, and shared host CLI publication.
-- Systemd unit installation and host-level service placement.
+- Docker engine readiness and host-level prerequisites.
 - Secret-file paths and file modes, without owning secret contents.
 - Runtime root creation under `/docker/driftward/*` and `/var/lib/*` where
   the host is the deployment substrate.
@@ -68,8 +70,8 @@ Driftward Hermes should keep owning:
    `hatchet/event-ingress/`, `hatchet/factory-lifecycle-writer/`, and
    `hatchet/workers/`. This initial source copy is complete; future work should
    happen directly in `Driftward-LLC/factory`.
-4. Keep host deployment templates or install shims in `driftward-host` until
-   the standalone app has its own packaging and release path.
+4. Use the Docker deployment path in `deploy/` as the standalone Factory
+   packaging and release path.
 5. Publish a versioned desired-state manifest from the Factory repository and
    make `factory doctor hatchet` compare that manifest with live Hatchet state.
 6. Run the doctor command in dry-run mode and review every unknown or retired

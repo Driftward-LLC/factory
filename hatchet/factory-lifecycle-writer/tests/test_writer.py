@@ -3,8 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from factory_lifecycle_writer.cli import status_health
+from factory_lifecycle_writer.cli import lifecycle_bind_host, status_health
 from factory_lifecycle_writer.linear import LinearClient, LinearError
 from factory_lifecycle_writer.outbox import Outbox
 from factory_lifecycle_writer.writer import Config, LifecycleWriter, _canonical_timestamp
@@ -243,6 +244,12 @@ class LifecycleWriterTest(unittest.TestCase):
             status_health({}, {"retried": 0}, {"dead_letters": 0, "oldest_queue_age_seconds": 601}),
             (False, "source_or_outbox_degraded"),
         )
+
+    def test_lifecycle_bind_host_defaults_to_loopback_and_allows_container_override(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(lifecycle_bind_host(), "127.0.0.1")
+        with mock.patch.dict("os.environ", {"FACTORY_LIFECYCLE_HOST": "0.0.0.0"}, clear=True):
+            self.assertEqual(lifecycle_bind_host(), "0.0.0.0")
 
     def test_pre_activation_and_missing_source_time_suppress_or_dead_letter(self):
         writer, _ = self.make()
