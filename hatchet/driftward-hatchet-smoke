@@ -1,0 +1,939 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+
+bridge_curl() {
+  curl -fsS -H "Authorization: Bearer $bridge_token" "$@"
+}
+
+pass() {
+  printf 'PASS: %s\n' "$*"
+}
+
+linear_payload_signature() {
+  local payload_file="$1"
+  python3 - "$EVENT_INGRESS_ENV_FILE" "$payload_file" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import hmac
+import sys
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+payload_file = Path(sys.argv[2])
+secret = ""
+for raw in env_file.read_text().splitlines():
+    if raw.startswith("HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET="):
+        secret = raw.split("=", 1)[1].strip()
+        break
+if not secret:
+    raise SystemExit("missing HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET")
+print(hmac.new(secret.encode("utf-8"), payload_file.read_bytes(), hashlib.sha256).hexdigest())
+PY
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# The managed copy lives in /usr/local/bin, while source-backed checks remain
+# in the canonical host checkout. A source-tree invocation still discovers its
+# parent checkout without configuration.
+if [[ -n "${DRIFTWARD_HATCHET_SOURCE_ROOT:-}" ]]; then
+  REPO_ROOT="$DRIFTWARD_HATCHET_SOURCE_ROOT"
+elif [[ -f "$SCRIPT_DIR/../tools/hatchet-contracts.py" ]]; then
+  REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+  REPO_ROOT=/root/driftward/repos/factory
+fi
+SERVICE=driftward-hatchet.service
+BRIDGE_SERVICE=driftward-hatchet-bridge.service
+LEGACY_BRIDGE_RECONCILER_SERVICE=driftward-hatchet-bridge-reconciler.service
+LEGACY_BRIDGE_RECONCILER_TIMER=driftward-hatchet-bridge-reconciler.timer
+EVENT_INGRESS_SERVICE=driftward-hatchet-event-ingress.service
+PUBLIC_WEBHOOK_SERVICE=driftward-hatchet-linear-webhook-proxy.service
+LIFECYCLE_WRITER_SERVICE=driftward-factory-lifecycle-writer.service
+LIFECYCLE_TOKEN_TIMER=driftward-factory-linear-token.timer
+WORKER_SERVICES=(
+  driftward-hatchet-worker-intake.service
+  driftward-hatchet-worker-execution-dispatch.service
+  driftward-hatchet-worker-bridge-executor.service
+  driftward-hatchet-worker-pr-event.service
+  driftward-hatchet-worker-reconciliation.service
+)
+ROOT=/docker/driftward/hatchet
+ENV_FILE=/etc/driftward/hatchet.env
+BRIDGE_DB=/var/lib/driftward-hatchet-bridge/bridge.db
+EVENT_INGRESS_DB=/var/lib/driftward-hatchet-event-ingress/ingress.db
+BRIDGE_ENV_FILE=/etc/driftward/hatchet-bridge.env
+EVENT_INGRESS_ENV_FILE=/etc/driftward/hatchet-event-ingress.env
+WORKERS_ENV_FILE=/etc/driftward/hatchet-workers.env
+BRIDGE_EXECUTOR_ENV_FILE=/etc/driftward/hatchet-worker-bridge-executor.env
+LIFECYCLE_WRITER_ENV_FILE=/etc/driftward/factory-lifecycle-writer.env
+TAILSCALE_HOST=srv1379035.tail5c6a78.ts.net
+TAILSCALE_URL=https://srv1379035.tail5c6a78.ts.net:8888
+LINEAR_WEBHOOK_URL=https://srv1379035.tail5c6a78.ts.net/events/linear/issue
+
+[[ -d "$ROOT" ]] || fail "runtime root is missing: $ROOT"
+[[ -f "$ROOT/docker-compose.yml" ]] || fail "compose file is missing"
+[[ -f "$ENV_FILE" ]] || fail "env file is missing: $ENV_FILE"
+[[ -f "$REPO_ROOT/tools/hatchet-contracts.py" ]] || fail "Hatchet source checkout is missing contracts tooling"
+
+HATCHET_BIN="${DRIFTWARD_HATCHET_CLI:-}"
+if [[ -z "$HATCHET_BIN" ]]; then
+  for candidate in "$(command -v hatchet 2>/dev/null || true)" /root/.local/bin/hatchet /usr/local/bin/hatchet; do
+    if [[ -x "$candidate" ]]; then
+      HATCHET_BIN="$candidate"
+      break
+    fi
+  done
+fi
+[[ -x "$HATCHET_BIN" ]] || fail "Hatchet CLI is unavailable; set DRIFTWARD_HATCHET_CLI to an executable path"
+# Transient systemd verification units intentionally omit HOME; the root-owned
+# Hatchet profile lives under /root and contains only the worker control-plane
+# client configuration used by this smoke command.
+export HOME="${HOME:-/root}"
+
+python3 "$REPO_ROOT/tools/hatchet-contracts.py" check >/dev/null || fail "Hatchet generated contracts are stale"
+pass "Hatchet generated contracts are current"
+
+mode="$(stat -c '%a' "$ENV_FILE")"
+[[ "$mode" == "600" ]] || fail "env file mode is $mode, expected 600"
+pass "protected env file exists"
+
+systemctl is-active --quiet "$SERVICE" || fail "$SERVICE is not active"
+pass "systemd service is active"
+
+systemctl is-active --quiet "$BRIDGE_SERVICE" || fail "$BRIDGE_SERVICE is not active"
+pass "Hatchet Hermes bridge service is active"
+
+if systemctl is-active --quiet "$LEGACY_BRIDGE_RECONCILER_SERVICE"; then
+  fail "retired $LEGACY_BRIDGE_RECONCILER_SERVICE is active"
+fi
+if systemctl is-active --quiet "$LEGACY_BRIDGE_RECONCILER_TIMER"; then
+  fail "retired $LEGACY_BRIDGE_RECONCILER_TIMER is active"
+fi
+if systemctl is-enabled --quiet "$LEGACY_BRIDGE_RECONCILER_TIMER"; then
+  fail "retired $LEGACY_BRIDGE_RECONCILER_TIMER is enabled"
+fi
+pass "retired Hatchet Hermes bridge reconciler is disabled"
+
+for worker_service in "${WORKER_SERVICES[@]}"; do
+  systemctl is-active --quiet "$worker_service" || fail "$worker_service is not active"
+done
+pass "Hatchet worker services are active"
+
+systemctl is-active --quiet "$EVENT_INGRESS_SERVICE" || fail "$EVENT_INGRESS_SERVICE is not active"
+pass "Hatchet event ingress service is active"
+
+systemctl is-active --quiet "$PUBLIC_WEBHOOK_SERVICE" || fail "$PUBLIC_WEBHOOK_SERVICE is not active"
+pass "Hatchet public Linear webhook proxy service is active"
+
+systemctl is-active --quiet "$LIFECYCLE_WRITER_SERVICE" || fail "$LIFECYCLE_WRITER_SERVICE is not active"
+systemctl is-enabled --quiet "$LIFECYCLE_TOKEN_TIMER" || fail "$LIFECYCLE_TOKEN_TIMER is not enabled"
+pass "Factory lifecycle writer and token timer are active"
+
+[[ -f "$BRIDGE_DB" ]] || fail "bridge database is missing: $BRIDGE_DB"
+pass "Hatchet Hermes bridge database exists"
+
+[[ -f "$EVENT_INGRESS_DB" ]] || fail "event ingress database is missing: $EVENT_INGRESS_DB"
+pass "Hatchet event ingress database exists"
+
+if [[ -e "$BRIDGE_ENV_FILE" ]]; then
+  bridge_env_mode="$(stat -c '%a' "$BRIDGE_ENV_FILE")"
+  [[ "$bridge_env_mode" == "600" ]] || fail "bridge env file mode is $bridge_env_mode, expected 600"
+  pass "protected bridge env file exists"
+fi
+
+bridge_token="$(awk -F= '$1 == "HATCHET_HERMES_BRIDGE_TOKEN" { print $2; exit }' "$BRIDGE_ENV_FILE")"
+[[ -n "$bridge_token" ]] || fail "bridge bearer token is missing"
+if curl -fsS http://127.0.0.1:19877/health >/dev/null 2>&1; then
+  fail "Hatchet Hermes bridge accepted an unauthenticated request"
+fi
+pass "Hatchet Hermes bridge requires local bearer authentication"
+
+if [[ -e "$EVENT_INGRESS_ENV_FILE" ]]; then
+  event_ingress_env_mode="$(stat -c '%a' "$EVENT_INGRESS_ENV_FILE")"
+  [[ "$event_ingress_env_mode" == "600" ]] || fail "event ingress env file mode is $event_ingress_env_mode, expected 600"
+  pass "protected event ingress env file exists"
+fi
+
+[[ -f "$WORKERS_ENV_FILE" ]] || fail "worker env file is missing: $WORKERS_ENV_FILE"
+workers_env_mode="$(stat -c '%a' "$WORKERS_ENV_FILE")"
+[[ "$workers_env_mode" == "600" ]] || fail "worker env file mode is $workers_env_mode, expected 600"
+intake_dry_run="$(awk -F= '$1 == "HATCHET_INTAKE_DRY_RUN" { value = $2 } END { print value }' "$WORKERS_ENV_FILE")"
+[[ "$intake_dry_run" != "false" ]] || fail "smoke requires HATCHET_INTAKE_DRY_RUN=true"
+intake_routing_registry="$(awk -F= '$1 == "HATCHET_INTAKE_ROUTING_REGISTRY_PATH" { value = $2 } END { print value }' "$WORKERS_ENV_FILE")"
+[[ -n "$intake_routing_registry" && -f "$intake_routing_registry" ]] || fail "intake routing registry is missing"
+python3 -m json.tool "$intake_routing_registry" >/dev/null || fail "intake routing registry is not valid JSON"
+pass "protected worker env file exists"
+
+[[ -f "$BRIDGE_EXECUTOR_ENV_FILE" ]] || fail "bridge executor env file is missing: $BRIDGE_EXECUTOR_ENV_FILE"
+bridge_executor_env_mode="$(stat -c '%a' "$BRIDGE_EXECUTOR_ENV_FILE")"
+[[ "$bridge_executor_env_mode" == "600" ]] || fail "bridge executor env file mode is $bridge_executor_env_mode, expected 600"
+pass "protected bridge executor env file exists"
+
+[[ -f "$LIFECYCLE_WRITER_ENV_FILE" ]] || fail "lifecycle writer env file is missing: $LIFECYCLE_WRITER_ENV_FILE"
+lifecycle_writer_env_mode="$(stat -c '%a' "$LIFECYCLE_WRITER_ENV_FILE")"
+[[ "$lifecycle_writer_env_mode" == "600" ]] || fail "lifecycle writer env file mode is $lifecycle_writer_env_mode, expected 600"
+pass "protected lifecycle writer env file exists"
+
+compose=(docker compose --env-file "$ENV_FILE" --project-directory "$ROOT")
+
+"${compose[@]}" ps --status running postgres >/dev/null || fail "postgres is not running"
+"${compose[@]}" ps --status running hatchet-lite >/dev/null || fail "hatchet-lite is not running"
+pass "compose services are running"
+
+"${compose[@]}" exec -T postgres pg_isready -U hatchet -d hatchet >/dev/null ||
+  fail "postgres readiness check failed"
+pass "postgres accepts connections"
+
+if curl -fsS http://127.0.0.1:8733/health >/dev/null 2>&1; then
+  pass "Hatchet health endpoint responds"
+else
+  if curl -fsS http://127.0.0.1:8888 >/dev/null; then
+    pass "Hatchet dashboard responds"
+  else
+    fail "Hatchet did not respond on health or dashboard endpoints"
+  fi
+fi
+
+if bridge_curl http://127.0.0.1:19877/health >/dev/null; then
+  pass "Hatchet Hermes bridge API responds"
+else
+  fail "Hatchet Hermes bridge API did not respond"
+fi
+
+if curl -fsS http://127.0.0.1:19878/health >/dev/null; then
+  pass "Hatchet event ingress API responds"
+else
+  fail "Hatchet event ingress API did not respond"
+fi
+
+if curl -fsS http://127.0.0.1:19879/health >/dev/null; then
+  pass "Hatchet public Linear webhook proxy responds locally"
+else
+  fail "Hatchet public Linear webhook proxy did not respond locally"
+fi
+
+if curl -fsS http://127.0.0.1:19879/events >/dev/null 2>&1; then
+  fail "public Linear webhook proxy exposed ingress event listing"
+fi
+pass "Hatchet public Linear webhook proxy rejects non-webhook paths"
+
+if curl -fsS http://127.0.0.1:19880/health | jq -e '.ok == true' >/dev/null; then
+  pass "Factory lifecycle writer responds locally"
+else
+  fail "Factory lifecycle writer did not become healthy"
+fi
+
+smoke_key="hatchet:worker-smoke:$(date -u +%Y%m%dT%H%M%SZ):create_draft_pr:dry-run"
+payload_file="$(mktemp)"
+reconciliation_payload_file="$(mktemp)"
+github_pr_payload_file="$(mktemp)"
+linear_issue_payload_file="$(mktemp)"
+linear_ready_payload_file="$(mktemp)"
+linear_ready_second_payload_file="$(mktemp)"
+ingress_response_file="$(mktemp)"
+ingress_dupe_response_file="$(mktemp)"
+linear_ingress_response_file="$(mktemp)"
+linear_ingress_dupe_response_file="$(mktemp)"
+linear_ready_response_file="$(mktemp)"
+linear_ready_dupe_response_file="$(mktemp)"
+linear_ready_second_response_file="$(mktemp)"
+negative_finding_file="$(mktemp)"
+negative_finding_retry_file="$(mktemp)"
+trap 'rm -f "$payload_file" "$reconciliation_payload_file" "$github_pr_payload_file" "$linear_issue_payload_file" "$linear_ready_payload_file" "$linear_ready_second_payload_file" "$ingress_response_file" "$ingress_dupe_response_file" "$linear_ingress_response_file" "$linear_ingress_dupe_response_file" "$linear_ready_response_file" "$linear_ready_dupe_response_file" "$linear_ready_second_response_file" "$negative_finding_file" "$negative_finding_retry_file"' EXIT
+cat >"$payload_file" <<JSON
+{
+  "requestId": "worker-smoke",
+  "idempotencyKey": "$smoke_key",
+  "workItemId": "smoke",
+  "repo": "Driftward-LLC/factory",
+  "implementationPrompt": "Dry-run Hatchet worker smoke. Do not create external effects.",
+  "dryRun": true
+}
+JSON
+
+"$HATCHET_BIN" trigger manual \
+  --profile driftward \
+  --workflow execution-dispatch-create-draft-pr \
+  --json "$payload_file" \
+  -o json >/dev/null || fail "managed execution-dispatch worker did not accept dry-run trigger"
+
+for _ in $(seq 1 20); do
+  if job_json="$(bridge_curl "http://127.0.0.1:19877/jobs/$smoke_key" 2>/dev/null)"; then
+    state="$(printf '%s' "$job_json" | jq -r '.state')"
+    pr_url="$(printf '%s' "$job_json" | jq -r '.pr_url // empty')"
+    if [[ "$state" == "completed" && "$pr_url" == dry-run://github/pr/* ]]; then
+      pass "managed Hatchet workers completed dry-run bridge job"
+      break
+    fi
+  fi
+  sleep 1
+done
+
+if [[ "${state:-}" != "completed" ]]; then
+  fail "managed Hatchet workers did not complete dry-run bridge job"
+fi
+
+for _ in $(seq 1 45); do
+  if curl -fsS http://127.0.0.1:19880/status | jq -e '(.outbox.states.suppressed // 0) >= 1' >/dev/null; then
+    pass "Factory lifecycle writer permanently suppressed dry-run lifecycle sources"
+    break
+  fi
+  sleep 1
+done
+
+cat >"$reconciliation_payload_file" <<JSON
+{
+  "requestId": "worker-smoke",
+  "maxJobs": 20,
+  "staleAfterMinutes": 10080,
+  "emitWhenClean": true
+}
+JSON
+
+"$HATCHET_BIN" trigger manual \
+  --profile driftward \
+  --workflow reconciliation-bridge-state-check \
+  --json "$reconciliation_payload_file" \
+  -o json >/dev/null || fail "managed reconciliation worker did not accept bridge check trigger"
+pass "managed reconciliation worker accepted bridge check trigger"
+
+smoke_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+smoke_timestamp_ms="$(date -u +%s%3N)"
+github_delivery_id="worker-smoke-pr-closed-unmerged-$smoke_timestamp"
+cat >"$github_pr_payload_file" <<JSON
+{
+  "action": "closed",
+  "repository": {
+    "full_name": "Driftward-LLC/capykit"
+  },
+  "pull_request": {
+    "number": 11,
+    "html_url": "https://github.com/Driftward-LLC/capykit/pull/11",
+    "title": "ENG-7: implement Capykit discovery CLI commands",
+    "body": "Refs ENG-7",
+    "merged": false,
+    "state": "closed",
+    "closed_at": "$smoke_timestamp",
+    "updated_at": "$smoke_timestamp",
+    "head": {
+      "ref": "codex/eng-7-capykit-discovery-cli",
+      "sha": "smoke"
+    },
+    "base": {
+      "ref": "main"
+    }
+  }
+}
+JSON
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H "X-GitHub-Delivery: $github_delivery_id" \
+  --data @"$github_pr_payload_file" \
+  http://127.0.0.1:19878/events/github/pull_request >"$ingress_response_file" ||
+  fail "event ingress did not accept closed-unmerged PR payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.github.pr.closed_unmerged" and
+  .event.normalized.linearIssues[0] == "ENG-7" and
+  .event.normalized.dispatchEligible == false and
+  .event.normalized.decision == "observe_only"
+' "$ingress_response_file" >/dev/null ||
+  fail "event ingress did not publish normalized closed-unmerged PR observation"
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H "X-GitHub-Delivery: $github_delivery_id" \
+  --data @"$github_pr_payload_file" \
+  http://127.0.0.1:19878/events/github/pull_request >"$ingress_dupe_response_file" ||
+  fail "event ingress did not accept duplicate closed-unmerged PR payload"
+
+jq -e '
+  .created == false and
+  .event.event_key == input.event.event_key and
+  .event.hatchet_published == true
+' "$ingress_dupe_response_file" "$ingress_response_file" >/dev/null ||
+  fail "event ingress did not dedupe closed-unmerged PR observation"
+pass "Hatchet event ingress deduplicated closed-unmerged PR observation"
+
+github_opened_delivery_id="worker-smoke-pr-opened-$smoke_timestamp"
+cat >"$github_pr_payload_file" <<JSON
+{
+  "action": "opened",
+  "repository": {
+    "full_name": "Driftward-LLC/capykit"
+  },
+  "pull_request": {
+    "number": 12,
+    "html_url": "https://github.com/Driftward-LLC/capykit/pull/12",
+    "title": "ENG-7: implement Capykit discovery CLI commands",
+    "body": "Refs ENG-7",
+    "draft": true,
+    "merged": false,
+    "state": "open",
+    "created_at": "$smoke_timestamp",
+    "updated_at": "$smoke_timestamp",
+    "head": {
+      "ref": "codex/eng-7-capykit-discovery-cli",
+      "sha": "smoke-opened"
+    },
+    "base": {
+      "ref": "main"
+    }
+  }
+}
+JSON
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H "X-GitHub-Delivery: $github_opened_delivery_id" \
+  --data @"$github_pr_payload_file" \
+  http://127.0.0.1:19878/events/github/pull_request >"$ingress_response_file" ||
+  fail "event ingress did not accept opened PR payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.github.pr.created" and
+  .event.normalized.isDraft == true and
+  .event.normalized.dispatchEligible == false and
+  .event.normalized.decision == "observe_only"
+' "$ingress_response_file" >/dev/null ||
+  fail "event ingress did not publish normalized opened PR observation"
+
+github_sync_delivery_id="worker-smoke-pr-sync-$smoke_timestamp"
+cat >"$github_pr_payload_file" <<JSON
+{
+  "action": "synchronize",
+  "repository": {
+    "full_name": "Driftward-LLC/capykit"
+  },
+  "pull_request": {
+    "number": 12,
+    "html_url": "https://github.com/Driftward-LLC/capykit/pull/12",
+    "title": "ENG-7: implement Capykit discovery CLI commands",
+    "body": "Refs ENG-7",
+    "draft": true,
+    "merged": false,
+    "state": "open",
+    "created_at": "$smoke_timestamp",
+    "updated_at": "$smoke_timestamp",
+    "head": {
+      "ref": "codex/eng-7-capykit-discovery-cli",
+      "sha": "smoke-sync"
+    },
+    "base": {
+      "ref": "main"
+    }
+  }
+}
+JSON
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H "X-GitHub-Delivery: $github_sync_delivery_id" \
+  --data @"$github_pr_payload_file" \
+  http://127.0.0.1:19878/events/github/pull_request >"$ingress_response_file" ||
+  fail "event ingress did not accept synchronized PR payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.github.pr.synchronized" and
+  .event.normalized.headSha == "smoke-sync" and
+  .event.normalized.dispatchEligible == false and
+  .event.normalized.decision == "observe_only"
+' "$ingress_response_file" >/dev/null ||
+  fail "event ingress did not publish normalized synchronized PR observation"
+
+github_merged_delivery_id="worker-smoke-pr-merged-$smoke_timestamp"
+cat >"$github_pr_payload_file" <<JSON
+{
+  "action": "closed",
+  "repository": {
+    "full_name": "Driftward-LLC/capykit"
+  },
+  "pull_request": {
+    "number": 12,
+    "html_url": "https://github.com/Driftward-LLC/capykit/pull/12",
+    "title": "ENG-7: implement Capykit discovery CLI commands",
+    "body": "Refs ENG-7",
+    "draft": false,
+    "merged": true,
+    "state": "closed",
+    "created_at": "$smoke_timestamp",
+    "closed_at": "$smoke_timestamp",
+    "updated_at": "$smoke_timestamp",
+    "head": {
+      "ref": "codex/eng-7-capykit-discovery-cli",
+      "sha": "smoke-merged"
+    },
+    "base": {
+      "ref": "main"
+    }
+  }
+}
+JSON
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H "X-GitHub-Delivery: $github_merged_delivery_id" \
+  --data @"$github_pr_payload_file" \
+  http://127.0.0.1:19878/events/github/pull_request >"$ingress_response_file" ||
+  fail "event ingress did not accept merged PR payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.github.pr.closed_merged" and
+  .event.normalized.merged == true and
+  .event.normalized.dispatchEligible == false and
+  .event.normalized.decision == "observe_only"
+' "$ingress_response_file" >/dev/null ||
+  fail "event ingress did not publish normalized merged PR observation"
+pass "Hatchet event ingress published GitHub PR lifecycle observations"
+
+linear_delivery_id="worker-smoke-linear-observed-$smoke_timestamp"
+cat >"$linear_issue_payload_file" <<JSON
+{
+  "action": "update",
+  "type": "Issue",
+  "createdAt": "$smoke_timestamp",
+  "url": "https://linear.app/driftward/issue/ENG-7/implement-capykit-discovery-cli-commands",
+  "webhookTimestamp": $smoke_timestamp_ms,
+  "data": {
+    "id": "ENG-7",
+    "identifier": "ENG-7",
+    "title": "Implement Capykit discovery CLI commands",
+    "description": "Provide cwd-independent, deterministic command-line discovery for humans and agents.",
+    "updatedAt": "$smoke_timestamp",
+    "team": {
+      "name": "Engineering",
+      "key": "ENG"
+    },
+    "state": {
+      "name": "Done",
+      "type": "completed"
+    },
+    "labels": [
+      {"name": "Feature"},
+      {"name": "Human Decision"}
+    ],
+    "delegate": {
+      "name": "Driftward Factory"
+    },
+    "relations": {
+      "blockedBy": [
+        {
+          "id": "ENG-6",
+          "title": "Implement layered registry loading and deterministic precedence"
+        }
+      ]
+    }
+  },
+  "updatedFrom": {
+    "state": {
+      "name": "Needs Operator"
+    }
+  }
+}
+JSON
+
+linear_issue_signature_headers=()
+if grep -q '^HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET=' "$EVENT_INGRESS_ENV_FILE" 2>/dev/null; then
+  linear_issue_signature_headers=(
+    -H "Linear-Signature: $(linear_payload_signature "$linear_issue_payload_file")"
+    -H "Linear-Timestamp: $smoke_timestamp_ms"
+  )
+fi
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Linear-Event: Issue' \
+  -H "Linear-Delivery: $linear_delivery_id" \
+  "${linear_issue_signature_headers[@]}" \
+  --data-binary @"$linear_issue_payload_file" \
+  http://127.0.0.1:19878/events/linear/issue >"$linear_ingress_response_file" ||
+  fail "event ingress did not accept Linear issue payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.linear.issue.observed" and
+  .event.normalized.identifier == "ENG-7" and
+  .event.normalized.dispatchEligible == false and
+  .event.normalized.decision == "observe_only" and
+  .event.normalized.reasonCode == "linear_issue_status_not_ready"
+' "$linear_ingress_response_file" >/dev/null ||
+  fail "event ingress did not publish normalized Linear issue observation"
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Linear-Event: Issue' \
+  -H "Linear-Delivery: $linear_delivery_id" \
+  "${linear_issue_signature_headers[@]}" \
+  --data-binary @"$linear_issue_payload_file" \
+  http://127.0.0.1:19878/events/linear/issue >"$linear_ingress_dupe_response_file" ||
+  fail "event ingress did not accept duplicate Linear issue payload"
+
+jq -e '
+  .created == false and
+  .event.event_key == input.event.event_key and
+  .event.hatchet_published == true
+' "$linear_ingress_dupe_response_file" "$linear_ingress_response_file" >/dev/null ||
+  fail "event ingress did not dedupe Linear issue observation"
+pass "Hatchet event ingress deduplicated Linear issue observation"
+
+linear_disabled_issue="SMOKE-DISABLED-$(date -u +%Y%m%d%H%M%S)"
+linear_disabled_delivery_id="worker-smoke-linear-disabled-$smoke_timestamp"
+jobs_before_disabled_project="$(bridge_curl 'http://127.0.0.1:19877/jobs?limit=1' | jq -er '.total')"
+cat >"$linear_ready_payload_file" <<JSON
+{
+  "action": "update",
+  "type": "Issue",
+  "createdAt": "$smoke_timestamp",
+  "url": "https://linear.app/driftward/issue/$linear_disabled_issue/example",
+  "webhookTimestamp": $smoke_timestamp_ms,
+  "data": {
+    "id": "$linear_disabled_issue",
+    "identifier": "$linear_disabled_issue",
+    "title": "Observe a disabled factory project",
+    "description": "Implementation-ready work item.",
+    "updatedAt": "$smoke_timestamp",
+    "project": {
+      "id": "c670f223-bcaf-4e48-9209-6cca65da4568",
+      "name": "Driftward Software Factory"
+    },
+    "team": {
+      "name": "Engineering",
+      "key": "ENG"
+    },
+    "state": {
+      "name": "Ready",
+      "type": "unstarted"
+    },
+    "labels": [
+      {"name": "Feature"}
+    ],
+    "relations": {
+      "blockedBy": []
+    }
+  },
+  "updatedFrom": {
+    "state": {
+      "name": "Backlog"
+    }
+  }
+}
+JSON
+
+linear_ready_signature_headers=()
+if grep -q '^HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET=' "$EVENT_INGRESS_ENV_FILE" 2>/dev/null; then
+  linear_ready_signature_headers=(
+    -H "Linear-Signature: $(linear_payload_signature "$linear_ready_payload_file")"
+    -H "Linear-Timestamp: $smoke_timestamp_ms"
+  )
+fi
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Linear-Event: Issue' \
+  -H "Linear-Delivery: $linear_disabled_delivery_id" \
+  "${linear_ready_signature_headers[@]}" \
+  --data-binary @"$linear_ready_payload_file" \
+  http://127.0.0.1:19878/events/linear/issue >"$linear_ready_response_file" ||
+  fail "event ingress did not accept disabled-project Linear issue payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.linear.issue.observed" and
+  .event.normalized.identifier == $issue and
+  .event.normalized.projectId == "c670f223-bcaf-4e48-9209-6cca65da4568" and
+  .event.normalized.dispatchEligible == false and
+  .event.normalized.decision == "observe_only" and
+  .event.normalized.reasonCode == "linear_issue_project_execution_disabled"
+' --arg issue "$linear_disabled_issue" "$linear_ready_response_file" >/dev/null ||
+  fail "event ingress did not preserve disabled-project observation"
+
+sleep 2
+jobs_after_disabled_project="$(bridge_curl 'http://127.0.0.1:19877/jobs?limit=1' | jq -er '.total')"
+[[ "$jobs_before_disabled_project" == "$jobs_after_disabled_project" ]] ||
+  fail "disabled-project Linear event created a bridge job"
+pass "disabled-project Linear issue remained observed without a bridge job"
+
+linear_ready_issue="SMOKE-$(date -u +%Y%m%d%H%M%S)"
+linear_ready_delivery_id="worker-smoke-linear-ready-$smoke_timestamp"
+python3 - "$linear_ready_payload_file" "$linear_ready_issue" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+issue = sys.argv[2]
+payload = json.loads(path.read_text())
+payload["url"] = f"https://linear.app/driftward/issue/{issue}/example"
+payload["data"]["id"] = issue
+payload["data"]["identifier"] = issue
+payload["data"]["title"] = "Build a narrow Linear ingress test"
+payload["data"]["project"] = {
+    "id": "d779c532-620d-458c-8abd-05e37f5ca4c1",
+    "name": "Capykit",
+}
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+
+linear_ready_signature_headers=()
+if grep -q '^HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET=' "$EVENT_INGRESS_ENV_FILE" 2>/dev/null; then
+  linear_ready_signature_headers=(
+    -H "Linear-Signature: $(linear_payload_signature "$linear_ready_payload_file")"
+    -H "Linear-Timestamp: $smoke_timestamp_ms"
+  )
+fi
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Linear-Event: Issue' \
+  -H "Linear-Delivery: $linear_ready_delivery_id" \
+  "${linear_ready_signature_headers[@]}" \
+  --data-binary @"$linear_ready_payload_file" \
+  http://127.0.0.1:19878/events/linear/issue >"$linear_ready_response_file" ||
+  fail "event ingress did not accept ready Capykit Linear issue payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.linear.issue.ready_for_implementation" and
+  .event.normalized.identifier == $issue and
+  .event.normalized.projectId == "d779c532-620d-458c-8abd-05e37f5ca4c1" and
+  .event.normalized.dispatchEligible == true and
+  .event.normalized.decision == "ready_for_implementation" and
+  .event.normalized.reasonCode == "linear_issue_ready_for_implementation"
+' --arg issue "$linear_ready_issue" "$linear_ready_response_file" >/dev/null ||
+  fail "event ingress did not publish ready Capykit Linear issue event"
+pass "Hatchet event ingress published ready Capykit Linear issue event"
+
+linear_ready_intake_key="hatchet:work-item:linear:$linear_ready_issue:create_draft_pr:dry-run:active"
+linear_ready_intake_job_id=""
+for _ in $(seq 1 30); do
+  if job_json="$(bridge_curl "http://127.0.0.1:19877/jobs/$linear_ready_intake_key" 2>/dev/null)"; then
+    state="$(printf '%s' "$job_json" | jq -r '.state')"
+    pr_url="$(printf '%s' "$job_json" | jq -r '.pr_url // empty')"
+    dry_run="$(printf '%s' "$job_json" | jq -r '.payload.dry_run')"
+    linear_issue="$(printf '%s' "$job_json" | jq -r '.payload.linear_issue // empty')"
+    repo="$(printf '%s' "$job_json" | jq -r '.payload.repo // empty')"
+    routing_source="$(printf '%s' "$job_json" | jq -r '.payload.routing.source // empty')"
+    routing_project_id="$(printf '%s' "$job_json" | jq -r '.payload.routing.project_id // empty')"
+    source_event_key="$(printf '%s' "$job_json" | jq -r '.payload.source_event_key // empty')"
+    if [[ "$state" == "completed" && "$pr_url" == dry-run://github/pr/* && "$dry_run" == "true" && "$linear_issue" == "$linear_ready_issue" && "$repo" == "Driftward-LLC/capykit" && "$routing_source" == "linear_project" && "$routing_project_id" == "d779c532-620d-458c-8abd-05e37f5ca4c1" && "$source_event_key" == "linear:issue:$linear_ready_issue:update:$linear_ready_delivery_id" ]]; then
+      linear_ready_intake_job_id="$(printf '%s' "$job_json" | jq -r '.job_id')"
+      pass "intake worker completed ready Linear issue dry-run bridge job"
+      break
+    fi
+  fi
+  sleep 1
+done
+
+if [[ -z "$linear_ready_intake_job_id" ]]; then
+  fail "intake worker did not complete ready Linear issue dry-run bridge job"
+fi
+
+jobs_before_negative="$(bridge_curl 'http://127.0.0.1:19877/jobs?limit=1' | jq -er '.total')"
+negative_finding="$(npm --prefix "$REPO_ROOT/hatchet/workers/reconciliation-worker" run --silent smoke:negative-mismatch -- "$linear_ready_intake_job_id")" ||
+  fail "negative reconciliation mismatch was not detected"
+printf '%s' "$negative_finding" | jq -e '.kind == "github_pr_branch_mismatch" and (.findingKey | startswith("reconciliation:v1:github_pr_branch_mismatch:"))' >/dev/null ||
+  fail "negative reconciliation mismatch returned an unexpected finding"
+negative_request="$(printf '%s' "$negative_finding" | jq -c '{findings: [{finding_key: .findingKey, job_id: .jobId, subject: .subject, kind: .kind, severity: .severity, details: {expected: .expected, observed: .observed}}]}')"
+bridge_curl -H 'Content-Type: application/json' --data "$negative_request" http://127.0.0.1:19877/reconciliation/findings >"$negative_finding_file" ||
+  fail "bridge did not persist the negative reconciliation finding"
+bridge_curl -H 'Content-Type: application/json' --data "$negative_request" http://127.0.0.1:19877/reconciliation/findings >"$negative_finding_retry_file" ||
+  fail "bridge did not deduplicate the negative reconciliation finding retry"
+jobs_after_negative="$(bridge_curl 'http://127.0.0.1:19877/jobs?limit=1' | jq -er '.total')"
+[[ "$jobs_before_negative" == "$jobs_after_negative" ]] || fail "negative reconciliation smoke mutated bridge jobs"
+jq -e '(.created_finding_keys | length) == 1 or (.existing_finding_keys | length) == 1' "$negative_finding_file" >/dev/null ||
+  fail "negative reconciliation finding persistence did not return a dedupe key"
+jq -e '(.created_finding_keys | length) == 0 and (.existing_finding_keys | length) == 1' "$negative_finding_retry_file" >/dev/null ||
+  fail "negative reconciliation finding retry was not deduplicated"
+pass "negative reconciliation mismatch detected and persisted without bridge job or provider mutation"
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Linear-Event: Issue' \
+  -H "Linear-Delivery: $linear_ready_delivery_id" \
+  "${linear_ready_signature_headers[@]}" \
+  --data-binary @"$linear_ready_payload_file" \
+  http://127.0.0.1:19878/events/linear/issue >"$linear_ready_dupe_response_file" ||
+  fail "event ingress did not accept duplicate ready Linear issue payload"
+
+jq -e '
+  .created == false and
+  .event.event_key == input.event.event_key and
+  .event.hatchet_published == true
+' "$linear_ready_dupe_response_file" "$linear_ready_response_file" >/dev/null ||
+  fail "event ingress did not dedupe ready Linear issue event"
+
+job_json="$(bridge_curl "http://127.0.0.1:19877/jobs/$linear_ready_intake_key")" ||
+  fail "bridge job disappeared after duplicate ready Linear issue event"
+linear_ready_intake_dupe_job_id="$(printf '%s' "$job_json" | jq -r '.job_id')"
+[[ "$linear_ready_intake_dupe_job_id" == "$linear_ready_intake_job_id" ]] ||
+  fail "duplicate ready Linear issue event created a different bridge job"
+pass "ready Linear issue intake remains idempotent across duplicate delivery"
+
+linear_ready_second_delivery_id="worker-smoke-linear-ready-second-$smoke_timestamp"
+cp "$linear_ready_payload_file" "$linear_ready_second_payload_file"
+python3 - "$linear_ready_second_payload_file" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text())
+payload["updatedFrom"] = {"state": {"name": "Backlog"}}
+payload["data"]["description"] = "Implementation-ready work item. Second ready delivery for active-work idempotency."
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+
+linear_ready_second_signature_headers=()
+if grep -q '^HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET=' "$EVENT_INGRESS_ENV_FILE" 2>/dev/null; then
+  linear_ready_second_signature_headers=(
+    -H "Linear-Signature: $(linear_payload_signature "$linear_ready_second_payload_file")"
+    -H "Linear-Timestamp: $smoke_timestamp_ms"
+  )
+fi
+
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Linear-Event: Issue' \
+  -H "Linear-Delivery: $linear_ready_second_delivery_id" \
+  "${linear_ready_second_signature_headers[@]}" \
+  --data-binary @"$linear_ready_second_payload_file" \
+  http://127.0.0.1:19878/events/linear/issue >"$linear_ready_second_response_file" ||
+  fail "event ingress did not accept second ready Linear issue payload"
+
+jq -e '
+  .created == true and
+  .event.hatchet_published == true and
+  .event.normalized.eventName == "driftward.linear.issue.ready_for_implementation" and
+  .event.normalized.identifier == $issue
+' --arg issue "$linear_ready_issue" "$linear_ready_second_response_file" >/dev/null ||
+  fail "event ingress did not publish second ready Linear issue event"
+
+for _ in $(seq 1 10); do
+  job_json="$(bridge_curl "http://127.0.0.1:19877/jobs/$linear_ready_intake_key")" ||
+    fail "bridge job disappeared after second ready Linear issue event"
+  linear_ready_intake_second_job_id="$(printf '%s' "$job_json" | jq -r '.job_id')"
+  state="$(printf '%s' "$job_json" | jq -r '.state')"
+  if [[ "$linear_ready_intake_second_job_id" == "$linear_ready_intake_job_id" && "$state" == "completed" ]]; then
+    pass "second ready Linear issue delivery reused active work-item bridge job"
+    break
+  fi
+  sleep 1
+done
+
+[[ "${linear_ready_intake_second_job_id:-}" == "$linear_ready_intake_job_id" ]] ||
+  fail "second ready Linear issue delivery created a different bridge job"
+jq -e --arg first "linear:issue:$linear_ready_issue:update:$linear_ready_delivery_id" --arg second "linear:issue:$linear_ready_issue:update:$linear_ready_second_delivery_id" '
+  .payload.source_event_keys | index($first) and index($second)
+' <<<"$job_json" >/dev/null || fail "bridge job did not preserve both ready Linear delivery correlations"
+pass "ready Linear issue intake preserved event-level delivery correlation"
+
+if grep -q '^HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET=' "$EVENT_INGRESS_ENV_FILE" 2>/dev/null; then
+  unauth_status="$(
+    curl -ksS \
+      -o /dev/null \
+      -w '%{http_code}' \
+      -H 'Content-Type: application/json' \
+      -H 'Linear-Event: Issue' \
+      -H 'Linear-Delivery: worker-smoke-public-unsigned' \
+      --data-binary @"$linear_ready_payload_file" \
+      "$LINEAR_WEBHOOK_URL"
+  )"
+  [[ "$unauth_status" == "401" ]] || fail "public Linear webhook endpoint returned $unauth_status for unsigned payload with secret configured"
+  pass "public Linear webhook endpoint rejects unsigned payloads"
+else
+  unconfigured_status="$(
+    curl -ksS \
+      -o /dev/null \
+      -w '%{http_code}' \
+      -H 'Content-Type: application/json' \
+      -H 'Linear-Event: Issue' \
+      -H 'Linear-Delivery: worker-smoke-public-unconfigured' \
+      --data-binary @"$linear_ready_payload_file" \
+      "$LINEAR_WEBHOOK_URL"
+  )"
+  [[ "$unconfigured_status" == "503" ]] || fail "public Linear webhook endpoint returned $unconfigured_status before secret configuration"
+  pass "public Linear webhook endpoint refuses payloads before secret configuration"
+fi
+
+python3 - <<'PY' || fail "Tailscale Serve does not expose Hatchet dashboard"
+import json
+import subprocess
+
+result = subprocess.run(
+    ["tailscale", "serve", "status", "--json"],
+    check=True,
+    capture_output=True,
+    text=True,
+)
+status = json.loads(result.stdout)
+web = status.get("Web", {})
+handler = web.get("srv1379035.tail5c6a78.ts.net:8888", {}).get("Handlers", {}).get("/")
+if not handler or handler.get("Proxy") != "http://127.0.0.1:8888":
+    raise SystemExit(1)
+tcp = status.get("TCP", {})
+if not tcp.get("8888", {}).get("HTTPS"):
+    raise SystemExit(1)
+PY
+pass "Tailscale Serve exposes Hatchet dashboard"
+
+python3 - <<'PY' || fail "Tailscale Funnel does not expose Linear webhook proxy on HTTPS 443"
+import json
+import subprocess
+
+result = subprocess.run(
+    ["tailscale", "funnel", "status", "--json"],
+    check=True,
+    capture_output=True,
+    text=True,
+)
+status = json.loads(result.stdout)
+web = status.get("Web", {})
+handler = web.get("srv1379035.tail5c6a78.ts.net:443", {}).get("Handlers", {}).get("/")
+if not handler or handler.get("Proxy") != "http://127.0.0.1:19879":
+    raise SystemExit(1)
+tcp = status.get("TCP", {})
+if not tcp.get("443", {}).get("HTTPS"):
+    raise SystemExit(1)
+PY
+pass "Tailscale Funnel exposes Linear webhook proxy on HTTPS 443"
+
+if curl -kfsS "$TAILSCALE_URL" >/dev/null; then
+  pass "Hatchet dashboard responds through Tailscale URL"
+else
+  fail "Hatchet dashboard did not respond through $TAILSCALE_URL"
+fi
+
+if ss -ltn | grep -qE '127\.0\.0\.1:8888|127\.0\.0\.1:7077|127\.0\.0\.1:8733|127\.0\.0\.1:19877|127\.0\.0\.1:19878|127\.0\.0\.1:19879'; then
+  pass "Hatchet ports are bound on localhost"
+else
+  fail "expected localhost Hatchet ports were not listening"
+fi
+
+if ss -ltn | grep -qE '(^|[[:space:]])0\.0\.0\.0:(8888|7077|8733|19877|19878|19879)\b|\[::\]:(8888|7077|8733|19877|19878|19879)\b'; then
+  fail "Hatchet exposed a public listener"
+fi
+pass "Hatchet ports are not publicly exposed"
+
+printf '\nDriftward Hatchet Lite smoke test passed.\n'

@@ -1,0 +1,19 @@
+[Unit]
+Description=Driftward Factory retry and inspection outbox dispatcher
+After=driftward-hatchet-bridge.service
+Requires=driftward-hatchet-bridge.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/docker/driftward/hatchet/releases/bridge/current
+Environment=PYTHONPATH=/docker/driftward/hatchet/releases/bridge/current
+Environment=DRIFTWARD_BRIDGE_RELEASE_ROOT=/docker/driftward/hatchet/releases/bridge/current
+EnvironmentFile=/etc/driftward/factory-operator.env
+ExecStart=/usr/bin/python3 -m hatchet_hermes_bridge.cli --db /var/lib/driftward-hatchet-bridge/bridge.db dispatch-factory-outbox --limit 50
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/driftward-hatchet-bridge /run
+PrivateTmp=true
+CPUQuota=10%
+MemoryMax=96M

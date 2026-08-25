@@ -1,0 +1,23 @@
+{
+  "name": "@driftward/hatchet-bridge-executor-worker",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/worker.js",
+  "types": "dist/worker.d.ts",
+  "scripts": {
+    "start": "npx ts-node src/worker.ts",
+    "start:prod": "node dist/worker.js",
+    "push:accepted": "npx ts-node src/triggers/push-accepted-event.ts",
+    "test": "npm run build && node --test dist/hermes/*.test.js dist/workflows/*.test.js",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@driftward/hatchet-worker-shared": "0.1.0",
+    "@hatchet-dev/typescript-sdk": "1.26.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

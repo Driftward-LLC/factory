@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.coverage
+.env
+.env.*
+!.env.example
+*.log
+tmp/
+coverage/

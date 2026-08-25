@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${CREDENTIALS_DIRECTORY:?systemd credentials directory is required}"
+credential_file="$CREDENTIALS_DIRECTORY/factory-lifecycle.env"
+[[ -r "$credential_file" ]] || { echo "missing lifecycle credential" >&2; exit 1; }
+
+# The credential is root-published and manager-mounted read-only for this service.
+set -a
+. "$credential_file"
+set +a
+
+export PYTHONPATH=/usr/local/lib/driftward-factory-lifecycle-writer
+export FACTORY_LIFECYCLE_DB=/var/lib/driftward-factory-lifecycle-writer/outbox.db
+export FACTORY_LIFECYCLE_PORT=19880
+if [[ "$#" == 0 ]]; then
+  set -- serve --interval 30
+fi
+exec /usr/bin/python3 -m factory_lifecycle_writer.cli "$@"

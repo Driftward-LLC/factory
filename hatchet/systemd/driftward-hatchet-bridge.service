@@ -1,0 +1,27 @@
+[Unit]
+Description=Driftward Hatchet Hermes bridge ledger API
+After=network-online.target
+Wants=network-online.target
+Documentation=file:/docker/driftward/hatchet/releases/bridge/current/README.md
+
+[Service]
+Type=exec
+WorkingDirectory=/docker/driftward/hatchet/releases/bridge/current
+Environment=PYTHONPATH=/docker/driftward/hatchet/releases/bridge/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HATCHET_VERIFIER_POLICY_PATH=/etc/driftward/hatchet-verifier-policy.json
+EnvironmentFile=-/etc/driftward/hatchet-verifier.env
+EnvironmentFile=-/etc/driftward/hatchet-bridge.env
+ExecStart=/usr/bin/python3 -m hatchet_hermes_bridge.cli --db /var/lib/driftward-hatchet-bridge/bridge.db serve --host 127.0.0.1 --port 19877
+Restart=always
+RestartSec=5
+RuntimeDirectory=driftward-hatchet-bridge
+CPUQuota=20%
+MemoryMax=128M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/driftward-hatchet-bridge
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

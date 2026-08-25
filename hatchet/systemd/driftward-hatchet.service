@@ -1,0 +1,23 @@
+[Unit]
+Description=Driftward Hatchet Lite control plane
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+Documentation=file:/root/driftward/repos/factory/docs/hatchet-hermes-control-plane.md
+Documentation=file:/root/driftward/repos/factory/hatchet/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=/docker/driftward/hatchet
+Environment=COMPOSE_PROJECT_NAME=driftward-hatchet
+ExecStart=/usr/bin/docker compose --env-file /etc/driftward/hatchet.env up --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/driftward/hatchet.env down
+Restart=always
+RestartSec=10
+TimeoutStartSec=180
+TimeoutStopSec=60
+CPUQuota=150%
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target

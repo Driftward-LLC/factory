@@ -1,0 +1,31 @@
+{
+  "units": [
+    "driftward-hatchet-bridge.service",
+    "driftward-hatchet-bridge-reconciler.service",
+    "driftward-hatchet-bridge-reconciler.timer",
+    "driftward-factory-operator.service",
+    "driftward-factory-outbox-dispatcher.service",
+    "driftward-factory-outbox-dispatcher.timer"
+  ],
+  "targets": [
+    "/etc/driftward/hatchet-verifier-policy.json",
+    "/etc/driftward/hatchet-routing-registry.json",
+    "/etc/driftward/hatchet.env",
+    "/etc/driftward/hatchet-bridge.env",
+    "/etc/driftward/hatchet-workers.env",
+    "/etc/driftward/hatchet-worker-bridge-executor.env",
+    "/etc/driftward/hatchet-event-ingress.env",
+    "/etc/driftward/factory-operator.env",
+    "/etc/driftward/hatchet-verifier.env",
+    "/docker/driftward/hatchet/releases/bridge/current"
+  ],
+  "directories": [
+    "/etc/driftward",
+    "/etc/systemd/system",
+    "/docker/driftward/hatchet/releases",
+    "/docker/driftward/hatchet/releases/bridge"
+  ],
+  "transients": [
+    "/docker/driftward/hatchet/releases/bridge/.current.new"
+  ]
+}

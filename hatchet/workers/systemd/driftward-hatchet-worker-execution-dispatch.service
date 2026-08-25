@@ -1,0 +1,22 @@
+[Unit]
+Description=Driftward Hatchet execution dispatch worker
+After=network-online.target driftward-hatchet.service driftward-hatchet-bridge.service
+Wants=network-online.target
+Documentation=file:__REPO_ROOT__/hatchet/workers/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__/hatchet/workers/execution-dispatch-worker
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/driftward/hatchet-workers.env
+ExecStart=/usr/bin/node dist/worker.js
+Restart=always
+RestartSec=5
+CPUQuota=25%
+MemoryMax=192M
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

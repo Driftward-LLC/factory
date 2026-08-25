@@ -1,0 +1,692 @@
+import tempfile
+import unittest
+import hashlib
+import json
+import os
+from pathlib import Path
+
+from hatchet_hermes_bridge.store import (
+    BridgeConflict,
+    BridgeValidationError,
+    deterministic_branch,
+    list_events,
+    list_lifecycle_events,
+    count_events,
+    record_job_correlation,
+    submit_job,
+    transition_job,
+    record_reconciliation_findings,
+    acquire_verification_lease,
+    claim_verification_lease,
+    claim_factory_execution,
+    get_job,
+    record_verification_observation,
+    reserve_factory_attempt,
+    reserve_factory_intake,
+    list_factory_attempts,
+    list_factory_attempt_events,
+    reserve_factory_retry,
+    cancel_factory_attempt,
+    get_factory_attempt,
+)
+from test_support import connect_migrate as connect
+
+
+def verifier_payload(repository="Driftward-LLC/driftward-host"):
+    catalog = json.loads((Path(__file__).resolve().parents[2] / "workers" / "verifier-policy.json").read_text())
+    policy = next(item for item in catalog["policies"] if item["repo"] == repository)
+    canonical = {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}
+    return {"repo": policy["repo"], "dry_run": False, "verification_policy": canonical, "expected_base": policy["expected_base"], "required_github_checks": policy["required_github_checks"], "allowed_changed_paths": policy["allowed_changed_paths"], "forbidden_changed_paths": policy["forbidden_changed_paths"], "required_local_commands": policy["required_local_commands"], "secret_check_command": policy["secret_check_command"]}
+
+
+def verification_receipt(job, commit_sha):
+    changed_file = "src/example.ts" if job["payload"]["repo"] == "Driftward-LLC/capykit" else "hatchet/bridge/tests/test_store.py"
+    return {
+        "version": "draft-pr-verification-v1", "verifier_version": "bridge-executor-v2", "verified_at": "2026-08-16T00:00:00Z",
+        "repo": job["payload"]["repo"], "pr_url": job["pr_url"], "branch": job["branch"], "commit_sha": commit_sha,
+        "policy_id": job["payload"]["verification_policy"]["id"], "policy_catalog_version": job["payload"]["verification_policy"]["catalog_version"], "policy_digest": job["payload"]["verification_policy"]["digest"],
+        "checks": [{"name": name, "conclusion": "SUCCESS"} for name in job["payload"]["required_github_checks"]],
+        "pr_identity": {"base": job["payload"]["expected_base"], "draft": True, "author": "factory-hermes[bot]", "linear_reference": f"Refs Linear {job['payload'].get('linear_issue')}"},
+        "file_policy": {"allowed_changed_paths": job["payload"]["allowed_changed_paths"], "forbidden_changed_paths": job["payload"]["forbidden_changed_paths"], "files": [changed_file]},
+        "local_policy": {"required_commands": job["payload"]["required_local_commands"], "results": [{"command": command, "exit_code": 0} for command in job["payload"]["required_local_commands"]]},
+        "secret_policy": {"required_command": job["payload"]["secret_check_command"], "result": {"command": job["payload"]["secret_check_command"], "exit_code": 0}},
+    }
+
+
+def original_context(job):
+    return {
+        "local_commands": [{"command": command, "exit_code": 0} for command in job["payload"]["required_local_commands"]],
+        "secret_check": {"command": job["payload"]["secret_check_command"], "exit_code": 0},
+    }
+
+
+class BridgeStoreTests(unittest.TestCase):
+    def setUp(self):
+        os.environ["HATCHET_VERIFIER_POLICY_PATH"] = str(Path(__file__).resolve().parents[2] / "workers" / "verifier-policy.json")
+        self.tmp = tempfile.NamedTemporaryFile()
+        self.conn = connect(self.tmp.name)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.close()
+
+    def test_submit_is_idempotent_for_same_intent(self):
+        request = {
+            "idempotency_key": "hatchet:run-1:create-pr",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host", "linear_issue": "ENG-35"},
+        }
+
+        first, first_created = submit_job(self.conn, request)
+        second, second_created = submit_job(self.conn, request)
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertEqual(first["branch"], deterministic_branch(request["idempotency_key"]))
+
+        events = list_events(self.conn, first["job_id"])
+        self.assertEqual([event["event_type"] for event in events], ["accepted", "submit_deduplicated"])
+
+    def test_submit_conflicts_for_same_key_different_payload(self):
+        request = {
+            "idempotency_key": "hatchet:run-1:create-pr",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        }
+        submit_job(self.conn, request)
+
+        with self.assertRaises(BridgeConflict):
+            submit_job(
+                self.conn,
+                {
+                    "idempotency_key": "hatchet:run-1:create-pr",
+                    "requested_action": "create_draft_pr",
+                    "payload": {"repo": "Driftward-LLC/other"},
+                },
+            )
+
+    def test_transition_records_external_refs_and_blocks_terminal_changes(self):
+        job, _ = submit_job(
+            self.conn,
+            {
+                "idempotency_key": "hatchet:run-2:create-pr",
+                "requested_action": "create_draft_pr",
+                "payload": verifier_payload(),
+            },
+        )
+
+        running = transition_job(self.conn, job["job_id"], state="running")
+        self.assertEqual(running["state"], "running")
+
+        committed = transition_job(
+            self.conn,
+            job["job_id"],
+            state="effect_committed",
+            details={
+                "commit_sha": "abc123",
+                "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/95",
+            },
+        )
+        self.assertEqual(committed["state"], "effect_committed")
+        self.assertEqual(committed["commit_sha"], "abc123")
+        self.assertEqual(committed["pr_url"], "https://github.com/Driftward-LLC/driftward-host/pull/95")
+
+        pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verified-attempt")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="verified-attempt"))
+        record_verification_observation(self.conn, pending["job_id"], attempt_id="verified-attempt", receipt=verification_receipt(pending, "abc123"))
+        self.assertEqual(pending["state"], "verification_pending")
+
+        ready = transition_job(
+            self.conn,
+            job["job_id"],
+            state="ready_for_human_review",
+            details={"reason_code": "draft_pr_verified", "verification_attempt_id": "verified-attempt", "verification_receipt": verification_receipt(pending, "abc123")},
+        )
+        self.assertEqual(ready["state"], "ready_for_human_review")
+        self.assertEqual(ready["verification_receipt"]["commit_sha"], "abc123")
+        self.assertTrue(ready["verification_digest"])
+
+        with self.assertRaises(BridgeConflict):
+            transition_job(self.conn, job["job_id"], state="failed")
+
+    def test_verification_receipt_accepts_github_app_author_slug(self):
+        job, _ = submit_job(
+            self.conn,
+            {
+                "idempotency_key": "hatchet:run-app-author:create-pr",
+                "requested_action": "create_draft_pr",
+                "payload": verifier_payload(),
+            },
+        )
+        transition_job(self.conn, job["job_id"], state="running")
+        transition_job(
+            self.conn,
+            job["job_id"],
+            state="effect_committed",
+            details={
+                "commit_sha": "abc123",
+                "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/96",
+            },
+        )
+        pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        receipt = verification_receipt(pending, "abc123")
+        receipt["pr_identity"]["author"] = "app/factory-hermes"
+
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verified-app-author")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="verified-app-author"))
+        record_verification_observation(self.conn, pending["job_id"], attempt_id="verified-app-author", receipt=receipt)
+        ready = transition_job(
+            self.conn,
+            job["job_id"],
+            state="ready_for_human_review",
+            details={"reason_code": "draft_pr_verified", "verification_attempt_id": "verified-app-author", "verification_receipt": receipt},
+        )
+
+        self.assertEqual(ready["state"], "ready_for_human_review")
+        self.assertEqual(ready["verification_receipt"]["pr_identity"]["author"], "app/factory-hermes")
+
+    def test_verified_ready_requires_a_pr_and_verification_reason(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:verified-ready:validation",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        })
+        transition_job(self.conn, job["job_id"], state="running")
+        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/96"})
+        transition_job(self.conn, job["job_id"], state="verification_pending")
+        with self.assertRaises(BridgeValidationError):
+            transition_job(self.conn, job["job_id"], state="ready_for_human_review")
+
+    def test_ready_transition_rejects_abusive_or_detached_receipts(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:receipt:validation", "requested_action": "create_draft_pr",
+            "payload": verifier_payload(),
+        })
+        transition_job(self.conn, job["job_id"], state="running")
+        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/97"})
+        pending = transition_job(self.conn, job["job_id"], state="verification_pending")
+        receipt = verification_receipt(pending, "abc123")
+        receipt["pr_identity"] = {"passed": False}
+        with self.assertRaises(BridgeValidationError):
+            transition_job(self.conn, job["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "commit_sha": "abc123", "verification_receipt": receipt})
+        receipt = verification_receipt(pending, "other")
+        with self.assertRaises(BridgeValidationError):
+            transition_job(self.conn, job["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "commit_sha": "abc123", "verification_receipt": receipt})
+
+    def test_real_jobs_cannot_take_legacy_completed_transition(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:real:completed", "requested_action": "create_draft_pr", "payload": {"repo": "Driftward-LLC/driftward-host", "dry_run": False},
+        })
+        transition_job(self.conn, job["job_id"], state="running")
+        with self.assertRaises(BridgeValidationError):
+            transition_job(self.conn, job["job_id"], state="completed")
+        dry, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:dry:completed", "requested_action": "create_draft_pr", "payload": {"repo": "Driftward-LLC/driftward-host", "dry_run": True},
+        })
+        transition_job(self.conn, dry["job_id"], state="running")
+        self.assertEqual(transition_job(self.conn, dry["job_id"], state="completed")["state"], "completed")
+
+    def test_verification_lease_collapses_redelivery_expires_and_closes_terminal_work(self):
+        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:lease:test", "requested_action": "create_draft_pr", "payload": verifier_payload()})
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/98"})
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        # Separate connections model concurrent worker/reconciler processes.
+        second_conn = connect(self.tmp.name)
+        self.addCleanup(second_conn.close)
+        first = acquire_verification_lease(self.conn, pending["job_id"], attempt_id="worker-a")
+        duplicate = acquire_verification_lease(second_conn, pending["job_id"], attempt_id="worker-b")
+        self.assertTrue(first["acquired"]); self.assertFalse(duplicate["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="worker-a"))
+        self.assertFalse(claim_verification_lease(self.conn, pending["job_id"], attempt_id="worker-a"))
+        self.conn.execute("UPDATE verification_leases SET expires_at = '2000-01-01T00:00:00Z' WHERE job_id = ?", (pending["job_id"],)); self.conn.commit()
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="worker-c")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="worker-c"))
+        record_verification_observation(self.conn, pending["job_id"], attempt_id="worker-c", receipt=verification_receipt(pending, "abc123"))
+        ready = transition_job(self.conn, pending["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "verification_attempt_id": "worker-c", "verification_receipt": verification_receipt(pending, "abc123")})
+        lease = self.conn.execute("SELECT closed_at, outcome FROM verification_leases WHERE job_id = ?", (ready["job_id"],)).fetchone()
+        self.assertIsNotNone(lease["closed_at"]); self.assertEqual(lease["outcome"], "verified")
+        with self.assertRaises(BridgeValidationError):
+            acquire_verification_lease(self.conn, pending["job_id"], attempt_id="worker-after-terminal")
+
+    def test_failed_verification_closes_the_active_lease_in_its_transition_transaction(self):
+        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:lease:failure", "requested_action": "create_draft_pr", "payload": verifier_payload()})
+        transition_job(self.conn, job["job_id"], state="running")
+        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/99"})
+        pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="crashed-worker")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="crashed-worker"))
+        failed = transition_job(self.conn, pending["job_id"], state="failed", details={"reason_code": "github_checks_failed", "verification_attempt_id": "crashed-worker", "error": "sanitized"})
+        lease = self.conn.execute("SELECT closed_at, outcome FROM verification_leases WHERE job_id = ?", (failed["job_id"],)).fetchone()
+        self.assertIsNotNone(lease["closed_at"]); self.assertEqual(lease["outcome"], "failed")
+
+    def test_failed_github_check_queues_bounded_repair_for_existing_pr(self):
+        attempt, job, _ = reserve_factory_intake(
+            self.conn, work_item_key="ENG-11", mode="real", request_id="linear:issue:ENG-11:update:first",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-11"},
+        )
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/111"}, _factory_execution_commit=True)
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-repair")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-repair"))
+
+        failed = transition_job(
+            self.conn,
+            pending["job_id"],
+            state="failed",
+            details={"reason_code": "verification_github_check_failed", "verification_attempt_id": "verifier-repair", "error": "GitHub check markdown lint did not succeed; observed FAILURE"},
+            _factory_verifier_completion=True,
+        )
+
+        attempts = list_factory_attempts(self.conn, "ENG-11")
+        repair = attempts[0]
+        repair_job = get_job(self.conn, repair["job_id"])
+        self.assertEqual(failed["state"], "failed")
+        self.assertEqual(get_factory_attempt(self.conn, attempt["attempt_id"])["status"], "failed")
+        self.assertEqual(repair["generation"], 2)
+        self.assertEqual(repair["status"], "accepted")
+        self.assertEqual(repair["prior_attempt_id"], attempt["attempt_id"])
+        self.assertEqual(repair["prior_pr_url"], "https://github.com/Driftward-LLC/capykit/pull/111")
+        self.assertEqual(repair_job["requested_action"], "repair_draft_pr")
+        self.assertEqual(repair_job["branch"], failed["branch"])
+        self.assertEqual(repair_job["payload"]["factory_repair"]["pr_url"], failed["pr_url"])
+        self.assertEqual(repair_job["payload"]["factory_repair"]["reason_code"], "verification_github_check_failed")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_attempt_outbox WHERE job_id=?", (repair_job["job_id"],)).fetchone()[0], 1)
+        self.assertIn("repair_queued", [event["event_type"] for event in list_factory_attempt_events(self.conn, attempt["attempt_id"])])
+        self.assertEqual([event["event_type"] for event in list_factory_attempt_events(self.conn, repair["attempt_id"])][:2], ["repair_reserved", "repair_requested"])
+
+    def test_non_repairable_verifier_failures_do_not_queue_repair(self):
+        attempt, job, _ = reserve_factory_intake(
+            self.conn, work_item_key="ENG-12", mode="real", request_id="linear:issue:ENG-12:update:first",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-12"},
+        )
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/112"}, _factory_execution_commit=True)
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-unsafe")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-unsafe"))
+
+        transition_job(
+            self.conn,
+            pending["job_id"],
+            state="failed",
+            details={"reason_code": "verification_pr_author_mismatch", "verification_attempt_id": "verifier-unsafe", "error": "unexpected PR author"},
+            _factory_verifier_completion=True,
+        )
+
+        self.assertEqual(len(list_factory_attempts(self.conn, "ENG-12")), 1)
+        self.assertEqual(get_factory_attempt(self.conn, attempt["attempt_id"])["status"], "failed")
+
+    def test_legacy_context_receipt_rows_remain_readable_without_allowing_new_legacy_completion(self):
+        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:legacy:receipt", "requested_action": "create_draft_pr", "payload": verifier_payload()})
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/100"})
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="legacy-owner")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="legacy-owner"))
+        record_verification_observation(self.conn, pending["job_id"], attempt_id="legacy-owner", receipt=verification_receipt(pending, "abc123"))
+        ready = transition_job(self.conn, pending["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "verification_attempt_id": "legacy-owner", "verification_receipt": verification_receipt(pending, "abc123")})
+        self.conn.execute("UPDATE bridge_jobs SET verification_original_context_json = NULL, verification_context_json = verification_receipt_json WHERE job_id = ?", (ready["job_id"],)); self.conn.commit()
+        readable = get_job(self.conn, ready["job_id"])
+        self.assertEqual(readable["verification_receipt"]["commit_sha"], "abc123")
+        self.assertEqual(readable["verification_context"]["commit_sha"], "abc123")
+
+    def test_completion_rejects_lease_bypass_non_owner_expiry_and_forged_evidence(self):
+        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:claimed:receipt", "requested_action": "create_draft_pr", "payload": verifier_payload()})
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/101"})
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        good = verification_receipt(pending, "abc123")
+        for attempt in (None, "wrong-owner"):
+            with self.subTest(attempt=attempt), self.assertRaises(BridgeValidationError):
+                transition_job(self.conn, pending["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "verification_attempt_id": attempt, "verification_receipt": good})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="owner")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="owner"))
+        for field, mutate in (
+            ("author", lambda receipt: receipt["pr_identity"].__setitem__("author", "human")),
+            ("unexpected_pr_identity_field", lambda receipt: receipt["pr_identity"].__setitem__("labels", ["bug"])),
+            ("checks", lambda receipt: receipt.__setitem__("checks", [])),
+            ("files", lambda receipt: receipt["file_policy"].__setitem__("files", ["../escape"])),
+            ("commands", lambda receipt: receipt["local_policy"].__setitem__("results", [])),
+        ):
+            forged = json.loads(json.dumps(good)); mutate(forged)
+            with self.subTest(field=field), self.assertRaises(BridgeValidationError):
+                transition_job(self.conn, pending["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "verification_attempt_id": "owner", "verification_receipt": forged})
+        self.conn.execute("UPDATE verification_leases SET expires_at = '2000-01-01T00:00:00Z' WHERE job_id = ?", (pending["job_id"],)); self.conn.commit()
+        with self.assertRaises(BridgeValidationError):
+            transition_job(self.conn, pending["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "verification_attempt_id": "owner", "verification_receipt": good})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="fresh-owner")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="fresh-owner"))
+        record_verification_observation(self.conn, pending["job_id"], attempt_id="fresh-owner", receipt=good)
+        self.conn.execute("UPDATE bridge_jobs SET verification_observed_digest = 'tampered' WHERE job_id = ?", (pending["job_id"],)); self.conn.commit()
+        with self.assertRaises(BridgeValidationError):
+            get_job(self.conn, pending["job_id"])
+        self.conn.execute("UPDATE bridge_jobs SET verification_observed_digest = ? WHERE job_id = ?", (hashlib.sha256(json.dumps(good, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), pending["job_id"])); self.conn.commit()
+        ready = transition_job(self.conn, pending["job_id"], state="ready_for_human_review", details={"reason_code": "draft_pr_verified", "verification_attempt_id": "fresh-owner", "verification_receipt": good})
+        self.assertEqual(ready["verification_context"], original_context(job))
+
+    def test_verification_context_is_write_once_on_effect_to_pending_only(self):
+        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:context:immutable", "requested_action": "create_draft_pr", "payload": verifier_payload()})
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/102"})
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        replacement = {"local_commands": [], "secret_check": {"command": "wrong", "exit_code": 1}}
+        with self.assertRaises(BridgeConflict):
+            transition_job(self.conn, pending["job_id"], state="verification_pending", details={"verification_context": replacement})
+        with self.assertRaises(BridgeValidationError):
+            transition_job(self.conn, pending["job_id"], state="failed", details={"verification_context": replacement})
+        self.assertEqual(get_job(self.conn, pending["job_id"])["verification_context"], original_context(job))
+
+    def test_verification_terminal_failure_reason_codes_close_only_the_claimed_lease(self):
+        for reason in ("github_checks_failed", "verification_github_checks_timeout", "verification_evidence_unavailable", "verification_pr_author_mismatch"):
+            with self.subTest(reason=reason):
+                job, _ = submit_job(self.conn, {"idempotency_key": f"hatchet:terminal:{reason}", "requested_action": "create_draft_pr", "payload": verifier_payload()})
+                transition_job(self.conn, job["job_id"], state="running")
+                committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": f"https://github.com/Driftward-LLC/driftward-host/pull/{reason}"})
+                pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+                self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id=reason)["acquired"])
+                self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id=reason))
+                failed = transition_job(self.conn, pending["job_id"], state="failed", details={"reason_code": reason, "verification_attempt_id": reason, "error": "sanitized"})
+                self.assertEqual(failed["state"], "failed")
+                self.assertEqual(self.conn.execute("SELECT outcome FROM verification_leases WHERE job_id = ?", (pending["job_id"],)).fetchone()[0], "failed")
+
+    def test_lifecycle_event_cursor_exposes_sanitized_history_in_order(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:lifecycle:cursor", "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/capykit", "linear_issue_id": "11111111-2222-4333-8444-555555555555", "linear_issue": "ENG-52", "linear_issue_url": "https://linear.app/driftward/issue/ENG-52/test", "dry_run": False},
+        })
+        transition_job(self.conn, job["job_id"], state="running")
+        first = list_lifecycle_events(self.conn, after_created_at=None, after_event_id=None, limit=1)
+        # A scan upper bound freezes its snapshot even when a later event arrives.
+        frozen = list_lifecycle_events(
+            self.conn,
+            after_created_at=None,
+            after_event_id=None,
+            before_created_at=first[0]["createdAt"],
+            before_event_id=first[0]["eventId"],
+            limit=10,
+        )
+        second = list_lifecycle_events(self.conn, after_created_at=first[0]["createdAt"], after_event_id=first[0]["eventId"], limit=10)
+        self.assertEqual(first[0]["state"], "accepted")
+        self.assertEqual([row["state"] for row in frozen], ["accepted"])
+        self.assertEqual(second[0]["state"], "running")
+        self.assertNotIn("error", first[0])
+
+    def test_reconciliation_finding_retries_are_deduplicated(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:reconciliation:test",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        })
+        finding = {
+            "finding_key": "reconciliation:v1:github_pr_branch_mismatch:test",
+            "job_id": job["job_id"], "subject": f"bridge:{job['job_id']}",
+            "kind": "github_pr_branch_mismatch", "severity": "warning",
+            "details": {"expected": {"branch": "codex/expected"}, "observed": {"headRefName": "codex/observed"}},
+        }
+        created, existing = record_reconciliation_findings(self.conn, [finding])
+        retry_created, retry_existing = record_reconciliation_findings(self.conn, [finding])
+        self.assertEqual(created, ["reconciliation:v1:github_pr_branch_mismatch:test"])
+        self.assertEqual(existing, [])
+        self.assertEqual(retry_created, [])
+        self.assertEqual(retry_existing, ["reconciliation:v1:github_pr_branch_mismatch:test"])
+
+    def test_reconciliation_findings_require_known_kind_existing_job_and_sanitized_details(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:reconciliation:validation",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        })
+        base = {
+            "finding_key": "reconciliation:v1:github_pr_branch_mismatch:validation",
+            "job_id": job["job_id"], "subject": f"bridge:{job['job_id']}",
+            "kind": "github_pr_branch_mismatch", "severity": "warning",
+            "details": {"expected": {"branch": "codex/a"}, "observed": {"headRefName": "codex/b"}},
+        }
+        with self.assertRaises(BridgeValidationError):
+            record_reconciliation_findings(self.conn, [{**base, "kind": "not_a_contract_kind"}])
+        with self.assertRaises(BridgeValidationError):
+            record_reconciliation_findings(self.conn, [{**base, "job_id": "00000000-0000-0000-0000-000000000000"}])
+        with self.assertRaises(BridgeValidationError):
+            record_reconciliation_findings(self.conn, [{**base, "details": {"raw_payload": "secret"}}])
+
+    def test_reconciliation_finding_can_use_non_job_sanitized_subject(self):
+        finding = {
+            "finding_key": "reconciliation:v1:ingress_stored_not_published:ingress",
+            "job_id": None, "subject": "ingress:linear:issue:ENG-39:update:delivery-1",
+            "kind": "ingress_stored_not_published", "severity": "critical",
+            "details": {"expected": {"published": True}, "observed": {"published": False}},
+        }
+        created, _ = record_reconciliation_findings(self.conn, [finding])
+        self.assertEqual(created, [finding["finding_key"]])
+
+    def test_reconciliation_findings_reject_extra_raw_and_non_string_severity_without_mutating_ledger(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:reconciliation:strict-schema",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        })
+        base = {
+            "finding_key": "reconciliation:v1:github_pr_branch_mismatch:strict",
+            "job_id": job["job_id"], "subject": f"bridge:{job['job_id']}",
+            "kind": "github_pr_branch_mismatch", "severity": "warning",
+            "details": {"expected": {"branch": "codex/a"}, "observed": {"headRefName": "codex/b"}},
+        }
+        before = self.conn.execute("SELECT COUNT(*) FROM reconciliation_findings").fetchone()[0]
+        for invalid in (
+            {**base, "extra": "rejected"},
+            {**base, "raw_payload": {"body": "rejected"}},
+            {**base, "severity": "info"},
+            {**base, "details": {"expected": {}, "observed": {}, "body": "rejected"}},
+            {**base, "details": {"expected": {"raw_payload": "rejected"}, "observed": {}}},
+        ):
+            with self.assertRaises(BridgeValidationError):
+                record_reconciliation_findings(self.conn, [invalid])
+            self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM reconciliation_findings").fetchone()[0], before)
+
+        for severity in ([], {}, None, 0, 1.5):
+            with self.subTest(severity=severity):
+                with self.assertRaises(BridgeValidationError):
+                    record_reconciliation_findings(self.conn, [{**base, "severity": severity}])
+                self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM reconciliation_findings").fetchone()[0], before)
+
+    def test_reconciliation_validation_is_atomic_and_persists_constructed_record_only(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:reconciliation:atomic",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        })
+        good = {
+            "finding_key": "reconciliation:v1:github_pr_branch_mismatch:atomic-good",
+            "job_id": job["job_id"], "subject": f"bridge:{job['job_id']}",
+            "kind": "github_pr_branch_mismatch", "severity": "warning",
+            "details": {"expected": {"branch": "codex/a"}, "observed": {"headRefName": "codex/b"}},
+        }
+        with self.assertRaises(BridgeValidationError):
+            record_reconciliation_findings(self.conn, [good, {**good, "finding_key": "bad", "severity": "info"}])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM reconciliation_findings").fetchone()[0], 0)
+        record_reconciliation_findings(self.conn, [good])
+        stored = self.conn.execute("SELECT details_json FROM reconciliation_findings WHERE finding_key = ?", (good["finding_key"],)).fetchone()[0]
+        self.assertNotIn("reason", stored)
+        self.assertNotIn("raw_payload", stored)
+
+    def test_submit_preserves_event_level_correlation_across_retries(self):
+        base = {
+            "idempotency_key": "hatchet:correlation:ENG-39",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host", "linear_issue": "ENG-39", "source_event_key": "linear:issue:ENG-39:update:first", "source_delivery_id": "first"},
+        }
+        first, created = submit_job(self.conn, base)
+        self.assertTrue(created)
+        retry, created = submit_job(self.conn, {**base, "payload": {**base["payload"], "source_event_key": "linear:issue:ENG-39:update:second", "source_delivery_id": "second"}})
+        self.assertFalse(created)
+        self.assertEqual(first["job_id"], retry["job_id"])
+        self.assertEqual(retry["payload"]["source_event_key"], "linear:issue:ENG-39:update:first")
+        self.assertEqual(retry["payload"]["source_event_keys"], ["linear:issue:ENG-39:update:first", "linear:issue:ENG-39:update:second"])
+
+    def test_correlation_endpoint_preserves_new_delivery_when_effect_payload_changes(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:correlation:changed-payload",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host", "linear_issue": "ENG-39", "implementation_prompt": "first", "source_event_key": "linear:issue:ENG-39:update:first"},
+        })
+        correlated = record_job_correlation(self.conn, job["idempotency_key"], {
+            "source_event_key": "linear:issue:ENG-39:update:second", "source_delivery_id": "second",
+        })
+        self.assertEqual(correlated["payload"]["source_event_keys"], ["linear:issue:ENG-39:update:first", "linear:issue:ENG-39:update:second"])
+        self.assertEqual(correlated["payload"]["implementation_prompt"], "first")
+        with self.assertRaises(BridgeValidationError):
+            record_job_correlation(self.conn, job["job_id"], {"raw_payload": "rejected"})
+
+    def test_event_history_is_bounded_and_counted(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:event-limit",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        })
+        for _ in range(3):
+            submit_job(self.conn, {
+                "idempotency_key": "hatchet:event-limit",
+                "requested_action": "create_draft_pr",
+                "payload": {"repo": "Driftward-LLC/driftward-host"},
+            })
+        self.assertEqual(len(list_events(self.conn, job["job_id"], 2)), 2)
+        self.assertEqual(count_events(self.conn, job["job_id"]), 4)
+        with self.assertRaises(BridgeValidationError):
+            list_events(self.conn, job["job_id"], 251)
+
+    def test_operator_retry_generations_are_transactional_and_idempotent(self):
+        first, created = reserve_factory_attempt(self.conn, work_item_key="ENG-8", mode="real", request_id="retry-001", reason="red CI", actor="root")
+        self.assertTrue(created); self.assertEqual(first["generation"], 1)
+        self.assertEqual(first["idempotency_key"], "hatchet:work-item:linear:ENG-8:create_draft_pr:real:active")
+        replay, created = reserve_factory_attempt(self.conn, work_item_key="ENG-8", mode="real", request_id="retry-001", reason="red CI", actor="root")
+        self.assertFalse(created); self.assertEqual(replay["attempt_id"], first["attempt_id"])
+        with self.assertRaises(BridgeConflict):
+            reserve_factory_attempt(self.conn, work_item_key="ENG-8", mode="real", request_id="retry-001", reason="different", actor="root")
+        self.conn.execute("UPDATE factory_attempts SET status='failed' WHERE attempt_id=?", (first["attempt_id"],)); self.conn.commit()
+        second, created = reserve_factory_attempt(self.conn, work_item_key="ENG-8", mode="real", request_id="retry-002", reason="retry after failure", actor="root")
+        self.assertTrue(created); self.assertEqual(second["generation"], 2)
+        self.assertEqual(second["branch"], deterministic_branch(second["idempotency_key"]))
+        self.assertEqual(len(list_factory_attempts(self.conn, "ENG-8")), 2)
+
+    def test_generationed_retry_tracks_lifecycle_and_cancel_is_non_destructive(self):
+        attempt, job, created = reserve_factory_retry(
+            self.conn, work_item_key="ENG-8", mode="real", request_id="atomic-1", reason="failed CI", actor="uid:0",
+            payload=verifier_payload(),
+        )
+        self.assertTrue(created); self.assertEqual(attempt["status"], "accepted")
+        canceled = cancel_factory_attempt(self.conn, attempt["attempt_id"], reason="operator stop", actor="uid:0")
+        self.assertEqual(canceled["status"], "canceled")
+        self.assertEqual(get_job(self.conn, job["job_id"])["state"], "accepted")
+        events = [event["event_type"] for event in list_factory_attempt_events(self.conn, attempt["attempt_id"])]
+        self.assertEqual(events, ["retry_reserved", "retry_requested", "attempt_accepted", "accepted_event_enqueued", "cancellation_requested"])
+
+    def test_intake_reserves_attempt_lineage_and_dry_run_does_not_block_real(self):
+        dry_attempt, dry_job, created = reserve_factory_intake(
+            self.conn, work_item_key="ENG-9", mode="dry-run", request_id="linear:issue:ENG-9:update:dry",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-9:update:dry"},
+            hatchet_workflow_run_id="wf-dry", hatchet_step_run_id="step-dry",
+        )
+        self.assertTrue(created)
+        self.assertEqual(dry_attempt["status"], "accepted")
+        self.assertEqual(dry_job["payload"]["factory_retry"]["attempt_id"], dry_attempt["attempt_id"])
+        self.assertEqual(dry_job["hatchet_workflow_run_id"], "wf-dry")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_attempt_outbox WHERE job_id=?", (dry_job["job_id"],)).fetchone()[0], 1)
+
+        transition_job(self.conn, dry_job["job_id"], state="running")
+        transition_job(self.conn, dry_job["job_id"], state="completed", details={"reason_code": "dry_run_completed"})
+        self.assertEqual(get_factory_attempt(self.conn, dry_attempt["attempt_id"])["status"], "completed")
+
+        real_attempt, real_job, real_created = reserve_factory_intake(
+            self.conn, work_item_key="ENG-9", mode="real", request_id="linear:issue:ENG-9:update:real",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-9:update:real"},
+            hatchet_workflow_run_id="wf-real", hatchet_step_run_id="step-real",
+        )
+        self.assertTrue(real_created)
+        self.assertEqual(real_attempt["mode"], "real")
+        self.assertEqual(real_job["idempotency_key"], "hatchet:work-item:linear:ENG-9:create_draft_pr:real:active")
+        self.assertEqual(real_job["payload"]["dry_run"], False)
+        self.assertIsNotNone(real_job["payload"]["factory_retry"]["attempt_id"])
+        self.assertTrue(claim_factory_execution(self.conn, real_job["job_id"], owner="executor")["claimed"])
+
+    def test_intake_skips_orphaned_active_bridge_key(self):
+        orphan, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:work-item:linear:ENG-9:create_draft_pr:real:active",
+            "requested_action": "create_draft_pr",
+            "payload": {
+                **verifier_payload("Driftward-LLC/capykit"),
+                "linear_issue": "ENG-9",
+                "dry_run": False,
+                "source_event_key": "linear:issue:ENG-9:update:old",
+            },
+        })
+        self.conn.execute(
+            "UPDATE bridge_jobs SET state='failed', reason_code='factory_attempt_required', error=? WHERE job_id=?",
+            ("real create_draft_pr requires a valid factory attempt lineage", orphan["job_id"]),
+        )
+        self.conn.commit()
+
+        attempt, job, created = reserve_factory_intake(
+            self.conn, work_item_key="ENG-9", mode="real", request_id="linear:issue:ENG-9:update:new",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={
+                **verifier_payload("Driftward-LLC/capykit"),
+                "source_event_key": "linear:issue:ENG-9:update:new",
+                "linear_issue": "ENG-9",
+            },
+        )
+        self.assertTrue(created)
+        self.assertEqual(attempt["generation"], 2)
+        self.assertEqual(attempt["idempotency_key"], "hatchet:work-item:linear:ENG-9:create_draft_pr:real:attempt:2")
+        self.assertEqual(job["idempotency_key"], attempt["idempotency_key"])
+        self.assertNotEqual(job["job_id"], orphan["job_id"])
+        self.assertEqual(get_job(self.conn, orphan["job_id"])["state"], "failed")
+
+    def test_intake_reuses_active_attempt_and_records_event_correlation(self):
+        first_attempt, first_job, created = reserve_factory_intake(
+            self.conn, work_item_key="ENG-10", mode="real", request_id="linear:issue:ENG-10:update:first",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-10:update:first"},
+        )
+        self.assertTrue(created)
+        second_attempt, second_job, second_created = reserve_factory_intake(
+            self.conn, work_item_key="ENG-10", mode="real", request_id="linear:issue:ENG-10:update:second",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-10:update:second"},
+        )
+        self.assertFalse(second_created)
+        self.assertEqual(second_attempt["attempt_id"], first_attempt["attempt_id"])
+        self.assertEqual(second_job["job_id"], first_job["job_id"])
+        self.assertEqual(second_job["payload"]["source_event_keys"], ["linear:issue:ENG-10:update:first", "linear:issue:ENG-10:update:second"])
+
+    def test_legacy_real_import_cannot_claim_new_verified_ready_path(self):
+        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:work-item:linear:ENG-91:create_draft_pr:real:active", "requested_action": "create_draft_pr", "payload": {**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-91"}})
+        # Reopen migrations after a complete legacy artifact exists, then prove
+        # the imported generation-one lineage cannot use the fresh verifier path.
+        self.conn.execute("DELETE FROM factory_attempts"); self.conn.commit()
+        self.conn.execute("UPDATE bridge_jobs SET state='completed',pr_url=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/91", job["job_id"]))
+        self.conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('legacy-eng91',?,'effect_committed','effect_committed',?,'2026-08-17T00:00:00Z')", (job["job_id"], json.dumps({"pr_url":"https://github.com/Driftward-LLC/capykit/pull/91", "head_branch":job["branch"]})))
+        self.conn.commit()
+        from hatchet_hermes_bridge.store import init_db
+        init_db(self.conn)
+        self.conn.execute("UPDATE bridge_jobs SET state='accepted',pr_url=NULL WHERE job_id=?", (job["job_id"],)); self.conn.commit()
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha":"abc", "pr_url":"https://github.com/Driftward-LLC/driftward-host/pull/91"})
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="legacy") ["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="legacy"))
+        receipt = verification_receipt(pending, "abc")
+        record_verification_observation(self.conn, pending["job_id"], attempt_id="legacy", receipt=receipt)
+        with self.assertRaisesRegex(BridgeValidationError, "legacy generation-one"):
+            transition_job(self.conn, pending["job_id"], state="ready_for_human_review", details={"reason_code":"draft_pr_verified", "verification_attempt_id":"legacy", "verification_receipt":receipt})
+
+
+if __name__ == "__main__":
+    unittest.main()

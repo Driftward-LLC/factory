@@ -1,0 +1,26 @@
+{
+  "name": "@driftward/hatchet-workers",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "intake-worker",
+    "execution-dispatch-worker",
+    "bridge-executor-worker",
+    "pr-event-worker",
+    "reconciliation-worker"
+  ],
+  "scripts": {
+    "build": "npm run build -w @driftward/hatchet-worker-shared && npm run build -w @driftward/hatchet-intake-worker && npm run build -w @driftward/hatchet-execution-dispatch-worker && npm run build -w @driftward/hatchet-bridge-executor-worker && npm run build -w @driftward/hatchet-pr-event-worker && npm run build -w @driftward/hatchet-reconciliation-worker",
+    "typecheck": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "esbuild": "^0.28.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@hatchet-dev/typescript-sdk": "1.26.1"
+  }
+}

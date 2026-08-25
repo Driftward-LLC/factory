@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "project_id": "d779c532-620d-458c-8abd-05e37f5ca4c1",
+      "repo": "Driftward-LLC/capykit",
+      "execution_enabled": true
+    },
+    {
+      "project_id": "c670f223-bcaf-4e48-9209-6cca65da4568",
+      "repo": "Driftward-LLC/driftward-host",
+      "execution_enabled": false
+    }
+  ]
+}

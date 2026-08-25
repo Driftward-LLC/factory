@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Renew Shipwright's token and atomically publish only that token to the writer."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+from factory_lifecycle_writer.linear import LinearClient, LinearError
+from factory_lifecycle_writer.oauth import AppTokenProvider, IdentityError
+
+
+STATE_DIR = Path(os.environ.get("FACTORY_TOKEN_STATE_DIR", "/var/lib/driftward-factory-linear-token"))
+ENV_FILE = Path(os.environ.get("FACTORY_LIFECYCLE_ENV_FILE", "/etc/driftward/factory-lifecycle-writer.env"))
+
+
+def credential(name: str) -> str:
+    try:
+        directory = Path(os.environ["CREDENTIALS_DIRECTORY"])
+        value = (directory / name).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise IdentityError("app_credentials_missing") from exc
+    if not value or "\n" in value or "\r" in value:
+        raise IdentityError("app_credentials_invalid")
+    return value
+
+
+def publish_token(token: str) -> bool:
+    ENV_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    existing = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
+    retained = [line for line in existing.splitlines() if not line.startswith("LINEAR_FACTORY_ACCESS_TOKEN=")]
+    next_value = "\n".join([*retained, f"LINEAR_FACTORY_ACCESS_TOKEN={token}"]) + "\n"
+    if existing == next_value:
+        ENV_FILE.chmod(0o600)
+        return False
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=ENV_FILE.parent, delete=False) as handle:
+        handle.write(next_value)
+        temporary = Path(handle.name)
+    temporary.chmod(0o600)
+    os.replace(temporary, ENV_FILE)
+    return True
+
+
+def main() -> int:
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    STATE_DIR.chmod(0o700)
+    provider = AppTokenProvider(credential("factory-client-id"), credential("factory-client-secret"), STATE_DIR / "factory_app_token.json", skew=3600)
+    token = provider.token()
+    actor = LinearClient(token).verify_scope()
+    changed = publish_token(token)
+    state = {"schema_version": 1, "actor_id": actor.actor_id, "actor_name": actor.name, "workspace": actor.workspace, "team": "Engineering"}
+    target = STATE_DIR / "factory_actor.json"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=STATE_DIR, delete=False) as handle:
+        json.dump(state, handle, separators=(",", ":"), sort_keys=True); handle.write("\n"); temporary = Path(handle.name)
+    temporary.chmod(0o600); os.replace(temporary, target)
+    if changed and subprocess.run(["systemctl", "is-active", "--quiet", "driftward-factory-lifecycle-writer.service"], check=False).returncode == 0:
+        subprocess.run(["systemctl", "restart", "driftward-factory-lifecycle-writer.service"], check=True)
+    print(json.dumps({"actor_name": actor.name, "status": "ok", "token_changed": changed}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (IdentityError, LinearError) as exc:
+        print(json.dumps({"status": "error", "reason": exc.reason}, sort_keys=True))
+        raise SystemExit(1) from None

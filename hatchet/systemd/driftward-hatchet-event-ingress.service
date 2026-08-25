@@ -1,0 +1,29 @@
+[Unit]
+Description=Driftward Hatchet event ingress
+After=network-online.target driftward-hatchet.service driftward-hatchet-worker-pr-event.service
+Wants=network-online.target
+Documentation=file:__REPO_ROOT__/hatchet/event-ingress/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__
+Environment=PYTHONPATH=__REPO_ROOT__/hatchet/event-ingress
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HATCHET_EVENT_INGRESS_HOST=127.0.0.1
+Environment=HATCHET_EVENT_INGRESS_PORT=19878
+Environment=HATCHET_EVENT_INGRESS_DB=/var/lib/driftward-hatchet-event-ingress/ingress.db
+Environment="HATCHET_EVENT_PUBLISHER_COMMAND=/usr/bin/node __REPO_ROOT__/hatchet/workers/pr-event-worker/dist/events/push-generic-event.js"
+EnvironmentFile=/etc/driftward/hatchet-workers.env
+EnvironmentFile=-/etc/driftward/hatchet-event-ingress.env
+ExecStart=/usr/bin/python3 -m hatchet_event_ingress.cli --db /var/lib/driftward-hatchet-event-ingress/ingress.db serve --host 127.0.0.1 --port 19878
+Restart=always
+RestartSec=5
+CPUQuota=20%
+MemoryMax=128M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/driftward-hatchet-event-ingress
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

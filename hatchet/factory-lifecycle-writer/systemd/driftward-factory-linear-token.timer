@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew Shipwright Linear token before expiry
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+AccuracySec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=driftward-factory-linear-token.service
+
+[Install]
+WantedBy=timers.target

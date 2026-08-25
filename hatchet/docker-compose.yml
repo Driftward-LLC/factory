@@ -1,0 +1,66 @@
+name: driftward-hatchet
+
+services:
+  postgres:
+    image: postgres:15.6@sha256:0b723c153bca6ffdc3d8084d3b4d493a945b955456bb4318c74f7a66d371a1fd
+    command: postgres -c 'max_connections=200'
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${HATCHET_POSTGRES_USER:-hatchet}
+      POSTGRES_PASSWORD: ${HATCHET_POSTGRES_PASSWORD:?HATCHET_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${HATCHET_POSTGRES_DB:-hatchet}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d ${HATCHET_POSTGRES_DB:-hatchet} -U ${HATCHET_POSTGRES_USER:-hatchet}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    cpus: "0.50"
+    mem_limit: 1g
+    memswap_limit: 1152m
+
+  hatchet-lite:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:0fc77a4779a58778abafb20d2b9077830dc0ebb984a00c8d31cc288b0b398bf6
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:7077:7077"
+      - "127.0.0.1:8733:8733"
+    environment:
+      DATABASE_URL: "postgresql://${HATCHET_POSTGRES_USER:-hatchet}:${HATCHET_POSTGRES_PASSWORD:?HATCHET_POSTGRES_PASSWORD is required}@postgres:5432/${HATCHET_POSTGRES_DB:-hatchet}?sslmode=disable"
+      SERVER_AUTH_COOKIE_DOMAIN: ${HATCHET_SERVER_AUTH_COOKIE_DOMAIN:-srv1379035.tail5c6a78.ts.net}
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_AUTH_COOKIE_SECRETS: ${HATCHET_SERVER_AUTH_COOKIE_SECRETS:?HATCHET_SERVER_AUTH_COOKIE_SECRETS is required}
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_ALLOW_SIGNUP: "false"
+      SERVER_ALLOW_INVITES: "false"
+      SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: ${HATCHET_GRPC_BROADCAST_ADDRESS:-localhost:7077}
+      SERVER_GRPC_PORT: "7077"
+      SERVER_HEALTHCHECK: "true"
+      SERVER_HEALTHCHECK_PORT: "8733"
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: "localhost:7077"
+      SERVER_URL: ${HATCHET_SERVER_URL:-https://srv1379035.tail5c6a78.ts.net:8888}
+      SERVER_ENCRYPTION_MASTER_KEYSET_FILE: /keys/master.key
+      SERVER_ENCRYPTION_JWT_PRIVATE_KEYSET_FILE: /keys/private_ec256.key
+      SERVER_ENCRYPTION_JWT_PUBLIC_KEYSET_FILE: /keys/public_ec256.key
+      ADMIN_EMAIL: ${HATCHET_ADMIN_EMAIL:-admin@driftward.local}
+      ADMIN_PASSWORD: ${HATCHET_ADMIN_PASSWORD:?HATCHET_ADMIN_PASSWORD is required}
+      ADMIN_NAME: ${HATCHET_ADMIN_NAME:-Driftward Admin}
+      DEFAULT_TENANT_NAME: ${HATCHET_DEFAULT_TENANT_NAME:-Driftward}
+      DEFAULT_TENANT_SLUG: ${HATCHET_DEFAULT_TENANT_SLUG:-driftward}
+      DATABASE_LOGGER_LEVEL: "warn"
+      DATABASE_LOGGER_FORMAT: "console"
+      SERVER_LOGGER_LEVEL: "info"
+      SERVER_LOGGER_FORMAT: "console"
+    volumes:
+      - ./data/config:/config
+      - ./keys:/keys:ro
+    cpus: "0.75"
+    mem_limit: 768m

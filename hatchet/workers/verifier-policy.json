@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "policies": [
+    {
+      "id": "capykit-node-v1",
+      "repo": "Driftward-LLC/capykit",
+      "expected_base": "main",
+      "required_github_checks": [
+        "quality (ubuntu-latest)",
+        "quality (macos-latest)",
+        "quality (windows-latest)",
+        "validate",
+        "secret-scan"
+      ],
+      "allowed_changed_paths": [
+        "src",
+        "tests",
+        "scripts",
+        "docs",
+        "README.md",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json"
+      ],
+      "forbidden_changed_paths": [
+        ".github/workflows",
+        ".env",
+        "Dockerfile",
+        "docker-compose.yml"
+      ],
+      "required_local_commands": [
+        "npm run lint",
+        "npm run typecheck",
+        "npm test",
+        "npm run build",
+        "npm run test:package",
+        "npm run check:schema"
+      ],
+      "secret_check_command": "npm run check:secrets"
+    },
+    {
+      "id": "driftward-host-hatchet-v1",
+      "repo": "Driftward-LLC/driftward-host",
+      "expected_base": "main",
+      "required_github_checks": [
+        "ledger",
+        "validate"
+      ],
+      "allowed_changed_paths": [
+        "hatchet",
+        ".github/workflows/hatchet-quality.yml"
+      ],
+      "forbidden_changed_paths": [
+        ".env",
+        "Dockerfile",
+        "docker-compose.yml",
+        "bootstrap-host.sh"
+      ],
+      "required_local_commands": [
+        "python3 tools/hatchet-contracts.py check",
+        "npm run build --prefix hatchet/workers",
+        "PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests",
+        "PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/factory-lifecycle-writer/tests"
+      ],
+      "secret_check_command": "gitleaks git --redact --verbose ."
+    }
+  ]
+}

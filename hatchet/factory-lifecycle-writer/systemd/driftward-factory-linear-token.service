@@ -1,0 +1,33 @@
+[Unit]
+Description=Renew and verify the Shipwright Linear token
+After=network-online.target
+Wants=network-online.target
+Documentation=file:__REPO_ROOT__/hatchet/factory-lifecycle-writer/README.md
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=__INSTALL_ROOT__
+Environment=FACTORY_TOKEN_STATE_DIR=/var/lib/driftward-factory-linear-token
+LoadCredential=factory-client-id:/root/.config/linear/factory_client_id
+LoadCredential=factory-client-secret:/root/.config/linear/factory_client_secret
+ExecStart=__INSTALL_ROOT__/factory-lifecycle-token-refresh
+CPUQuota=5%
+MemoryMax=96M
+TimeoutStartSec=60
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+UMask=0077
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+SystemCallArchitectures=native
+StateDirectory=driftward-factory-linear-token
+ReadWritePaths=/etc/driftward
+PrivateTmp=true

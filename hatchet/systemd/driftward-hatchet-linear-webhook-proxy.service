@@ -1,0 +1,26 @@
+[Unit]
+Description=Driftward Hatchet public Linear webhook proxy
+After=network-online.target driftward-hatchet-event-ingress.service
+Wants=network-online.target
+Documentation=file:__REPO_ROOT__/hatchet/event-ingress/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__
+Environment=PYTHONPATH=__REPO_ROOT__/hatchet/event-ingress
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HATCHET_PUBLIC_LINEAR_WEBHOOK_HOST=127.0.0.1
+Environment=HATCHET_PUBLIC_LINEAR_WEBHOOK_PORT=19879
+Environment=HATCHET_PUBLIC_LINEAR_WEBHOOK_TARGET_URL=http://127.0.0.1:19878/events/linear/issue
+EnvironmentFile=-/etc/driftward/hatchet-event-ingress.env
+ExecStart=/usr/bin/python3 -m hatchet_event_ingress.cli serve-public-linear-proxy --host 127.0.0.1 --port 19879
+Restart=always
+RestartSec=5
+CPUQuota=10%
+MemoryMax=96M
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

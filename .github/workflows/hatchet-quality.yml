@@ -1,0 +1,60 @@
+name: Hatchet Quality
+
+on:
+  pull_request:
+    paths:
+      - 'hatchet/**'
+      - '.github/workflows/hatchet-quality.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'hatchet/**'
+      - '.github/workflows/hatchet-quality.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hatchet/workers/package-lock.json
+      - name: Install worker dependencies
+        run: npm ci --prefix hatchet/workers
+      - name: Generate and check contracts
+        run: |
+          python3 tools/hatchet-contracts.py generate
+          python3 tools/hatchet-contracts.py check
+          git diff --exit-code -- hatchet/event-ingress/hatchet_event_ingress/contracts.py hatchet/workers/shared/src/contracts.ts
+      - name: Build and test workers
+        run: |
+          npm run build --prefix hatchet/workers
+          npm run test --prefix hatchet/workers/intake-worker
+          npm run test --prefix hatchet/workers/bridge-executor-worker
+          npm run test --prefix hatchet/workers/reconciliation-worker
+      - name: Test bridge and lifecycle writer
+        run: |
+          PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests
+          PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/factory-lifecycle-writer/tests
+      - name: Check changed-file whitespace
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ]; then base="HEAD~1"; fi
+          git diff --check "$base" HEAD
+      - name: Scan committed content for secrets
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl --fail --location --retry 3 "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum --check -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --verbose .

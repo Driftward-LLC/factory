@@ -1,0 +1,22 @@
+{
+  "name": "@driftward/hatchet-intake-worker",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/worker.js",
+  "types": "dist/worker.d.ts",
+  "scripts": {
+    "start": "npx ts-node src/worker.ts",
+    "start:prod": "node dist/worker.js",
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/workflows/*.test.js"
+  },
+  "dependencies": {
+    "@driftward/hatchet-worker-shared": "0.1.0",
+    "@hatchet-dev/typescript-sdk": "1.26.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

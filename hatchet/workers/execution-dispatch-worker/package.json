@@ -1,0 +1,22 @@
+{
+  "name": "@driftward/hatchet-execution-dispatch-worker",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/worker.js",
+  "types": "dist/worker.d.ts",
+  "scripts": {
+    "start": "npx ts-node src/worker.ts",
+    "start:prod": "node dist/worker.js",
+    "trigger:dry-run": "npx ts-node src/triggers/dispatch-dry-run.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@driftward/hatchet-worker-shared": "0.1.0",
+    "@hatchet-dev/typescript-sdk": "1.26.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

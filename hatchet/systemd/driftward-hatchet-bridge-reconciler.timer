@@ -1,0 +1,12 @@
+[Unit]
+Description=Reconcile Driftward Hatchet Hermes bridge jobs every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=driftward-hatchet-bridge-reconciler.service
+
+[Install]
+WantedBy=timers.target

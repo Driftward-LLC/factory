@@ -1,0 +1,243 @@
+{
+  "schema": "driftward.factory.hatchet.desired-state.v1",
+  "linear_issue": "ENG-97",
+  "last_reviewed": "2026-08-25",
+  "status": "transitional_in_driftward_host",
+  "repository": "Driftward-LLC/factory",
+  "source_roots": [
+    "factory/",
+    "hatchet/bridge/",
+    "hatchet/contracts/",
+    "hatchet/event-ingress/",
+    "hatchet/factory-lifecycle-writer/",
+    "hatchet/workers/"
+  ],
+  "active_workers": [
+    {
+      "name": "intake-worker",
+      "source": "hatchet/workers/intake-worker",
+      "systemd_unit": "driftward-hatchet-worker-intake.service",
+      "status": "repo_managed",
+      "tasks": [
+        "reserve-ready-linear-issue-attempt"
+      ],
+      "workflows": [
+        "intake-linear-ready-dispatch"
+      ]
+    },
+    {
+      "name": "execution-dispatch-worker",
+      "source": "hatchet/workers/execution-dispatch-worker",
+      "systemd_unit": "driftward-hatchet-worker-execution-dispatch.service",
+      "status": "repo_managed",
+      "tasks": [
+        "submit-create-draft-pr"
+      ],
+      "workflows": [
+        "execution-dispatch-create-draft-pr"
+      ]
+    },
+    {
+      "name": "bridge-executor-worker",
+      "source": "hatchet/workers/bridge-executor-worker",
+      "systemd_unit": "driftward-hatchet-worker-bridge-executor.service",
+      "status": "repo_managed",
+      "tasks": [
+        "execute-create-draft-pr",
+        "await-hermes-receipt"
+      ],
+      "workflows": [
+        "bridge-executor-create-draft-pr"
+      ]
+    },
+    {
+      "name": "pr-event-worker",
+      "source": "hatchet/workers/pr-event-worker",
+      "systemd_unit": "driftward-hatchet-worker-pr-event.service",
+      "status": "repo_managed",
+      "tasks": [
+        "normalize-pr-event"
+      ],
+      "workflows": [
+        "pr-event-observer"
+      ]
+    },
+    {
+      "name": "reconciliation-worker",
+      "source": "hatchet/workers/reconciliation-worker",
+      "systemd_unit": "driftward-hatchet-worker-reconciliation.service",
+      "status": "repo_managed",
+      "tasks": [
+        "inspect-bridge-ledger"
+      ],
+      "workflows": [
+        "reconciliation-bridge-state-check"
+      ]
+    }
+  ],
+  "active_workflows": [
+    {
+      "name": "intake-linear-ready-dispatch",
+      "worker": "intake-worker",
+      "source": "hatchet/workers/intake-worker/src/workflows/linear-ready-intake.ts",
+      "status": "repo_managed",
+      "tasks": [
+        "reserve-ready-linear-issue-attempt"
+      ],
+      "event_triggers": [
+        {
+          "event": "driftward.linear.issue.ready_for_implementation",
+          "owner": "hatchet/event-ingress"
+        }
+      ],
+      "runbook": "hatchet/workers/intake-worker/README.md"
+    },
+    {
+      "name": "execution-dispatch-create-draft-pr",
+      "recommended_name": "bridge-submit-create-draft-pr",
+      "worker": "execution-dispatch-worker",
+      "source": "hatchet/workers/execution-dispatch-worker/src/workflows/create-draft-pr-dispatch.ts",
+      "status": "repo_managed",
+      "tasks": [
+        "submit-create-draft-pr"
+      ],
+      "event_triggers": [],
+      "runbook": "hatchet/workers/execution-dispatch-worker/README.md"
+    },
+    {
+      "name": "bridge-executor-create-draft-pr",
+      "recommended_name": "executor-create-draft-pr",
+      "worker": "bridge-executor-worker",
+      "source": "hatchet/workers/bridge-executor-worker/src/workflows/create-draft-pr-executor.ts",
+      "status": "repo_managed",
+      "tasks": [
+        "execute-create-draft-pr",
+        "await-hermes-receipt"
+      ],
+      "event_triggers": [
+        {
+          "event": "driftward.hermes.job.accepted",
+          "owner": "hatchet/bridge"
+        }
+      ],
+      "runbook": "hatchet/workers/bridge-executor-worker/README.md"
+    },
+    {
+      "name": "pr-event-observer",
+      "worker": "pr-event-worker",
+      "source": "hatchet/workers/pr-event-worker/src/workflows/pr-event-observer.ts",
+      "status": "repo_managed",
+      "tasks": [
+        "normalize-pr-event"
+      ],
+      "event_triggers": [
+        {
+          "event": "driftward.github.pr.created",
+          "owner": "hatchet/event-ingress"
+        },
+        {
+          "event": "driftward.github.pr.synchronized",
+          "owner": "hatchet/event-ingress"
+        },
+        {
+          "event": "driftward.github.pr.closed_unmerged",
+          "owner": "hatchet/event-ingress"
+        },
+        {
+          "event": "driftward.github.pr.closed_merged",
+          "owner": "hatchet/event-ingress"
+        },
+        {
+          "event": "driftward.github.checks.completed",
+          "owner": "future-provider-ingress"
+        },
+        {
+          "event": "driftward.github.review.submitted",
+          "owner": "future-provider-ingress"
+        }
+      ],
+      "runbook": "hatchet/workers/pr-event-worker/README.md"
+    },
+    {
+      "name": "reconciliation-bridge-state-check",
+      "recommended_name": "reconcile-bridge-state",
+      "worker": "reconciliation-worker",
+      "source": "hatchet/workers/reconciliation-worker/src/workflows/bridge-state-reconciliation.ts",
+      "status": "repo_managed",
+      "tasks": [
+        "inspect-bridge-ledger"
+      ],
+      "event_triggers": [],
+      "runbook": "hatchet/workers/reconciliation-worker/README.md"
+    }
+  ],
+  "retired_workflows": [
+    {
+      "name": "hermes-pr-event-smoke",
+      "desired_state": "paused_or_removed",
+      "source": "temporary smoke project outside this repository",
+      "reason": "ENG-97 evidence: stale PR-created trigger generated no-worker inspect-pr-event task runs.",
+      "event_triggers": [
+        "driftward.github.pr.created"
+      ],
+      "audit_history": "Preserve Hatchet run and event history; do not re-register unless migrated into the Factory repo."
+    },
+    {
+      "name": "hermes-pr-smoke",
+      "desired_state": "paused_or_removed",
+      "source": "temporary smoke project outside this repository",
+      "reason": "Live Hatchet inventory shows the workflow registered from /tmp/hatchet-hermes-pr.* with no checked-in owner.",
+      "event_triggers": [],
+      "audit_history": "Preserve Hatchet run and PR smoke evidence; do not re-register unless migrated into the Factory repo."
+    },
+    {
+      "name": "hermes-linear-comment-smoke",
+      "desired_state": "paused_or_removed",
+      "source": "temporary smoke project outside this repository",
+      "reason": "Live Hatchet inventory shows the workflow registered from /tmp/hatchet-hermes-linear.* with no checked-in owner.",
+      "event_triggers": [],
+      "audit_history": "Preserve Hatchet run and Linear smoke evidence; do not re-register unless migrated into the Factory repo."
+    },
+    {
+      "name": "hermes-agentic-smoke",
+      "desired_state": "paused_or_removed",
+      "source": "temporary smoke project outside this repository",
+      "reason": "Live Hatchet inventory shows the workflow registered from /tmp/hatchet-hermes-agentic.* with no checked-in owner.",
+      "event_triggers": [],
+      "audit_history": "Preserve Hatchet run evidence; do not re-register unless migrated into the Factory repo."
+    },
+    {
+      "name": "first-workflow",
+      "desired_state": "paused_or_removed",
+      "source": "temporary Hatchet quickstart project outside this repository",
+      "reason": "ENG-97 evidence: workflow remained registered after source lived under /tmp.",
+      "event_triggers": [],
+      "audit_history": "Preserve Hatchet run history; pause or remove only through an explicit reviewed apply path."
+    }
+  ],
+  "event_ingress": {
+    "source": "hatchet/event-ingress",
+    "contracts": "hatchet/contracts/events.json",
+    "public_provider_webhooks_must_not_target_hatchet_directly": true
+  },
+  "storage": {
+    "current": [
+      {
+        "name": "Hatchet control plane PostgreSQL",
+        "scope": "host-level runtime",
+        "owner": "factory after standalone deployment"
+      },
+      {
+        "name": "Hatchet Hermes bridge SQLite ledger",
+        "path": "/var/lib/driftward-hatchet-bridge/bridge.db",
+        "owner": "Factory app after extraction"
+      },
+      {
+        "name": "event ingress SQLite ledger",
+        "path": "/var/lib/driftward-hatchet-event-ingress/ingress.db",
+        "owner": "Factory app after extraction"
+      }
+    ],
+    "future_consideration": "Move Factory product/runtime records to a cloud store such as Supabase only after schema ownership, backup, and rollback paths are documented."
+  }
+}

@@ -1,0 +1,584 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_FILE="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"
+INTAKE_SERVICE=driftward-hatchet-worker-intake.service
+OPERATOR_ENV_FILE="${FACTORY_OPERATOR_ENV:-/etc/driftward/factory-operator.env}"
+OPERATOR_SOCKET="${FACTORY_OPERATOR_SOCKET:-/run/driftward-factory-operator/operator.sock}"
+BRIDGE_ENV_FILE="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+FACTORY_SHARE_DIR="${FACTORY_SHARE_DIR:-${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  factory status
+  factory logs [target] [-f|--follow] [-n|--lines N]
+  factory mode
+  factory mode dry-run
+  factory mode real --yes
+  factory retry ENG-X preview [--supersede-pr URL] [--supersede-job JOB-ID]
+  factory retry ENG-X --reason TEXT --request-id ID --snapshot-digest DIGEST [--supersede-pr URL] [--supersede-job JOB-ID] --yes
+  factory attempts list ENG-X [--json]
+  factory attempts show ATTEMPT-ID
+  factory attempts cancel ATTEMPT-ID --reason TEXT --yes
+  factory doctor hatchet [--profile PROFILE | --live-json PATH] [--json] [--fail-on-warning]
+
+Log targets:
+  all, ingress, intake, executor, bridge, pr, reconciliation, lifecycle, linear
+
+Modes:
+  dry-run  Linear Ready events create dry-run bridge jobs.
+  real     Linear Ready events create real bridge jobs. Requires --yes.
+EOF
+}
+
+die() {
+  printf 'factory: %s\n' "$*" >&2
+  exit 1
+}
+
+source_tree_root() {
+  local candidate
+  candidate="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd -P || true)"
+  if [[ -n "$candidate" && -f "$candidate/tools/factory-hatchet-doctor.py" ]]; then
+    printf '%s\n' "$candidate"
+  fi
+}
+
+factory_hatchet_doctor_script() {
+  local root
+  if [[ -n "${FACTORY_HATCHET_DOCTOR_SCRIPT:-}" ]]; then
+    printf '%s\n' "$FACTORY_HATCHET_DOCTOR_SCRIPT"
+    return
+  fi
+  root="$(source_tree_root || true)"
+  if [[ -n "$root" ]]; then
+    printf '%s\n' "$root/tools/factory-hatchet-doctor.py"
+    return
+  fi
+  printf '%s\n' "$FACTORY_SHARE_DIR/factory-hatchet-doctor.py"
+}
+
+factory_hatchet_desired_state() {
+  local root
+  if [[ -n "${FACTORY_HATCHET_DESIRED_STATE:-}" ]]; then
+    printf '%s\n' "$FACTORY_HATCHET_DESIRED_STATE"
+    return
+  fi
+  root="$(source_tree_root || true)"
+  if [[ -n "$root" ]]; then
+    printf '%s\n' "$root/hatchet/desired-state/factory-hatchet.json"
+    return
+  fi
+  printf '%s\n' "$FACTORY_SHARE_DIR/desired-state/factory-hatchet.json"
+}
+
+doctor() {
+  local target="${1:-}"
+  shift || true
+  case "$target" in
+    hatchet)
+      local script desired
+      script="$(factory_hatchet_doctor_script)"
+      desired="$(factory_hatchet_desired_state)"
+      [[ -f "$script" ]] || die "missing Hatchet doctor script: $script"
+      [[ -f "$desired" ]] || die "missing Hatchet desired-state manifest: $desired"
+      python3 "$script" --desired "$desired" "$@"
+      ;;
+    *)
+      die "usage: factory doctor hatchet [--profile PROFILE | --live-json PATH] [--json] [--fail-on-warning]"
+      ;;
+  esac
+}
+
+require_root() {
+  if [[ "$(id -u)" != "0" ]]; then
+    die "mode changes require root"
+  fi
+}
+
+operator_token() {
+  [[ -r "$OPERATOR_ENV_FILE" ]] || die "factory retry operator credentials are unavailable"
+  awk -F= '$1 == "HATCHET_FACTORY_OPERATOR_TOKEN" { print $2; exit }' "$OPERATOR_ENV_FILE"
+}
+
+operator_request() {
+  local method="$1" path="$2" data="${3:-}" token
+  require_root
+  token="$(operator_token)"
+  [[ -n "$token" && -S "$OPERATOR_SOCKET" ]] || die "factory retry operator is unavailable"
+  if [[ "$method" == "GET" ]]; then
+    curl --silent --show-error --fail --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" "http://localhost$path"
+  else
+    curl --silent --show-error --fail --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$data" "http://localhost$path"
+  fi
+}
+
+retry_issue() {
+  local issue="$1"; shift
+  local reason="" request_id="" snapshot_digest="" supersede="" supersede_job="" yes=""
+  local preview_only=""
+  if [[ "${1:-}" == "preview" ]]; then preview_only=1; shift; fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
+      --request-id) [[ $# -ge 2 ]] || die "--request-id requires an ID"; request_id="$2"; shift 2 ;;
+      --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the digest returned by preview"; snapshot_digest="$2"; shift 2 ;;
+      --supersede-pr) [[ $# -ge 2 ]] || die "--supersede-pr requires an exact GitHub PR URL"; supersede="$2"; shift 2 ;;
+      --supersede-job) [[ $# -ge 2 ]] || die "--supersede-job requires a bridge job ID"; supersede_job="$2"; shift 2 ;;
+      --yes) yes="--yes"; shift ;;
+      *) die "unknown retry option: $1" ;;
+    esac
+  done
+  if [[ -n "$preview_only" ]]; then
+    [[ -z "$reason" && -z "$yes" ]] || die "preview accepts only --supersede-pr and --supersede-job"
+    local preview_body
+    preview_body="$(jq -cn --arg issue "$issue" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
+    operator_request POST /v1/retry/preview "$preview_body"
+    return
+  fi
+  [[ "$yes" == "--yes" ]] || die "retry reserves a fresh attempt and may create one draft PR; rerun with --yes"
+  [[ -n "$reason" ]] || die "retry requires --reason"
+  [[ -n "$request_id" ]] || die "retry requires an explicit --request-id for idempotency"
+  [[ -n "$snapshot_digest" ]] || die "retry requires --snapshot-digest from a fresh preview"
+  local body
+  body="$(jq -cn --arg issue "$issue" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
+  operator_request POST /v1/retry/reserve "$body"
+}
+
+attempts() {
+  local subcommand="${1:-}"; shift || true
+  case "$subcommand" in
+    list)
+      local issue=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json)
+            shift
+            ;;
+          --*)
+            die "unknown attempts list option: $1"
+            ;;
+          *)
+            [[ -z "$issue" ]] || die "usage: factory attempts list ENG-X [--json]"
+            issue="$1"
+            shift
+            ;;
+        esac
+      done
+      [[ -n "$issue" ]] || die "usage: factory attempts list ENG-X [--json]"
+      operator_request GET "/v1/attempts/work-item/$issue"
+      ;;
+    show) [[ $# -eq 1 ]] || die "usage: factory attempts show ATTEMPT-ID"; operator_request GET "/v1/attempts/$1" ;;
+    cancel)
+      local id="${1:-}"; shift || true; local reason="" yes=""
+      [[ -n "$id" ]] || die "usage: factory attempts cancel ATTEMPT-ID --reason TEXT --yes"
+      while [[ $# -gt 0 ]]; do case "$1" in --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;; --yes) yes="--yes"; shift ;; *) die "unknown cancellation option: $1" ;; esac; done
+      [[ -n "$reason" && "$yes" == "--yes" ]] || die "cancellation requires --reason and --yes; it never closes or deletes a PR"
+      operator_request POST "/v1/attempts/$id/cancel" "$(jq -cn --arg reason "$reason" '{reason:$reason}')"
+      ;;
+    *) die "usage: factory attempts {list|show|cancel}" ;;
+  esac
+}
+
+env_value() {
+  local key="$1"
+  if [[ -f "$ENV_FILE" ]]; then
+    awk -F= -v key="$key" '$1 == key { value = substr($0, length(key) + 2) } END { if (value != "") print value }' "$ENV_FILE"
+  fi
+}
+
+upsert_env() {
+  local key="$1"
+  local value="$2"
+  local tmp
+
+  install -d -m 0755 -o root -g root "$(dirname "$ENV_FILE")"
+  if [[ ! -e "$ENV_FILE" ]]; then
+    install -m 0600 -o root -g root /dev/null "$ENV_FILE"
+  fi
+
+  tmp="$(mktemp)"
+  if [[ -s "$ENV_FILE" ]]; then
+    awk -F= -v key="$key" '$1 != key { print }' "$ENV_FILE" >"$tmp"
+  fi
+  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  install -m 0600 -o root -g root "$tmp" "$ENV_FILE"
+  rm -f "$tmp"
+}
+
+mode_status() {
+  local value
+  value="$(env_value HATCHET_INTAKE_DRY_RUN || true)"
+  if [[ "$value" == "false" ]]; then
+    printf 'real\n'
+  else
+    printf 'dry-run\n'
+  fi
+}
+
+status_result=0
+
+status_line() {
+  local level="$1"
+  local name="$2"
+  local detail="${3:-}"
+  printf '%-5s %-42s %s\n' "$level" "$name" "$detail"
+}
+
+mark_failure() {
+  status_result=1
+}
+
+unit_status() {
+  local label="$1"
+  local unit="$2"
+  local required="${3:-required}"
+  local active enabled detail
+
+  active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  detail="active=${active:-unknown} enabled=${enabled:-unknown}"
+
+  if [[ "$active" == "active" ]]; then
+    status_line OK "$label" "$detail"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "$detail"
+    mark_failure
+  else
+    status_line WARN "$label" "$detail"
+  fi
+}
+
+oneshot_status() {
+  local label="$1"
+  local unit="$2"
+  local required="${3:-required}"
+  local active failed enabled detail
+
+  active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  failed="$(systemctl is-failed "$unit" 2>/dev/null || true)"
+  enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  detail="active=${active:-unknown} failed=${failed:-unknown} enabled=${enabled:-unknown}"
+
+  if [[ "$failed" != "failed" && ( "$active" == "active" || "$active" == "inactive" ) ]]; then
+    status_line OK "$label" "$detail"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "$detail"
+    mark_failure
+  else
+    status_line WARN "$label" "$detail"
+  fi
+}
+
+timer_status() {
+  local label="$1"
+  local timer="$2"
+  local required="${3:-required}"
+  local active enabled next detail
+
+  active="$(systemctl is-active "$timer" 2>/dev/null || true)"
+  enabled="$(systemctl is-enabled "$timer" 2>/dev/null || true)"
+  next="$(systemctl list-timers "$timer" --no-pager --no-legend 2>/dev/null | awk '{ print $1" "$2" "$3" "$4 }' || true)"
+  detail="active=${active:-unknown} enabled=${enabled:-unknown}"
+  [[ -z "$next" ]] || detail="$detail next=\"$next\""
+
+  if [[ "$active" == "active" ]]; then
+    status_line OK "$label" "$detail"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "$detail"
+    mark_failure
+  else
+    status_line WARN "$label" "$detail"
+  fi
+}
+
+retired_timer_status() {
+  local label="$1"
+  local timer="$2"
+  local service="${3:-}"
+  local active enabled service_active detail
+
+  active="$(systemctl is-active "$timer" 2>/dev/null || true)"
+  enabled="$(systemctl is-enabled "$timer" 2>/dev/null || true)"
+  service_active=""
+  [[ -z "$service" ]] || service_active="$(systemctl is-active "$service" 2>/dev/null || true)"
+  detail="timer_active=${active:-unknown} timer_enabled=${enabled:-unknown}"
+  [[ -z "$service" ]] || detail="$detail service_active=${service_active:-unknown}"
+
+  if [[ "$active" != "active" && "$enabled" != "enabled" && "$enabled" != "enabled-runtime" && ( -z "$service" || "$service_active" != "active" ) ]]; then
+    status_line OK "$label" "$detail"
+  else
+    status_line WARN "$label" "$detail"
+  fi
+}
+
+http_status() {
+  local label="$1"
+  local url="$2"
+  local ok_codes="$3"
+  local required="${4:-required}"
+  shift 4 || true
+  local code
+
+  code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 3 "$@" "$url" 2>/dev/null || true)"
+  if [[ " $ok_codes " == *" ${code:-000} "* ]]; then
+    status_line OK "$label" "http=$code"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "http=${code:-000}"
+    mark_failure
+  else
+    status_line WARN "$label" "http=${code:-000}"
+  fi
+}
+
+bridge_token() {
+  if [[ -r "$BRIDGE_ENV_FILE" ]]; then
+    awk -F= '$1 == "HATCHET_HERMES_BRIDGE_TOKEN" { print $2; exit }' "$BRIDGE_ENV_FILE"
+  fi
+}
+
+command_status() {
+  local label="$1"
+  local required="${2:-required}"
+  shift 2 || true
+
+  if "$@" >/dev/null 2>&1; then
+    status_line OK "$label" "$*"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "$*"
+    mark_failure
+  else
+    status_line WARN "$label" "$*"
+  fi
+}
+
+socket_status() {
+  local label="$1"
+  local socket="$2"
+  local required="${3:-required}"
+
+  if [[ -S "$socket" ]]; then
+    status_line OK "$label" "$socket"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "missing $socket"
+    mark_failure
+  else
+    status_line WARN "$label" "missing $socket"
+  fi
+}
+
+show_status() {
+  local mode token
+  status_result=0
+  mode="$(mode_status)"
+
+  printf 'Factory status\n'
+  printf '==============\n'
+  status_line OK "intake mode" "$mode"
+
+  printf '\nRequired runtime\n'
+  printf '%s\n' '----------------'
+  unit_status "Hatchet control plane" driftward-hatchet.service required
+  unit_status "Hatchet bridge API" driftward-hatchet-bridge.service required
+  unit_status "Hatchet event ingress" driftward-hatchet-event-ingress.service required
+  unit_status "Hatchet Linear webhook proxy" driftward-hatchet-linear-webhook-proxy.service required
+  unit_status "Hatchet intake worker" driftward-hatchet-worker-intake.service required
+  unit_status "Hatchet execution-dispatch worker" driftward-hatchet-worker-execution-dispatch.service required
+  unit_status "Hatchet bridge-executor worker" driftward-hatchet-worker-bridge-executor.service required
+  unit_status "Hatchet PR-event worker" driftward-hatchet-worker-pr-event.service required
+  unit_status "Factory lifecycle writer" driftward-factory-lifecycle-writer.service required
+  timer_status "Factory Linear token timer" driftward-factory-linear-token.timer required
+  unit_status "Driftward Hermes service" driftward-hermes.service required
+
+  printf '\nRequired endpoints\n'
+  printf '%s\n' '------------------'
+  http_status "Hatchet dashboard/API" http://127.0.0.1:8888/ "200 302 401" required
+  token="$(bridge_token)"
+  if [[ -n "$token" ]]; then
+    http_status "Hatchet bridge health" http://127.0.0.1:19877/health "200" required -H "Authorization: Bearer $token"
+  else
+    status_line FAIL "Hatchet bridge token" "missing or unreadable $BRIDGE_ENV_FILE"
+    mark_failure
+  fi
+  http_status "Hatchet ingress health" http://127.0.0.1:19878/health "200" required
+  http_status "Linear webhook proxy health" http://127.0.0.1:19879/health "200" required
+  http_status "Factory lifecycle writer status" http://127.0.0.1:19880/status "200" required
+  http_status "Driftward Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
+  command_status "Driftward Hermes Codex auth" required driftward-hermes hermes auth status openai-codex
+
+  printf '\nAdvisory / recovery\n'
+  printf '%s\n' '-------------------'
+  unit_status "Hatchet reconciliation worker" driftward-hatchet-worker-reconciliation.service advisory
+  retired_timer_status "Retired bridge reconciler" driftward-hatchet-bridge-reconciler.timer driftward-hatchet-bridge-reconciler.service
+  unit_status "Factory retry operator" driftward-factory-operator.service advisory
+  socket_status "Factory retry operator socket" "$OPERATOR_SOCKET" advisory
+  oneshot_status "Factory outbox dispatcher service" driftward-factory-outbox-dispatcher.service advisory
+  timer_status "Factory outbox dispatcher timer" driftward-factory-outbox-dispatcher.timer advisory
+
+  if [[ "$status_result" == "0" ]]; then
+    printf '\nFactory required path is healthy.\n'
+  else
+    printf '\nFactory required path has failures.\n'
+  fi
+  return "$status_result"
+}
+
+set_mode() {
+  local mode="$1"
+  local confirmed="${2:-}"
+
+  require_root
+  case "$mode" in
+    dry-run)
+      upsert_env HATCHET_INTAKE_DRY_RUN true
+      systemctl restart "$INTAKE_SERVICE"
+      printf 'factory intake mode: dry-run\n'
+      ;;
+    real)
+      if [[ "$confirmed" != "--yes" ]]; then
+        die "real mode can create GitHub PRs from Ready Linear issues; rerun: factory mode real --yes"
+      fi
+      upsert_env HATCHET_INTAKE_DRY_RUN false
+      systemctl restart "$INTAKE_SERVICE"
+      printf 'factory intake mode: real\n'
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+units_for_target() {
+  local target="$1"
+  case "$target" in
+    all)
+      printf '%s\n' \
+        driftward-hatchet-event-ingress.service \
+        driftward-hatchet-worker-intake.service \
+        driftward-hatchet-worker-bridge-executor.service \
+        driftward-hatchet-worker-pr-event.service \
+        driftward-hatchet-worker-reconciliation.service \
+        driftward-hatchet-bridge.service \
+        driftward-factory-lifecycle-writer.service
+      ;;
+    ingress)
+      printf '%s\n' driftward-hatchet-event-ingress.service
+      ;;
+    intake)
+      printf '%s\n' driftward-hatchet-worker-intake.service
+      ;;
+    executor)
+      printf '%s\n' driftward-hatchet-worker-bridge-executor.service
+      ;;
+    bridge)
+      printf '%s\n' driftward-hatchet-bridge.service
+      ;;
+    pr)
+      printf '%s\n' driftward-hatchet-worker-pr-event.service
+      ;;
+    reconciliation)
+      printf '%s\n' driftward-hatchet-worker-reconciliation.service
+      ;;
+    lifecycle)
+      printf '%s\n' \
+        driftward-factory-lifecycle-writer.service \
+        driftward-factory-linear-token.service
+      ;;
+    linear)
+      printf '%s\n' \
+        driftward-hatchet-event-ingress.service \
+        driftward-hatchet-worker-intake.service \
+        driftward-hatchet-worker-bridge-executor.service \
+        driftward-factory-lifecycle-writer.service
+      ;;
+    *)
+      die "unknown log target: $target"
+      ;;
+  esac
+}
+
+show_logs() {
+  local target="all"
+  local follow=0
+  local lines=100
+  local units=()
+  local args=()
+
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    target="$1"
+    shift
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow)
+        follow=1
+        shift
+        ;;
+      -n|--lines)
+        [[ $# -ge 2 ]] || die "--lines requires a value"
+        lines="$2"
+        shift 2
+        ;;
+      *)
+        die "unknown logs option: $1"
+        ;;
+    esac
+  done
+
+  mapfile -t units < <(units_for_target "$target")
+  for unit in "${units[@]}"; do
+    args+=(-u "$unit")
+  done
+  if [[ "$follow" == "1" ]]; then
+    journalctl "${args[@]}" -n "$lines" -f
+  else
+    journalctl "${args[@]}" -n "$lines" --no-pager
+  fi
+}
+
+main() {
+  local command="${1:-}"
+  case "$command" in
+    status)
+      show_status
+      ;;
+    logs)
+      shift
+      show_logs "$@"
+      ;;
+    mode)
+      shift
+      if [[ $# -eq 0 || "${1:-}" == "status" ]]; then
+        mode_status
+      else
+        set_mode "$@"
+      fi
+      ;;
+    retry)
+      shift
+      [[ $# -ge 1 ]] || die "usage: factory retry ENG-X --reason TEXT --yes"
+      retry_issue "$@"
+      ;;
+    attempts)
+      shift
+      attempts "$@"
+      ;;
+    doctor)
+      shift
+      doctor "$@"
+      ;;
+    -h|--help|help|"")
+      usage
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

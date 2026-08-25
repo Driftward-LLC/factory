@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispatch durable Driftward Factory retry events
+
+[Timer]
+OnCalendar=*:*:00/30
+AccuracySec=1s
+RandomizedDelaySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

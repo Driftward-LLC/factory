@@ -1,0 +1,420 @@
+{
+  "version": 1,
+  "workflow_naming": {
+    "shape": "<domain>-<action>-<object>[-mode]",
+    "prefixes": {
+      "intake": "Consumes external or normalized events and decides eligibility.",
+      "bridge": "Submits, reads, correlates, or transitions bridge jobs.",
+      "executor": "Performs fenced side effects or invokes Hermes/providers.",
+      "verify": "Validates an existing side effect or artifact.",
+      "reconcile": "Observes or repairs drift between durable systems.",
+      "lifecycle": "Writes operator-facing lifecycle status.",
+      "pr": "Observes pull-request events and advances read-only PR state."
+    }
+  },
+  "workers": [
+    {
+      "name": "execution-dispatch-worker",
+      "stage": "implementation_dispatch",
+      "priority": 1,
+      "status": "source_added",
+      "purpose": "Submit bounded external-effect jobs to the Hatchet Hermes bridge and return the bridge job state.",
+      "allowed_effects": [
+        "bridge.jobs.submit"
+      ],
+      "forbidden_effects": [
+        "driftward_hermes.direct_cli",
+        "github.write",
+        "linear.write",
+        "provider_credentials.read"
+      ],
+      "produces_events": [
+        "driftward.hermes.job.accepted"
+      ],
+      "consumes_events": []
+    },
+    {
+      "name": "bridge-executor-worker",
+      "stage": "execution",
+      "priority": 2,
+      "status": "source_added",
+      "purpose": "Consume accepted bridge jobs, invoke Driftward Hermes through an allowlisted executor, record effect state, and emit Hatchet completion events.",
+      "allowed_effects": [
+        "bridge.jobs.transition",
+        "driftward_hermes.bounded_execution",
+        "hatchet.events.push"
+      ],
+      "forbidden_effects": [
+        "generic_shell_payload",
+        "hatchet_worker_credentials_expansion"
+      ],
+      "produces_events": [
+        "driftward.hermes.job.effect_committed",
+        "driftward.hermes.job.verification_pending",
+        "driftward.hermes.job.verification_failed",
+        "driftward.hermes.job.ready_for_human_review",
+        "driftward.hermes.job.completed",
+        "driftward.hermes.job.failed",
+        "driftward.github.pr.creation_simulated",
+        "driftward.github.pr.created"
+      ],
+      "consumes_events": [
+        "driftward.hermes.job.accepted"
+      ]
+    },
+    {
+      "name": "pr-event-worker",
+      "stage": "pr_observation",
+      "priority": 3,
+      "status": "source_added",
+      "purpose": "React to PR-created/synchronized/check/review events and advance read-only workflow state.",
+      "allowed_effects": [
+        "github.read",
+        "bridge.jobs.read",
+        "hatchet.events.push"
+      ],
+      "forbidden_effects": [
+        "github.merge",
+        "github.branch_write",
+        "linear.write_without_human_request"
+      ],
+      "produces_events": [],
+      "consumes_events": [
+        "driftward.github.pr.created",
+        "driftward.github.pr.synchronized",
+        "driftward.github.pr.closed_unmerged",
+        "driftward.github.pr.closed_merged",
+        "driftward.github.checks.completed",
+        "driftward.github.review.submitted"
+      ]
+    },
+    {
+      "name": "reconciliation-worker",
+      "stage": "reconciliation",
+      "priority": 4,
+      "status": "source_added",
+      "purpose": "Boundedly enumerate bridge, Hatchet, and sanitized ingress state; compare correlations and external observations; persist deduplicated read-only reconciliation findings.",
+      "allowed_effects": [
+        "bridge.jobs.read",
+        "bridge.reconciliation_findings.write",
+        "event_ingress.observations.read",
+        "hatchet.runs.read",
+        "hatchet.events.push"
+      ],
+      "forbidden_effects": [
+        "github.merge",
+        "github.write",
+        "linear.write",
+        "deployment.write",
+        "driftward_hermes.direct_cli",
+        "provider_credentials.read"
+      ],
+      "produces_events": [
+        "driftward.reconciliation.detected"
+      ],
+      "consumes_events": []
+    },
+    {
+      "name": "intake-worker",
+      "stage": "intake",
+      "priority": 5,
+      "status": "source_added",
+      "purpose": "Consume gated Linear ready-for-implementation events, recheck immutable project execution policy, and reserve mode-controlled create_draft_pr factory attempts through the bridge.",
+      "allowed_effects": [
+        "bridge.factory_intake.reserve",
+        "hatchet.events.push"
+      ],
+      "forbidden_effects": [
+        "code.write",
+        "github.write",
+        "linear.write",
+        "driftward_hermes.direct_cli",
+        "provider_credentials.read"
+      ],
+      "produces_events": [
+        "driftward.work_item.intake.received"
+      ],
+      "consumes_events": [
+        "driftward.linear.issue.ready_for_implementation"
+      ]
+    },
+    {
+      "name": "triage-worker",
+      "stage": "triage",
+      "priority": 6,
+      "status": "planned_after_core_loop",
+      "purpose": "Classify work items as actionable, duplicate, blocked, unsafe, or needing a human.",
+      "allowed_effects": [
+        "linear.read",
+        "github.read",
+        "artifact.write"
+      ],
+      "forbidden_effects": [
+        "code.write",
+        "github.merge",
+        "deployment.write"
+      ],
+      "produces_events": [
+        "driftward.work_item.triaged"
+      ],
+      "consumes_events": [
+        "driftward.work_item.intake.received"
+      ]
+    },
+    {
+      "name": "spec-worker",
+      "stage": "specification",
+      "priority": 7,
+      "status": "planned_after_core_loop",
+      "purpose": "Produce bounded acceptance criteria, verification commands, risks, and stop rules.",
+      "allowed_effects": [
+        "driftward_hermes.bounded_execution",
+        "artifact.write"
+      ],
+      "forbidden_effects": [
+        "code.write",
+        "github.write"
+      ],
+      "produces_events": [
+        "driftward.work_item.specified"
+      ],
+      "consumes_events": [
+        "driftward.work_item.triaged"
+      ]
+    },
+    {
+      "name": "verification-worker",
+      "stage": "verification",
+      "priority": 8,
+      "status": "planned_after_core_loop",
+      "purpose": "Run or dispatch lint, tests, smoke checks, screenshots, and evidence capture.",
+      "allowed_effects": [
+        "command.run_allowlisted",
+        "artifact.write",
+        "hatchet.events.push"
+      ],
+      "forbidden_effects": [
+        "github.merge",
+        "deployment.write"
+      ],
+      "produces_events": [
+        "driftward.verification.completed"
+      ],
+      "consumes_events": [
+        "driftward.github.pr.created",
+        "driftward.github.pr.synchronized"
+      ]
+    },
+    {
+      "name": "review-worker",
+      "stage": "review",
+      "priority": 9,
+      "status": "planned_after_core_loop",
+      "purpose": "Perform independent review from fresh context.",
+      "allowed_effects": [
+        "github.read",
+        "artifact.write",
+        "hatchet.events.push"
+      ],
+      "forbidden_effects": [
+        "github.merge",
+        "implementation_session_reuse"
+      ],
+      "produces_events": [
+        "driftward.review.completed"
+      ],
+      "consumes_events": [
+        "driftward.verification.completed"
+      ]
+    },
+    {
+      "name": "repair-worker",
+      "stage": "repair",
+      "priority": 10,
+      "status": "planned_after_core_loop",
+      "purpose": "Dispatch bounded repair attempts after verification or independent review failures.",
+      "allowed_effects": [
+        "bridge.jobs.submit",
+        "hatchet.events.push"
+      ],
+      "forbidden_effects": [
+        "unbounded_retry",
+        "github.merge",
+        "deployment.write"
+      ],
+      "produces_events": [
+        "driftward.repair.dispatched"
+      ],
+      "consumes_events": [
+        "driftward.verification.completed",
+        "driftward.review.completed"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "name": "intake-linear-ready-dispatch",
+      "worker": "intake-worker",
+      "stage": "intake",
+      "status": "source_added",
+      "purpose": "Consume gated Linear ready-for-implementation events and reserve or reuse one active factory-attempt-backed create_draft_pr bridge job for the issue.",
+      "does_not": [
+        "call Driftward Hermes",
+        "create GitHub pull requests",
+        "write Linear comments or status",
+        "perform provider side effects"
+      ],
+      "tasks": [
+        "reserve-ready-linear-issue-attempt"
+      ],
+      "consumes_events": [
+        "driftward.linear.issue.ready_for_implementation"
+      ],
+      "produces_events": [
+        "driftward.work_item.intake.received"
+      ],
+      "next_workflows": [
+        "bridge-executor-create-draft-pr"
+      ]
+    },
+    {
+      "name": "execution-dispatch-create-draft-pr",
+      "recommended_name": "bridge-submit-create-draft-pr",
+      "worker": "execution-dispatch-worker",
+      "stage": "bridge_submit",
+      "status": "source_added",
+      "purpose": "Submit a manual create_draft_pr job to the bridge and emit the accepted-job event.",
+      "does_not": [
+        "call Driftward Hermes",
+        "create GitHub pull requests",
+        "transition bridge jobs past accepted",
+        "perform provider side effects"
+      ],
+      "tasks": [
+        "submit-create-draft-pr"
+      ],
+      "consumes_events": [],
+      "produces_events": [
+        "driftward.hermes.job.accepted"
+      ],
+      "next_workflows": [
+        "bridge-executor-create-draft-pr"
+      ]
+    },
+    {
+      "name": "bridge-executor-create-draft-pr",
+      "recommended_name": "executor-create-draft-pr",
+      "worker": "bridge-executor-worker",
+      "stage": "execution",
+      "status": "source_added",
+      "purpose": "Consume accepted create_draft_pr bridge jobs, perform the dry-run or fenced Hermes execution path, and record durable bridge state.",
+      "does_not": [
+        "submit fresh Linear intake",
+        "bypass bridge idempotency",
+        "perform real PR creation without factory attempt lineage and execution gate",
+        "merge, deploy, or release code"
+      ],
+    "tasks": [
+      "execute-create-draft-pr",
+      "await-hermes-receipt"
+    ],
+      "consumes_events": [
+        "driftward.hermes.job.accepted"
+      ],
+      "produces_events": [
+        "driftward.hermes.job.effect_committed",
+        "driftward.hermes.job.verification_pending",
+        "driftward.hermes.job.verification_failed",
+        "driftward.hermes.job.ready_for_human_review",
+        "driftward.hermes.job.completed",
+        "driftward.hermes.job.failed",
+        "driftward.github.pr.creation_simulated",
+        "driftward.github.pr.created"
+      ],
+      "next_workflows": [
+        "pr-event-observer",
+        "reconciliation-bridge-state-check"
+      ]
+    },
+    {
+      "name": "pr-event-observer",
+      "worker": "pr-event-worker",
+      "stage": "pr_observation",
+      "status": "source_added",
+      "purpose": "Normalize PR lifecycle events and advance read-only bridge or operator state.",
+      "does_not": [
+        "merge pull requests",
+        "write branches",
+        "dispatch Hermes",
+        "write Linear without explicit operator request"
+      ],
+      "tasks": [
+        "normalize-pr-event"
+      ],
+      "consumes_events": [
+        "driftward.github.pr.created",
+        "driftward.github.pr.synchronized",
+        "driftward.github.pr.closed_unmerged",
+        "driftward.github.pr.closed_merged",
+        "driftward.github.checks.completed",
+        "driftward.github.review.submitted"
+      ],
+      "produces_events": [],
+      "next_workflows": [
+        "reconciliation-bridge-state-check"
+      ]
+    },
+    {
+      "name": "reconciliation-bridge-state-check",
+      "recommended_name": "reconcile-bridge-state",
+      "worker": "reconciliation-worker",
+      "stage": "reconciliation",
+      "status": "source_added",
+      "purpose": "Inspect bridge ledger state and persist deduplicated reconciliation findings for stale or inconsistent jobs.",
+      "does_not": [
+        "create pull requests",
+        "merge, deploy, or release code",
+        "write Linear",
+        "dispatch Hermes"
+      ],
+      "tasks": [
+        "inspect-bridge-ledger"
+      ],
+      "consumes_events": [],
+      "produces_events": [
+        "driftward.reconciliation.detected"
+      ],
+      "next_workflows": []
+    }
+  ],
+  "events": [
+    "driftward.hermes.job.accepted",
+    "driftward.hermes.job.effect_committed",
+    "driftward.hermes.job.verification_pending",
+    "driftward.hermes.job.verification_failed",
+    "driftward.hermes.job.ready_for_human_review",
+    "driftward.hermes.job.completed",
+    "driftward.hermes.job.failed",
+    "driftward.github.pr.creation_simulated",
+    "driftward.github.pr.created",
+    "driftward.github.pr.synchronized",
+    "driftward.github.pr.closed_unmerged",
+    "driftward.github.pr.closed_merged",
+    "driftward.github.checks.completed",
+    "driftward.github.review.submitted",
+    "driftward.linear.issue.observed",
+    "driftward.linear.issue.ready_for_implementation",
+    "driftward.reconciliation.detected",
+    "driftward.work_item.intake.received",
+    "driftward.factory.retry.requested",
+    "driftward.factory.attempt.started",
+    "driftward.factory.attempt.failed",
+    "driftward.factory.attempt.verified_ready",
+    "driftward.factory.attempt.superseded",
+    "driftward.work_item.triaged",
+    "driftward.work_item.specified",
+    "driftward.verification.completed",
+    "driftward.review.completed",
+    "driftward.repair.dispatched"
+  ]
+}
