@@ -10,7 +10,8 @@ Use the dedicated `Driftward-LLC/factory` repository for the
 Factory product and runtime surface. Keep `driftward-host` as the host-level
 bootstrap owner for VPS-wide prerequisites, Docker availability, secret-file
 placement, and documented recovery commands. The standalone Factory app should
-deploy through Docker Compose from this repository.
+deploy through Docker Compose from this repository, including Hatchet
+Lite/Postgres and Factory-owned services.
 
 The checked-in Hatchet desired state is
 `hatchet/desired-state/factory-hatchet.json`, and the read-only drift check is
@@ -32,11 +33,12 @@ The standalone Factory repository should own:
 
 - Factory operator CLI behavior and UX.
 - Docker image, Compose runtime, systemd wrapper, smoke test, and deploy docs.
+- Hatchet Lite/Postgres deployment topology for the Factory control plane.
 - Hatchet workflow and task source.
 - Hatchet worker packages, manifests, and worker runbooks.
 - Event ingress normalization, routing policy, and event contract files.
-- Hatchet-to-Hermes bridge API, ledger schema, recovery tools, and lifecycle
-  writer.
+- Hatchet-to-Hermes bridge API, ledger schema, recovery tools, lifecycle
+  writer, and Factory-owned Linear lifecycle token renewal.
 - Desired-state manifests for active workflows, task actions, workers, event
   triggers, runtime units, and retired workflow history.
 - Doctor/reconcile commands that can run in `--dry-run` mode before any apply.

@@ -251,6 +251,35 @@ class LifecycleWriterTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {"FACTORY_LIFECYCLE_HOST": "0.0.0.0"}, clear=True):
             self.assertEqual(lifecycle_bind_host(), "0.0.0.0")
 
+    def test_config_from_env_reads_lifecycle_env_file_and_overrides_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "factory-lifecycle-writer.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "LINEAR_FACTORY_ACCESS_TOKEN=from-file",
+                        "HATCHET_HERMES_BRIDGE_TOKEN=bridge-token",
+                        "FACTORY_LIFECYCLE_ACTIVATION_WATERMARK=2026-08-25T00:00:00Z",
+                        "FACTORY_LIFECYCLE_ALLOWED_REPOS=Driftward-LLC/factory",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "FACTORY_LIFECYCLE_ENV_FILE": str(env_path),
+                    "LINEAR_FACTORY_ACCESS_TOKEN": "stale-process-token",
+                },
+                clear=True,
+            ):
+                config = Config.from_env()
+
+        self.assertEqual(config.token, "from-file")
+        self.assertEqual(config.bridge_token, "bridge-token")
+        self.assertEqual(config.allowed_repos, frozenset({"Driftward-LLC/factory"}))
+
     def test_pre_activation_and_missing_source_time_suppress_or_dead_letter(self):
         writer, _ = self.make()
         self.assertEqual(writer._bridge_candidate(event(created="1999-01-01T00:00:00Z"))["delivery_state"], "suppressed")

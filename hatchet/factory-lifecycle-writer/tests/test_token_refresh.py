@@ -13,6 +13,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TokenRefreshTest(unittest.TestCase):
+    def test_credentials_can_come_from_container_env(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FACTORY_LINEAR_CLIENT_ID": "client-id",
+                    "FACTORY_LINEAR_CLIENT_SECRET": "client-secret",
+                },
+                clear=True,
+            ):
+                script = runpy.run_path(str(ROOT / "factory-lifecycle-token-refresh"), run_name="token_refresh_test")
+                self.assertEqual(script["credential"]("factory-client-id"), "client-id")
+                self.assertEqual(script["credential"]("factory-client-secret"), "client-secret")
+        finally:
+            sys.path.remove(str(ROOT))
+
     def test_publish_is_atomic_private_and_preserves_non_token_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

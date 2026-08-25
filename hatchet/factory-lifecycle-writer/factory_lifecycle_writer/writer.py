@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -66,13 +67,38 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        token = os.environ.get("LINEAR_FACTORY_ACCESS_TOKEN", "").strip()
-        bridge_token = os.environ.get("HATCHET_HERMES_BRIDGE_TOKEN", "").strip()
-        watermark = _canonical_timestamp(os.environ.get("FACTORY_LIFECYCLE_ACTIVATION_WATERMARK", "").strip())
-        repos = frozenset(item.strip() for item in os.environ.get("FACTORY_LIFECYCLE_ALLOWED_REPOS", "Driftward-LLC/capykit").split(",") if item.strip())
+        env = lifecycle_env()
+        token = env.get("LINEAR_FACTORY_ACCESS_TOKEN", "").strip()
+        bridge_token = env.get("HATCHET_HERMES_BRIDGE_TOKEN", "").strip()
+        watermark = _canonical_timestamp(env.get("FACTORY_LIFECYCLE_ACTIVATION_WATERMARK", "").strip())
+        repos = frozenset(item.strip() for item in env.get("FACTORY_LIFECYCLE_ALLOWED_REPOS", "Driftward-LLC/capykit").split(",") if item.strip())
         if not token or not bridge_token or not watermark or not repos or any(not REPO.fullmatch(repo) for repo in repos):
             raise SourceError("writer_configuration_invalid")
-        return cls(os.environ.get("FACTORY_LIFECYCLE_BRIDGE_URL", "http://127.0.0.1:19877").rstrip("/"), bridge_token, os.environ.get("FACTORY_LIFECYCLE_INGRESS_URL", "http://127.0.0.1:19878").rstrip("/"), token, watermark, repos)
+        return cls(env.get("FACTORY_LIFECYCLE_BRIDGE_URL", "http://127.0.0.1:19877").rstrip("/"), bridge_token, env.get("FACTORY_LIFECYCLE_INGRESS_URL", "http://127.0.0.1:19878").rstrip("/"), token, watermark, repos)
+
+
+def lifecycle_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env_file = env.get("FACTORY_LIFECYCLE_ENV_FILE", "").strip()
+    if not env_file:
+        return env
+    try:
+        lines = Path(env_file).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return env
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1]
+        env[key] = value
+    return env
 
 
 def _canonical_timestamp(value: Any) -> str | None:

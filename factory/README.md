@@ -29,7 +29,8 @@ Keep those roots separate:
 
 - `factory/`: operator command and front-door documentation.
 - `hatchet/`: control plane, workers, event ingress, and bridge source.
-- `deploy/`: Docker image, Compose runtime, systemd wrapper, and smoke test.
+- `deploy/`: Docker image, Compose runtime, Hatchet Lite/Postgres topology,
+  Linear token renewer, systemd wrapper, and smoke test.
 - Driftward Hermes: isolated execution runtime outside this repository.
 
 Do not move `hatchet/`, `deploy/`, or Driftward Hermes runtime state under

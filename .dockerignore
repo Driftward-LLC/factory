@@ -8,6 +8,8 @@ dist
 coverage
 tmp
 deploy/data
+deploy/keys
+keys
 .env
 .env.*
 *.log

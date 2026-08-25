@@ -14,9 +14,11 @@ from `Driftward-LLC/driftward-host`.
   runbooks.
 - `tools/`: checked-in validation and contract tooling.
 
-Factory deploys through Docker Compose from this repository. `driftward-host`
-remains responsible for host-level bootstrap, shared VPS tooling, root Codex
-state, Docker availability, host package installs, and secret-file placement.
+Factory deploys through Docker Compose from this repository. The Compose app
+owns Hatchet Lite/Postgres plus Factory bridge, ingress, worker, lifecycle,
+Linear token-renewal, and operator services. `driftward-host` remains
+responsible for host-level bootstrap, shared VPS tooling, root Codex state,
+Docker availability, host package installs, and secret-file placement.
 Driftward Hermes remains responsible for agent execution, credentials, MCP,
 browser state, and Hermes session retention.
 

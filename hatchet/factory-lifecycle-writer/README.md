@@ -56,3 +56,10 @@ The root-only token service reads `/root/.config/linear/factory_client_{id,secre
 and atomically publishes only `LINEAR_FACTORY_ACCESS_TOKEN` into
 `/etc/driftward/factory-lifecycle-writer.env` (mode `0600`). Never print,
 copy, or commit either credential or token.
+
+In the Docker deployment, the token renewer runs as the
+`factory-linear-token-refresh` Compose service. It reads
+`FACTORY_LINEAR_CLIENT_ID` and `FACTORY_LINEAR_CLIENT_SECRET` from the protected
+`/etc/driftward/factory-linear-token.env` file and writes only the refreshed
+access token into the mounted lifecycle-writer env file. Do not mount root's
+Linear credential directory into the Factory containers.

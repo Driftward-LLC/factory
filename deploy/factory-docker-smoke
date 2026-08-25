@@ -2,13 +2,35 @@
 set -euo pipefail
 
 runtime_root="${1:-${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}}"
+hatchet_env_file="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
+
+env_file_value() {
+  local file="$1"
+  local key="$2"
+  [[ -r "$file" ]] || return 1
+  awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }' "$file"
+}
+
+strip_simple_quotes() {
+  local value="$1"
+  value="${value%\"}"; value="${value#\"}"
+  value="${value%\'}"; value="${value#\'}"
+  printf '%s\n' "$value"
+}
 
 if [[ ! -f "$runtime_root/docker-compose.yml" ]]; then
   echo "Factory compose file is missing: $runtime_root/docker-compose.yml" >&2
   exit 1
 fi
 
+compose_args=(--project-directory "$runtime_root")
+if [[ -r "$hatchet_env_file" ]]; then
+  compose_args=(--env-file "$hatchet_env_file" "${compose_args[@]}")
+fi
+
 required_services=(
+  postgres
+  hatchet-lite
   bridge
   event-ingress
   linear-webhook-proxy
@@ -18,11 +40,12 @@ required_services=(
   pr-event-worker
   reconciliation-worker
   factory-lifecycle-writer
+  factory-linear-token-refresh
   factory-operator
   outbox-dispatcher
 )
 
-running="$(docker compose --project-directory "$runtime_root" ps --services --filter status=running)"
+running="$(docker compose "${compose_args[@]}" ps --services --filter status=running)"
 for service in "${required_services[@]}"; do
   if ! grep -qx "$service" <<<"$running"; then
     echo "Factory Docker service is not running: $service" >&2
@@ -32,13 +55,22 @@ done
 
 bridge_header=()
 if [[ -r /etc/driftward/hatchet-bridge.env ]]; then
-  token="$(awk -F= '$1 == "HATCHET_HERMES_BRIDGE_TOKEN" { print substr($0, length($1) + 2); exit }' /etc/driftward/hatchet-bridge.env)"
-  token="${token%\"}"; token="${token#\"}"
-  token="${token%\'}"; token="${token#\'}"
+  token="$(env_file_value /etc/driftward/hatchet-bridge.env HATCHET_HERMES_BRIDGE_TOKEN || true)"
+  token="$(strip_simple_quotes "$token")"
   if [[ -n "${token:-}" ]]; then
     bridge_header=(-H "Authorization: Bearer $token")
   fi
 fi
+
+hatchet_postgres_db="$(strip_simple_quotes "$(env_file_value "$hatchet_env_file" HATCHET_POSTGRES_DB || true)")"
+hatchet_postgres_user="$(strip_simple_quotes "$(env_file_value "$hatchet_env_file" HATCHET_POSTGRES_USER || true)")"
+hatchet_postgres_db="${hatchet_postgres_db:-hatchet}"
+hatchet_postgres_user="${hatchet_postgres_user:-hatchet}"
+
+docker compose "${compose_args[@]}" exec -T postgres pg_isready \
+  -d "$hatchet_postgres_db" \
+  -U "$hatchet_postgres_user" >/dev/null
+curl -fsS http://127.0.0.1:8733/health >/dev/null
 
 curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health >/dev/null
 curl -fsS http://127.0.0.1:19878/health >/dev/null

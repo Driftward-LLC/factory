@@ -35,11 +35,12 @@ def lifecycle_bind_host() -> str:
 
 
 def serve(interval: int) -> int:
-    writer, outbox = build_writer()
+    outbox = Outbox(os.environ.get("FACTORY_LIFECYCLE_DB", "/var/lib/driftward-factory-lifecycle-writer/outbox.db"))
     state = {"ok": False, "last_error": "starting", "last_scan": None, "source_errors": {}}
     def loop() -> None:
         while True:
             try:
+                writer = LifecycleWriter(Config.from_env(), outbox)
                 result = scan_and_deliver(writer)
                 status = outbox.status()
                 ok, last_error = status_health(writer.source_errors, result["delivery"], status)
