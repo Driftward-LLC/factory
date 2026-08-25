@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -18,11 +19,19 @@ ENV_FILE = Path(os.environ.get("FACTORY_LIFECYCLE_ENV_FILE", "/etc/driftward/fac
 
 
 def credential(name: str) -> str:
-    try:
-        directory = Path(os.environ["CREDENTIALS_DIRECTORY"])
-        value = (directory / name).read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise IdentityError("app_credentials_missing") from exc
+    env_names = {
+        "factory-client-id": "FACTORY_LINEAR_CLIENT_ID",
+        "factory-client-secret": "FACTORY_LINEAR_CLIENT_SECRET",
+    }
+    env_value = os.environ.get(env_names.get(name, ""), "").strip()
+    if env_value:
+        value = env_value
+    else:
+        try:
+            directory = Path(os.environ["CREDENTIALS_DIRECTORY"])
+            value = (directory / name).read_text(encoding="utf-8").strip()
+        except (KeyError, OSError) as exc:
+            raise IdentityError("app_credentials_missing") from exc
     if not value or "\n" in value or "\r" in value:
         raise IdentityError("app_credentials_invalid")
     return value
@@ -56,7 +65,8 @@ def main() -> int:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=STATE_DIR, delete=False) as handle:
         json.dump(state, handle, separators=(",", ":"), sort_keys=True); handle.write("\n"); temporary = Path(handle.name)
     temporary.chmod(0o600); os.replace(temporary, target)
-    if changed and subprocess.run(["systemctl", "is-active", "--quiet", "driftward-factory-lifecycle-writer.service"], check=False).returncode == 0:
+    restart_enabled = os.environ.get("FACTORY_LIFECYCLE_RESTART_SERVICE", "1").lower() not in {"0", "false", "no"}
+    if changed and restart_enabled and shutil.which("systemctl") and subprocess.run(["systemctl", "is-active", "--quiet", "driftward-factory-lifecycle-writer.service"], check=False).returncode == 0:
         subprocess.run(["systemctl", "restart", "driftward-factory-lifecycle-writer.service"], check=True)
     print(json.dumps({"actor_name": actor.name, "status": "ok", "token_changed": changed}, sort_keys=True))
     return 0

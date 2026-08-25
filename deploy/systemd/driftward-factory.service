@@ -1,0 +1,23 @@
+[Unit]
+Description=Driftward Factory Docker runtime
+Requires=docker.service
+After=docker.service network-online.target driftward-hermes.service
+Wants=network-online.target driftward-hermes.service
+Documentation=file:__SOURCE_ROOT__/deploy/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=__RUNTIME_ROOT__
+Environment=COMPOSE_PROJECT_NAME=driftward-factory
+Environment=FACTORY_SOURCE_ROOT=__SOURCE_ROOT__
+ExecStart=/usr/bin/docker compose --env-file /etc/driftward/hatchet.env --project-directory __RUNTIME_ROOT__ up --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/driftward/hatchet.env --project-directory __RUNTIME_ROOT__ down --remove-orphans
+Restart=always
+RestartSec=10
+TimeoutStartSec=240
+TimeoutStopSec=60
+CPUQuota=250%
+MemoryMax=2048M
+
+[Install]
+WantedBy=multi-user.target

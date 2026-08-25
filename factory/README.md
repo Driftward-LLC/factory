@@ -2,8 +2,9 @@
 
 Main operator-facing CLI for Driftward factory operations.
 
-This sits beside `hatchet/` and `hermes/` because it is not the workflow engine
-or the execution runtime. It is the human control surface over those systems.
+This sits beside `hatchet/` and `deploy/` because it is not the workflow engine,
+the deployment wrapper, or the execution runtime. It is the human control
+surface over those systems.
 The current `factory` CLI/front-door architecture replaces the retired
 unattended factory/controller stack for this host.
 
@@ -28,11 +29,14 @@ Keep those roots separate:
 
 - `factory/`: operator command and front-door documentation.
 - `hatchet/`: control plane, workers, event ingress, and bridge source.
-- `hermes/`: isolated execution runtime and Driftward Hermes host wiring.
+- `deploy/`: Docker image, Compose runtime, Hatchet Lite/Postgres topology,
+  Linear token renewer, systemd wrapper, and smoke test.
+- Driftward Hermes: isolated execution runtime outside this repository.
 
-Do not move `hatchet/` or `hermes/` under `factory/`. That would make the
-front-door command look like the owner of both services and blur the service
-boundaries that keep the replacement architecture understandable.
+Do not move `hatchet/`, `deploy/`, or Driftward Hermes runtime state under
+`factory/`. That would make the front-door command look like the owner of both
+the control plane and execution runtime and blur the service boundaries that
+keep the replacement architecture understandable.
 
 Use this command first when managing the current factory path:
 
@@ -82,7 +86,8 @@ workflows, retired workflows that remain active, unexpected event triggers, and
 task actions without active repo-managed workers. It does not pause, remove, or
 register workflows.
 
-Use direct `systemctl`, `curl`, Docker, or service-specific commands only for
+Use `factory status` first, then direct `systemctl`, `curl`, Docker, or
+service-specific commands only for
 focused debugging, installer work, or break-glass recovery after `factory`
 identifies the component involved.
 
