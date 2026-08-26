@@ -112,7 +112,8 @@ checkout is clean and that `HEAD` matches the requested tag before building.
 It writes the selected image into
 `/etc/systemd/system/driftward-factory.service.d/10-image-tag.conf`, reloads
 systemd, builds `driftward/factory:<tag>`, restarts
-`driftward-factory.service`, and runs `factory-docker-smoke`.
+`driftward-factory.service`, and retries `factory-docker-smoke` until the
+runtime is healthy or the deploy smoke timeout expires.
 
 To pin a full image reference instead of the default `driftward/factory:<tag>`
 shape:

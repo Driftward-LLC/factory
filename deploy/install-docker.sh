@@ -19,6 +19,8 @@ factory_hatchet_desired_state_source="$repo_root/hatchet/desired-state/factory-h
 factory_hatchet_desired_state_target="$factory_share_dir/desired-state/factory-hatchet.json"
 factory_image_tag="${FACTORY_IMAGE_TAG:-local}"
 factory_image_override="${FACTORY_IMAGE:-}"
+smoke_timeout="${DRIFTWARD_FACTORY_SMOKE_TIMEOUT:-90}"
+smoke_interval="${DRIFTWARD_FACTORY_SMOKE_INTERVAL:-5}"
 start=0
 
 usage() {
@@ -68,6 +70,15 @@ else
   factory_image="$factory_image_override"
 fi
 
+if [[ ! "$smoke_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid smoke timeout: $smoke_timeout" >&2
+  exit 64
+fi
+if [[ ! "$smoke_interval" =~ ^[1-9][0-9]*$ ]]; then
+  echo "invalid smoke interval: $smoke_interval" >&2
+  exit 64
+fi
+
 require_clean_release_checkout() {
   local release_tag="$factory_image_tag"
   if [[ -n "$factory_image_override" ]]; then
@@ -104,6 +115,27 @@ require_clean_release_checkout() {
 }
 
 require_clean_release_checkout
+
+wait_for_factory_smoke() {
+  local deadline=$((SECONDS + smoke_timeout))
+  local output
+
+  while true; do
+    if output="$(factory-docker-smoke "$runtime_root" 2>&1)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+
+    printf '%s\n' "$output" >&2
+    if (( SECONDS >= deadline )); then
+      echo "Factory Docker smoke did not pass within ${smoke_timeout}s" >&2
+      return 1
+    fi
+
+    echo "Factory Docker smoke is not ready; retrying in ${smoke_interval}s" >&2
+    sleep "$smoke_interval"
+  done
+}
 
 if [[ "$(id -u)" != "0" ]]; then
   echo "Factory Docker install requires root" >&2
@@ -206,7 +238,7 @@ if (( start )); then
   docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"
   systemctl enable "$service_name"
   systemctl restart "$service_name"
-  factory-docker-smoke "$runtime_root"
+  wait_for_factory_smoke
 else
   echo "Start after the selected image exists with: systemctl enable --now $service_name"
   echo "Smoke with: factory-docker-smoke $runtime_root"
