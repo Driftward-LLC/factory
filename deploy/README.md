@@ -96,6 +96,31 @@ systemctl disable --now driftward-hatchet.service
 missing. That prevents accidentally starting a second empty Hatchet control
 plane on the same ports.
 
+## Release Deployment
+
+Factory releases are source-built Docker image tags. Deploy from a clean
+checkout of the exact release tag and pass that same tag to the installer:
+
+```bash
+git fetch --tags origin
+git switch --detach v2026.8.26
+bash deploy/install-docker.sh --image-tag v2026.8.26 --start
+```
+
+For release-shaped tags such as `v2026.8.26`, the installer verifies that the
+checkout is clean and that `HEAD` matches the requested tag before building.
+It writes the selected image into
+`/etc/systemd/system/driftward-factory.service.d/10-image-tag.conf`, reloads
+systemd, builds `driftward/factory:<tag>`, restarts
+`driftward-factory.service`, and runs `factory-docker-smoke`.
+
+To pin a full image reference instead of the default `driftward/factory:<tag>`
+shape:
+
+```bash
+bash deploy/install-docker.sh --image driftward/factory:v2026.8.26 --start
+```
+
 ## Install
 
 Install the Compose wrapper without starting it:
@@ -104,19 +129,15 @@ Install the Compose wrapper without starting it:
 bash deploy/install-docker.sh
 ```
 
-Build and start through systemd:
-
-```bash
-docker build -f deploy/Dockerfile -t driftward/factory:local .
-systemctl enable --now driftward-factory.service
-factory-docker-smoke
-```
-
-Install and start in one step:
+Install and start the current checkout in one step:
 
 ```bash
 bash deploy/install-docker.sh --start
 ```
+
+By default this pins and builds `driftward/factory:local`. Use
+`--image-tag TAG` for a named Factory image tag or `--image IMAGE` for a full
+image reference.
 
 ## Operations
 
@@ -129,7 +150,7 @@ systemctl restart driftward-factory.service
 factory-docker-smoke
 ```
 
-Rollback to the previous image or source commit by checking out the prior
-commit in `/root/driftward/repos/factory`, rebuilding the image, and restarting
-`driftward-factory.service`. Preserve `/docker/driftward/factory/data/*` unless
-there is a separately approved record migration or restore plan.
+Rollback to the previous release by checking out the prior tag and running
+`bash deploy/install-docker.sh --image-tag <tag> --start`. Preserve
+`/docker/driftward/factory/data/*` unless there is a separately approved record
+migration or restore plan.

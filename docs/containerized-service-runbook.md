@@ -83,8 +83,11 @@ Default to localhost-bound ports. User-facing web URLs must be exposed through
 Tailscale Serve or another approved Tailscale-only path. Expose public ports
 only after the ingress, TLS, authentication, and alerting model is explicit.
 
-Pin images by immutable tag or digest for production services. Floating tags
-such as `latest` are acceptable only for disposable experiments.
+Pin images by immutable tag or digest for production services. For source-built
+services, persist the selected tag or image reference in the installed runtime
+configuration, such as a systemd drop-in, and verify the source checkout matches
+the release tag before building. Floating tags such as `latest` are acceptable
+only for disposable experiments.
 
 ## Systemd Template
 
@@ -218,7 +221,7 @@ systemctl restart driftward-example-service.service
 
 Rollback should be explicit. For image-based services, record the previous
 image tag or digest before updating. For source-built services, record the
-commit SHA that produced the running image.
+release tag and commit SHA that produced the running image.
 
 ## Stop Or Retire
 
