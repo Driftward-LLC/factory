@@ -362,7 +362,7 @@ bash hatchet/workers/install.sh
 ```
 
 The installer builds the npm workspace, seeds root-only env files from the
-`driftward` Hatchet profile when available, installs systemd units, and enables:
+`prod` Hatchet profile when available, installs systemd units, and enables:
 
 ```text
 driftward-hatchet-worker-execution-dispatch.service
@@ -418,5 +418,5 @@ Run the full Hatchet smoke, including a managed worker dry-run job:
 driftward-hatchet-smoke
 ```
 
-Use `hatchet worker dev --profile driftward` only for local development from an
+Use `hatchet worker dev --profile prod` only for local development from an
 individual worker directory. It is not the host runtime.

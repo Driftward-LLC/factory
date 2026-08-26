@@ -8,7 +8,7 @@ or any model provider directly.
 
 - Workflow: `execution-dispatch-create-draft-pr`
 - Task: `submit-create-draft-pr`
-- Trigger: `hatchet trigger dry-run --profile driftward`
+- Trigger: `hatchet trigger dry-run --profile prod`
 
 The task builds or accepts an idempotency key, submits `create_draft_pr` to the
 bridge, and emits `driftward.hermes.job.accepted` after the bridge returns a

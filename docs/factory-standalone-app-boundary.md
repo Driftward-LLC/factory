@@ -18,7 +18,7 @@ The checked-in Hatchet desired state is
 available through:
 
 ```bash
-factory doctor hatchet --profile driftward
+factory doctor hatchet --profile prod
 ```
 
 The doctor command does not pause, remove, or register workflows. It collects

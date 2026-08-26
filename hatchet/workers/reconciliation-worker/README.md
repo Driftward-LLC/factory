@@ -9,7 +9,7 @@ or mutating external systems.
 - Workflow: `reconciliation-bridge-state-check`
 - Task: `inspect-bridge-ledger`
 - Event emitted: `driftward.reconciliation.detected`
-- Trigger: `hatchet trigger bridge-check --profile driftward`
+- Trigger: `hatchet trigger bridge-check --profile prod`
 
 The worker checks bounded bridge, sanitized ingress, and Hatchet inventories.
 It never reports clean when an inventory is unavailable or reaches its safe

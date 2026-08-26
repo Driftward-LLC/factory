@@ -116,7 +116,7 @@ the lifecycle writer, retry operator, and recovery components:
 
 ```bash
 factory status
-factory doctor hatchet --profile driftward
+factory doctor hatchet --profile prod
 factory mode
 factory mode dry-run
 factory mode real --yes
