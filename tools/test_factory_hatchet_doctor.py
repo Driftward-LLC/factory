@@ -119,7 +119,7 @@ class FactoryHatchetDoctorTests(unittest.TestCase):
                     "--hatchet-bin",
                     str(fake_hatchet),
                     "--profile",
-                    "driftward",
+                    "prod",
                     "--json",
                 ],
                 text=True,
@@ -129,7 +129,7 @@ class FactoryHatchetDoctorTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["live"], "hatchet profile driftward")
+        self.assertEqual(payload["live"], "hatchet profile prod")
         self.assertEqual(payload["findings"], [])
 
     def test_desired_workflow_names_match_worker_catalog(self) -> None:

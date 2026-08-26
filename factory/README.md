@@ -42,7 +42,7 @@ Use this command first when managing the current factory path:
 
 ```bash
 factory status
-factory doctor hatchet --profile driftward
+factory doctor hatchet --profile prod
 factory mode
 factory logs linear -f
 factory attempts list ENG-62 --json
@@ -52,7 +52,7 @@ Current scope:
 
 ```bash
 factory status
-factory doctor hatchet --profile driftward
+factory doctor hatchet --profile prod
 factory logs linear -f
 factory logs lifecycle
 factory mode

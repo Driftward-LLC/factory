@@ -351,7 +351,7 @@ Install or refresh managed worker services:
 bash workers/install.sh
 ```
 
-Use `hatchet worker dev --profile driftward` only for local development from an
+Use `hatchet worker dev --profile prod` only for local development from an
 individual worker directory. It is not the host runtime.
 
 <!-- hatchet-skills:start -->

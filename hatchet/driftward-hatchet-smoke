@@ -258,7 +258,7 @@ cat >"$payload_file" <<JSON
 JSON
 
 "$HATCHET_BIN" trigger manual \
-  --profile driftward \
+  --profile prod \
   --workflow execution-dispatch-create-draft-pr \
   --json "$payload_file" \
   -o json >/dev/null || fail "managed execution-dispatch worker did not accept dry-run trigger"
@@ -297,7 +297,7 @@ cat >"$reconciliation_payload_file" <<JSON
 JSON
 
 "$HATCHET_BIN" trigger manual \
-  --profile driftward \
+  --profile prod \
   --workflow reconciliation-bridge-state-check \
   --json "$reconciliation_payload_file" \
   -o json >/dev/null || fail "managed reconciliation worker did not accept bridge check trigger"
