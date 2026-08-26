@@ -3,6 +3,12 @@
 This repository owns the Driftward Factory product/runtime surface extracted
 from `Driftward-LLC/driftward-host`.
 
+## Orientation
+
+Read `README.md` first for the current repo overview, layout, deployment
+model, and common commands. Use this file for agent-specific boundaries, safety
+rules, and validation expectations.
+
 ## Boundaries
 
 - `factory/`: operator CLI and front-door documentation.
