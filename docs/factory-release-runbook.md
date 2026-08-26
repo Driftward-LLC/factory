@@ -93,7 +93,10 @@ bash deploy/install-docker.sh --image-tag "$release_tag" --start
 For release-shaped tags, the installer verifies that `HEAD` matches the tag and
 that the checkout is clean before building. It then writes the systemd image
 pin, reloads systemd, builds the selected image, restarts
-`driftward-factory.service`, and runs `factory-docker-smoke`.
+`driftward-factory.service`, and retries `factory-docker-smoke` until the
+runtime is healthy or the deploy smoke timeout expires. The default timeout is
+90 seconds. Override it with `DRIFTWARD_FACTORY_SMOKE_TIMEOUT` only for a
+specific operator-approved deploy.
 
 ## Verify
 

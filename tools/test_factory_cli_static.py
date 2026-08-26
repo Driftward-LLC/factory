@@ -65,6 +65,10 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG", source)
         self.assertIn('docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"', source)
         self.assertIn('systemctl restart "$service_name"', source)
+        self.assertIn('DRIFTWARD_FACTORY_SMOKE_TIMEOUT:-90', source)
+        self.assertIn('DRIFTWARD_FACTORY_SMOKE_INTERVAL:-5', source)
+        self.assertIn("wait_for_factory_smoke()", source)
+        self.assertIn("Factory Docker smoke is not ready; retrying", source)
 
     def test_release_image_tags_require_matching_clean_checkout(self) -> None:
         source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
