@@ -121,6 +121,9 @@ shape:
 bash deploy/install-docker.sh --image driftward/factory:v2026.8.26 --start
 ```
 
+Use [../docs/factory-release-runbook.md](../docs/factory-release-runbook.md)
+for the full release, deploy, verification, and rollback procedure.
+
 ## Install
 
 Install the Compose wrapper without starting it:

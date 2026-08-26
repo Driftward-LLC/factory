@@ -63,6 +63,9 @@ git switch --detach v2026.8.26
 bash deploy/install-docker.sh --image-tag v2026.8.26 --start
 ```
 
+See [docs/factory-release-runbook.md](docs/factory-release-runbook.md) for the
+full release, deploy, verification, and rollback procedure.
+
 The Docker runtime lives under `/docker/driftward/factory` and is supervised by
 `driftward-factory.service`. The older direct host/systemd installers remain in
 tree for migration and recovery work, but Docker is the standalone Factory app
