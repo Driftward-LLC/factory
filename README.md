@@ -55,6 +55,14 @@ Install the Docker runtime wrapper:
 bash deploy/install-docker.sh
 ```
 
+Deploy a tagged release:
+
+```bash
+git fetch --tags origin
+git switch --detach v2026.8.26
+bash deploy/install-docker.sh --image-tag v2026.8.26 --start
+```
+
 The Docker runtime lives under `/docker/driftward/factory` and is supervised by
 `driftward-factory.service`. The older direct host/systemd installers remain in
 tree for migration and recovery work, but Docker is the standalone Factory app

@@ -42,6 +42,41 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertNotIn("HATCHET_INTAKE_DRY_RUN: ${HATCHET_INTAKE_DRY_RUN", compose)
         self.assertNotIn("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: ${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED", compose)
 
+    def test_compose_accepts_pinned_factory_image_env(self) -> None:
+        compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+        service = (ROOT / "deploy/systemd/driftward-factory.service").read_text(encoding="utf-8")
+
+        self.assertIn("image: ${FACTORY_IMAGE:-driftward/factory:${FACTORY_IMAGE_TAG:-local}}", compose)
+        self.assertIn("build:", compose)
+        self.assertIn("Environment=COMPOSE_PROJECT_NAME=driftward-factory", service)
+        self.assertIn("Environment=FACTORY_SOURCE_ROOT=__SOURCE_ROOT__", service)
+        self.assertNotIn("Environment=FACTORY_IMAGE_TAG=", service)
+        self.assertNotIn("Environment=FACTORY_IMAGE=", service)
+
+    def test_install_docker_persists_factory_image_selection(self) -> None:
+        source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
+
+        self.assertIn("--image-tag TAG", source)
+        self.assertIn("--image IMAGE", source)
+        self.assertIn('factory_image_dropin_dir="${service_unit}.d"', source)
+        self.assertIn('factory_image_override="${FACTORY_IMAGE:-}"', source)
+        self.assertIn("Environment=FACTORY_IMAGE_TAG=%s", source)
+        self.assertIn("Environment=FACTORY_IMAGE=%s", source)
+        self.assertIn("env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG", source)
+        self.assertIn('docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"', source)
+        self.assertIn('systemctl restart "$service_name"', source)
+
+    def test_release_image_tags_require_matching_clean_checkout(self) -> None:
+        source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
+
+        self.assertIn("require_clean_release_checkout()", source)
+        self.assertIn('image_basename="${factory_image_override##*/}"', source)
+        self.assertIn('release_tag="${image_basename##*:}"', source)
+        self.assertIn('[[ "$release_tag" =~ ^v[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,2}($|[.-]) ]]', source)
+        self.assertIn('"refs/tags/$release_tag^{commit}"', source)
+        self.assertIn('git -C "$repo_root" diff-index --quiet HEAD --', source)
+        self.assertIn('git -C "$repo_root" ls-files --others --exclude-standard', source)
+
     def test_attempts_list_accepts_json_option(self) -> None:
         if not hasattr(socket, "AF_UNIX"):
             self.skipTest("Unix sockets are required for the factory operator wrapper")
