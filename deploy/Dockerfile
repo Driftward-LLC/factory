@@ -5,9 +5,17 @@ COPY . .
 
 RUN npm ci --prefix hatchet/workers \
   && npm run build --prefix hatchet/workers \
-  && npm prune --omit=dev --prefix hatchet/workers \
   && mkdir -p /app/worker-triggers \
-  && cp /app/hatchet/workers/bridge-executor-worker/dist/triggers/push-accepted-event.js /app/worker-triggers/push-accepted-event.js
+  && npm exec --prefix hatchet/workers -- esbuild \
+    /app/hatchet/workers/bridge-executor-worker/src/triggers/push-accepted-event.ts \
+    --bundle \
+    --platform=node \
+    --format=cjs \
+    --target=node18 \
+    --line-limit=120 \
+    --legal-comments=none \
+    --outfile=/app/worker-triggers/push-accepted-event.js \
+  && npm prune --omit=dev --prefix hatchet/workers
 
 FROM node:22-bookworm-slim AS runtime
 
