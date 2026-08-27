@@ -38,6 +38,8 @@ through the bridge, then reaches Hermes only through an explicit approved
 gRPC gateway. The Factory Compose app mounts only
 `/run/driftward-hermes-factory`; it must not mount the Docker socket, Hermes
 data, provider credentials, browser state, or host root filesystem.
+The retry operator also mounts Factory ingress state read-only so it can fence
+manual retry eligibility against the latest trusted Linear observation.
 
 The Docker worker defaults are safe for source deployment and dry-run intake
 when protected env files are absent:

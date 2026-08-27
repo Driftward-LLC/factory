@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, inspect_draft_pr_state
+from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, inspect_draft_pr_state, _services_healthy
 from test_support import connect_migrate as connect
 from hatchet_hermes_bridge.store import BridgeConflict, get_factory_attempt, list_events, list_factory_attempt_events, submit_job, transition_job
 
@@ -149,3 +149,25 @@ class FactoryOperatorTests(unittest.TestCase):
     def test_snapshot_must_match_preview(self):
         with self.assertRaisesRegex(OperatorError, "snapshot"):
             reserve_retry(**self.kwargs(), request_id="request", reason="x", actor="uid:0", snapshot_digest="forged")
+
+    def test_docker_operator_health_uses_mounted_state_and_ingress_health(self):
+        env = {
+            "HATCHET_FACTORY_OPERATOR_RUNTIME": "docker",
+            "HATCHET_FACTORY_OPERATOR_BRIDGE_DB": self.bridge_db,
+            "HATCHET_FACTORY_OPERATOR_INGRESS_DB": self.ingress_db,
+            "HATCHET_EVENT_INGRESS_URL": "http://event-ingress:19878",
+        }
+        with patch.dict(os.environ, env, clear=True), patch("hatchet_hermes_bridge.operator._http_healthy", return_value=True) as health:
+            self.assertTrue(_services_healthy())
+        health.assert_called_once_with("http://event-ingress:19878")
+
+    def test_docker_operator_health_fails_without_ingress_mount(self):
+        env = {
+            "HATCHET_FACTORY_OPERATOR_RUNTIME": "docker",
+            "HATCHET_FACTORY_OPERATOR_BRIDGE_DB": self.bridge_db,
+            "HATCHET_FACTORY_OPERATOR_INGRESS_DB": str(Path(self.work.name) / "missing-ingress.db"),
+            "HATCHET_EVENT_INGRESS_URL": "http://event-ingress:19878",
+        }
+        with patch.dict(os.environ, env, clear=True), patch("hatchet_hermes_bridge.operator._http_healthy", return_value=True) as health:
+            self.assertFalse(_services_healthy())
+        health.assert_not_called()
