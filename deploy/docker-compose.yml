@@ -331,9 +331,13 @@ services:
         required: false
     environment:
       <<: *hatchet-client-env
+      HATCHET_FACTORY_OPERATOR_RUNTIME: docker
+      HATCHET_FACTORY_OPERATOR_BRIDGE_DB: /var/lib/driftward-hatchet-bridge/bridge.db
+      HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/driftward-hatchet-event-ingress/ingress.db
     volumes:
       - /run/driftward-factory-operator:/run/driftward-factory-operator
       - ./data/bridge:/var/lib/driftward-hatchet-bridge
+      - ./data/ingress:/var/lib/driftward-hatchet-event-ingress:ro
     cpus: "0.10"
     mem_limit: 128m
 

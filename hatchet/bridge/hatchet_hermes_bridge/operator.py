@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
+from urllib.request import urlopen
 
 from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_job, get_supersedable_bridge_job, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_retry, cancel_factory_attempt, sanitize_detail
 
@@ -86,10 +87,29 @@ def _latest_linear(ingress_db: str, issue: str) -> dict[str, Any] | None:
         raise OperatorError("trusted_ingress_unavailable") from exc
 
 
+def _http_healthy(base_url: str | None) -> bool:
+    if not isinstance(base_url, str) or not base_url.strip():
+        return False
+    try:
+        with urlopen(f"{base_url.rstrip('/')}/health", timeout=3) as response:
+            return 200 <= response.status < 300
+    except OSError:
+        return False
+
+
+def _docker_services_healthy() -> bool:
+    bridge_db = Path(os.environ.get("HATCHET_FACTORY_OPERATOR_BRIDGE_DB", "/var/lib/driftward-hatchet-bridge/bridge.db"))
+    ingress_db = Path(os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/driftward-hatchet-event-ingress/ingress.db"))
+    return bridge_db.is_file() and ingress_db.is_file() and _http_healthy(os.environ.get("HATCHET_EVENT_INGRESS_URL"))
+
+
 def _services_healthy() -> bool:
     # Only fixed unit names are ever queried; no user controlled command path.
     if os.environ.get("HATCHET_FACTORY_OPERATOR_TEST_HEALTH"):
         return os.environ["HATCHET_FACTORY_OPERATOR_TEST_HEALTH"] == "healthy"
+    runtime = os.environ.get("HATCHET_FACTORY_OPERATOR_RUNTIME", "systemd").strip().lower()
+    if runtime in {"docker", "compose", "docker-compose"}:
+        return _docker_services_healthy()
     units = ("driftward-hatchet-event-ingress.service", "driftward-hatchet-bridge.service", "driftward-hatchet-worker-bridge-executor.service")
     return all(subprocess.run(["systemctl", "is-active", "--quiet", unit], check=False, timeout=3).returncode == 0 for unit in units)
 
