@@ -133,6 +133,9 @@ It writes the selected image into
 systemd, builds `driftward/factory:<tag>`, restarts
 `driftward-factory.service`, and retries `factory-docker-smoke` until the
 runtime is healthy or the deploy smoke timeout expires.
+The smoke check also calls the retry operator's read-only preview endpoint for
+a sentinel ENG issue, so missing ingress mounts fail before a release is
+reported healthy.
 
 To pin a full image reference instead of the default `driftward/factory:<tag>`
 shape:
