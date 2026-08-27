@@ -4,6 +4,17 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { BridgeJob, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 import type { Duration } from '@hatchet-dev/typescript-sdk/v1/client/duration';
+import { NonRetryableBridgeExecutionError } from './errors';
+import {
+  checkHermesIdentityViaGrpc,
+  hermesGrpcGatewayEnabled,
+  inspectDraftPrStateViaGrpc,
+  inspectDraftPullRequestViaGrpc,
+  runHermesCreateDraftPrViaGrpc,
+  type HermesIdentityCheck
+} from './hermes-gateway-client';
+
+export { NonRetryableBridgeExecutionError } from './errors';
 
 export type HermesDraftPrResult = {
   status: 'created' | 'reused';
@@ -57,7 +68,7 @@ export function resumeHermesDraftPrResult(job: BridgeJob): HermesDraftPrResult {
   };
 }
 
-type GithubPrView = {
+export type GithubPrView = {
   headRefName?: string;
   baseRefName?: string;
   isDraft?: boolean;
@@ -112,16 +123,6 @@ type VerifiedValidationEvidence = {
   localCommands: JsonObject[];
   secretCheck: JsonObject;
 };
-
-export class NonRetryableBridgeExecutionError extends Error {
-  reasonCode: string;
-
-  constructor(reasonCode: string, message: string) {
-    super(message);
-    this.name = 'NonRetryableBridgeExecutionError';
-    this.reasonCode = reasonCode;
-  }
-}
 
 type ExecResult = {
   stdout: string;
@@ -260,6 +261,14 @@ function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecutionLease
     'HATCHET_HERMES_INSPECTION_TOKEN',
     'HATCHET_HERMES_RECOVERY_TOKEN',
     'HATCHET_VERIFIER_POLICY_PATH',
+    'DRIFTWARD_HERMES_GRPC_TARGET',
+    'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
+    'DRIFTWARD_HERMES_GRPC_TLS',
+    'DRIFTWARD_HERMES_GRPC_CA_PATH',
+    'DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH',
+    'DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH',
+    'DRIFTWARD_HERMES_GRPC_ALLOW_TCP',
+    'DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP',
     'DRIFTWARD_HERMES_COMMAND',
     'DRIFTWARD_HERMES_ALLOWED_REPOS',
     'DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN',
@@ -334,13 +343,35 @@ export function validateRealCreateDraftPrJob(job: BridgeJob): void {
   }
 }
 
+export async function preflightHermesCreateDraftPr(job: BridgeJob): Promise<void> {
+  validateRealCreateDraftPrJob(job);
+  if (hermesGrpcGatewayEnabled()) {
+    await assertHermesIdentity(requiredPayloadString(job, 'repo'));
+  }
+}
+
 export async function runHermesCreateDraftPr(job: BridgeJob): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
-  await assertHermesIdentity(requiredPayloadString(job, 'repo'));
-
   const command = process.env.DRIFTWARD_HERMES_COMMAND || 'driftward-hermes';
   const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000);
   const maxBuffer = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024);
+
+  if (hermesGrpcGatewayEnabled()) {
+    await assertHermesIdentity(requiredPayloadString(job, 'repo'));
+    return runHermesCreateDraftPrViaGrpc(job, timeout);
+  }
+
+  return runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer);
+}
+
+export async function runHermesCreateDraftPrViaCommand(
+  job: BridgeJob,
+  command: string = process.env.DRIFTWARD_HERMES_COMMAND || 'driftward-hermes',
+  timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000),
+  maxBuffer: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024)
+): Promise<HermesDraftPrResult> {
+  validateRealCreateDraftPrJob(job);
+  await assertHermesIdentityViaCommand(requiredPayloadString(job, 'repo'));
   const prompt = buildPrompt(job);
 
   const result = await execFileAsync(command, ['--accept-hooks', '--pass-session-id', '-z', prompt], {
@@ -385,11 +416,8 @@ export async function validateHermesDraftPrSideEffect(job: BridgeJob, result: He
 
   const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VALIDATION_TIMEOUT_MS, 30_000);
   const maxBuffer = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VALIDATION_MAX_BUFFER_BYTES, 1024 * 1024);
-  const view = await execHermesRuntimeJson<GithubPrView>(
-    ['gh', 'pr', 'view', String(result.prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,files,statusCheckRollup'],
-    timeout,
-    maxBuffer
-  );
+  const observation = await inspectDraftPullRequest(repo, result.prNumber, timeout, maxBuffer);
+  const { diffText, ...view } = observation;
 
   if (view.url !== result.prUrl) {
     throw new NonRetryableBridgeExecutionError(
@@ -409,12 +437,7 @@ export async function validateHermesDraftPrSideEffect(job: BridgeJob, result: He
 
   const verification = verifyDraftPrEvidence(job, result, view);
 
-  const diff = await execHermesRuntimeCommand(
-    ['gh', 'pr', 'diff', String(result.prNumber), '--repo', repo],
-    timeout,
-    maxBuffer
-  );
-  const suspiciousLine = findAddedTempFileReference(diff.stdout);
+  const suspiciousLine = findAddedTempFileReference(diffText);
   if (suspiciousLine) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_pr_contains_tempfile_reference',
@@ -423,6 +446,26 @@ export async function validateHermesDraftPrSideEffect(job: BridgeJob, result: He
   }
 
   return verification;
+}
+
+async function inspectDraftPullRequest(repo: string, prNumber: number, timeout: number, maxBuffer: number): Promise<GithubPrView & { diffText: string }> {
+  return hermesGrpcGatewayEnabled()
+    ? inspectDraftPullRequestViaGrpc(repo, prNumber, timeout)
+    : inspectDraftPullRequestViaCommand(repo, prNumber, timeout, maxBuffer);
+}
+
+export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: number, timeout: number, maxBuffer: number): Promise<GithubPrView & { diffText: string }> {
+  const view = await execHermesRuntimeJson<GithubPrView>(
+    ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,files,statusCheckRollup'],
+    timeout,
+    maxBuffer
+  );
+  const diff = await execHermesRuntimeCommand(
+    ['gh', 'pr', 'diff', String(prNumber), '--repo', repo],
+    timeout,
+    maxBuffer
+  );
+  return { ...view, diffText: diff.stdout };
 }
 
 /** A fixed, read-only Hermes action used only for retry artifact fencing. */
@@ -437,15 +480,25 @@ export async function inspectDraftPrState(repository: string, reference: string 
     return { repository, number: 0, url: '', state: 'unknown', merged: false, draft: false, head_branch: null, head_sha: null, base_ref: null, reason: 'invalid_reference' };
   }
   try {
-    const view = await execHermesRuntimeJson<{ number?: number; url?: string; state?: string; mergedAt?: string | null; isDraft?: boolean; headRefName?: string; headRefOid?: string; baseRefName?: string }>(
-      ['gh', 'pr', 'view', String(parsed.number), '--repo', repository, '--json', 'number,url,state,mergedAt,isDraft,headRefName,headRefOid,baseRefName'],
-      parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000), 128 * 1024
-    );
-    if (view.number !== parsed.number || view.url !== parsed.url || (view.state !== 'OPEN' && view.state !== 'CLOSED')) throw new Error('unexpected PR inspection response');
-    return { repository, number: parsed.number, url: parsed.url, state: view.state.toLowerCase() as 'open' | 'closed', merged: Boolean(view.mergedAt), draft: Boolean(view.isDraft), head_branch: typeof view.headRefName === 'string' ? view.headRefName : null, head_sha: typeof view.headRefOid === 'string' ? view.headRefOid : null, base_ref: typeof view.baseRefName === 'string' ? view.baseRefName : null, reason: 'ok' };
+    if (hermesGrpcGatewayEnabled()) {
+      return await inspectDraftPrStateViaGrpc(repository, parsed.url, parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000));
+    }
+    return await inspectDraftPrStateViaCommand(repository, parsed);
   } catch {
     return { repository, number: parsed.number, url: parsed.url, state: 'unknown', merged: false, draft: false, head_branch: null, head_sha: null, base_ref: null, reason: 'inspect_unavailable' };
   }
+}
+
+export async function inspectDraftPrStateViaCommand(
+  repository: string,
+  parsed: { number: number; url: string }
+): Promise<DraftPrStateInspection> {
+  const view = await execHermesRuntimeJson<{ number?: number; url?: string; state?: string; mergedAt?: string | null; isDraft?: boolean; headRefName?: string; headRefOid?: string; baseRefName?: string }>(
+    ['gh', 'pr', 'view', String(parsed.number), '--repo', repository, '--json', 'number,url,state,mergedAt,isDraft,headRefName,headRefOid,baseRefName'],
+    parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000), 128 * 1024
+  );
+  if (view.number !== parsed.number || view.url !== parsed.url || (view.state !== 'OPEN' && view.state !== 'CLOSED')) throw new Error('unexpected PR inspection response');
+  return { repository, number: parsed.number, url: parsed.url, state: view.state.toLowerCase() as 'open' | 'closed', merged: Boolean(view.mergedAt), draft: Boolean(view.isDraft), head_branch: typeof view.headRefName === 'string' ? view.headRefName : null, head_sha: typeof view.headRefOid === 'string' ? view.headRefOid : null, base_ref: typeof view.baseRefName === 'string' ? view.baseRefName : null, reason: 'ok' };
 }
 
 export async function waitForHermesDraftPrVerification(
@@ -540,7 +593,38 @@ export function verifyDraftPrEvidence(
   return { expectedBase: policy.expectedBase, changedFiles, checks, verifiedCommitSha, receipt };
 }
 
+type HermesIdentityExpectation = {
+  expectedGithubLogin: string;
+  expectedGitAuthorName: string;
+  expectedGitAuthorEmail: string;
+  forbiddenGithubLogins: string[];
+  forbiddenGitAuthorEmails: string[];
+  timeout: number;
+};
+
 export async function assertHermesIdentity(repo: string): Promise<void> {
+  await checkHermesIdentity(repo);
+}
+
+export async function checkHermesIdentity(repo: string): Promise<HermesIdentityCheck> {
+  const expectation = hermesIdentityExpectation(repo);
+  if (hermesGrpcGatewayEnabled()) {
+    const observed = await checkHermesIdentityViaGrpc({
+      repo,
+      expectedGithubLogin: expectation.expectedGithubLogin,
+      expectedGitAuthorName: expectation.expectedGitAuthorName,
+      expectedGitAuthorEmail: expectation.expectedGitAuthorEmail,
+      forbiddenGithubLogins: expectation.forbiddenGithubLogins,
+      forbiddenGitAuthorEmails: expectation.forbiddenGitAuthorEmails,
+      timeoutMs: expectation.timeout
+    });
+    validateObservedHermesIdentity(repo, observed, expectation);
+    return observed;
+  }
+  return assertHermesIdentityViaCommand(repo, expectation);
+}
+
+function hermesIdentityExpectation(repo: string): HermesIdentityExpectation {
   const expectedGithubLogin = requiredEnv(
     'DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN',
     'hermes_github_identity_not_configured'
@@ -566,22 +650,35 @@ export async function assertHermesIdentity(repo: string): Promise<void> {
       `expected GitHub login ${expectedGithubLogin} is forbidden for Driftward Hermes execution`
     );
   }
+  return {
+    expectedGithubLogin,
+    expectedGitAuthorName,
+    expectedGitAuthorEmail,
+    forbiddenGithubLogins,
+    forbiddenGitAuthorEmails,
+    timeout
+  };
+}
 
-  const gitAuthorName = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.name'], timeout)).stdout.trim();
-  if (gitAuthorName !== expectedGitAuthorName) {
+export async function assertHermesIdentityViaCommand(
+  repo: string,
+  expectation: HermesIdentityExpectation = hermesIdentityExpectation(repo)
+): Promise<HermesIdentityCheck> {
+  const gitAuthorName = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.name'], expectation.timeout)).stdout.trim();
+  if (gitAuthorName !== expectation.expectedGitAuthorName) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_name_mismatch',
-      `expected Git author name ${expectedGitAuthorName}, got ${gitAuthorName || '<unset>'}`
+      `expected Git author name ${expectation.expectedGitAuthorName}, got ${gitAuthorName || '<unset>'}`
     );
   }
-  const gitAuthorEmail = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.email'], timeout)).stdout.trim();
-  if (gitAuthorEmail !== expectedGitAuthorEmail) {
+  const gitAuthorEmail = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.email'], expectation.timeout)).stdout.trim();
+  if (gitAuthorEmail !== expectation.expectedGitAuthorEmail) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_mismatch',
-      `expected Git author email ${expectedGitAuthorEmail}, got ${gitAuthorEmail || '<unset>'}`
+      `expected Git author email ${expectation.expectedGitAuthorEmail}, got ${gitAuthorEmail || '<unset>'}`
     );
   }
-  if (forbiddenGitAuthorEmails.includes(gitAuthorEmail)) {
+  if (expectation.forbiddenGitAuthorEmails.includes(gitAuthorEmail)) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_forbidden',
       `Git author email ${gitAuthorEmail} is forbidden for Driftward Hermes execution`
@@ -595,11 +692,50 @@ export async function assertHermesIdentity(repo: string): Promise<void> {
   }
 
   const repoApiPath = `repos/${repo}`;
-  const accessibleRepo = (await execHermesRuntimeCommand(['gh', 'api', repoApiPath, '--jq', '.full_name'], timeout)).stdout.trim();
+  const accessibleRepo = (await execHermesRuntimeCommand(['gh', 'api', repoApiPath, '--jq', '.full_name'], expectation.timeout)).stdout.trim();
   if (accessibleRepo !== repo) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_github_app_repo_access_mismatch',
       `expected Driftward Hermes GitHub App access to ${repo}, got ${accessibleRepo || '<empty>'}`
+    );
+  }
+  return {
+    githubLogin: expectation.expectedGithubLogin,
+    gitAuthorName,
+    gitAuthorEmail,
+    accessibleRepo
+  };
+}
+
+function validateObservedHermesIdentity(repo: string, observed: HermesIdentityCheck, expectation: HermesIdentityExpectation): void {
+  if (observed.gitAuthorName !== expectation.expectedGitAuthorName) {
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_git_author_name_mismatch',
+      `expected Git author name ${expectation.expectedGitAuthorName}, got ${observed.gitAuthorName || '<unset>'}`
+    );
+  }
+  if (observed.gitAuthorEmail !== expectation.expectedGitAuthorEmail) {
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_git_author_mismatch',
+      `expected Git author email ${expectation.expectedGitAuthorEmail}, got ${observed.gitAuthorEmail || '<unset>'}`
+    );
+  }
+  if (expectation.forbiddenGithubLogins.includes(observed.githubLogin)) {
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_git_author_forbidden',
+      `GitHub login ${observed.githubLogin} is forbidden for Driftward Hermes execution`
+    );
+  }
+  if (expectation.forbiddenGitAuthorEmails.includes(observed.gitAuthorEmail)) {
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_git_author_forbidden',
+      `Git author email ${observed.gitAuthorEmail} is forbidden for Driftward Hermes execution`
+    );
+  }
+  if (observed.accessibleRepo !== repo) {
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_github_app_repo_access_mismatch',
+      `expected Driftward Hermes GitHub App access to ${repo}, got ${observed.accessibleRepo || '<empty>'}`
     );
   }
 }

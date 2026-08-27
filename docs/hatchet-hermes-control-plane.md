@@ -125,12 +125,21 @@ Forbidden in Hatchet worker environment:
 
 ## Bridge Contract
 
-The Hermes bridge should be a local-only service. Prefer a Unix domain socket
-owned by a dedicated group. Localhost HTTP is acceptable for a prototype only
-when bound to `127.0.0.1`, protected by a shared secret or mTLS-equivalent local
-credential, and blocked from public ingress. A CLI wrapper is acceptable for a
-manual pilot, but should not become the durable API because command execution
-and structured error handling are harder to constrain.
+The Hermes bridge is a typed gRPC service. Production should use a Unix domain
+socket owned by a dedicated group:
+
+```text
+unix:///run/driftward-hermes-factory/hermes.sock
+```
+
+The protobuf contract is transport-neutral, so a future private TCP endpoint is
+allowed only as a deployment change with `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1`
+and either TLS or `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`. Localhost HTTP is
+acceptable only for one-off prototypes when bound to `127.0.0.1`, protected by
+a shared secret or mTLS-equivalent local credential, and blocked from public
+ingress. A CLI wrapper is acceptable for a manual pilot, but should not become
+the durable API because command execution and structured error handling are
+harder to constrain.
 
 Minimum request fields:
 
@@ -334,8 +343,8 @@ Pilot smoke tests:
   PostgreSQL/RabbitMQ, or Hatchet Cloud?
 - Should the binding store share Hatchet's PostgreSQL database or stay as a
   separate Driftward-owned SQLite/PostgreSQL database?
-- What is the exact Hermes bridge primitive available today: socket service,
-  HTTP endpoint, Hermes-native MCP/tool endpoint, or a constrained wrapper?
+- Which additional Hermes bridge actions should graduate into the gRPC
+  contract after draft PR creation, PR observation, and retry inspection?
 - Which Hermes profile should own a read-only pilot, and how is its session ID
   returned durably?
 - Should Hatchet workflow metadata store only binding IDs, or duplicate selected
