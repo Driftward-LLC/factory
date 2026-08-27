@@ -3,6 +3,10 @@ set -euo pipefail
 
 runtime_root="${1:-${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}}"
 hatchet_env_file="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
+bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"
+operator_env_file="${FACTORY_OPERATOR_ENV:-/etc/driftward/factory-operator.env}"
+operator_socket="${FACTORY_OPERATOR_SOCKET:-/run/driftward-factory-operator/operator.sock}"
+operator_preview_smoke_issue="${FACTORY_OPERATOR_PREVIEW_SMOKE_ISSUE:-ENG-999999999}"
 
 env_file_value() {
   local file="$1"
@@ -54,13 +58,70 @@ for service in "${required_services[@]}"; do
 done
 
 bridge_header=()
-if [[ -r /etc/driftward/hatchet-bridge.env ]]; then
-  token="$(env_file_value /etc/driftward/hatchet-bridge.env HATCHET_HERMES_BRIDGE_TOKEN || true)"
+if [[ -r "$bridge_env_file" ]]; then
+  token="$(env_file_value "$bridge_env_file" HATCHET_HERMES_BRIDGE_TOKEN || true)"
   token="$(strip_simple_quotes "$token")"
   if [[ -n "${token:-}" ]]; then
     bridge_header=(-H "Authorization: Bearer $token")
   fi
 fi
+
+operator_preview_smoke() {
+  local token response status payload error
+
+  if [[ ! "$operator_preview_smoke_issue" =~ ^ENG-[1-9][0-9]*$ ]]; then
+    echo "Factory operator preview smoke issue must be an ENG identifier" >&2
+    exit 1
+  fi
+  if [[ ! -r "$operator_env_file" ]]; then
+    echo "Factory operator env file is missing: $operator_env_file" >&2
+    exit 1
+  fi
+  if [[ ! -S "$operator_socket" ]]; then
+    echo "Factory operator socket is missing: $operator_socket" >&2
+    exit 1
+  fi
+
+  token="$(env_file_value "$operator_env_file" HATCHET_FACTORY_OPERATOR_TOKEN || true)"
+  token="$(strip_simple_quotes "$token")"
+  if [[ -z "${token:-}" ]]; then
+    echo "Factory operator token is missing from $operator_env_file" >&2
+    exit 1
+  fi
+
+  response="$(
+    curl --silent --show-error --unix-socket "$operator_socket" \
+      -H "Authorization: Bearer $token" \
+      -H 'Content-Type: application/json' \
+      --data "{\"issue\":\"$operator_preview_smoke_issue\"}" \
+      --write-out '\n%{http_code}' \
+      http://localhost/v1/retry/preview
+  )"
+  status="${response##*$'\n'}"
+  payload="${response%$'\n'*}"
+  if [[ ! "$status" =~ ^[0-9]{3}$ ]]; then
+    echo "Factory operator preview smoke returned an invalid HTTP status" >&2
+    exit 1
+  fi
+  error="$(
+    python3 -c 'import json,sys; value=json.load(sys.stdin); print(value.get("error",""))' <<<"$payload"
+  )" || {
+    echo "Factory operator preview smoke did not return JSON" >&2
+    exit 1
+  }
+  if [[ "$status" == "401" ]]; then
+    echo "Factory operator preview smoke was unauthorized" >&2
+    exit 1
+  fi
+  if [[ "$error" == "trusted_ingress_unavailable" ]]; then
+    echo "Factory operator preview smoke cannot read trusted ingress" >&2
+    exit 1
+  fi
+  if [[ "$status" != "200" && -z "$error" ]]; then
+    echo "Factory operator preview smoke returned HTTP $status without a bounded error" >&2
+    exit 1
+  fi
+}
 
 hatchet_postgres_db="$(strip_simple_quotes "$(env_file_value "$hatchet_env_file" HATCHET_POSTGRES_DB || true)")"
 hatchet_postgres_user="$(strip_simple_quotes "$(env_file_value "$hatchet_env_file" HATCHET_POSTGRES_USER || true)")"
@@ -78,5 +139,6 @@ curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health >/dev/null
 curl -fsS http://127.0.0.1:19878/health >/dev/null
 curl -fsS http://127.0.0.1:19879/health >/dev/null
 curl -fsS http://127.0.0.1:19880/health >/dev/null
+operator_preview_smoke
 
 echo "Factory Docker runtime is healthy: $runtime_root"
