@@ -34,6 +34,103 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("docker_compose up -d --force-recreate --no-deps intake-worker >/dev/null", source)
         self.assertIn('docker_compose logs "${args[@]}" "${units[@]}"', source)
 
+    def test_status_checks_linear_webhook_readiness(self) -> None:
+        source = (ROOT / "factory/factory").read_text(encoding="utf-8")
+
+        self.assertIn("linear_webhook_public_readiness_status()", source)
+        self.assertIn('http_status "Linear webhook readiness" http://127.0.0.1:19879/ready "200" required', source)
+        self.assertIn('linear_webhook_public_readiness_status "Linear webhook public readiness" required', source)
+        self.assertNotIn('http_status "Linear webhook proxy health" http://127.0.0.1:19879/health "200" required', source)
+
+    def test_status_exercises_linear_webhook_public_readiness(self) -> None:
+        factory = ROOT / "factory/factory"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            runtime_root = tmp_path / "runtime"
+            bridge_env = tmp_path / "hatchet-bridge.env"
+            worker_env = tmp_path / "hatchet-workers.env"
+            curl_args = tmp_path / "curl-args.txt"
+            fake_bin.mkdir()
+            runtime_root.mkdir()
+            (runtime_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+            bridge_env.write_text("HATCHET_HERMES_BRIDGE_TOKEN=test-token\n", encoding="utf-8")
+            worker_env.write_text("HATCHET_INTAKE_DRY_RUN=true\n", encoding="utf-8")
+            self._write_executable(
+                fake_bin / "systemctl",
+                "#!/usr/bin/env sh\n"
+                "case \"$1\" in\n"
+                "  is-active) echo active ;;\n"
+                "  is-enabled) echo enabled ;;\n"
+                "  list-timers) ;;\n"
+                "esac\n",
+            )
+            self._write_executable(
+                fake_bin / "docker",
+                "#!/usr/bin/env sh\n"
+                "case \" $* \" in\n"
+                "  *' ps '*|*' ps')\n"
+                "    printf '%s\\n' \\\n"
+                "      postgres \\\n"
+                "      hatchet-lite \\\n"
+                "      bridge \\\n"
+                "      event-ingress \\\n"
+                "      linear-webhook-proxy \\\n"
+                "      intake-worker \\\n"
+                "      execution-dispatch-worker \\\n"
+                "      bridge-executor-worker \\\n"
+                "      pr-event-worker \\\n"
+                "      reconciliation-worker \\\n"
+                "      factory-lifecycle-writer \\\n"
+                "      factory-linear-token-refresh \\\n"
+                "      factory-operator \\\n"
+                "      outbox-dispatcher\n"
+                "    ;;\n"
+                "esac\n",
+            )
+            self._write_executable(
+                fake_bin / "curl",
+                "#!/usr/bin/env sh\n"
+                "printf '%s\\n' \"$@\" >> \"$FACTORY_TEST_CURL_ARGS\"\n"
+                "case \" $* \" in *' --write-out '*) printf '200' ;; *) printf '{}' ;; esac\n",
+            )
+            self._write_executable(
+                fake_bin / "tailscale",
+                "#!/usr/bin/env sh\n"
+                "if [ \"$1\" = status ] && [ \"$2\" = --json ]; then\n"
+                "  printf '{\"Self\":{\"DNSName\":\"factory.test.\"}}\\n'\n"
+                "else\n"
+                "  exit 1\n"
+                "fi\n",
+            )
+            self._write_executable(fake_bin / "driftward-hermes", "#!/usr/bin/env sh\nexit 0\n")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "DRIFTWARD_FACTORY_RUNTIME_ROOT": str(runtime_root),
+                    "FACTORY_HATCHET_BRIDGE_ENV": str(bridge_env),
+                    "FACTORY_HATCHET_WORKERS_ENV": str(worker_env),
+                    "FACTORY_TEST_CURL_ARGS": str(curl_args),
+                    "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+                }
+            )
+            result = subprocess.run(
+                [str(factory), "status"],
+                check=True,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=5,
+            )
+
+            self.assertIn("Linear webhook readiness", result.stdout)
+            self.assertIn("Linear webhook public readiness", result.stdout)
+            self.assertIn("url=https://factory.test/ready", result.stdout)
+            logged_curl_args = curl_args.read_text(encoding="utf-8")
+            self.assertIn("http://127.0.0.1:19879/ready", logged_curl_args)
+            self.assertIn("https://factory.test/ready", logged_curl_args)
+
     def test_compose_honors_protected_worker_mode_env(self) -> None:
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
 

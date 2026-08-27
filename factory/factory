@@ -383,6 +383,62 @@ http_status() {
   fi
 }
 
+linear_webhook_public_readiness_status() {
+  local label="$1"
+  local required="${2:-required}"
+  local public_port="${HATCHET_PUBLIC_LINEAR_WEBHOOK_FUNNEL_PORT:-443}"
+  local dns url code detail
+
+  if ! command -v tailscale >/dev/null 2>&1; then
+    detail="tailscale command unavailable"
+    if [[ "$required" == "required" ]]; then
+      status_line FAIL "$label" "$detail"
+      mark_failure
+    else
+      status_line WARN "$label" "$detail"
+    fi
+    return
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    detail="jq command unavailable"
+    if [[ "$required" == "required" ]]; then
+      status_line FAIL "$label" "$detail"
+      mark_failure
+    else
+      status_line WARN "$label" "$detail"
+    fi
+    return
+  fi
+
+  dns="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' 2>/dev/null | sed 's/[.]$//' || true)"
+  if [[ -z "$dns" || "$dns" == "null" ]]; then
+    detail="tailscale self DNS unavailable"
+    if [[ "$required" == "required" ]]; then
+      status_line FAIL "$label" "$detail"
+      mark_failure
+    else
+      status_line WARN "$label" "$detail"
+    fi
+    return
+  fi
+
+  if [[ "$public_port" == "443" ]]; then
+    url="https://$dns/ready"
+  else
+    url="https://$dns:$public_port/ready"
+  fi
+  code="$(curl --silent --show-error --insecure --output /dev/null --write-out '%{http_code}' --max-time 5 "$url" 2>/dev/null || true)"
+  detail="http=${code:-000} url=$url"
+  if [[ "${code:-000}" == "200" ]]; then
+    status_line OK "$label" "$detail"
+  elif [[ "$required" == "required" ]]; then
+    status_line FAIL "$label" "$detail"
+    mark_failure
+  else
+    status_line WARN "$label" "$detail"
+  fi
+}
+
 bridge_token() {
   if [[ -r "$BRIDGE_ENV_FILE" ]]; then
     awk -F= '$1 == "HATCHET_HERMES_BRIDGE_TOKEN" { print $2; exit }' "$BRIDGE_ENV_FILE"
@@ -471,7 +527,8 @@ show_status() {
     mark_failure
   fi
   http_status "Hatchet ingress health" http://127.0.0.1:19878/health "200" required
-  http_status "Linear webhook proxy health" http://127.0.0.1:19879/health "200" required
+  http_status "Linear webhook readiness" http://127.0.0.1:19879/ready "200" required
+  linear_webhook_public_readiness_status "Linear webhook public readiness" required
   http_status "Factory lifecycle writer status" http://127.0.0.1:19880/status "200" required
   http_status "Driftward Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
   command_status "Driftward Hermes Codex auth" required driftward-hermes hermes auth status openai-codex
