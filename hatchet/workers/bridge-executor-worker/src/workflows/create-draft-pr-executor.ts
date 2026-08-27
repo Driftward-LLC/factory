@@ -14,9 +14,9 @@ import {
   hermesReceiptEventScope,
   hermesReceiptWaitDuration,
   inspectDraftPrState,
+  preflightHermesCreateDraftPr,
   resumeHermesDraftPrResult,
   waitForHermesDraftPrVerification,
-  validateRealCreateDraftPrJob,
   type HermesDraftPrResult
 } from '../hermes/create-draft-pr';
 import { Or, SleepCondition, UserEventCondition } from '@hatchet-dev/typescript-sdk/v1/conditions';
@@ -177,7 +177,7 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
 
     let running: BridgeJob;
     try {
-      validateRealCreateDraftPrJob(job);
+      await preflightHermesCreateDraftPr(job);
       running = await ensureRunning(bridge, job, 'hermes');
     } catch (error) {
       if (error instanceof NonRetryableBridgeExecutionError) {

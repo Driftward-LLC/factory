@@ -9,6 +9,8 @@ BRIDGE_ENV_FILE="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env
 RUNTIME_ROOT="${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}"
 HATCHET_ENV_FILE="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
 FACTORY_SERVICE="${DRIFTWARD_FACTORY_SYSTEMD_SERVICE:-driftward-factory.service}"
+HERMES_FACTORY_GATEWAY_SERVICE="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SERVICE:-driftward-hermes-factory-gateway.service}"
+HERMES_FACTORY_GATEWAY_SOCKET="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SOCKET:-/run/driftward-hermes-factory/hermes.sock}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 FACTORY_SHARE_DIR="${FACTORY_SHARE_DIR:-${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}}"
 
@@ -432,6 +434,7 @@ show_status() {
   printf '%s\n' '----------------'
   if factory_docker_runtime_active; then
     unit_status "Factory Docker wrapper" "$FACTORY_SERVICE" required
+    unit_status "Hermes Factory gRPC gateway" "$HERMES_FACTORY_GATEWAY_SERVICE" required
     docker_service_status "Factory Postgres" postgres required
     docker_service_status "Hatchet Lite" hatchet-lite required
     docker_service_status "Hatchet bridge API" bridge required
@@ -448,6 +451,7 @@ show_status() {
     docker_service_status "Factory outbox dispatcher" outbox-dispatcher required
   else
     unit_status "Hatchet control plane" driftward-hatchet.service required
+    unit_status "Hatchet Hermes gRPC gateway" driftward-hatchet-hermes-gateway.service required
     unit_status "Hatchet bridge API" driftward-hatchet-bridge.service required
     unit_status "Hatchet event ingress" driftward-hatchet-event-ingress.service required
     unit_status "Hatchet Linear webhook proxy" driftward-hatchet-linear-webhook-proxy.service required
@@ -475,6 +479,7 @@ show_status() {
   http_status "Factory lifecycle writer status" http://127.0.0.1:19880/status "200" required
   http_status "Driftward Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
   command_status "Driftward Hermes Codex auth" required driftward-hermes hermes auth status openai-codex
+  socket_status "Hermes Factory gRPC socket" "$HERMES_FACTORY_GATEWAY_SOCKET" advisory
 
   printf '\nAdvisory / recovery\n'
   printf '%s\n' '-------------------'

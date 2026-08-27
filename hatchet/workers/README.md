@@ -365,6 +365,7 @@ The installer builds the npm workspace, seeds root-only env files from the
 `prod` Hatchet profile when available, installs systemd units, and enables:
 
 ```text
+driftward-hatchet-hermes-gateway.service
 driftward-hatchet-worker-execution-dispatch.service
 driftward-hatchet-worker-intake.service
 driftward-hatchet-worker-bridge-executor.service
@@ -380,8 +381,8 @@ Runtime env files:
   intake repo allowlist
 
 /etc/driftward/hatchet-worker-bridge-executor.env
-  Explicit real-PR gate, Driftward Hermes command, allowed repos, expected
-  factory-hermes GitHub App identity
+  Explicit real-PR gate, Hermes gRPC target, Driftward Hermes command fallback,
+  allowed repos, expected factory-hermes GitHub App identity
 ```
 
 Use the factory CLI first when operating the worker path:

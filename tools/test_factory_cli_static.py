@@ -30,6 +30,8 @@ class FactoryCliStaticTests(unittest.TestCase):
 
         self.assertIn("factory_docker_runtime_active()", source)
         self.assertIn('unit_status "Factory Docker wrapper" "$FACTORY_SERVICE" required', source)
+        self.assertIn('unit_status "Hermes Factory gRPC gateway" "$HERMES_FACTORY_GATEWAY_SERVICE" required', source)
+        self.assertIn('socket_status "Hermes Factory gRPC socket" "$HERMES_FACTORY_GATEWAY_SOCKET" advisory', source)
         self.assertIn('docker_service_status "Hatchet intake worker" intake-worker required', source)
         self.assertIn("docker_compose up -d --force-recreate --no-deps intake-worker >/dev/null", source)
         self.assertIn('docker_compose logs "${args[@]}" "${units[@]}"', source)
@@ -39,6 +41,9 @@ class FactoryCliStaticTests(unittest.TestCase):
 
         self.assertIn("- path: /etc/driftward/hatchet-workers.env", compose)
         self.assertIn("- path: /etc/driftward/hatchet-worker-bridge-executor.env", compose)
+        self.assertIn("/run/driftward-hermes-factory:/run/driftward-hermes-factory", compose)
+        self.assertNotIn("/var/run/docker.sock", compose)
+        self.assertNotIn("/run/docker.sock", compose)
         self.assertNotIn("HATCHET_INTAKE_DRY_RUN: ${HATCHET_INTAKE_DRY_RUN", compose)
         self.assertNotIn("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: ${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED", compose)
 
@@ -50,6 +55,7 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("build:", compose)
         self.assertIn("Environment=COMPOSE_PROJECT_NAME=driftward-factory", service)
         self.assertIn("Environment=FACTORY_SOURCE_ROOT=__SOURCE_ROOT__", service)
+        self.assertIn("driftward-hermes-factory-gateway.service", service)
         self.assertNotIn("Environment=FACTORY_IMAGE_TAG=", service)
         self.assertNotIn("Environment=FACTORY_IMAGE=", service)
 
@@ -69,6 +75,21 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn('DRIFTWARD_FACTORY_SMOKE_INTERVAL:-5', source)
         self.assertIn("wait_for_factory_smoke()", source)
         self.assertIn("Factory Docker smoke is not ready; retrying", source)
+        self.assertIn("hermes_gateway_bundle_target=", source)
+        self.assertIn("hermes-gateway-server.ts", source)
+        self.assertIn('node_bin="${DRIFTWARD_FACTORY_NODE_BIN:-/usr/bin/node}"', source)
+        self.assertIn("Hermes Factory gateway requires Node.js 18 or newer", source)
+        self.assertIn("DRIFTWARD_HERMES_GRPC_TARGET", source)
+        self.assertIn("driftward-hermes-factory-gateway.service", source)
+
+    def test_hermes_gateway_systemd_unit_is_local_socket_boundary(self) -> None:
+        unit = (ROOT / "deploy/systemd/driftward-hermes-factory-gateway.service").read_text(encoding="utf-8")
+
+        self.assertIn("DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock", unit)
+        self.assertIn("ExecStart=__NODE_BIN__ __FACTORY_SHARE_DIR__/hermes-gateway/hermes-gateway-server.js", unit)
+        self.assertIn("ReadWritePaths=/run/driftward-hermes-factory /run/docker.sock /var/run/docker.sock", unit)
+        self.assertNotIn("OPENAI_API_KEY", unit)
+        self.assertNotIn("ANTHROPIC_API_KEY", unit)
 
     def test_release_image_tags_require_matching_clean_checkout(self) -> None:
         source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")

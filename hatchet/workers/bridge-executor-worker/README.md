@@ -70,6 +70,7 @@ DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=1
 Optional environment:
 
 ```bash
+DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
 DRIFTWARD_HERMES_COMMAND=driftward-hermes
 DRIFTWARD_HERMES_ALLOWED_REPOS=Driftward-LLC/driftward-host
 DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN=factory-hermes[bot]
@@ -86,13 +87,20 @@ DRIFTWARD_HERMES_PR_VERIFICATION_TIMEOUT_MS=180000
 DRIFTWARD_HERMES_PR_VERIFICATION_POLL_MS=15000
 ```
 
+When `DRIFTWARD_HERMES_GRPC_TARGET` is set, the bridge executor and detached
+receipt runner call the typed Hermes Factory gRPC gateway instead of invoking
+the Hermes wrapper directly. The default production target is a Unix domain
+socket at `/run/driftward-hermes-factory/hermes.sock`; future TCP transport is
+opt-in with `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1` and TLS or
+`DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`.
+
 `DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN`,
 `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME`, and
 `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL` are required for real PR
 execution. They must match GitHub's App bot signature for the dedicated
 Driftward Hermes GitHub App. The bridge validates the configured Git author and
 GitHub repository access from inside the isolated Driftward Hermes runtime
-before it asks Hermes to create or reuse a PR.
+through the gateway before it asks Hermes to create or reuse a PR.
 
 The bridge payload must include:
 

@@ -16,6 +16,7 @@ operator_env="/etc/driftward/factory-operator.env"
 policy_src="$workers_root/verifier-policy.json"
 policy_dst="/etc/driftward/hatchet-verifier-policy.json"
 units=(
+  driftward-hatchet-hermes-gateway.service
   driftward-hatchet-worker-intake.service
   driftward-hatchet-worker-execution-dispatch.service
   driftward-hatchet-worker-bridge-executor.service
@@ -168,6 +169,7 @@ for key in HATCHET_CLIENT_API_URL HATCHET_CLIENT_HOST_PORT HATCHET_CLIENT_TLS_ST
 done
 
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED "${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED:-1}"
+upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_COMMAND "${DRIFTWARD_HERMES_COMMAND:-driftward-hermes}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_ALLOWED_REPOS "${DRIFTWARD_HERMES_ALLOWED_REPOS:-Driftward-LLC/driftward-host,Driftward-LLC/capykit}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN "${DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN:-factory-hermes[bot]}"

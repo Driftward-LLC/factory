@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package driftward.factory.hermes.v1;
+
+service HermesFactoryGateway {
+  rpc CheckIdentity(CheckIdentityRequest) returns (CheckIdentityResponse);
+  rpc CreateDraftPullRequest(CreateDraftPullRequestRequest) returns (DraftPullRequestResult);
+  rpc InspectDraftPullRequest(InspectDraftPullRequestRequest) returns (InspectDraftPullRequestResponse);
+  rpc InspectPullRequestState(InspectPullRequestStateRequest) returns (InspectPullRequestStateResponse);
+}
+
+message CheckIdentityRequest {
+  string request_id = 1;
+  string repo = 2;
+  string expected_github_login = 3;
+  string expected_git_author_name = 4;
+  string expected_git_author_email = 5;
+  repeated string forbidden_github_logins = 6;
+  repeated string forbidden_git_author_emails = 7;
+}
+
+message CheckIdentityResponse {
+  string github_login = 1;
+  string git_author_name = 2;
+  string git_author_email = 3;
+  string accessible_repo = 4;
+}
+
+message CreateDraftPullRequestRequest {
+  string request_id = 1;
+  string bridge_job_id = 2;
+  string idempotency_key = 3;
+  string requested_action = 4;
+  string repo = 5;
+  string branch = 6;
+  string job_json = 7;
+  uint32 timeout_ms = 8;
+}
+
+message DraftPullRequestResult {
+  string status = 1;
+  string pr_url = 2;
+  uint32 pr_number = 3;
+  string commit_sha = 4;
+  string branch = 5;
+  string hermes_session_id = 6;
+  string summary = 7;
+  string validation_json = 8;
+}
+
+message InspectDraftPullRequestRequest {
+  string request_id = 1;
+  string repo = 2;
+  uint32 pr_number = 3;
+  uint32 timeout_ms = 4;
+}
+
+message PullRequestFile {
+  string path = 1;
+}
+
+message PullRequestStatusCheck {
+  string name = 1;
+  string conclusion = 2;
+  string state = 3;
+  string status = 4;
+}
+
+message PullRequestAuthor {
+  string login = 1;
+}
+
+message InspectDraftPullRequestResponse {
+  string head_ref_name = 1;
+  string base_ref_name = 2;
+  bool is_draft = 3;
+  string url = 4;
+  PullRequestAuthor author = 5;
+  string body = 6;
+  repeated PullRequestFile files = 7;
+  repeated PullRequestStatusCheck status_check_rollup = 8;
+  string head_ref_oid = 9;
+  string diff_text = 10;
+}
+
+message InspectPullRequestStateRequest {
+  string request_id = 1;
+  string repository = 2;
+  string reference = 3;
+  uint32 timeout_ms = 4;
+}
+
+message InspectPullRequestStateResponse {
+  string repository = 1;
+  uint32 number = 2;
+  string url = 3;
+  string state = 4;
+  bool merged = 5;
+  bool draft = 6;
+  string head_branch = 7;
+  string head_sha = 8;
+  string base_ref = 9;
+  string reason = 10;
+}

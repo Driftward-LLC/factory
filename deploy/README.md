@@ -13,7 +13,9 @@ manifests, and checked-in runtime code.
 - Runtime root: `/docker/driftward/factory`.
 - Compose file: `/docker/driftward/factory/docker-compose.yml`.
 - Systemd wrapper: `driftward-factory.service`, ordered after
-  `driftward-hermes.service`.
+  `driftward-hermes.service` and `driftward-hermes-factory-gateway.service`.
+- Hermes gateway: `driftward-hermes-factory-gateway.service`, listening on
+  `unix:///run/driftward-hermes-factory/hermes.sock`.
 - Durable data:
   - `/docker/driftward/factory/data/hatchet/postgres`
   - `/docker/driftward/factory/data/hatchet/config`
@@ -23,6 +25,7 @@ manifests, and checked-in runtime code.
   - `/docker/driftward/factory/data/linear-token`
 - Hatchet key material: `/docker/driftward/factory/keys/hatchet`
 - Local operator socket: `/run/driftward-factory-operator/operator.sock`.
+- Local Hermes gateway socket: `/run/driftward-hermes-factory/hermes.sock`.
 
 ## Boundaries
 
@@ -32,7 +35,9 @@ Hatchet Lite and its Postgres database are part of the Factory Compose app.
 Real agent execution still belongs to Driftward Hermes. The host systemd unit
 orders Factory after Hermes, but Dockerized Factory records and fences work
 through the bridge, then reaches Hermes only through an explicit approved
-gateway/command.
+gRPC gateway. The Factory Compose app mounts only
+`/run/driftward-hermes-factory`; it must not mount the Docker socket, Hermes
+data, provider credentials, browser state, or host root filesystem.
 
 The Docker worker defaults are safe for source deployment and dry-run intake
 when protected env files are absent:
@@ -42,9 +47,21 @@ HATCHET_INTAKE_DRY_RUN defaults to true
 DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED defaults to disabled
 ```
 
-Before enabling real effects in Docker, provide a container-safe Hermes gateway
-or wrapper and set the `DRIFTWARD_HERMES_*` execution variables explicitly. Do
-not solve that by copying Hermes credentials or session state into Factory.
+Real Docker effects use the host-local Hermes Factory gateway. The installer
+seeds `DRIFTWARD_HERMES_GRPC_TARGET` in
+`/etc/driftward/hatchet-worker-bridge-executor.env` when absent:
+
+```text
+DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
+```
+
+The gateway may bind TCP later by setting `DRIFTWARD_HERMES_GRPC_TARGET` or
+`DRIFTWARD_HERMES_GRPC_BIND_TARGET` plus `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1`
+and either TLS or `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`. Do not solve Factory to
+Hermes access by copying Hermes credentials or session state into Factory.
+The gateway is bundled during install and requires a host Node.js 18+ binary;
+override the default `/usr/bin/node` with `DRIFTWARD_FACTORY_NODE_BIN` if the
+host keeps Node elsewhere.
 
 ## Required Env Files
 
@@ -147,10 +164,13 @@ image reference.
 
 ```bash
 systemctl status driftward-factory.service --no-pager
+systemctl status driftward-hermes-factory-gateway.service --no-pager
 journalctl -u driftward-factory.service -n 100 --no-pager
+journalctl -u driftward-hermes-factory-gateway.service -n 100 --no-pager
 docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
 docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100
 systemctl restart driftward-factory.service
+systemctl restart driftward-hermes-factory-gateway.service
 factory-docker-smoke
 ```
 

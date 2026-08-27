@@ -220,6 +220,8 @@ services:
         required: false
     environment:
       <<: *hatchet-client-env
+    volumes:
+      - /run/driftward-hermes-factory:/run/driftward-hermes-factory
     cpus: "0.50"
     mem_limit: 256m
 

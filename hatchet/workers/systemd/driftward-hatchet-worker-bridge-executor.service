@@ -1,7 +1,7 @@
 [Unit]
 Description=Driftward Hatchet bridge executor worker
-After=network-online.target driftward-hatchet.service driftward-hatchet-bridge.service driftward-hermes.service
-Wants=network-online.target
+After=network-online.target driftward-hatchet.service driftward-hatchet-bridge.service driftward-hermes.service driftward-hatchet-hermes-gateway.service
+Wants=network-online.target driftward-hatchet-hermes-gateway.service
 Documentation=file:__REPO_ROOT__/hatchet/workers/bridge-executor-worker/README.md
 
 [Service]

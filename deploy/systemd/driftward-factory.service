@@ -1,8 +1,8 @@
 [Unit]
 Description=Driftward Factory Docker runtime
 Requires=docker.service
-After=docker.service network-online.target driftward-hermes.service
-Wants=network-online.target driftward-hermes.service
+After=docker.service network-online.target driftward-hermes.service driftward-hermes-factory-gateway.service
+Wants=network-online.target driftward-hermes.service driftward-hermes-factory-gateway.service
 Documentation=file:__SOURCE_ROOT__/deploy/README.md
 
 [Service]
