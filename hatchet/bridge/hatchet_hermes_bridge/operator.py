@@ -49,6 +49,9 @@ def _optional_bridge_job_id(value: Any) -> str | None:
 
 
 def _mode(env_file: str = "/etc/driftward/hatchet-workers.env") -> str:
+    value = os.environ.get("HATCHET_INTAKE_DRY_RUN")
+    if value is not None:
+        return "real" if value.strip().lower() == "false" else "dry-run"
     try:
         for line in Path(env_file).read_text().splitlines():
             if line.startswith("HATCHET_INTAKE_DRY_RUN="):

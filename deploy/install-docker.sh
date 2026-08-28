@@ -12,6 +12,8 @@ factory_image_dropin_dir="${service_unit}.d"
 factory_image_dropin="$factory_image_dropin_dir/10-image-tag.conf"
 hatchet_env_file="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
 bridge_executor_env_file="${DRIFTWARD_HERMES_BRIDGE_EXECUTOR_ENV_FILE:-/etc/driftward/hatchet-worker-bridge-executor.env}"
+hatchet_workers_env_file="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"
+factory_operator_env_file="${DRIFTWARD_FACTORY_OPERATOR_ENV_FILE:-/etc/driftward/factory-operator.env}"
 legacy_hatchet_unit="${DRIFTWARD_LEGACY_HATCHET_UNIT:-driftward-hatchet.service}"
 factory_cli_source="$repo_root/factory/factory"
 factory_cli_target="${DRIFTWARD_FACTORY_CLI_TARGET:-/usr/local/bin/factory}"
@@ -221,6 +223,13 @@ install -d -m 0750 -o root -g root \
 install -d -m 0755 -o root -g root /etc/driftward
 ensure_env_file "$bridge_executor_env_file"
 ensure_env_default "$bridge_executor_env_file" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
+ensure_env_file "$factory_operator_env_file"
+operator_dry_run="true"
+if [[ -r "$hatchet_workers_env_file" ]]; then
+  operator_dry_run="$(awk -F= '$1 == "HATCHET_INTAKE_DRY_RUN" { print $2; exit }' "$hatchet_workers_env_file")"
+fi
+[[ "$operator_dry_run" == "false" ]] || operator_dry_run="true"
+upsert_env "$factory_operator_env_file" HATCHET_INTAKE_DRY_RUN "$operator_dry_run"
 if [[ ! -e /etc/driftward/factory-lifecycle-writer.env ]]; then
   install -m 0600 -o root -g root /dev/null /etc/driftward/factory-lifecycle-writer.env
 else
