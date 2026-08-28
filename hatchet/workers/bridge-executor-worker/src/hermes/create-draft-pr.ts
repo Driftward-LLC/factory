@@ -8,9 +8,11 @@ import { NonRetryableBridgeExecutionError } from './errors';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
+  inspectGitHubHeadViaGrpc,
   inspectDraftPrStateViaGrpc,
   inspectDraftPullRequestViaGrpc,
   runHermesCreateDraftPrViaGrpc,
+  type GatewayGitHubHeadInspection,
   type HermesIdentityCheck
 } from './hermes-gateway-client';
 
@@ -97,6 +99,21 @@ export type DraftPrStateInspection = {
   base_ref: string | null;
   reason: 'ok' | 'inspect_unavailable' | 'invalid_reference';
 };
+
+export type GitHubHeadPullRequest = {
+  number: number;
+  url: string;
+  state: string;
+  isDraft: boolean;
+  headRefName: string;
+  headRefOid: string | null;
+  baseRefName: string | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+  title: string | null;
+};
+
+export type GitHubHeadInspection = GatewayGitHubHeadInspection;
 
 export type DraftPrVerification = {
   expectedBase: string;
@@ -501,6 +518,53 @@ export async function inspectDraftPrStateViaCommand(
   return { repository, number: parsed.number, url: parsed.url, state: view.state.toLowerCase() as 'open' | 'closed', merged: Boolean(view.mergedAt), draft: Boolean(view.isDraft), head_branch: typeof view.headRefName === 'string' ? view.headRefName : null, head_sha: typeof view.headRefOid === 'string' ? view.headRefOid : null, base_ref: typeof view.baseRefName === 'string' ? view.baseRefName : null, reason: 'ok' };
 }
 
+/** A fixed, read-only Hermes action used only for force-absence retry fences. */
+export async function inspectGitHubHead(repository: string, headBranch: string): Promise<GitHubHeadInspection> {
+  if (!safeGitHubRepo(repository) || !safeGitHubBranch(headBranch)) {
+    return unavailableGitHubHeadInspection(repository, headBranch, 'invalid_reference');
+  }
+  try {
+    if (hermesGrpcGatewayEnabled()) {
+      return await inspectGitHubHeadViaGrpc(repository, headBranch, parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000));
+    }
+    return await inspectGitHubHeadViaCommand(repository, headBranch);
+  } catch {
+    return unavailableGitHubHeadInspection(repository, headBranch, 'inspect_unavailable');
+  }
+}
+
+export async function inspectGitHubHeadViaCommand(
+  repository: string,
+  headBranch: string,
+  timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000)
+): Promise<GitHubHeadInspection> {
+  assertSafeGitHubRepo(repository);
+  assertSafeGitHubBranch(headBranch);
+  const raw = await execHermesRuntimeJson<GitHubHeadInspectionCommandResponse>([
+    'sh',
+    '-c',
+    `set -eu
+repo="$1"
+branch="$2"
+encoded="$(printf '%s' "$branch" | sed 's|/|%2F|g')"
+prs="$(gh pr list --repo "$repo" --head "$branch" --state all --json number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,closedAt,title)"
+if branch_error="$(gh api "repos/$repo/branches/$encoded" 2>&1 >/dev/null)"; then
+  branch_exists=true
+else
+  case "$branch_error" in
+    *"HTTP 404"*|*"Not Found"*) branch_exists=false ;;
+    *) printf '%s\\n' "$branch_error" >&2; exit 1 ;;
+  esac
+fi
+observed="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+printf '{"kind":"github_branch_pr_absence_v1","repository":"%s","head_branch":"%s","branch_exists":%s,"pull_requests":%s,"observed_at":"%s","reason":"ok"}\\n' "$repo" "$branch" "$branch_exists" "$prs" "$observed"`,
+    'factory-inspect-github-head',
+    repository,
+    headBranch
+  ], timeout, 256 * 1024);
+  return normalizeGitHubHeadInspection(repository, headBranch, raw);
+}
+
 export async function waitForHermesDraftPrVerification(
   job: BridgeJob,
   result: HermesDraftPrResult,
@@ -853,13 +917,107 @@ function githubAppAuthorAliases(expectedGithubLogin: string): string[] {
   return [expectedGithubLogin, `app/${match[1]}`];
 }
 
+function safeGitHubRepo(repo: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
+}
+
 function assertSafeGitHubRepo(repo: string): void {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+  if (!safeGitHubRepo(repo)) {
     throw new NonRetryableBridgeExecutionError(
       'invalid_repo',
       `repo ${repo} must be an owner/name GitHub repository identifier`
     );
   }
+}
+
+function safeGitHubBranch(branch: string): boolean {
+  const value = branch.trim();
+  if (!value || value !== branch || value.length > 200) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(value)) return false;
+  if (value.startsWith('/') || value.endsWith('/') || value.endsWith('.')) return false;
+  if (value.includes('//') || value.includes('..') || value.includes('@{')) return false;
+  return value.split('/').every((part) => Boolean(part) && part !== '.' && part !== '..' && !part.endsWith('.lock'));
+}
+
+function assertSafeGitHubBranch(branch: string): void {
+  if (!safeGitHubBranch(branch)) {
+    throw new NonRetryableBridgeExecutionError(
+      'invalid_branch',
+      `branch ${branch || '<empty>'} must be a bounded deterministic GitHub branch name`
+    );
+  }
+}
+
+type GitHubHeadPullRequestCommandResponse = {
+  number?: number;
+  url?: string;
+  state?: string;
+  isDraft?: boolean;
+  headRefName?: string;
+  headRefOid?: string | null;
+  baseRefName?: string | null;
+  mergedAt?: string | null;
+  closedAt?: string | null;
+  title?: string | null;
+};
+
+type GitHubHeadInspectionCommandResponse = {
+  kind?: string;
+  repository?: string;
+  head_branch?: string;
+  branch_exists?: boolean;
+  pull_requests?: GitHubHeadPullRequestCommandResponse[];
+  observed_at?: string;
+  reason?: string;
+};
+
+function normalizeGitHubHeadInspection(repository: string, headBranch: string, raw: GitHubHeadInspectionCommandResponse): GitHubHeadInspection {
+  if (raw.kind !== 'github_branch_pr_absence_v1' || raw.repository !== repository || raw.head_branch !== headBranch || raw.reason !== 'ok') {
+    throw new NonRetryableBridgeExecutionError('github_head_inspection_malformed', 'GitHub head inspection response did not match the requested repository and branch');
+  }
+  if (typeof raw.branch_exists !== 'boolean' || !Array.isArray(raw.pull_requests) || typeof raw.observed_at !== 'string' || !raw.observed_at) {
+    throw new NonRetryableBridgeExecutionError('github_head_inspection_malformed', 'GitHub head inspection response omitted required fields');
+  }
+  return {
+    kind: 'github_branch_pr_absence_v1',
+    repository,
+    head_branch: headBranch,
+    branch_exists: raw.branch_exists,
+    pull_requests: raw.pull_requests.map(normalizeGitHubHeadPullRequest),
+    observed_at: raw.observed_at,
+    reason: 'ok'
+  };
+}
+
+function normalizeGitHubHeadPullRequest(item: GitHubHeadPullRequestCommandResponse): GitHubHeadPullRequest {
+  return {
+    number: typeof item.number === 'number' && Number.isSafeInteger(item.number) ? item.number : 0,
+    url: typeof item.url === 'string' ? item.url : '',
+    state: typeof item.state === 'string' ? item.state : 'unknown',
+    isDraft: Boolean(item.isDraft),
+    headRefName: typeof item.headRefName === 'string' ? item.headRefName : '',
+    headRefOid: typeof item.headRefOid === 'string' && item.headRefOid.trim() ? item.headRefOid : null,
+    baseRefName: typeof item.baseRefName === 'string' && item.baseRefName.trim() ? item.baseRefName : null,
+    mergedAt: typeof item.mergedAt === 'string' && item.mergedAt.trim() ? item.mergedAt : null,
+    closedAt: typeof item.closedAt === 'string' && item.closedAt.trim() ? item.closedAt : null,
+    title: typeof item.title === 'string' && item.title.trim() ? item.title : null
+  };
+}
+
+function unavailableGitHubHeadInspection(
+  repository: string,
+  headBranch: string,
+  reason: 'inspect_unavailable' | 'invalid_reference'
+): GitHubHeadInspection {
+  return {
+    kind: 'github_branch_pr_absence_v1',
+    repository,
+    head_branch: headBranch,
+    branch_exists: false,
+    pull_requests: [],
+    observed_at: '',
+    reason
+  };
 }
 
 function factoryRepairContext(job: BridgeJob): FactoryRepairContext | null {

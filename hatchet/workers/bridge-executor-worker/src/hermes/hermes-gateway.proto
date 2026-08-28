@@ -7,6 +7,7 @@ service HermesFactoryGateway {
   rpc CreateDraftPullRequest(CreateDraftPullRequestRequest) returns (DraftPullRequestResult);
   rpc InspectDraftPullRequest(InspectDraftPullRequestRequest) returns (InspectDraftPullRequestResponse);
   rpc InspectPullRequestState(InspectPullRequestStateRequest) returns (InspectPullRequestStateResponse);
+  rpc InspectGitHubHead(InspectGitHubHeadRequest) returns (InspectGitHubHeadResponse);
 }
 
 message CheckIdentityRequest {
@@ -101,4 +102,34 @@ message InspectPullRequestStateResponse {
   string head_sha = 8;
   string base_ref = 9;
   string reason = 10;
+}
+
+message InspectGitHubHeadRequest {
+  string request_id = 1;
+  string repository = 2;
+  string head_branch = 3;
+  uint32 timeout_ms = 4;
+}
+
+message GitHubHeadPullRequest {
+  uint32 number = 1;
+  string url = 2;
+  string state = 3;
+  bool is_draft = 4;
+  string head_ref_name = 5;
+  string head_ref_oid = 6;
+  string base_ref_name = 7;
+  string merged_at = 8;
+  string closed_at = 9;
+  string title = 10;
+}
+
+message InspectGitHubHeadResponse {
+  string kind = 1;
+  string repository = 2;
+  string head_branch = 3;
+  bool branch_exists = 4;
+  repeated GitHubHeadPullRequest pull_requests = 5;
+  string observed_at = 6;
+  string reason = 7;
 }

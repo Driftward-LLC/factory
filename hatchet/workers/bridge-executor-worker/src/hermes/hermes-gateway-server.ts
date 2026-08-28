@@ -4,11 +4,13 @@ import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import {
   assertHermesIdentityViaCommand,
+  inspectGitHubHeadViaCommand,
   inspectDraftPrStateViaCommand,
   inspectDraftPullRequestViaCommand,
   runHermesCreateDraftPrViaCommand,
   sanitizeText,
   type DraftPrStateInspection,
+  type GitHubHeadInspection,
   type GithubPrView,
   type HermesDraftPrResult
 } from './create-draft-pr';
@@ -43,6 +45,12 @@ type InspectDraftPullRequestRequest = {
 type InspectPullRequestStateRequest = {
   repository?: string;
   reference?: string;
+};
+
+type InspectGitHubHeadRequest = {
+  repository?: string;
+  headBranch?: string;
+  timeoutMs?: number;
 };
 
 type GatewayService = grpc.ServiceClientConstructor & { service: grpc.ServiceDefinition };
@@ -88,6 +96,12 @@ function createServer(target: string): grpc.Server {
       }
       const inspection = await inspectDraftPrStateViaCommand(repository, parsed);
       return prStateResponse(inspection);
+    }),
+    inspectGitHubHead: unary(target, async (request: InspectGitHubHeadRequest) => {
+      const repository = requiredString(request.repository, 'repository');
+      const headBranch = requiredString(request.headBranch, 'head_branch');
+      const inspection = await inspectGitHubHeadViaCommand(repository, headBranch, positiveInt(request.timeoutMs, 15_000));
+      return gitHubHeadInspectionResponse(inspection);
     })
   });
   return server;
@@ -301,6 +315,29 @@ function prStateResponse(inspection: DraftPrStateInspection): Record<string, unk
     headBranch: inspection.head_branch || '',
     headSha: inspection.head_sha || '',
     baseRef: inspection.base_ref || '',
+    reason: inspection.reason
+  };
+}
+
+function gitHubHeadInspectionResponse(inspection: GitHubHeadInspection): Record<string, unknown> {
+  return {
+    kind: inspection.kind,
+    repository: inspection.repository,
+    headBranch: inspection.head_branch,
+    branchExists: inspection.branch_exists,
+    pullRequests: inspection.pull_requests.map((pullRequest) => ({
+      number: pullRequest.number,
+      url: pullRequest.url,
+      state: pullRequest.state,
+      isDraft: pullRequest.isDraft,
+      headRefName: pullRequest.headRefName,
+      headRefOid: pullRequest.headRefOid || '',
+      baseRefName: pullRequest.baseRefName || '',
+      mergedAt: pullRequest.mergedAt || '',
+      closedAt: pullRequest.closedAt || '',
+      title: pullRequest.title || ''
+    })),
+    observedAt: inspection.observed_at,
     reason: inspection.reason
   };
 }

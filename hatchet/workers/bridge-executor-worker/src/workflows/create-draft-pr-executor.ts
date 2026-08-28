@@ -22,6 +22,7 @@ import {
 import { Or, SleepCondition, UserEventCondition } from '@hatchet-dev/typescript-sdk/v1/conditions';
 import { hatchet } from '../hatchet-client';
 import { emitBestEffort } from './event-delivery';
+import { validateFactoryArtifactFence } from './factory-artifact-fence';
 import { recoverClaimedVerification } from './verification-recovery';
 
 if (!globalThis.crypto) {
@@ -199,19 +200,14 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
     // Supersession evidence is durable in the attempt/job payload but may have
     // changed remotely since reservation.  Re-observe immediately before the
     // execution claim; any reopen, merge, branch, SHA, or base change blocks.
-    const fence = running.payload.factory_artifact_fence;
-    if (fence && typeof fence === 'object' && !Array.isArray(fence)) {
-      const priorUrl = fence.prior_pr_url;
-      const expectedBranch = fence.head_branch;
-      const expectedSha = fence.head_sha;
-      const expectedBase = fence.base_ref;
-      if (typeof priorUrl !== 'string' || typeof expectedBranch !== 'string' || typeof expectedSha !== 'string' || typeof expectedBase !== 'string') {
-        return { executed: false, blockedReason: 'artifact_fence_invalid', job: running, dryRun: false, reused: true };
-      }
-      const observed = await inspectDraftPrState(String(running.payload.repo || ''), priorUrl);
-      if (observed.state !== 'closed' || observed.merged || observed.url !== priorUrl || observed.head_branch !== expectedBranch || observed.head_sha !== expectedSha || observed.base_ref !== expectedBase) {
-        return { executed: false, blockedReason: 'artifact_fence_changed', job: running, dryRun: false, reused: true };
-      }
+    const fenceValidation = await validateFactoryArtifactFence(running);
+    if (!fenceValidation.ok) {
+      const failed = await failBeforeExternalEffect(bridge, running, {
+        reasonCode: fenceValidation.reasonCode,
+        error: fenceValidation.error
+      });
+      await emitFailed(failed, false);
+      return { executed: false, blockedReason: fenceValidation.reasonCode, job: failed, dryRun: false, reused: true };
     }
 
     // Validation and the durable running transition are pre-effect work. Claim
