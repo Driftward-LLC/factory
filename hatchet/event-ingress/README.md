@@ -116,6 +116,12 @@ Health:
 curl -fsS http://127.0.0.1:19878/health
 ```
 
+Public Linear webhook proxy readiness:
+
+```bash
+curl -fsS http://127.0.0.1:19879/ready
+```
+
 Ingest a GitHub PR webhook payload:
 
 ```bash

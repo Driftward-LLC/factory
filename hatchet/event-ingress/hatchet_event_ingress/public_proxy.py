@@ -7,6 +7,7 @@ import urllib.request
 from errno import ECONNABORTED, ECONNRESET, EPIPE
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 
 DEFAULT_TARGET_URL = "http://127.0.0.1:19878/events/linear/issue"
@@ -55,9 +56,51 @@ class PublicLinearWebhookProxyHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length) if length else b""
 
+    def _target_url(self) -> str:
+        return os.environ.get("HATCHET_PUBLIC_LINEAR_WEBHOOK_TARGET_URL", DEFAULT_TARGET_URL)
+
+    def _target_health_url(self, target_url: str) -> str:
+        parsed = urlsplit(target_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError("invalid target URL")
+        return urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
+
+    def _target_health(self, target_url: str) -> tuple[bool, str]:
+        try:
+            request = urllib.request.Request(self._target_health_url(target_url), method="GET")
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return 200 <= response.status < 300, f"http={response.status}"
+        except urllib.error.HTTPError as exc:
+            return False, f"http={exc.code}"
+        except (OSError, ValueError, urllib.error.URLError):
+            return False, "unavailable"
+
+    def _write_ready(self) -> None:
+        secret_configured = bool(os.environ.get("HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET"))
+        target_url = self._target_url()
+        target_healthy, target_detail = self._target_health(target_url)
+        errors = []
+        if not secret_configured:
+            errors.append("linear webhook secret is not configured")
+        if not target_healthy:
+            errors.append("linear ingress target unavailable")
+        self._write_json(
+            200 if not errors else 503,
+            {
+                "ok": not errors,
+                "linearWebhookSecretConfigured": secret_configured,
+                "targetHealthy": target_healthy,
+                "targetHealth": target_detail,
+                "errors": errors,
+            },
+        )
+
     def do_GET(self) -> None:
         if self.path == "/health":
             self._write_json(200, {"ok": True})
+            return
+        if self.path == "/ready":
+            self._write_ready()
             return
         self._write_json(404, {"error": "not found"})
 
@@ -71,7 +114,7 @@ class PublicLinearWebhookProxyHandler(BaseHTTPRequestHandler):
             return
 
         raw = self._read_body()
-        target_url = os.environ.get("HATCHET_PUBLIC_LINEAR_WEBHOOK_TARGET_URL", DEFAULT_TARGET_URL)
+        target_url = self._target_url()
         headers = {
             key: value
             for key, value in self.headers.items()

@@ -74,7 +74,8 @@ ingress, and Hermes.
 
 `factory status` is the one-glance health check for the current factory path.
 It reports intake mode, the active Docker Compose runtime or legacy systemd
-layout, loopback health endpoints, and advisory recovery/operator components.
+layout, loopback health endpoints, public Linear webhook readiness, and
+advisory recovery/operator components.
 Required failures return a nonzero exit status; advisory warnings are shown
 without failing the command.
 
