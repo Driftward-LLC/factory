@@ -56,6 +56,29 @@ export type GatewayDraftPrStateInspection = {
   reason: 'ok' | 'inspect_unavailable' | 'invalid_reference';
 };
 
+export type GatewayGitHubHeadPullRequest = {
+  number: number;
+  url: string;
+  state: string;
+  isDraft: boolean;
+  headRefName: string;
+  headRefOid: string | null;
+  baseRefName: string | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+  title: string | null;
+};
+
+export type GatewayGitHubHeadInspection = {
+  kind: 'github_branch_pr_absence_v1';
+  repository: string;
+  head_branch: string;
+  branch_exists: boolean;
+  pull_requests: GatewayGitHubHeadPullRequest[];
+  observed_at: string;
+  reason: 'ok' | 'inspect_unavailable' | 'invalid_reference';
+};
+
 type CheckIdentityResponse = {
   githubLogin?: string;
   gitAuthorName?: string;
@@ -105,12 +128,36 @@ type InspectPullRequestStateResponse = {
   reason?: string;
 };
 
+type GitHubHeadPullRequestResponse = {
+  number?: number;
+  url?: string;
+  state?: string;
+  isDraft?: boolean;
+  headRefName?: string;
+  headRefOid?: string;
+  baseRefName?: string;
+  mergedAt?: string;
+  closedAt?: string;
+  title?: string;
+};
+
+type InspectGitHubHeadResponse = {
+  kind?: string;
+  repository?: string;
+  headBranch?: string;
+  branchExists?: boolean;
+  pullRequests?: GitHubHeadPullRequestResponse[];
+  observedAt?: string;
+  reason?: string;
+};
+
 type UnaryCallback<T> = (error: grpc.ServiceError | null, response: T) => void;
 type GatewayClient = grpc.Client & {
   checkIdentity(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<CheckIdentityResponse>): grpc.ClientUnaryCall;
   createDraftPullRequest(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<DraftPullRequestResult>): grpc.ClientUnaryCall;
   inspectDraftPullRequest(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<InspectDraftPullRequestResponse>): grpc.ClientUnaryCall;
   inspectPullRequestState(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<InspectPullRequestStateResponse>): grpc.ClientUnaryCall;
+  inspectGitHubHead(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<InspectGitHubHeadResponse>): grpc.ClientUnaryCall;
 };
 
 let cachedClient: { target: string; client: GatewayClient } | null = null;
@@ -256,6 +303,41 @@ export async function inspectDraftPrStateViaGrpc(repository: string, reference: 
     head_sha: emptyToNull(response.headSha),
     base_ref: emptyToNull(response.baseRef),
     reason: response.reason === 'ok' || response.reason === 'invalid_reference' ? response.reason : 'inspect_unavailable'
+  };
+}
+
+export async function inspectGitHubHeadViaGrpc(repository: string, headBranch: string, timeoutMs: number): Promise<GatewayGitHubHeadInspection> {
+  const response = await callGateway<InspectGitHubHeadResponse>('inspectGitHubHead', {
+    requestId: `inspect-github-head:${repository}:${headBranch}`,
+    repository,
+    headBranch,
+    timeoutMs
+  }, timeoutMs, 'hermes_grpc_head_inspection_failed');
+  const reason = response.reason === 'ok' || response.reason === 'invalid_reference' ? response.reason : 'inspect_unavailable';
+  const wellFormed = response.kind === 'github_branch_pr_absence_v1' &&
+    Boolean(response.repository) &&
+    Boolean(response.headBranch) &&
+    Boolean(response.observedAt);
+
+  return {
+    kind: response.kind === 'github_branch_pr_absence_v1' ? response.kind : 'github_branch_pr_absence_v1',
+    repository: response.repository || repository,
+    head_branch: response.headBranch || headBranch,
+    branch_exists: Boolean(response.branchExists),
+    pull_requests: Array.isArray(response.pullRequests) ? response.pullRequests.map((item) => ({
+      number: Number.isSafeInteger(item.number) ? Number(item.number) : 0,
+      url: item.url || '',
+      state: item.state || 'unknown',
+      isDraft: Boolean(item.isDraft),
+      headRefName: item.headRefName || '',
+      headRefOid: emptyToNull(item.headRefOid),
+      baseRefName: emptyToNull(item.baseRefName),
+      mergedAt: emptyToNull(item.mergedAt),
+      closedAt: emptyToNull(item.closedAt),
+      title: emptyToNull(item.title)
+    })) : [],
+    observed_at: response.observedAt || '',
+    reason: wellFormed ? reason : 'inspect_unavailable'
   };
 }
 

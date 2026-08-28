@@ -10,6 +10,7 @@ import { NonRetryableBridgeExecutionError } from './errors';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcTarget,
+  inspectGitHubHeadViaGrpc,
   inspectDraftPrStateViaGrpc,
   inspectDraftPullRequestViaGrpc,
   resolveHermesGatewayProtoPath,
@@ -46,6 +47,11 @@ test('Hermes gRPC client speaks over a Unix domain socket', async () => {
     const state = await inspectDraftPrStateViaGrpc('Driftward-LLC/capykit', 'https://github.com/Driftward-LLC/capykit/pull/28', 5000);
     assert.equal(state.state, 'open');
     assert.equal(state.head_sha, 'abc123');
+
+    const head = await inspectGitHubHeadViaGrpc('Driftward-LLC/capykit', 'codex/hermes-grpc-gateway', 5000);
+    assert.equal(head.kind, 'github_branch_pr_absence_v1');
+    assert.equal(head.branch_exists, false);
+    assert.equal(head.pull_requests.length, 0);
   });
 });
 
@@ -152,6 +158,17 @@ function mockGateway(): grpc.UntypedServiceImplementation {
         headBranch: 'codex/hermes-grpc-gateway',
         headSha: 'abc123',
         baseRef: 'main',
+        reason: 'ok'
+      });
+    },
+    inspectGitHubHead: (_call: MockCall, callback: MockCallback) => {
+      callback(null, {
+        kind: 'github_branch_pr_absence_v1',
+        repository: 'Driftward-LLC/capykit',
+        headBranch: 'codex/hermes-grpc-gateway',
+        branchExists: false,
+        pullRequests: [],
+        observedAt: '2026-08-28T00:00:00Z',
         reason: 'ok'
       });
     }
