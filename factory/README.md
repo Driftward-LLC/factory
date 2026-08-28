@@ -128,6 +128,28 @@ Linear issue and canonical repository, records an append-only
 job evidence into the fresh attempt payload. Factory-owned jobs are rejected
 here; use the attempt retry/supersede path for those.
 
+If an authorized executor disappears after the final effect gate, the attempt
+enters `effect_outcome_unknown` and ordinary retry stays blocked. The only
+break-glass retry path is:
+
+```bash
+factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
+factory retry ENG-X force-absence --attempt-id ATTEMPT-ID \
+  --reason "reviewed GitHub branch and PR absence" \
+  --request-id "operator:ENG-X:force-absence:YYYYMMDD" \
+  --snapshot-digest DIGEST-FROM-PREVIEW \
+  --yes
+```
+
+The CLI first asks the operator for the exact canonical repository and prior
+head branch, then gathers fixed GitHub evidence with `gh pr list --head` and a
+branch lookup. The operator accepts only fresh evidence proving the expected
+branch does not exist and no PR exists for that head, verifies the old attempt
+is `effect_outcome_unknown` with an expired authorized lease and no prior PR or
+recovery record, records `absence_superseded_unknown_attempt`, and reserves the
+next generation in one transaction. This path is for reviewed incidents only;
+it does not delete remote artifacts or mutate Linear.
+
 The operator obtains the authenticated local actor from Linux socket
 `SO_PEERCRED` (uid, pid, and best-effort account lookup); it never accepts an
 actor from CLI JSON. This proves the local peer, not an interactive user or

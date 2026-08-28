@@ -256,6 +256,18 @@ class FactoryCliStaticTests(unittest.TestCase):
             finally:
                 sock.close()
 
+    def test_force_absence_retry_collects_fixed_github_evidence(self) -> None:
+        source = (ROOT / "factory/factory").read_text(encoding="utf-8")
+
+        self.assertIn("factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID", source)
+        self.assertIn("github_absence_evidence()", source)
+        self.assertIn('gh pr list --repo "$repo" --head "$branch" --state all', source)
+        self.assertIn('gh api "repos/$repo/branches/$encoded_branch"', source)
+        self.assertIn("github_branch_pr_absence_v1", source)
+        self.assertIn("/v1/retry/force-absence/preview", source)
+        self.assertIn("/v1/retry/force-absence/reserve", source)
+        self.assertIn("branch_exists", source)
+
     def test_doctor_hatchet_forwards_manifest_and_args(self) -> None:
         factory = ROOT / "factory/factory"
         with tempfile.TemporaryDirectory() as tmp:

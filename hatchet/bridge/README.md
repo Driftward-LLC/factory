@@ -585,6 +585,17 @@ is evidence for explicit human/new-generation action, not proof that the
 authorized process did not call the provider. Unknown or conflicting evidence
 remains operator-visible and blocks allocation.
 
+A reviewed break-glass retry can supersede exactly one
+`effect_outcome_unknown` attempt only through the root operator's
+`force-absence` path. The host CLI derives the canonical repository and prior
+head branch from trusted Factory state, collects a fresh GitHub branch/PR
+absence proof, and sends that fixed evidence to the operator. Reservation then
+revalidates the Linear snapshot, route, policy, prior attempt, expired
+authorized lease, missing prior PR, and absence evidence before recording
+`absence_superseded_unknown_attempt` and accepting the next generation in one
+transaction. The old lease is preserved as audit evidence, and a superseded
+attempt cannot later commit through the fenced execution endpoint.
+
 The ordinary transition endpoint cannot terminalize a real factory job after
 its durable attempt reaches `effect_authorized`, `effect_committed`, or a
 verification/post-effect phase, regardless of whether its lease has since been

@@ -24,6 +24,8 @@ Usage:
   factory mode real --yes
   factory retry ENG-X preview [--supersede-pr URL] [--supersede-job JOB-ID]
   factory retry ENG-X --reason TEXT --request-id ID --snapshot-digest DIGEST [--supersede-pr URL] [--supersede-job JOB-ID] --yes
+  factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
+  factory retry ENG-X force-absence --attempt-id ATTEMPT-ID --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory attempts list ENG-X [--json]
   factory attempts show ATTEMPT-ID
   factory attempts cancel ATTEMPT-ID --reason TEXT --yes
@@ -138,8 +140,67 @@ operator_request() {
   fi
 }
 
+github_absence_evidence() {
+  local repo="$1" branch="$2" encoded_branch pr_json branch_exists api_error observed
+  command -v gh >/dev/null 2>&1 || die "GitHub CLI gh is required for force-absence evidence"
+  encoded_branch="$(jq -rn --arg branch "$branch" '$branch|@uri')"
+  pr_json="$(gh pr list --repo "$repo" --head "$branch" --state all --json number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,closedAt,title)"
+  if api_error="$(gh api "repos/$repo/branches/$encoded_branch" 2>&1 >/dev/null)"; then
+    branch_exists=true
+  else
+    if grep -Eq 'HTTP 404|Not Found' <<<"$api_error"; then
+      branch_exists=false
+    else
+      [[ -z "$api_error" ]] || printf '%s\n' "$api_error" >&2
+      die "GitHub branch absence check failed"
+    fi
+  fi
+  observed="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  jq -cn --arg kind "github_branch_pr_absence_v1" --arg repo "$repo" --arg branch "$branch" --arg observed "$observed" --argjson branch_exists "$branch_exists" --argjson prs "$pr_json" '{kind:$kind,repository:$repo,head_branch:$branch,branch_exists:$branch_exists,pull_requests:$prs,observed_at:$observed}'
+}
+
+force_absence_retry() {
+  local issue="$1"; shift
+  local attempt_id="" reason="" request_id="" snapshot_digest="" yes="" preview_only=""
+  if [[ "${1:-}" == "preview" ]]; then preview_only=1; shift; fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --attempt-id) [[ $# -ge 2 ]] || die "--attempt-id requires an attempt ID"; attempt_id="$2"; shift 2 ;;
+      --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
+      --request-id) [[ $# -ge 2 ]] || die "--request-id requires an ID"; request_id="$2"; shift 2 ;;
+      --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the digest returned by preview"; snapshot_digest="$2"; shift 2 ;;
+      --yes) yes="--yes"; shift ;;
+      *) die "unknown force-absence retry option: $1" ;;
+    esac
+  done
+  [[ -n "$attempt_id" ]] || die "force-absence retry requires --attempt-id"
+  local probe repo branch evidence body
+  probe="$(operator_request POST /v1/retry/force-absence/preview "$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" '{issue:$issue,attempt_id:$attempt_id}')")"
+  repo="$(jq -r '.repository // empty' <<<"$probe")"
+  branch="$(jq -r '.prior_attempt.head_branch // empty' <<<"$probe")"
+  [[ -n "$repo" && -n "$branch" ]] || die "force-absence preview did not return a repository and branch"
+  evidence="$(github_absence_evidence "$repo" "$branch")"
+  if [[ -n "$preview_only" ]]; then
+    [[ -z "$reason" && -z "$request_id" && -z "$snapshot_digest" && -z "$yes" ]] || die "force-absence preview accepts only --attempt-id"
+    body="$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" --argjson absence_evidence "$evidence" '{issue:$issue,attempt_id:$attempt_id,absence_evidence:$absence_evidence}')"
+    operator_request POST /v1/retry/force-absence/preview "$body"
+    return
+  fi
+  [[ "$yes" == "--yes" ]] || die "force-absence retry supersedes an unknown outcome and reserves a fresh attempt; rerun with --yes"
+  [[ -n "$reason" ]] || die "force-absence retry requires --reason"
+  [[ -n "$request_id" ]] || die "force-absence retry requires an explicit --request-id for idempotency"
+  [[ -n "$snapshot_digest" ]] || die "force-absence retry requires --snapshot-digest from a fresh preview"
+  body="$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --argjson absence_evidence "$evidence" '{issue:$issue,attempt_id:$attempt_id,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest,absence_evidence:$absence_evidence}')"
+  operator_request POST /v1/retry/force-absence/reserve "$body"
+}
+
 retry_issue() {
   local issue="$1"; shift
+  if [[ "${1:-}" == "force-absence" ]]; then
+    shift
+    force_absence_retry "$issue" "$@"
+    return
+  fi
   local reason="" request_id="" snapshot_digest="" supersede="" supersede_job="" yes=""
   local preview_only=""
   if [[ "${1:-}" == "preview" ]]; then preview_only=1; shift; fi
