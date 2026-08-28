@@ -174,15 +174,16 @@ force_absence_retry() {
     esac
   done
   [[ -n "$attempt_id" ]] || die "force-absence retry requires --attempt-id"
-  local probe repo branch evidence body
-  probe="$(operator_request POST /v1/retry/force-absence/preview "$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" '{issue:$issue,attempt_id:$attempt_id}')")"
+  local mode probe repo branch evidence body
+  mode="$(mode_status)"
+  probe="$(operator_request POST /v1/retry/force-absence/preview "$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" --arg mode "$mode" '{issue:$issue,attempt_id:$attempt_id,mode:$mode}')")"
   repo="$(jq -r '.repository // empty' <<<"$probe")"
   branch="$(jq -r '.prior_attempt.head_branch // empty' <<<"$probe")"
   [[ -n "$repo" && -n "$branch" ]] || die "force-absence preview did not return a repository and branch"
   evidence="$(github_absence_evidence "$repo" "$branch")"
   if [[ -n "$preview_only" ]]; then
     [[ -z "$reason" && -z "$request_id" && -z "$snapshot_digest" && -z "$yes" ]] || die "force-absence preview accepts only --attempt-id"
-    body="$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" --argjson absence_evidence "$evidence" '{issue:$issue,attempt_id:$attempt_id,absence_evidence:$absence_evidence}')"
+    body="$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" --arg mode "$mode" --argjson absence_evidence "$evidence" '{issue:$issue,attempt_id:$attempt_id,mode:$mode,absence_evidence:$absence_evidence}')"
     operator_request POST /v1/retry/force-absence/preview "$body"
     return
   fi
@@ -190,7 +191,7 @@ force_absence_retry() {
   [[ -n "$reason" ]] || die "force-absence retry requires --reason"
   [[ -n "$request_id" ]] || die "force-absence retry requires an explicit --request-id for idempotency"
   [[ -n "$snapshot_digest" ]] || die "force-absence retry requires --snapshot-digest from a fresh preview"
-  body="$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --argjson absence_evidence "$evidence" '{issue:$issue,attempt_id:$attempt_id,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest,absence_evidence:$absence_evidence}')"
+  body="$(jq -cn --arg issue "$issue" --arg attempt_id "$attempt_id" --arg mode "$mode" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --argjson absence_evidence "$evidence" '{issue:$issue,attempt_id:$attempt_id,mode:$mode,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest,absence_evidence:$absence_evidence}')"
   operator_request POST /v1/retry/force-absence/reserve "$body"
 }
 
@@ -201,8 +202,9 @@ retry_issue() {
     force_absence_retry "$issue" "$@"
     return
   fi
-  local reason="" request_id="" snapshot_digest="" supersede="" supersede_job="" yes=""
+  local reason="" request_id="" snapshot_digest="" supersede="" supersede_job="" yes="" mode
   local preview_only=""
+  mode="$(mode_status)"
   if [[ "${1:-}" == "preview" ]]; then preview_only=1; shift; fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -218,7 +220,7 @@ retry_issue() {
   if [[ -n "$preview_only" ]]; then
     [[ -z "$reason" && -z "$yes" ]] || die "preview accepts only --supersede-pr and --supersede-job"
     local preview_body
-    preview_body="$(jq -cn --arg issue "$issue" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
+    preview_body="$(jq -cn --arg issue "$issue" --arg mode "$mode" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,mode:$mode} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
     operator_request POST /v1/retry/preview "$preview_body"
     return
   fi
@@ -227,7 +229,7 @@ retry_issue() {
   [[ -n "$request_id" ]] || die "retry requires an explicit --request-id for idempotency"
   [[ -n "$snapshot_digest" ]] || die "retry requires --snapshot-digest from a fresh preview"
   local body
-  body="$(jq -cn --arg issue "$issue" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
+  body="$(jq -cn --arg issue "$issue" --arg mode "$mode" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,mode:$mode,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
   operator_request POST /v1/retry/reserve "$body"
 }
 
@@ -267,28 +269,43 @@ attempts() {
 }
 
 env_value() {
-  local key="$1"
-  if [[ -f "$ENV_FILE" ]]; then
-    awk -F= -v key="$key" '$1 == key { value = substr($0, length(key) + 2) } END { if (value != "") print value }' "$ENV_FILE"
+  env_file_value "$ENV_FILE" "$1"
+}
+
+env_file_value() {
+  local file="$1"
+  local key="$2"
+  if [[ -f "$file" ]]; then
+    awk -F= -v key="$key" '$1 == key { value = substr($0, length(key) + 2) } END { if (value != "") print value }' "$file"
   fi
 }
 
 upsert_env() {
-  local key="$1"
-  local value="$2"
+  upsert_env_file "$ENV_FILE" "$1" "$2"
+}
+
+upsert_operator_env_if_present() {
+  [[ -e "$OPERATOR_ENV_FILE" ]] || return 0
+  upsert_env_file "$OPERATOR_ENV_FILE" "$1" "$2"
+}
+
+upsert_env_file() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
   local tmp
 
-  install -d -m 0755 -o root -g root "$(dirname "$ENV_FILE")"
-  if [[ ! -e "$ENV_FILE" ]]; then
-    install -m 0600 -o root -g root /dev/null "$ENV_FILE"
+  install -d -m 0755 -o root -g root "$(dirname "$file")"
+  if [[ ! -e "$file" ]]; then
+    install -m 0600 -o root -g root /dev/null "$file"
   fi
 
   tmp="$(mktemp)"
-  if [[ -s "$ENV_FILE" ]]; then
-    awk -F= -v key="$key" '$1 != key { print }' "$ENV_FILE" >"$tmp"
+  if [[ -s "$file" ]]; then
+    awk -F= -v key="$key" '$1 != key { print }' "$file" >"$tmp"
   fi
   printf '%s=%s\n' "$key" "$value" >>"$tmp"
-  install -m 0600 -o root -g root "$tmp" "$ENV_FILE"
+  install -m 0600 -o root -g root "$tmp" "$file"
   rm -f "$tmp"
 }
 
@@ -634,6 +651,7 @@ set_mode() {
   case "$mode" in
     dry-run)
       upsert_env HATCHET_INTAKE_DRY_RUN true
+      upsert_operator_env_if_present HATCHET_INTAKE_DRY_RUN true
       restart_intake
       printf 'factory intake mode: dry-run\n'
       ;;
@@ -642,6 +660,7 @@ set_mode() {
         die "real mode can create GitHub PRs from Ready Linear issues; rerun: factory mode real --yes"
       fi
       upsert_env HATCHET_INTAKE_DRY_RUN false
+      upsert_operator_env_if_present HATCHET_INTAKE_DRY_RUN false
       restart_intake
       printf 'factory intake mode: real\n'
       ;;

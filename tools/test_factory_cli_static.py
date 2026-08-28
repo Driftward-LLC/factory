@@ -181,6 +181,10 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("Hermes Factory gateway requires Node.js 18 or newer", source)
         self.assertIn("DRIFTWARD_HERMES_GRPC_TARGET", source)
         self.assertIn("driftward-hermes-factory-gateway.service", source)
+        self.assertIn('factory_operator_env_file="${DRIFTWARD_FACTORY_OPERATOR_ENV_FILE:-/etc/driftward/factory-operator.env}"', source)
+        self.assertIn('hatchet_workers_env_file="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"', source)
+        self.assertIn('operator_dry_run="$(awk -F= ', source)
+        self.assertIn('upsert_env "$factory_operator_env_file" HATCHET_INTAKE_DRY_RUN "$operator_dry_run"', source)
 
     def test_hermes_gateway_systemd_unit_is_local_socket_boundary(self) -> None:
         unit = (ROOT / "deploy/systemd/driftward-hermes-factory-gateway.service").read_text(encoding="utf-8")
@@ -261,6 +265,9 @@ class FactoryCliStaticTests(unittest.TestCase):
 
         self.assertIn("factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID", source)
         self.assertIn("github_absence_evidence()", source)
+        self.assertIn('mode="$(mode_status)"', source)
+        self.assertIn('--arg mode "$mode"', source)
+        self.assertIn('mode:$mode', source)
         self.assertIn('gh pr list --repo "$repo" --head "$branch" --state all', source)
         self.assertIn('gh api "repos/$repo/branches/$encoded_branch"', source)
         self.assertIn("github_branch_pr_absence_v1", source)
