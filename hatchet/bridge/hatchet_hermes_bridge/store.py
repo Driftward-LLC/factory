@@ -1501,6 +1501,21 @@ def _reserve_factory_attempt_locked(
     return get_factory_attempt(conn, attempt_id), True
 
 
+def _validate_absence_evidence(evidence: dict[str, Any], *, repository: str, branch: str) -> dict[str, Any]:
+    required = {"kind", "repository", "head_branch", "branch_exists", "pull_requests", "observed_at"}
+    if not isinstance(evidence, dict) or set(evidence) != required:
+        raise BridgeValidationError("factory absence evidence is invalid")
+    if evidence.get("kind") != "github_branch_pr_absence_v1" or evidence.get("repository") != repository or evidence.get("head_branch") != branch:
+        raise BridgeValidationError("factory absence evidence does not bind to this attempt")
+    if evidence.get("branch_exists") is not False or evidence.get("pull_requests") != []:
+        raise BridgeValidationError("factory absence evidence reports an artifact")
+    try:
+        _canonical_time(str(evidence["observed_at"]))
+    except (TypeError, ValueError) as exc:
+        raise BridgeValidationError("factory absence evidence timestamp is invalid") from exc
+    return {key: evidence[key] for key in sorted(required)}
+
+
 def next_factory_attempt_key(conn: sqlite3.Connection, *, work_item_key: str, mode: str) -> tuple[int, str]:
     generation = int(conn.execute("SELECT COALESCE(MAX(generation), 0) FROM factory_attempts WHERE work_item_key=? AND action='create_draft_pr' AND mode=?", (work_item_key, mode)).fetchone()[0]) + 1
     while True:
@@ -1643,6 +1658,120 @@ def reserve_factory_retry(
         if prior_attempt_id:
             conn.execute("UPDATE factory_attempts SET status='superseded', updated_at=? WHERE attempt_id=? AND status NOT IN ('superseded','verified_ready')", (utc_now(), prior_attempt_id))
             _append_factory_attempt_event(conn, prior_attempt_id, "superseded", {"by_attempt_id": attempt["attempt_id"], "supersede_pr_url": supersede_pr_url})
+    return get_factory_attempt(conn, attempt["attempt_id"]), job, True
+
+
+def reserve_factory_absence_retry(
+    conn: sqlite3.Connection, *, work_item_key: str, mode: str, request_id: str,
+    reason: str, actor: str, payload: dict[str, Any], prior_attempt_id: str,
+    absence_evidence: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Supersede one expired unknown generation after reviewed GitHub absence proof."""
+    if not isinstance(payload, dict) or not isinstance(prior_attempt_id, str) or not prior_attempt_id:
+        raise BridgeValidationError("factory absence retry payload is invalid")
+    if not all(isinstance(value, str) and value and len(value) <= 200 for value in (work_item_key, request_id, actor)) or mode not in {"real", "dry-run"}:
+        raise BridgeValidationError("factory absence retry request is invalid")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 320:
+        raise BridgeValidationError("factory absence retry reason is invalid")
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        safe_reason = sanitize_detail(reason.strip(), 320)
+        existing = conn.execute("SELECT * FROM factory_attempts WHERE work_item_key=? AND action='create_draft_pr' AND mode=? AND request_id=?", (work_item_key, mode, request_id)).fetchone()
+        if existing:
+            if existing["reason"] != safe_reason or existing["supersede_pr_url"] is not None or existing["prior_attempt_id"] != prior_attempt_id or existing["trusted_snapshot_digest"] != payload.get("trusted_snapshot_digest"):
+                raise BridgeConflict("factory absence retry request_id conflicts with existing intent")
+            attempt = _row_to_factory_attempt(existing)
+            job = get_job(conn, attempt["job_id"]) if attempt.get("job_id") else None
+            if not job or job.get("payload", {}).get("factory_absence_retry", {}).get("prior_attempt_id") != prior_attempt_id:
+                raise BridgeConflict("existing factory absence retry is incomplete")
+            return attempt, job, False
+        prior = get_factory_attempt(conn, prior_attempt_id)
+        if prior["work_item_key"] != work_item_key or prior["action"] != "create_draft_pr" or prior["mode"] != mode:
+            raise BridgeValidationError("factory absence retry prior attempt mismatch")
+        if prior["status"] != "effect_outcome_unknown":
+            raise BridgeValidationError("factory absence retry prior attempt is not outcome-unknown")
+        if prior.get("prior_pr_url"):
+            raise BridgeConflict("factory absence retry cannot supersede an attempt with a PR artifact")
+        if not prior.get("job_id"):
+            raise BridgeValidationError("factory absence retry prior attempt has no bridge job")
+        active_other = conn.execute(
+            "SELECT attempt_id FROM factory_attempts WHERE work_item_key=? AND action='create_draft_pr' AND status IN ('reserved','accepted','running','effect_authorized','effect_committed','verification_pending','cancellation_requested','effect_outcome_unknown') AND attempt_id<>?",
+            (work_item_key, prior_attempt_id),
+        ).fetchone()
+        if active_other:
+            raise BridgeConflict("factory retry has another active attempt")
+        prior_job = get_job(conn, prior["job_id"])
+        repository = payload.get("repo")
+        if prior_job["requested_action"] != "create_draft_pr" or prior_job.get("branch") != prior["branch"] or prior_job.get("payload", {}).get("repo") != repository:
+            raise BridgeValidationError("factory absence retry prior job mismatch")
+        lease = conn.execute("SELECT * FROM factory_execution_leases WHERE attempt_id=? AND released_at IS NULL", (prior_attempt_id,)).fetchone()
+        if not lease or lease["effect_authorized_at"] is None or lease["effect_observed_at"] is not None:
+            raise BridgeValidationError("factory absence retry requires an expired unobserved authorized lease")
+        try:
+            lease_expires_at = _canonical_time(lease["expires_at"])
+        except (TypeError, ValueError) as exc:
+            raise BridgeValidationError("factory absence retry lease timestamp is invalid") from exc
+        if lease_expires_at > utc_now():
+            raise BridgeValidationError("factory absence retry requires an expired unobserved authorized lease")
+        if conn.execute("SELECT 1 FROM factory_recovery_requests WHERE attempt_id=?", (prior_attempt_id,)).fetchone():
+            raise BridgeConflict("factory absence retry conflicts with existing recovery evidence")
+        bound_evidence = _validate_absence_evidence(absence_evidence, repository=repository, branch=prior["branch"])
+        evidence_digest = hashlib.sha256(canonical_json(bound_evidence).encode()).hexdigest()
+        artifact_fence = payload.get("factory_artifact_fence")
+        expected_fence = {
+            "kind": "github_branch_pr_absence_v1",
+            "prior_attempt_id": prior_attempt_id,
+            "prior_job_id": prior["job_id"],
+            "repository": repository,
+            "head_branch": prior["branch"],
+            "lease_id": lease["lease_id"],
+            "lease_epoch": lease["epoch"],
+            "effect_authorized_at": lease["effect_authorized_at"],
+            "lease_expires_at": lease["expires_at"],
+            "branch_exists": False,
+            "pull_request_count": 0,
+            "observed_at": bound_evidence["observed_at"],
+            "evidence_digest": evidence_digest,
+        }
+        if artifact_fence != expected_fence:
+            raise BridgeValidationError("factory absence retry artifact fence mismatch")
+        conn.execute("UPDATE factory_attempts SET status='superseded', updated_at=? WHERE attempt_id=?", (utc_now(), prior_attempt_id))
+        _append_factory_attempt_event(conn, prior_attempt_id, "absence_superseded_unknown_attempt", {"by_request_id": request_id, "actor": actor, "reason": safe_reason, "evidence_digest": evidence_digest, "observed_at": bound_evidence["observed_at"]})
+        attempt, created = _reserve_factory_attempt_locked(
+            conn, work_item_key=work_item_key, mode=mode, request_id=request_id,
+            reason=reason, actor=actor, artifact_fence=artifact_fence,
+            trusted_snapshot_digest=payload.get("trusted_snapshot_digest"),
+            reserved_event_type="absence_retry_reserved",
+        )
+        if not created:
+            job = get_job(conn, attempt["job_id"]) if attempt.get("job_id") else None
+            if not job:
+                raise BridgeConflict("existing factory absence retry is incomplete")
+            return attempt, job, False
+        lineage = {
+            "attempt_id": attempt["attempt_id"], "generation": attempt["generation"],
+            "request_id": request_id, "reason": sanitize_detail(reason.strip(), 320),
+            "actor": actor, "prior_attempt_id": prior_attempt_id,
+            "supersede_pr_url": None, "superseded_bridge_job_id": None,
+        }
+        sealed_payload = dict(payload)
+        sealed_payload["factory_retry"] = lineage
+        sealed_payload["factory_absence_evidence"] = bound_evidence
+        sealed_payload["work_item_id"] = work_item_key
+        sealed_payload["linear_issue"] = work_item_key
+        sealed_payload["dry_run"] = mode == "dry-run"
+        job, job_created = submit_job(conn, {
+            "idempotency_key": attempt["idempotency_key"], "requested_action": "create_draft_pr",
+            "branch": attempt["branch"], "payload": sealed_payload,
+        })
+        if not job_created:
+            raise BridgeConflict("reserved factory absence retry bridge job already exists")
+        conn.execute("UPDATE factory_attempts SET status='accepted', job_id=?, prior_attempt_id=?, updated_at=? WHERE attempt_id=?", (job["job_id"], prior_attempt_id, utc_now(), attempt["attempt_id"]))
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "retry_requested", {"generation": attempt["generation"], "job_id": job["job_id"], "absence_evidence_digest": evidence_digest})
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_accepted", {"job_id": job["job_id"]})
+        outbox_key = f"factory:accepted:{attempt['attempt_id']}"
+        conn.execute("INSERT INTO factory_attempt_outbox (outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", utc_now(), utc_now()))
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "accepted_event_enqueued", {"outbox_key": outbox_key})
     return get_factory_attempt(conn, attempt["attempt_id"]), job, True
 
 
@@ -2003,6 +2132,9 @@ def commit_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[
         row = _current_execution_lease(conn, job_id, claim, allow_cancel=True, require_live=False, require_authorized=True)
         if not row:
             raise BridgeConflict("factory execution fence is stale or canceled")
+        attempt = get_factory_attempt(conn, row["attempt_id"])
+        if attempt["status"] == "superseded":
+            raise BridgeConflict("factory execution attempt was superseded")
         job = transition_job(
             conn,
             job_id,

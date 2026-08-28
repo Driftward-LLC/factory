@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, inspect_draft_pr_state, _services_healthy
+from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _services_healthy
 from test_support import connect_migrate as connect
-from hatchet_hermes_bridge.store import BridgeConflict, get_factory_attempt, list_events, list_factory_attempt_events, submit_job, transition_job
+from hatchet_hermes_bridge.store import BridgeConflict, authorize_factory_effect, claim_factory_execution, commit_factory_execution, get_factory_attempt, list_events, list_factory_attempt_events, settle_factory_execution, submit_job, transition_job, utc_now
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -40,6 +40,22 @@ class FactoryOperatorTests(unittest.TestCase):
         else: os.environ["HATCHET_FACTORY_OPERATOR_TEST_HEALTH"] = self.old_health
 
     def kwargs(self): return {"bridge_db": self.bridge_db, "ingress_db": self.ingress_db, "registry_path": ROUTES, "policy_path": POLICY, "issue": "ENG-8", "mode": "real"}
+
+    def absence_evidence(self, branch):
+        return {"kind": "github_branch_pr_absence_v1", "repository": "Driftward-LLC/capykit", "head_branch": branch, "branch_exists": False, "pull_requests": [], "observed_at": utc_now()}
+
+    def unknown_effect_attempt(self):
+        preview = preview_retry(**self.kwargs())
+        first = reserve_retry(**self.kwargs(), request_id="first-unknown", reason="test", actor="uid:0", snapshot_digest=preview["snapshot_digest"])
+        conn = connect(self.bridge_db)
+        transition_job(conn, first["job"]["job_id"], state="running")
+        claim = claim_factory_execution(conn, first["job"]["job_id"], owner="executor-a")["lease"]
+        authorize_factory_effect(conn, first["job"]["job_id"], claim)
+        settle_factory_execution(conn, first["job"]["job_id"], claim, effect_observed=False)
+        conn.execute("UPDATE factory_execution_leases SET expires_at=? WHERE attempt_id=?", ("2000-01-01T00:00:00Z", first["attempt"]["attempt_id"]))
+        conn.commit()
+        conn.close()
+        return first, claim
 
     def test_preview_is_read_only_and_reserve_is_generationed_idempotent(self):
         before = connect(self.bridge_db); self.assertEqual(before.execute("SELECT COUNT(*) FROM factory_attempts").fetchone()[0], 0); before.close()
@@ -139,6 +155,65 @@ class FactoryOperatorTests(unittest.TestCase):
         conn.close()
         with self.assertRaisesRegex(BridgeConflict, "belongs to a factory attempt"):
             preview_retry(**self.kwargs(), supersede_job_id=reserved["job"]["job_id"])
+
+    def test_force_absence_retry_supersedes_unknown_attempt_and_reserves_generation(self):
+        first, claim = self.unknown_effect_attempt()
+        evidence = self.absence_evidence(first["attempt"]["branch"])
+        with self.assertRaisesRegex(OperatorError, "active_attempt"):
+            preview_retry(**self.kwargs())
+        preview = preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=evidence)
+        self.assertFalse(preview["absence_evidence_required"])
+        self.assertEqual(preview["next_generation"], 2)
+        reserved = reserve_force_absence_retry(
+            **self.kwargs(),
+            attempt_id=first["attempt"]["attempt_id"],
+            request_id="absence-force",
+            reason="branch and PR are absent",
+            actor="uid:0",
+            snapshot_digest=preview["snapshot_digest"],
+            absence_evidence=evidence,
+        )
+        self.assertTrue(reserved["created"])
+        self.assertEqual(reserved["attempt"]["generation"], 2)
+        self.assertEqual(reserved["job"]["payload"]["factory_absence_retry"]["prior_attempt_id"], first["attempt"]["attempt_id"])
+        self.assertEqual(reserved["job"]["payload"]["factory_absence_evidence"], evidence)
+        conn = connect(self.bridge_db)
+        self.assertEqual(get_factory_attempt(conn, first["attempt"]["attempt_id"])["status"], "superseded")
+        self.assertIn("absence_superseded_unknown_attempt", [event["event_type"] for event in list_factory_attempt_events(conn, first["attempt"]["attempt_id"])])
+        self.assertEqual([event["event_type"] for event in list_factory_attempt_events(conn, reserved["attempt"]["attempt_id"])][:2], ["absence_retry_reserved", "retry_requested"])
+        with self.assertRaisesRegex(BridgeConflict, "superseded"):
+            commit_factory_execution(conn, first["job"]["job_id"], claim, {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/99", "commit_sha": "abcdef1"})
+        conn.close()
+        replay = reserve_force_absence_retry(
+            **self.kwargs(),
+            attempt_id=first["attempt"]["attempt_id"],
+            request_id="absence-force",
+            reason="branch and PR are absent",
+            actor="uid:0",
+            snapshot_digest=preview["snapshot_digest"],
+            absence_evidence=evidence,
+        )
+        self.assertFalse(replay["created"])
+        self.assertEqual(replay["job"]["job_id"], reserved["job"]["job_id"])
+
+    def test_force_absence_retry_rejects_positive_or_stale_evidence(self):
+        first, _claim = self.unknown_effect_attempt()
+        positive_branch = {**self.absence_evidence(first["attempt"]["branch"]), "branch_exists": True}
+        with self.assertRaisesRegex(OperatorError, "reports_artifact"):
+            preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=positive_branch)
+        positive_pr = {**self.absence_evidence(first["attempt"]["branch"]), "pull_requests": [{"number": 1, "url": "https://github.com/Driftward-LLC/capykit/pull/1"}]}
+        with self.assertRaisesRegex(OperatorError, "reports_artifact"):
+            preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=positive_pr)
+        stale = {**self.absence_evidence(first["attempt"]["branch"]), "observed_at": "2000-01-01T00:00:00Z"}
+        with self.assertRaisesRegex(OperatorError, "stale"):
+            preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=stale)
+
+    def test_force_absence_retry_rejects_wrong_attempt_state(self):
+        preview = preview_retry(**self.kwargs())
+        first = reserve_retry(**self.kwargs(), request_id="not-unknown", reason="test", actor="uid:0", snapshot_digest=preview["snapshot_digest"])
+        evidence = self.absence_evidence(first["attempt"]["branch"])
+        with self.assertRaisesRegex(OperatorError, "not_unknown"):
+            preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=evidence)
 
     def test_inspection_rejects_injection_without_starting_a_process(self):
         with patch("hatchet_hermes_bridge.operator.subprocess.run") as run:
