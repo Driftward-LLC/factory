@@ -257,6 +257,24 @@ class FactoryCliStaticTests(unittest.TestCase):
                         )
                         self.assertEqual(result.stdout, '{"attempts":[]}\n')
                         self.assertIn("http://localhost/v1/attempts/work-item/ENG-12", curl_args.read_text(encoding="utf-8"))
+                command_expectations = (
+                    (("attempts", "active", "--json"), "http://localhost/v1/attempts/active"),
+                    (("attempts", "events", "attempt-1", "--json", "--limit", "25"), "http://localhost/v1/attempts/attempt-1/events?limit=25"),
+                    (("lifecycle", "ENG-12", "--json", "--limit", "25"), "http://localhost/v1/lifecycle/work-item/ENG-12?limit=25"),
+                    (("lifecycle", "--limit", "25", "--json", "ENG-12"), "http://localhost/v1/lifecycle/work-item/ENG-12?limit=25"),
+                )
+                for command, expected_url in command_expectations:
+                    with self.subTest(command=command):
+                        result = subprocess.run(
+                            [str(factory), *command],
+                            check=True,
+                            env=env,
+                            text=True,
+                            capture_output=True,
+                            timeout=5,
+                        )
+                        self.assertEqual(result.stdout, '{"attempts":[]}\n')
+                        self.assertIn(expected_url, curl_args.read_text(encoding="utf-8"))
             finally:
                 sock.close()
 

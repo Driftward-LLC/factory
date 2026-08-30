@@ -1040,6 +1040,91 @@ def _row_to_factory_attempt(row: sqlite3.Row) -> dict[str, Any]:
     return result
 
 
+def _row_to_factory_execution_lease(row: sqlite3.Row, *, now: datetime | None = None) -> dict[str, Any]:
+    """Return execution lease state without exposing the fence token."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        expires_at = now
+    if row["released_at"] is not None:
+        status = "released"
+    elif expires_at <= now:
+        status = "expired"
+    elif row["cancel_requested_at"] is not None:
+        status = "cancel_requested"
+    elif row["effect_authorized_at"] is not None:
+        status = "effect_authorized"
+    else:
+        status = "active"
+    return {
+        "attempt_id": row["attempt_id"],
+        "lease_id": row["lease_id"],
+        "owner": sanitize_detail(row["owner"], 120),
+        "acquired_at": row["acquired_at"],
+        "expires_at": row["expires_at"],
+        "released_at": row["released_at"],
+        "cancel_requested_at": row["cancel_requested_at"],
+        "effect_observed_at": row["effect_observed_at"],
+        "effect_authorized_at": row["effect_authorized_at"],
+        "last_heartbeat_at": row["last_heartbeat_at"],
+        "epoch": row["epoch"],
+        "status": status,
+        "currently_live": row["released_at"] is None and expires_at > now,
+        "fence_token_present": bool(row["fence_token"]),
+    }
+
+
+def _job_lifecycle_summary(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if job is None:
+        return None
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    payload_keys = (
+        "repo",
+        "linear_issue",
+        "linear_issue_id",
+        "linear_issue_url",
+        "routing",
+        "source_event_key",
+        "source_delivery_id",
+        "source_event_keys",
+        "source_delivery_ids",
+        "dry_run",
+        "factory_retry",
+        "factory_repair",
+        "factory_artifact_fence",
+        "factory_absence_retry",
+        "superseded_bridge_job",
+    )
+    return {
+        "job_id": job["job_id"],
+        "idempotency_key": job["idempotency_key"],
+        "state": job["state"],
+        "requested_action": job["requested_action"],
+        "branch": job["branch"],
+        "commit_sha": job["commit_sha"],
+        "pr_url": job["pr_url"],
+        "hermes_session_id": job["hermes_session_id"],
+        "hatchet_workflow_run_id": job["hatchet_workflow_run_id"],
+        "hatchet_step_run_id": job["hatchet_step_run_id"],
+        "reason_code": job["reason_code"],
+        "error": sanitize_detail(job["error"]),
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"],
+        "payload": sanitize_detail({key: payload.get(key) for key in payload_keys if key in payload}),
+    }
+
+
+def _factory_attempt_lifecycle_summary(conn: sqlite3.Connection, attempt: dict[str, Any]) -> dict[str, Any]:
+    job = get_job(conn, attempt["job_id"]) if attempt.get("job_id") else None
+    lease_row = conn.execute("SELECT * FROM factory_execution_leases WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()
+    return {
+        "attempt": attempt,
+        "job": _job_lifecycle_summary(job),
+        "execution_lease": _row_to_factory_execution_lease(lease_row) if lease_row else None,
+    }
+
+
 def _append_factory_attempt_event(conn: sqlite3.Connection, attempt_id: str, event_type: str, details: dict[str, Any] | None = None) -> None:
     conn.execute(
         "INSERT INTO factory_attempt_events (event_id,attempt_id,event_type,details_json,created_at) VALUES (?,?,?,?,?)",
@@ -1343,6 +1428,15 @@ def list_factory_attempts(conn: sqlite3.Connection, work_item_key: str) -> list[
     return [_row_to_factory_attempt(row) for row in rows]
 
 
+def list_active_factory_attempts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    statuses = tuple(sorted(FACTORY_ATTEMPT_ACTIVE))
+    rows = conn.execute(
+        f"SELECT * FROM factory_attempts WHERE status IN ({','.join('?' for _ in statuses)}) ORDER BY updated_at DESC, generation DESC",
+        statuses,
+    ).fetchall()
+    return [_factory_attempt_lifecycle_summary(conn, _row_to_factory_attempt(row)) for row in rows]
+
+
 def get_factory_attempt(conn: sqlite3.Connection, ref: str) -> dict[str, Any]:
     if not isinstance(ref, str) or not ref or len(ref) > 200:
         raise BridgeValidationError("factory attempt reference is invalid")
@@ -1363,6 +1457,98 @@ def list_factory_attempt_events(conn: sqlite3.Connection, attempt_id: str, limit
     get_factory_attempt(conn, attempt_id)
     rows = conn.execute("SELECT * FROM factory_attempt_events WHERE attempt_id=? ORDER BY created_at,event_id LIMIT ?", (attempt_id, limit)).fetchall()
     return [{"event_id": row["event_id"], "attempt_id": row["attempt_id"], "event_type": row["event_type"], "details": json.loads(row["details_json"]), "created_at": row["created_at"]} for row in rows]
+
+
+def get_factory_lifecycle(conn: sqlite3.Connection, work_item_key: str, limit: int = 250) -> dict[str, Any]:
+    if limit < 1 or limit > 250:
+        raise BridgeValidationError("factory lifecycle limit must be between 1 and 250")
+    attempts = list_factory_attempts(conn, work_item_key)
+    attempt_records = []
+    timeline: list[dict[str, Any]] = []
+    active_attempts = []
+    for attempt in attempts:
+        record = _factory_attempt_lifecycle_summary(conn, attempt)
+        attempt_events = list_factory_attempt_events(conn, attempt["attempt_id"], 250)
+        bridge_events = list_events(conn, attempt["job_id"], 250) if attempt.get("job_id") else []
+        record["events"] = attempt_events
+        record["bridge_events"] = bridge_events
+        attempt_records.append(record)
+        if attempt["status"] in FACTORY_ATTEMPT_ACTIVE:
+            active_attempts.append(record)
+        for event in attempt_events:
+            timeline.append({
+                "created_at": event["created_at"],
+                "event_id": event["event_id"],
+                "source_kind": "factory_attempt",
+                "event_type": event["event_type"],
+                "state": attempt["status"],
+                "work_item_key": attempt["work_item_key"],
+                "attempt_id": attempt["attempt_id"],
+                "generation": attempt["generation"],
+                "job_id": attempt.get("job_id"),
+                "details": event["details"],
+            })
+        for event in bridge_events:
+            timeline.append({
+                "created_at": event["created_at"],
+                "event_id": event["event_id"],
+                "source_kind": "bridge_job",
+                "event_type": event["event_type"],
+                "state": event["state"],
+                "work_item_key": attempt["work_item_key"],
+                "attempt_id": attempt["attempt_id"],
+                "generation": attempt["generation"],
+                "job_id": event["job_id"],
+                "details": event["details"],
+            })
+        lease = record.get("execution_lease")
+        if lease:
+            timeline.append({
+                "created_at": lease["acquired_at"],
+                "event_id": f"{lease['attempt_id']}:execution-lease:{lease['epoch']}:acquired",
+                "source_kind": "factory_execution_lease",
+                "event_type": "execution_lease_acquired",
+                "state": lease["status"],
+                "work_item_key": attempt["work_item_key"],
+                "attempt_id": attempt["attempt_id"],
+                "generation": attempt["generation"],
+                "job_id": attempt.get("job_id"),
+                "details": {"lease_id": lease["lease_id"], "owner": lease["owner"], "expires_at": lease["expires_at"]},
+            })
+            if lease["effect_authorized_at"]:
+                timeline.append({
+                    "created_at": lease["effect_authorized_at"],
+                    "event_id": f"{lease['attempt_id']}:execution-lease:{lease['epoch']}:effect-authorized",
+                    "source_kind": "factory_execution_lease",
+                    "event_type": "execution_lease_effect_authorized",
+                    "state": lease["status"],
+                    "work_item_key": attempt["work_item_key"],
+                    "attempt_id": attempt["attempt_id"],
+                    "generation": attempt["generation"],
+                    "job_id": attempt.get("job_id"),
+                    "details": {"lease_id": lease["lease_id"], "owner": lease["owner"]},
+                })
+            if lease["released_at"]:
+                timeline.append({
+                    "created_at": lease["released_at"],
+                    "event_id": f"{lease['attempt_id']}:execution-lease:{lease['epoch']}:released",
+                    "source_kind": "factory_execution_lease",
+                    "event_type": "execution_lease_released",
+                    "state": lease["status"],
+                    "work_item_key": attempt["work_item_key"],
+                    "attempt_id": attempt["attempt_id"],
+                    "generation": attempt["generation"],
+                    "job_id": attempt.get("job_id"),
+                    "details": {"lease_id": lease["lease_id"], "effect_observed_at": lease["effect_observed_at"]},
+                })
+    timeline.sort(key=lambda item: (item["created_at"], item["event_id"]))
+    return {
+        "work_item_key": work_item_key,
+        "attempts": attempt_records,
+        "active_attempts": active_attempts,
+        "timeline": timeline[:limit],
+        "timeline_truncated": len(timeline) > limit,
+    }
 
 
 def list_factory_import_conflicts(conn: sqlite3.Connection, work_item_key: str) -> list[dict[str, Any]]:

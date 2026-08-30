@@ -45,6 +45,8 @@ factory status
 factory doctor hatchet --profile prod
 factory mode
 factory logs linear -f
+factory attempts active
+factory lifecycle ENG-62
 factory attempts list ENG-62 --json
 ```
 
@@ -62,8 +64,12 @@ factory retry ENG-62 preview --supersede-pr https://github.com/OWNER/REPO/pull/1
 factory retry ENG-62 preview --supersede-job BRIDGE-JOB-ID
 factory retry ENG-62 --reason "prior draft PR was closed unmerged" --request-id eng-62-retry-20260816 --snapshot-digest PREVIEW_DIGEST --supersede-pr https://github.com/OWNER/REPO/pull/123 --yes
 factory retry ENG-62 --reason "orphaned bridge job is obsolete" --request-id eng-62-orphan-20260823 --snapshot-digest PREVIEW_DIGEST --supersede-job BRIDGE-JOB-ID --yes
+factory lifecycle ENG-62
+factory lifecycle ENG-62 --json --limit 100
+factory attempts active
 factory attempts list ENG-62 --json
 factory attempts show ATTEMPT-ID
+factory attempts events ATTEMPT-ID
 factory attempts cancel ATTEMPT-ID --reason "operator canceled before execution" --yes
 ```
 
@@ -86,6 +92,13 @@ with `--live-json`, against
 workflows, retired workflows that remain active, unexpected event triggers, and
 task actions without active repo-managed workers. It does not pause, remove, or
 register workflows.
+
+`factory attempts active` is the root-only answer to "is Factory running
+anything right now?" It reads active attempt records through the operator socket
+and includes the associated bridge job and execution lease summary when present.
+`factory lifecycle ENG-X` shows the issue-level Factory record: attempts,
+bridge jobs, execution leases, and a bounded timeline of attempt and bridge
+events. Use `--json` on either command for scripts or deeper inspection.
 
 Use `factory status` first, then direct `systemctl`, `curl`, Docker, or
 service-specific commands only for

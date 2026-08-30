@@ -18,16 +18,16 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlopen
 
-from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_job, get_supersedable_bridge_job, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, sanitize_detail
+from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_factory_lifecycle, get_job, get_supersedable_bridge_job, list_active_factory_attempts, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, sanitize_detail
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$")
 ACTIVE_ATTEMPT_STATUSES = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
-OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "show_attempt", "cancel_attempt"}
+OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "list_active_attempts", "show_attempt", "show_attempt_events", "show_lifecycle", "cancel_attempt"}
 
 
 class OperatorError(BridgeError):
@@ -46,6 +46,23 @@ def _optional_bridge_job_id(value: Any) -> str | None:
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > 200:
         raise OperatorError("supersede_job_id is required and must be at most 200 characters")
     return sanitize_detail(value.strip(), 200)
+
+
+def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str) -> int:
+    if set(query) - {"limit"}:
+        raise OperatorError(f"{label} has unsupported query parameters")
+    if "limit" not in query:
+        return default
+    values = query["limit"]
+    if len(values) != 1:
+        raise OperatorError(f"{label} must be an integer")
+    try:
+        limit = int(values[0])
+    except (TypeError, ValueError) as exc:
+        raise OperatorError(f"{label} must be an integer") from exc
+    if limit < 1 or limit > 250:
+        raise OperatorError(f"{label} must be between 1 and 250")
+    return limit
 
 
 def _mode(env_file: str = "/etc/driftward/hatchet-workers.env") -> str:
@@ -506,10 +523,14 @@ class OperatorHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._auth(): return
         try:
-            bridge_db, _, _, _ = self._paths(); path = urlparse(self.path).path; conn = connect_readonly(bridge_db)
+            bridge_db, _, _, _ = self._paths(); parsed = urlparse(self.path); path = parsed.path; query = parse_qs(parsed.query, keep_blank_values=True); conn = connect_readonly(bridge_db)
             try:
-                if path.startswith("/v1/attempts/work-item/"): value = {"attempts": list_factory_attempts(conn, unquote(path.rsplit("/", 1)[1]))}
-                elif path.startswith("/v1/attempts/") and path.endswith("/events"): value = {"events": list_factory_attempt_events(conn, unquote(path.split("/")[3]))}
+                if path == "/v1/attempts/active": value = {"attempts": list_active_factory_attempts(conn)}
+                elif path.startswith("/v1/attempts/work-item/"): value = {"attempts": list_factory_attempts(conn, unquote(path.rsplit("/", 1)[1]))}
+                elif path.startswith("/v1/attempts/") and path.endswith("/events"):
+                    value = {"events": list_factory_attempt_events(conn, unquote(path.split("/")[3]), _bounded_limit(query, default=100, label="factory attempt event limit"))}
+                elif path.startswith("/v1/lifecycle/work-item/"):
+                    value = get_factory_lifecycle(conn, unquote(path.rsplit("/", 1)[1]), _bounded_limit(query, default=250, label="factory lifecycle limit"))
                 elif path.startswith("/v1/attempts/"): value = {"attempt": get_factory_attempt(conn, unquote(path.rsplit("/", 1)[1]))}
                 else: raise OperatorError("operator action is not allowed")
                 self._reply(200, value)
