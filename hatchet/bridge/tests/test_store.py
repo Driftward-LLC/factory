@@ -23,11 +23,13 @@ from hatchet_hermes_bridge.store import (
     record_verification_observation,
     reserve_factory_attempt,
     reserve_factory_intake,
+    list_active_factory_attempts,
     list_factory_attempts,
     list_factory_attempt_events,
     reserve_factory_retry,
     cancel_factory_attempt,
     get_factory_attempt,
+    get_factory_lifecycle,
 )
 from test_support import connect_migrate as connect
 
@@ -665,6 +667,58 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertEqual(second_attempt["attempt_id"], first_attempt["attempt_id"])
         self.assertEqual(second_job["job_id"], first_job["job_id"])
         self.assertEqual(second_job["payload"]["source_event_keys"], ["linear:issue:ENG-10:update:first", "linear:issue:ENG-10:update:second"])
+
+    def test_active_attempts_include_sanitized_job_and_lease_summary(self):
+        attempt, job, _ = reserve_factory_intake(
+            self.conn, work_item_key="ENG-21", mode="real", request_id="linear:issue:ENG-21:update:first",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-21", "implementation_prompt": "keep this out of lifecycle summaries"},
+        )
+        transition_job(self.conn, job["job_id"], state="running")
+        claim_factory_execution(self.conn, job["job_id"], owner="executor-secret-owner")
+
+        active = list_active_factory_attempts(self.conn)
+
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["attempt"]["attempt_id"], attempt["attempt_id"])
+        self.assertEqual(active[0]["job"]["job_id"], job["job_id"])
+        self.assertEqual(active[0]["job"]["payload"]["repo"], "Driftward-LLC/capykit")
+        self.assertEqual(active[0]["job"]["payload"]["linear_issue"], "ENG-21")
+        self.assertNotIn("implementation_prompt", active[0]["job"]["payload"])
+        self.assertEqual(active[0]["execution_lease"]["status"], "active")
+        self.assertTrue(active[0]["execution_lease"]["currently_live"])
+        self.assertTrue(active[0]["execution_lease"]["fence_token_present"])
+        self.assertNotIn("fence_token", active[0]["execution_lease"])
+
+    def test_factory_lifecycle_stitches_attempt_job_and_lease_events(self):
+        attempt, job, _ = reserve_factory_intake(
+            self.conn, work_item_key="ENG-22", mode="real", request_id="linear:issue:ENG-22:update:first",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-22"},
+        )
+        transition_job(self.conn, job["job_id"], state="running")
+        claim_factory_execution(self.conn, job["job_id"], owner="executor")
+
+        lifecycle = get_factory_lifecycle(self.conn, "ENG-22")
+
+        self.assertEqual(lifecycle["work_item_key"], "ENG-22")
+        self.assertEqual(lifecycle["attempts"][0]["attempt"]["attempt_id"], attempt["attempt_id"])
+        self.assertEqual(lifecycle["active_attempts"][0]["attempt"]["attempt_id"], attempt["attempt_id"])
+        source_kinds = {event["source_kind"] for event in lifecycle["timeline"]}
+        self.assertIn("factory_attempt", source_kinds)
+        self.assertIn("bridge_job", source_kinds)
+        self.assertIn("factory_execution_lease", source_kinds)
+        event_types = [event["event_type"] for event in lifecycle["timeline"]]
+        self.assertIn("attempt_execution_claimed", event_types)
+        self.assertIn("transition:running", event_types)
+        self.assertIn("execution_lease_acquired", event_types)
+        self.assertFalse(lifecycle["timeline_truncated"])
+
+        limited = get_factory_lifecycle(self.conn, "ENG-22", limit=1)
+        self.assertEqual(len(limited["timeline"]), 1)
+        self.assertTrue(limited["timeline_truncated"])
+        with self.assertRaises(BridgeValidationError):
+            get_factory_lifecycle(self.conn, "ENG-22", limit=0)
 
     def test_legacy_real_import_cannot_claim_new_verified_ready_path(self):
         job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:work-item:linear:ENG-91:create_draft_pr:real:active", "requested_action": "create_draft_pr", "payload": {**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-91"}})

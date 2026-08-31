@@ -26,8 +26,11 @@ Usage:
   factory retry ENG-X --reason TEXT --request-id ID --snapshot-digest DIGEST [--supersede-pr URL] [--supersede-job JOB-ID] --yes
   factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
   factory retry ENG-X force-absence --attempt-id ATTEMPT-ID --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+  factory lifecycle ENG-X [--json] [--limit N]
+  factory attempts active [--json]
   factory attempts list ENG-X [--json]
   factory attempts show ATTEMPT-ID
+  factory attempts events ATTEMPT-ID [--json] [--limit N]
   factory attempts cancel ATTEMPT-ID --reason TEXT --yes
   factory doctor hatchet [--profile PROFILE | --live-json PATH] [--json] [--fail-on-warning]
 
@@ -140,6 +143,80 @@ operator_request() {
   fi
 }
 
+require_jq_for_view() {
+  command -v jq >/dev/null 2>&1 || die "jq is required for formatted output; rerun with --json"
+}
+
+format_active_attempts() {
+  require_jq_for_view
+  jq -r '
+    def dash: if . == null or . == "" then "-" else tostring end;
+    if (.attempts | length) == 0 then
+      "No active factory attempts."
+    else
+      "Active factory attempts",
+      "=======================",
+      (.attempts[] |
+        .attempt as $a | .job as $j | .execution_lease as $l |
+        ((($j // {}).pr_url // $a.prior_pr_url) | dash) as $pr |
+        "",
+        "\($a.work_item_key) generation \($a.generation)  \($a.status)",
+        "  attempt: \($a.attempt_id)",
+        "  job: \((($j // {}).job_id)|dash)  \((($j // {}).requested_action)|dash)/\((($j // {}).state)|dash)",
+        "  repo: \((($j // {}).payload.repo)|dash)",
+        "  branch: \($a.branch|dash)",
+        "  pr: \($pr)",
+        "  lease: \(if $l == null then "none" else "\($l.status) expires=\($l.expires_at|dash)" end)"
+      )
+    end
+  '
+}
+
+format_attempt_events() {
+  require_jq_for_view
+  jq -r '
+    if (.events | length) == 0 then
+      "No factory attempt events."
+    else
+      "Factory attempt events",
+      "======================",
+      (.events[] | "  \(.created_at)  \(.event_type)  \(.details | tojson)")
+    end
+  '
+}
+
+format_lifecycle() {
+  require_jq_for_view
+  jq -r '
+    def dash: if . == null or . == "" then "-" else tostring end;
+    "Factory lifecycle \(.work_item_key)",
+    "==================",
+    "",
+    (if (.attempts | length) == 0 then
+      "No attempts."
+    else
+      "Attempts:",
+      (.attempts[] |
+        .attempt as $a | .job as $j | .execution_lease as $l |
+        ((($j // {}).pr_url // $a.prior_pr_url) | dash) as $pr |
+        "  generation \($a.generation)  \($a.status)  attempt=\($a.attempt_id)",
+        "    job=\((($j // {}).job_id)|dash)  \((($j // {}).requested_action)|dash)/\((($j // {}).state)|dash)",
+        "    repo=\((($j // {}).payload.repo)|dash) branch=\($a.branch|dash)",
+        "    pr=\($pr)",
+        "    lease=\(if $l == null then "none" else "\($l.status) expires=\($l.expires_at|dash)" end)"
+      )
+    end),
+    "",
+    "Timeline:",
+    (if (.timeline | length) == 0 then
+      "  no lifecycle events"
+    else
+      (.timeline[] | "  \(.created_at)  \(.source_kind)  \(.event_type)  \(.state|dash)  attempt=\(.attempt_id|dash) job=\(.job_id|dash)")
+    end),
+    (if .timeline_truncated then "  ... truncated" else empty end)
+  '
+}
+
 github_absence_evidence() {
   local repo="$1" branch="$2" encoded_branch pr_json branch_exists api_error observed
   command -v gh >/dev/null 2>&1 || die "GitHub CLI gh is required for force-absence evidence"
@@ -195,6 +272,42 @@ force_absence_retry() {
   operator_request POST /v1/retry/force-absence/reserve "$body"
 }
 
+lifecycle() {
+  local issue="" json=0 limit=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)
+        json=1
+        shift
+        ;;
+      --limit)
+        [[ $# -ge 2 ]] || die "--limit requires a value"
+        limit="$2"
+        shift 2
+        ;;
+      --*)
+        die "unknown lifecycle option: $1"
+        ;;
+      *)
+        [[ -z "$issue" ]] || die "usage: factory lifecycle ENG-X [--json] [--limit N]"
+        issue="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$issue" ]] || die "usage: factory lifecycle ENG-X [--json] [--limit N]"
+  local path="/v1/lifecycle/work-item/$issue" response
+  if [[ -n "$limit" ]]; then
+    path="$path?limit=$limit"
+  fi
+  response="$(operator_request GET "$path")"
+  if [[ "$json" == "1" ]]; then
+    printf '%s\n' "$response"
+  else
+    format_lifecycle <<<"$response"
+  fi
+}
+
 retry_issue() {
   local issue="$1"; shift
   if [[ "${1:-}" == "force-absence" ]]; then
@@ -236,6 +349,26 @@ retry_issue() {
 attempts() {
   local subcommand="${1:-}"; shift || true
   case "$subcommand" in
+    active)
+      local json=0 response
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json)
+            json=1
+            shift
+            ;;
+          *)
+            die "usage: factory attempts active [--json]"
+            ;;
+        esac
+      done
+      response="$(operator_request GET "/v1/attempts/active")"
+      if [[ "$json" == "1" ]]; then
+        printf '%s\n' "$response"
+      else
+        format_active_attempts <<<"$response"
+      fi
+      ;;
     list)
       local issue=""
       while [[ $# -gt 0 ]]; do
@@ -257,6 +390,41 @@ attempts() {
       operator_request GET "/v1/attempts/work-item/$issue"
       ;;
     show) [[ $# -eq 1 ]] || die "usage: factory attempts show ATTEMPT-ID"; operator_request GET "/v1/attempts/$1" ;;
+    events)
+      local id="" json=0 limit="" path response
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json)
+            json=1
+            shift
+            ;;
+          --limit)
+            [[ $# -ge 2 ]] || die "--limit requires a value"
+            limit="$2"
+            shift 2
+            ;;
+          --*)
+            die "unknown attempts events option: $1"
+            ;;
+          *)
+            [[ -z "$id" ]] || die "usage: factory attempts events ATTEMPT-ID [--json] [--limit N]"
+            id="$1"
+            shift
+            ;;
+        esac
+      done
+      [[ -n "$id" ]] || die "usage: factory attempts events ATTEMPT-ID [--json] [--limit N]"
+      path="/v1/attempts/$id/events"
+      if [[ -n "$limit" ]]; then
+        path="$path?limit=$limit"
+      fi
+      response="$(operator_request GET "$path")"
+      if [[ "$json" == "1" ]]; then
+        printf '%s\n' "$response"
+      else
+        format_attempt_events <<<"$response"
+      fi
+      ;;
     cancel)
       local id="${1:-}"; shift || true; local reason="" yes=""
       [[ -n "$id" ]] || die "usage: factory attempts cancel ATTEMPT-ID --reason TEXT --yes"
@@ -264,7 +432,7 @@ attempts() {
       [[ -n "$reason" && "$yes" == "--yes" ]] || die "cancellation requires --reason and --yes; it never closes or deletes a PR"
       operator_request POST "/v1/attempts/$id/cancel" "$(jq -cn --arg reason "$reason" '{reason:$reason}')"
       ;;
-    *) die "usage: factory attempts {list|show|cancel}" ;;
+    *) die "usage: factory attempts {active|list|show|events|cancel}" ;;
   esac
 }
 
@@ -843,6 +1011,10 @@ main() {
       shift
       [[ $# -ge 1 ]] || die "usage: factory retry ENG-X --reason TEXT --yes"
       retry_issue "$@"
+      ;;
+    lifecycle)
+      shift
+      lifecycle "$@"
       ;;
     attempts)
       shift

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _mode, _services_healthy
+from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _bounded_limit, _mode, _services_healthy
 from test_support import connect_migrate as connect
 from hatchet_hermes_bridge.store import BridgeConflict, authorize_factory_effect, claim_factory_execution, commit_factory_execution, get_factory_attempt, list_events, list_factory_attempt_events, settle_factory_execution, submit_job, transition_job, utc_now
 
@@ -252,3 +252,10 @@ class FactoryOperatorTests(unittest.TestCase):
             self.assertEqual(_mode("/does/not/exist"), "real")
         with patch.dict(os.environ, {"HATCHET_INTAKE_DRY_RUN": "true"}):
             self.assertEqual(_mode("/does/not/exist"), "dry-run")
+
+    def test_operator_get_limit_is_bounded_and_strict(self):
+        self.assertEqual(_bounded_limit({}, default=100, label="events"), 100)
+        self.assertEqual(_bounded_limit({"limit": ["25"]}, default=100, label="events"), 25)
+        for query in ({"limit": ["0"]}, {"limit": ["251"]}, {"limit": [""]}, {"limit": ["1", "2"]}, {"after": ["x"]}):
+            with self.subTest(query=query), self.assertRaises(OperatorError):
+                _bounded_limit(query, default=100, label="events")
