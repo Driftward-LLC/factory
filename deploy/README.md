@@ -117,13 +117,22 @@ plane on the same ports.
 
 ## Release Deployment
 
-Factory releases are source-built Docker image tags. Deploy from a clean
-checkout of the exact release tag and pass that same tag to the installer:
+Factory releases are source-built Docker image tags. Create the release tag and
+GitHub release with the manual GitHub Actions workflow:
+
+```bash
+gh workflow run factory-release.yml -f release_tag=v2026.9.2
+run_id="$(gh run list --workflow factory-release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run watch "$run_id"
+```
+
+After the workflow succeeds, deploy from a clean checkout of the exact release
+tag and pass that same tag to the installer:
 
 ```bash
 git fetch --tags origin
-git switch --detach v2026.8.26
-bash deploy/install-docker.sh --image-tag v2026.8.26 --start
+git switch --detach v2026.9.2
+bash deploy/install-docker.sh --image-tag v2026.9.2 --start
 ```
 
 For release-shaped tags such as `v2026.8.26`, the installer verifies that the

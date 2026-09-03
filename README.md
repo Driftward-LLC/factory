@@ -58,9 +58,14 @@ bash deploy/install-docker.sh
 Deploy a tagged release:
 
 ```bash
+gh workflow run factory-release.yml -f release_tag=v2026.9.2
+run_id="$(gh run list --workflow factory-release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run watch "$run_id"
 git fetch --tags origin
-git switch --detach v2026.8.26
-bash deploy/install-docker.sh --image-tag v2026.8.26 --start
+git switch --detach v2026.9.2
+bash deploy/install-docker.sh --image-tag v2026.9.2 --start
+git switch main
+git pull --ff-only
 ```
 
 See [docs/factory-release-runbook.md](docs/factory-release-runbook.md) for the

@@ -61,24 +61,28 @@ the targeted tests named in `AGENTS.md` before release.
 
 ## Create The Release
 
-Pick the next tag and create an annotated tag from `main`:
+Pick the next tag and run the GitHub release workflow from `main`:
 
 ```bash
-release_tag=v2026.8.26.1
-git tag -a "$release_tag" -m "Factory $release_tag"
-git push origin "$release_tag"
+release_tag=v2026.9.2
+gh workflow run factory-release.yml -f release_tag="$release_tag"
+run_id="$(gh run list --workflow factory-release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run watch "$run_id"
 ```
 
-Create the GitHub release:
+The workflow validates the release request, runs the release checks, creates the
+annotated tag, pushes it to GitHub, and creates the GitHub release. It does not
+deploy the VPS runtime.
+
+For a validation-only check, pass `dry_run=true`:
 
 ```bash
-gh release create "$release_tag" \
-  --title "Factory $release_tag" \
-  --notes-file /tmp/factory-release-notes.md
+gh workflow run factory-release.yml -f release_tag="$release_tag" -f dry_run=true
 ```
 
-Release notes should include the source commit, what changed, validation
-performed, and any deployment caveats.
+If GitHub Actions is unavailable, the manual fallback is to create an annotated
+tag from clean current `main`, push it, then create a GitHub release with notes
+that include the source commit, validation performed, and deployment caveats.
 
 ## Deploy
 

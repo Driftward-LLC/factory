@@ -206,6 +206,31 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn('git -C "$repo_root" diff-index --quiet HEAD --', source)
         self.assertIn('git -C "$repo_root" ls-files --others --exclude-standard', source)
 
+    def test_factory_release_workflow_is_manual_validated_and_host_deploy_only(self) -> None:
+        workflow = (ROOT / ".github/workflows/factory-release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("name: Factory Release", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("release_tag:", workflow)
+        self.assertIn("permissions:\n  contents: write", workflow)
+        self.assertIn("ref: main", workflow)
+        self.assertIn("release_tag must match vYYYY.M.D or vYYYY.M.D.N", workflow)
+        self.assertIn("release tag already exists at a different commit", workflow)
+        self.assertIn("using existing annotated tag", workflow)
+        self.assertIn("python3 tools/hatchet-contracts.py check", workflow)
+        self.assertIn("python3 -m unittest discover -s tools -p 'test_*.py'", workflow)
+        self.assertIn("npm run build --prefix hatchet/workers", workflow)
+        self.assertIn("docker build -f deploy/Dockerfile -t driftward/factory:ci .", workflow)
+        self.assertIn("Ensure checkout remains clean", workflow)
+        self.assertIn('git status --short', workflow)
+        self.assertIn("/tmp/gitleaks git --redact --verbose .", workflow)
+        self.assertIn('git tag -a "$RELEASE_TAG"', workflow)
+        self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
+        self.assertIn('gh "${args[@]}"', workflow)
+        self.assertIn("This workflow does not deploy the VPS runtime", workflow)
+        self.assertNotIn("ssh ", workflow)
+        self.assertNotIn("systemctl restart", workflow)
+
     def test_attempts_list_accepts_json_option(self) -> None:
         if not hasattr(socket, "AF_UNIX"):
             self.skipTest("Unix sockets are required for the factory operator wrapper")

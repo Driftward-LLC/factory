@@ -1,0 +1,182 @@
+name: Factory Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to create, such as v2026.9.2 or v2026.9.2.1
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub release as a prerelease
+        required: true
+        default: false
+        type: boolean
+      dry_run:
+        description: Validate only; do not create a tag or GitHub release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: factory-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Validate And Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      PRERELEASE: ${{ inputs.prerelease }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hatchet/workers/package-lock.json
+
+      - name: Validate release request
+        run: |
+          set -euo pipefail
+          git fetch --tags origin
+          release_sha="$(git rev-parse HEAD)"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(\.[0-9]+)?$ ]]; then
+            echo "release_tag must match vYYYY.M.D or vYYYY.M.D.N" >&2
+            exit 64
+          fi
+          tag_commit="$(git rev-parse -q --verify "refs/tags/$RELEASE_TAG^{commit}" || true)"
+          if [[ -n "$tag_commit" ]]; then
+            if [[ "$tag_commit" != "$release_sha" ]]; then
+              echo "release tag already exists at a different commit: $RELEASE_TAG" >&2
+              exit 64
+            fi
+            if [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" != "tag" ]]; then
+              echo "release tag already exists but is not annotated: $RELEASE_TAG" >&2
+              exit 64
+            fi
+            echo "release tag already exists at the target commit; release creation will reuse it"
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release already exists: $RELEASE_TAG" >&2
+            exit 64
+          fi
+          git status --short
+
+      - name: Install worker dependencies
+        run: npm ci --prefix hatchet/workers
+
+      - name: Generate and check contracts
+        run: |
+          python3 tools/hatchet-contracts.py generate
+          python3 tools/hatchet-contracts.py check
+          git diff --exit-code -- hatchet/event-ingress/hatchet_event_ingress/contracts.py hatchet/workers/shared/src/contracts.ts
+
+      - name: Run tool tests
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
+      - name: Build and test workers
+        run: |
+          npm run build --prefix hatchet/workers
+          npm run test --prefix hatchet/workers/intake-worker
+          npm run test --prefix hatchet/workers/bridge-executor-worker
+          npm run test --prefix hatchet/workers/reconciliation-worker
+
+      - name: Test bridge and lifecycle writer
+        run: |
+          PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests
+          PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/factory-lifecycle-writer/tests
+
+      - name: Validate Docker deployment
+        run: |
+          HATCHET_POSTGRES_PASSWORD=ci-postgres-password \
+            HATCHET_SERVER_AUTH_COOKIE_SECRETS=ci-cookie-secret \
+            HATCHET_ADMIN_PASSWORD=ci-admin-password \
+            FACTORY_SOURCE_ROOT="$PWD" \
+            docker compose -f deploy/docker-compose.yml config >/dev/null
+          docker build -f deploy/Dockerfile -t driftward/factory:ci .
+
+      - name: Check changed-file whitespace
+        run: git diff --check HEAD
+
+      - name: Ensure checkout remains clean
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --short)" ]]; then
+            git status --short
+            exit 1
+          fi
+
+      - name: Scan committed content for secrets
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl --fail --location --retry 3 "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum --check -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --verbose .
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          release_sha="$(git rev-parse HEAD)"
+          cat > "$RUNNER_TEMP/factory-release-notes.md" <<EOF
+          Factory $RELEASE_TAG
+
+          Source: $release_sha
+
+          Validation performed by this workflow:
+          - Generated and checked Hatchet contracts.
+          - Ran repository tool tests.
+          - Built and tested Hatchet workers.
+          - Ran bridge and lifecycle writer tests.
+          - Validated Docker Compose config and built the Factory image.
+          - Checked whitespace and scanned committed content with gitleaks.
+
+          Deployment:
+          This workflow does not deploy the VPS runtime. Deploy from the host with:
+
+          \`\`\`bash
+          cd /root/driftward/repos/factory
+          git fetch --tags origin
+          git switch --detach $RELEASE_TAG
+          bash deploy/install-docker.sh --image-tag $RELEASE_TAG --start
+          git switch main
+          git pull --ff-only
+          \`\`\`
+          EOF
+
+      - name: Create tag and GitHub release
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG^{commit}" >/dev/null; then
+            echo "using existing annotated tag: $RELEASE_TAG"
+          else
+            git tag -a "$RELEASE_TAG" -m "Factory $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+          args=(release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "Factory $RELEASE_TAG" --notes-file "$RUNNER_TEMP/factory-release-notes.md" --verify-tag)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"
+
+      - name: Report dry run
+        if: env.DRY_RUN == 'true'
+        run: |
+          echo "Dry run complete. No tag or GitHub release was created."
