@@ -621,11 +621,11 @@ verification_pending -> failed
 `effect_committed` truthfully means an external artifact exists. It is not an
 implementation-success state. The bounded Hermes-side verifier must collect
 the draft PR's repository, base, deterministic branch, draft status, Factory
-App author, exact `Refs Linear ENG-X` line, changed-file scope, checks,
-and reported local validation/secret-check evidence before it can transition to
-`ready_for_human_review`. Each real payload carries an immutable copy of a
-checked-in repository verifier policy: required check names, allowed and
-forbidden paths, exact local commands, and one exact secret-check command.
+App author, exact `Refs Linear ENG-X` line, changed-file scope, aggregate
+GitHub check status, and reported local validation/secret-check evidence before
+it can transition to `ready_for_human_review`. Each real payload carries an
+immutable copy of a checked-in repository verifier policy: allowed and forbidden
+paths, exact local commands, and one exact secret-check command.
 Missing or unavailable evidence fails closed. A stale reconciler may recover
 an artifact into `verification_pending` and re-deliver the original job for
 bounded verification, but it must never infer verified readiness merely
@@ -636,7 +636,7 @@ return its current state/result rather than starting a new external effect.
 `effect_committed` and `verification_pending` retries resume verification for
 the original deterministic branch and PR. The ledger persists the bounded
 Hermes validation context plus a canonical, hashed verification receipt
-(commit, check conclusions, PR identity, file, local, and secret policy results)
+(commit, aggregate GitHub check status, PR identity, file, local, and secret policy results)
 before `ready_for_human_review` is allowed. `completed` is reserved for a
 dry-run job; real jobs cannot enter that legacy terminal state.
 

@@ -182,16 +182,16 @@ export const HATCHET_CONTRACT = {
       "label": "Draft PR changed a forbidden path"
     },
     "verification_github_checks_missing": {
-      "label": "Draft PR did not expose required GitHub checks"
+      "label": "Draft PR did not expose GitHub check status"
     },
     "verification_github_checks_pending": {
       "label": "Draft PR GitHub checks are incomplete"
     },
     "verification_github_checks_timeout": {
-      "label": "Draft PR GitHub checks did not appear before the verification timeout"
+      "label": "Draft PR GitHub checks did not reach success before the verification timeout"
     },
     "verification_github_required_check_missing": {
-      "label": "Draft PR is missing a required GitHub check"
+      "label": "Draft PR is missing a legacy required GitHub check"
     },
     "verification_github_check_failed": {
       "label": "Draft PR GitHub check failed"

@@ -195,7 +195,7 @@ test('includes immutable project routing evidence in bridge payloads', () => {
   assert.equal(payload.linear_issue_id, '11111111-2222-4333-8444-555555555555');
   assert.equal(payload.expected_base, 'main');
   assert.equal(payload.body, 'Refs Linear ENG-7');
-  assert.deepEqual(payload.required_github_checks, ['quality (ubuntu-latest)', 'quality (macos-latest)', 'quality (windows-latest)', 'validate', 'secret-scan']);
+  assert.equal('required_github_checks' in payload, false);
   assert.deepEqual(payload.allowed_changed_paths, ['src', 'tests', 'scripts', 'docs', 'README.md', 'package.json', 'package-lock.json', 'tsconfig.json']);
   assert.equal(payload.secret_check_command, 'npm run check:secrets');
   assert.deepEqual(payload.verification_policy, verifierPolicyPayload(resolveDraftPrVerifierPolicy('Driftward-LLC/capykit')));
@@ -278,7 +278,7 @@ test('verifier policy fails closed when required enforcement is missing or empty
   withRawRegistry(JSON.stringify({ version: 1, policies: [] }), (policyPath) => {
     assert.throws(() => resolveDraftPrVerifierPolicy('Driftward-LLC/capykit', { policyPath }), (error: unknown) => error instanceof DraftPrVerifierPolicyError && error.code === 'verification_policy_missing');
   });
-  withRawRegistry(JSON.stringify({ version: 1, policies: [{ id: 'bad', repo: 'Driftward-LLC/capykit', expected_base: 'main', required_github_checks: [], allowed_changed_paths: ['tests'], forbidden_changed_paths: ['.env'], required_local_commands: ['npm test'], secret_check_command: 'npm run check:secrets' }] }), (policyPath) => {
+  withRawRegistry(JSON.stringify({ version: 1, policies: [{ id: 'bad', repo: 'Driftward-LLC/capykit', expected_base: 'main', allowed_changed_paths: [], forbidden_changed_paths: ['.env'], required_local_commands: ['npm test'], secret_check_command: 'npm run check:secrets' }] }), (policyPath) => {
     assert.throws(() => resolveDraftPrVerifierPolicy('Driftward-LLC/capykit', { policyPath }), (error: unknown) => error instanceof DraftPrVerifierPolicyError && error.code === 'verification_policy_invalid');
   });
 });

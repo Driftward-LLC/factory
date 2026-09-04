@@ -138,7 +138,7 @@ Retry behavior:
 - After Hermes returns a PR, the bridge records the artifact and enters
   `verification_pending`. The bounded Hermes runtime then verifies the expected
   repository/base/branch/draft state, Factory App author, exact Linear link,
-  declared changed-file scope, all GitHub checks, and reported
+  declared changed-file scope, aggregate GitHub check status, and reported
   local-command/secret-check evidence. A missing,
   malformed, pending, or failed item leaves the bridge job failed while
   preserving the PR URL; only green evidence reaches `ready_for_human_review`.

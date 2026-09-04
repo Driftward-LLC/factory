@@ -2699,8 +2699,8 @@ def _canonical_verifier_policy(repo: str) -> dict[str, Any]:
         if not isinstance(version, int) or version < 1 or len(policies) != 1:
             raise ValueError("catalog is invalid")
         policy = policies[0]
-        required = {"id", "repo", "expected_base", "required_github_checks", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command"}
-        if set(policy) != required or any(not isinstance(policy[key], str) or not policy[key].strip() for key in ("id", "repo", "expected_base", "secret_check_command")) or any(not isinstance(policy[key], list) or not policy[key] or any(not isinstance(item, str) or not item.strip() for item in policy[key]) for key in ("required_github_checks", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands")):
+        required = {"id", "repo", "expected_base", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command"}
+        if set(policy) != required or any(not isinstance(policy[key], str) or not policy[key].strip() for key in ("id", "repo", "expected_base", "secret_check_command")) or any(not isinstance(policy[key], list) or not policy[key] or any(not isinstance(item, str) or not item.strip() for item in policy[key]) for key in ("allowed_changed_paths", "forbidden_changed_paths", "required_local_commands")):
             raise ValueError("repository policy is invalid")
         return {"catalog_version": version, "digest": hashlib.sha256(canonical_json(policy).encode()).hexdigest(), **policy}
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -2713,12 +2713,34 @@ def _validate_payload_policy(job: dict[str, Any]) -> dict[str, Any]:
         raise BridgeValidationError("real draft PR job requires repository policy")
     canonical = _canonical_verifier_policy(repo)
     supplied = job["payload"].get("verification_policy")
-    if not isinstance(supplied, dict) or supplied != canonical:
+    if not _payload_policy_matches(supplied, canonical):
         raise BridgeValidationError("submitted verifier policy does not exactly match the checked-in policy")
-    for key in ("expected_base", "required_github_checks", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command"):
+    for key in ("expected_base", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command"):
         if job["payload"].get(key) != canonical[key]:
             raise BridgeValidationError("submitted verifier policy fields do not exactly match the checked-in policy")
     return canonical
+
+
+def _payload_policy_matches(supplied: Any, canonical: dict[str, Any]) -> bool:
+    if not isinstance(supplied, dict) or supplied.get("catalog_version") != canonical.get("catalog_version"):
+        return False
+    body_keys = ("id", "repo", "expected_base", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command")
+    allowed_keys = {*body_keys, "catalog_version", "digest"}
+    legacy_allowed_keys = {*allowed_keys, "required_github_checks"}
+    supplied_keys = set(supplied)
+    if supplied_keys != allowed_keys and supplied_keys != legacy_allowed_keys:
+        return False
+    if {key: supplied.get(key) for key in body_keys} != {key: canonical[key] for key in body_keys}:
+        return False
+    digest = supplied.get("digest")
+    if digest == canonical["digest"]:
+        return True
+    legacy_checks = supplied.get("required_github_checks")
+    if not isinstance(legacy_checks, list) or not legacy_checks or any(not isinstance(item, str) or not item.strip() for item in legacy_checks):
+        return False
+    legacy_body = {key: supplied[key] for key in body_keys}
+    legacy_body["required_github_checks"] = legacy_checks
+    return digest == hashlib.sha256(canonical_json(legacy_body).encode()).hexdigest()
 
 
 def _validate_verification_receipt(value: Any, job: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -2737,9 +2759,9 @@ def _validate_verification_receipt(value: Any, job: dict[str, Any]) -> tuple[dic
     policy = _validate_payload_policy(job)
     if value["policy_id"] != policy["id"] or value["policy_catalog_version"] != policy["catalog_version"] or value["policy_digest"] != policy["digest"]:
         raise BridgeValidationError("verification receipt does not match the checked-in verifier policy")
-    expected_checks = policy["required_github_checks"]
-    if not isinstance(value["checks"], list) or {item.get("name") for item in value["checks"] if isinstance(item, dict)} != set(expected_checks) or len(value["checks"]) != len(expected_checks) or any(not isinstance(item, dict) or set(item) != {"name", "conclusion"} or item.get("conclusion") != "SUCCESS" for item in value["checks"]):
-        raise BridgeValidationError("verification receipt checks do not exactly match the required successful set")
+    checks = value["checks"]
+    if not isinstance(checks, dict) or set(checks) != {"status", "total_count"} or checks.get("status") != "SUCCESS" or not isinstance(checks.get("total_count"), int) or checks["total_count"] < 1 or checks["total_count"] > 512:
+        raise BridgeValidationError("verification receipt GitHub check status is not successful")
     pr_identity, files, local, secret = (value[field] for field in ("pr_identity", "file_policy", "local_policy", "secret_policy"))
     expected_author = os.environ.get("DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN", "factory-hermes[bot]")
     allowed_authors = _github_app_author_aliases(expected_author)
