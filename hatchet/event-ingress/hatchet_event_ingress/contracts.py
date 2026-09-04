@@ -84,12 +84,12 @@ HATCHET_CONTRACT = {'version': 1,
                   'verification_changed_file_scope_invalid': {'label': 'Draft PR changed files are outside the '
                                                                        'declared scope'},
                   'verification_changed_file_forbidden': {'label': 'Draft PR changed a forbidden path'},
-                  'verification_github_checks_missing': {'label': 'Draft PR did not expose required GitHub checks'},
+                  'verification_github_checks_missing': {'label': 'Draft PR did not expose GitHub check status'},
                   'verification_github_checks_pending': {'label': 'Draft PR GitHub checks are incomplete'},
-                  'verification_github_checks_timeout': {'label': 'Draft PR GitHub checks did not appear before the '
-                                                                  'verification timeout'},
-                  'verification_github_required_check_missing': {'label': 'Draft PR is missing a required GitHub '
-                                                                          'check'},
+                  'verification_github_checks_timeout': {'label': 'Draft PR GitHub checks did not reach success before '
+                                                                  'the verification timeout'},
+                  'verification_github_required_check_missing': {'label': 'Draft PR is missing a legacy required '
+                                                                          'GitHub check'},
                   'verification_github_check_failed': {'label': 'Draft PR GitHub check failed'},
                   'verification_local_command_evidence_missing': {'label': 'Draft PR is missing reported local command '
                                                                            'evidence'},

@@ -9,7 +9,6 @@ export type DraftPrVerifierPolicy = {
   id: string;
   repo: string;
   expected_base: string;
-  required_github_checks: string[];
   allowed_changed_paths: string[];
   forbidden_changed_paths: string[];
   required_local_commands: string[];
@@ -59,7 +58,6 @@ export function verifierPolicyPayload(policy: DraftPrVerifierPolicy): JsonObject
     id: policy.id,
     repo: policy.repo,
     expected_base: policy.expected_base,
-    required_github_checks: policy.required_github_checks,
     allowed_changed_paths: policy.allowed_changed_paths,
     forbidden_changed_paths: policy.forbidden_changed_paths,
     required_local_commands: policy.required_local_commands,
@@ -68,21 +66,25 @@ export function verifierPolicyPayload(policy: DraftPrVerifierPolicy): JsonObject
 }
 
 function normalizePolicy(value: Record<string, unknown>, catalogVersion: number): DraftPrVerifierPolicy {
+  const allowedFields = ['allowed_changed_paths', 'expected_base', 'forbidden_changed_paths', 'id', 'repo', 'required_local_commands', 'secret_check_command'];
+  const fields = Object.keys(value).sort();
+  if (fields.length !== allowedFields.length || fields.some((field, index) => field !== allowedFields[index])) {
+    throw new DraftPrVerifierPolicyError('verification_policy_invalid', `verifier policy ${String(value.id || '<unknown>')} has unexpected fields`);
+  }
   const rawPolicy = {
     id: stringField(value, 'id'),
     repo: stringField(value, 'repo'),
     expected_base: stringField(value, 'expected_base'),
-    required_github_checks: stringArray(value, 'required_github_checks'),
     allowed_changed_paths: stringArray(value, 'allowed_changed_paths'),
     forbidden_changed_paths: stringArray(value, 'forbidden_changed_paths'),
     required_local_commands: stringArray(value, 'required_local_commands'),
     secret_check_command: stringField(value, 'secret_check_command')
   };
   const policy: DraftPrVerifierPolicy = { ...rawPolicy, catalog_version: catalogVersion, digest: digest(rawPolicy) };
-  if (!policy.expected_base || !policy.required_github_checks.length || !policy.allowed_changed_paths.length || !policy.forbidden_changed_paths.length || !policy.required_local_commands.length || !policy.secret_check_command) {
+  if (!policy.expected_base || !policy.allowed_changed_paths.length || !policy.forbidden_changed_paths.length || !policy.required_local_commands.length || !policy.secret_check_command) {
     throw new DraftPrVerifierPolicyError('verification_policy_invalid', `verifier policy ${policy.id || '<unknown>'} has empty required enforcement`);
   }
-  if (new Set(policy.required_github_checks).size !== policy.required_github_checks.length || new Set(policy.required_local_commands).size !== policy.required_local_commands.length) {
+  if (new Set(policy.required_local_commands).size !== policy.required_local_commands.length) {
     throw new DraftPrVerifierPolicyError('verification_policy_invalid', `verifier policy ${policy.id} has duplicate required entries`);
   }
   return policy;

@@ -31,7 +31,8 @@ test('findAddedTempFileReference detects temp-file placeholder content', () => {
 test('green evidence produces a structured receipt for ready-for-review', () => {
   const verification = verifyDraftPrEvidence(greenJob(), greenResult(), greenView());
   assert.equal(verification.verifiedCommitSha, 'abc123');
-  assert.deepEqual(verification.checks.map((check) => check.name), policy().required_github_checks);
+  assert.deepEqual(verification.checks, { status: 'SUCCESS', total_count: 2 });
+  assert.deepEqual(verification.receipt.checks, { status: 'SUCCESS', total_count: 2 });
   assert.equal(verification.receipt.policy_id, 'capykit-node-v1');
   assert.deepEqual((verification.receipt.file_policy as { files: string[] }).files, ['tests/cli.test.ts']);
 });
@@ -60,10 +61,36 @@ test('PR #20 regression fixtures never verify', () => {
   assertFailure(() => verifyDraftPrEvidence(greenJob(), greenResult(), greenView({ statusCheckRollup: null })), 'verification_evidence_unavailable');
 });
 
-test('required checks and required command evidence fail closed', () => {
-  assertFailure(() => verifyDraftPrEvidence(greenJob(), greenResult(), greenView({ statusCheckRollup: [{ name: 'quality (ubuntu-latest)', conclusion: 'SUCCESS' }] })), 'verification_github_required_check_missing');
+test('GitHub check status and required command evidence fail closed', () => {
+  assertFailure(() => verifyDraftPrEvidence(greenJob(), greenResult(), greenView({ statusCheckRollup: [] })), 'verification_github_checks_pending');
   assertFailure(() => verifyDraftPrEvidence(greenJob(), { ...greenResult(), validation: validation([...policy().required_local_commands.slice(0, -1), policy().required_local_commands[0]]) }, greenView()), 'verification_local_command_policy_mismatch');
   assertFailure(() => verifyDraftPrEvidence(greenJob(), { ...greenResult(), validation: validation(policy().required_local_commands, 'npm run arbitrary-secret-check') }, greenView()), 'verification_secret_check_policy_mismatch');
+});
+
+test('successful GitHub checks are aggregate and repository specific names are accepted', () => {
+  const verification = verifyDraftPrEvidence(
+    greenJob(),
+    greenResult(),
+    greenView({ statusCheckRollup: githubChecks(['quality (ubuntu-latest)', 'factory-verification', 'repo-specific']) })
+  );
+  assert.deepEqual(verification.checks, { status: 'SUCCESS', total_count: 3 });
+});
+
+test('legacy payload policy check names are accepted only as digest compatibility', () => {
+  const canonical = policy();
+  const legacyChecks = ['quality (ubuntu-latest)', 'quality (macos-latest)'];
+  const legacyPolicy = {
+    ...canonical,
+    required_github_checks: legacyChecks,
+    digest: createHash('sha256').update(JSON.stringify(sort({ ...policyBody(canonical), required_github_checks: legacyChecks }))).digest('hex')
+  };
+  const job = {
+    ...greenJob(),
+    payload: { ...greenJob().payload, required_github_checks: legacyChecks, verification_policy: legacyPolicy }
+  };
+  const verification = verifyDraftPrEvidence(job, greenResult(), greenView({ statusCheckRollup: githubChecks(['factory-verification']) }));
+  assert.equal(verification.receipt.policy_digest, canonical.digest);
+  assert.deepEqual(verification.checks, { status: 'SUCCESS', total_count: 1 });
 });
 
 test('successful non-policy local commands do not block required validation evidence', () => {
@@ -220,10 +247,15 @@ function assertFailure(fn: () => unknown, reasonCode: string): void {
 function policy() {
   const catalog = JSON.parse(readFileSync(process.env.HATCHET_VERIFIER_POLICY_PATH!, 'utf8')) as { version: number; policies: Array<Record<string, unknown>> };
   const entry = catalog.policies.find((item) => item.repo === 'Driftward-LLC/capykit')!;
-  return { ...entry, catalog_version: catalog.version, digest: createHash('sha256').update(JSON.stringify(sort(entry))).digest('hex') } as { id: string; repo: string; expected_base: string; required_github_checks: string[]; allowed_changed_paths: string[]; forbidden_changed_paths: string[]; required_local_commands: string[]; secret_check_command: string; catalog_version: number; digest: string };
+  return { ...entry, catalog_version: catalog.version, digest: createHash('sha256').update(JSON.stringify(sort(entry))).digest('hex') } as { id: string; repo: string; expected_base: string; allowed_changed_paths: string[]; forbidden_changed_paths: string[]; required_local_commands: string[]; secret_check_command: string; catalog_version: number; digest: string };
 }
 
 function sort(value: unknown): unknown { if (Array.isArray(value)) return value.map(sort); if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, sort(item)])); return value; }
+
+function policyBody(value: ReturnType<typeof policy>) {
+  const { catalog_version: _catalogVersion, digest: _digest, ...body } = value;
+  return body;
+}
 
 function validation(commands: string[], secretCommand = 'npm run check:secrets') {
   return { local_commands: commands.map((command) => ({ command, exit_code: 0 })), secret_check: { command: secretCommand, exit_code: 0 } };
@@ -233,7 +265,7 @@ function greenJob(): BridgeJob {
   const verifierPolicy = policy();
   return {
     job_id: 'job-61', idempotency_key: 'hatchet:work-item:linear:ENG-61:create_draft_pr:real:active', state: 'verification_pending', requested_action: 'create_draft_pr',
-    payload: { repo: 'Driftward-LLC/capykit', linear_issue: 'ENG-61', expected_base: 'main', required_github_checks: verifierPolicy.required_github_checks, allowed_changed_paths: verifierPolicy.allowed_changed_paths, forbidden_changed_paths: verifierPolicy.forbidden_changed_paths, required_local_commands: verifierPolicy.required_local_commands, secret_check_command: verifierPolicy.secret_check_command, verification_policy: verifierPolicy, dry_run: false },
+    payload: { repo: 'Driftward-LLC/capykit', linear_issue: 'ENG-61', expected_base: 'main', allowed_changed_paths: verifierPolicy.allowed_changed_paths, forbidden_changed_paths: verifierPolicy.forbidden_changed_paths, required_local_commands: verifierPolicy.required_local_commands, secret_check_command: verifierPolicy.secret_check_command, verification_policy: verifierPolicy, dry_run: false },
     payload_hash: 'hash', branch: 'codex/eng-61-draft-pr-verification-gate', commit_sha: 'abc123', pr_url: 'https://github.com/Driftward-LLC/capykit/pull/61', hermes_session_id: 'session-61', hatchet_workflow_run_id: 'run-61', hatchet_step_run_id: 'step-61', verification_context: validation(policy().required_local_commands), verification_observed_context: null, verification_receipt: null, verification_digest: null, reason_code: null, error: null, created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T00:00:00Z'
   };
 }
@@ -267,7 +299,11 @@ function greenResult(): HermesDraftPrResult {
 }
 
 function greenView(overrides: Record<string, unknown> = {}) {
-  return { url: 'https://github.com/Driftward-LLC/capykit/pull/61', headRefName: 'codex/eng-61-draft-pr-verification-gate', headRefOid: 'abc123', baseRefName: 'main', isDraft: true, author: { login: 'factory-hermes[bot]' }, body: 'Refs Linear ENG-61', labels: [{ name: 'codex-authored' }, { name: 'bug' }], files: [{ path: 'tests/cli.test.ts' }], statusCheckRollup: policy().required_github_checks.map((name) => ({ name, conclusion: 'SUCCESS' })), ...overrides };
+  return { url: 'https://github.com/Driftward-LLC/capykit/pull/61', headRefName: 'codex/eng-61-draft-pr-verification-gate', headRefOid: 'abc123', baseRefName: 'main', isDraft: true, author: { login: 'factory-hermes[bot]' }, body: 'Refs Linear ENG-61', labels: [{ name: 'codex-authored' }, { name: 'bug' }], files: [{ path: 'tests/cli.test.ts' }], statusCheckRollup: githubChecks(['quality (ubuntu-latest)', 'factory-verification']), ...overrides };
+}
+
+function githubChecks(names: string[]) {
+  return names.map((name) => ({ name, conclusion: 'SUCCESS' }));
 }
 
 function greenVerification(): DraftPrVerification {

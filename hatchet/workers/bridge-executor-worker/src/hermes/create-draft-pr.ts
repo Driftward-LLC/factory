@@ -118,7 +118,7 @@ export type GitHubHeadInspection = GatewayGitHubHeadInspection;
 export type DraftPrVerification = {
   expectedBase: string;
   changedFiles: string[];
-  checks: Array<{ name: string; conclusion: 'SUCCESS' }>;
+  checks: { status: 'SUCCESS'; total_count: number };
   verifiedCommitSha: string;
   receipt: JsonObject;
 };
@@ -129,7 +129,6 @@ type VerificationPolicy = {
   id: string;
   repo: string;
   expectedBase: string;
-  requiredGitHubChecks: string[];
   allowedChangedPaths: string[];
   forbiddenChangedPaths: string[];
   requiredLocalCommands: string[];
@@ -590,7 +589,7 @@ export async function waitForHermesDraftPrVerification(
         throw error;
       }
       if (now() >= deadline) {
-        throw new NonRetryableBridgeExecutionError('verification_github_checks_timeout', 'required GitHub checks did not appear before the bounded verification timeout');
+        throw new NonRetryableBridgeExecutionError('verification_github_checks_timeout', 'GitHub checks did not reach a successful status before the bounded verification timeout');
       }
       await sleep(Math.min(poll, Math.max(1, deadline - now())));
     }
@@ -628,7 +627,7 @@ export function verifyDraftPrEvidence(
 
   const changedFiles = changedFileNames(view.files);
   verifyChangedFileScope(changedFiles, policy.allowedChangedPaths, policy.forbiddenChangedPaths);
-  const checks = verifyGitHubChecks(view.statusCheckRollup, policy.requiredGitHubChecks);
+  const checks = verifyGitHubChecks(view.statusCheckRollup);
   const validation = verifyReportedValidation(result.validation, policy);
   const verifiedCommitSha = view.headRefOid?.trim();
   if (!verifiedCommitSha) {
@@ -1332,14 +1331,13 @@ function pathMatchesRule(path: string, rule: string): boolean {
   return path === normalized || path.startsWith(normalized + '/');
 }
 
-function verifyGitHubChecks(checks: GithubPrView['statusCheckRollup'], requiredChecks: string[]): Array<{ name: string; conclusion: 'SUCCESS' }> {
+function verifyGitHubChecks(checks: GithubPrView['statusCheckRollup']): { status: 'SUCCESS'; total_count: number } {
   if (!Array.isArray(checks)) {
     throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'GitHub check evidence was unavailable');
   }
   if (checks.length === 0) {
-    throw new NonRetryableBridgeExecutionError('verification_github_checks_pending', 'required GitHub checks have not appeared yet');
+    throw new NonRetryableBridgeExecutionError('verification_github_checks_pending', 'GitHub checks have not appeared yet');
   }
-  const successful: Array<{ name: string; conclusion: 'SUCCESS' }> = [];
   for (const check of checks) {
     const name = check?.name?.trim();
     if (!name) {
@@ -1348,7 +1346,6 @@ function verifyGitHubChecks(checks: GithubPrView['statusCheckRollup'], requiredC
     const conclusion = (check.conclusion || check.state || '').toUpperCase();
     const status = (check.status || '').toUpperCase();
     if (conclusion === 'SUCCESS') {
-      successful.push({ name, conclusion: 'SUCCESS' });
       continue;
     }
     if (['PENDING', 'QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED'].includes(conclusion) || ['PENDING', 'QUEUED', 'IN_PROGRESS'].includes(status)) {
@@ -1356,12 +1353,7 @@ function verifyGitHubChecks(checks: GithubPrView['statusCheckRollup'], requiredC
     }
     throw new NonRetryableBridgeExecutionError('verification_github_check_failed', `GitHub check ${name} did not succeed; observed ${conclusion || status || 'UNKNOWN'}`);
   }
-  const observed = new Set(successful.map((check) => check.name));
-  const missing = requiredChecks.find((name) => !observed.has(name));
-  if (missing) {
-    throw new NonRetryableBridgeExecutionError('verification_github_required_check_missing', `required GitHub check ${missing} did not succeed`);
-  }
-  return successful;
+  return { status: 'SUCCESS', total_count: checks.length };
 }
 
 function verifyReportedValidation(raw: JsonValue | null, policy: VerificationPolicy): VerifiedValidationEvidence {
@@ -1434,19 +1426,18 @@ function verificationPolicy(job: BridgeJob): VerificationPolicy {
     id: jsonValueToString(value.id) || '',
     repo: jsonValueToString(value.repo) || '',
     expectedBase: jsonValueToString(value.expected_base) || '',
-    requiredGitHubChecks: policyArray(value.required_github_checks),
     allowedChangedPaths: policyArray(value.allowed_changed_paths),
     forbiddenChangedPaths: policyArray(value.forbidden_changed_paths),
     requiredLocalCommands: policyArray(value.required_local_commands),
     secretCheckCommand: jsonValueToString(value.secret_check_command) || ''
   };
-  if (!policy.id || policy.repo !== repo || !policy.expectedBase || !policy.requiredGitHubChecks.length || !policy.allowedChangedPaths.length || !policy.forbiddenChangedPaths.length || !policy.requiredLocalCommands.length || !policy.secretCheckCommand) {
+  if (!policy.id || policy.repo !== repo || !policy.expectedBase || !policy.allowedChangedPaths.length || !policy.forbiddenChangedPaths.length || !policy.requiredLocalCommands.length || !policy.secretCheckCommand) {
     throw new NonRetryableBridgeExecutionError('verification_policy_invalid', 'draft PR verifier policy is incomplete or does not match the routed repository');
   }
-  if (policy.catalogVersion !== canonical.catalogVersion || policy.digest !== canonical.digest || !samePolicy(policy, canonical) || !sameStrings(policy.requiredGitHubChecks, payloadStringArray(job, 'required_github_checks')) || !sameStrings(policy.allowedChangedPaths, payloadStringArray(job, 'allowed_changed_paths')) || !sameStrings(policy.forbiddenChangedPaths, payloadStringArray(job, 'forbidden_changed_paths')) || !sameStrings(policy.requiredLocalCommands, payloadStringArray(job, 'required_local_commands')) || policy.expectedBase !== requiredPayloadString(job, 'expected_base') || policy.secretCheckCommand !== requiredPayloadString(job, 'secret_check_command')) {
+  if (policy.catalogVersion !== canonical.catalogVersion || !payloadPolicyFieldsAllowed(value) || !payloadPolicyDigestMatches(value, canonical) || !samePolicy(policy, canonical) || !sameStrings(policy.allowedChangedPaths, payloadStringArray(job, 'allowed_changed_paths')) || !sameStrings(policy.forbiddenChangedPaths, payloadStringArray(job, 'forbidden_changed_paths')) || !sameStrings(policy.requiredLocalCommands, payloadStringArray(job, 'required_local_commands')) || policy.expectedBase !== requiredPayloadString(job, 'expected_base') || policy.secretCheckCommand !== requiredPayloadString(job, 'secret_check_command')) {
     throw new NonRetryableBridgeExecutionError('verification_policy_invalid', 'draft PR payload policy does not exactly match the checked-in verifier policy');
   }
-  return policy;
+  return canonical;
 }
 
 function loadCanonicalPolicy(repo: string): VerificationPolicy {
@@ -1458,8 +1449,11 @@ function loadCanonicalPolicy(repo: string): VerificationPolicy {
     const matches = catalog.policies.filter((item): item is Record<string, JsonValue> => Boolean(item) && typeof item === 'object' && !Array.isArray(item) && (item as Record<string, JsonValue>).repo === repo);
     if (matches.length !== 1) throw new Error('missing repository policy');
     const value = matches[0];
-    const policy: VerificationPolicy = { catalogVersion: catalog.version as number, digest: policyDigest(value), id: jsonValueToString(value.id) || '', repo: jsonValueToString(value.repo) || '', expectedBase: jsonValueToString(value.expected_base) || '', requiredGitHubChecks: policyArray(value.required_github_checks), allowedChangedPaths: policyArray(value.allowed_changed_paths), forbiddenChangedPaths: policyArray(value.forbidden_changed_paths), requiredLocalCommands: policyArray(value.required_local_commands), secretCheckCommand: jsonValueToString(value.secret_check_command) || '' };
-    if (!policy.id || !policy.expectedBase || !policy.requiredGitHubChecks.length || !policy.allowedChangedPaths.length || !policy.forbiddenChangedPaths.length || !policy.requiredLocalCommands.length || !policy.secretCheckCommand) throw new Error('incomplete repository policy');
+    const expectedFields = ['allowed_changed_paths', 'expected_base', 'forbidden_changed_paths', 'id', 'repo', 'required_local_commands', 'secret_check_command'];
+    const fields = Object.keys(value).sort();
+    if (fields.length !== expectedFields.length || fields.some((field, index) => field !== expectedFields[index])) throw new Error('repository policy has unexpected fields');
+    const policy: VerificationPolicy = { catalogVersion: catalog.version as number, digest: policyDigest(value), id: jsonValueToString(value.id) || '', repo: jsonValueToString(value.repo) || '', expectedBase: jsonValueToString(value.expected_base) || '', allowedChangedPaths: policyArray(value.allowed_changed_paths), forbiddenChangedPaths: policyArray(value.forbidden_changed_paths), requiredLocalCommands: policyArray(value.required_local_commands), secretCheckCommand: jsonValueToString(value.secret_check_command) || '' };
+    if (!policy.id || !policy.expectedBase || !policy.allowedChangedPaths.length || !policy.forbiddenChangedPaths.length || !policy.requiredLocalCommands.length || !policy.secretCheckCommand) throw new Error('incomplete repository policy');
     return policy;
   } catch (error) {
     throw new NonRetryableBridgeExecutionError('verification_policy_unavailable', `checked-in verifier policy is unavailable: ${sanitizeError(error)}`);
@@ -1467,7 +1461,34 @@ function loadCanonicalPolicy(repo: string): VerificationPolicy {
 }
 
 function samePolicy(left: VerificationPolicy, right: VerificationPolicy): boolean {
-  return left.id === right.id && left.repo === right.repo && left.expectedBase === right.expectedBase && sameStrings(left.requiredGitHubChecks, right.requiredGitHubChecks) && sameStrings(left.allowedChangedPaths, right.allowedChangedPaths) && sameStrings(left.forbiddenChangedPaths, right.forbiddenChangedPaths) && sameStrings(left.requiredLocalCommands, right.requiredLocalCommands) && left.secretCheckCommand === right.secretCheckCommand;
+  return left.id === right.id && left.repo === right.repo && left.expectedBase === right.expectedBase && sameStrings(left.allowedChangedPaths, right.allowedChangedPaths) && sameStrings(left.forbiddenChangedPaths, right.forbiddenChangedPaths) && sameStrings(left.requiredLocalCommands, right.requiredLocalCommands) && left.secretCheckCommand === right.secretCheckCommand;
+}
+
+function payloadPolicyDigestMatches(value: JsonObject, canonical: VerificationPolicy): boolean {
+  const digest = jsonValueToString(value.digest);
+  if (digest === canonical.digest) return true;
+  const legacyChecks = policyArray(value.required_github_checks);
+  if (!legacyChecks.length) return false;
+  return digest === policyDigest({ ...policyBody(canonical), required_github_checks: legacyChecks });
+}
+
+function payloadPolicyFieldsAllowed(value: JsonObject): boolean {
+  const currentFields = ['allowed_changed_paths', 'catalog_version', 'digest', 'expected_base', 'forbidden_changed_paths', 'id', 'repo', 'required_local_commands', 'secret_check_command'];
+  const legacyFields = [...currentFields, 'required_github_checks'].sort();
+  const fields = Object.keys(value).sort();
+  return sameStrings(fields, currentFields) || sameStrings(fields, legacyFields);
+}
+
+function policyBody(policy: VerificationPolicy): Record<string, JsonValue> {
+  return {
+    id: policy.id,
+    repo: policy.repo,
+    expected_base: policy.expectedBase,
+    allowed_changed_paths: policy.allowedChangedPaths,
+    forbidden_changed_paths: policy.forbiddenChangedPaths,
+    required_local_commands: policy.requiredLocalCommands,
+    secret_check_command: policy.secretCheckCommand
+  };
 }
 
 function policyDigest(value: Record<string, JsonValue>): string {

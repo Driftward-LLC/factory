@@ -100,7 +100,6 @@ export function buildBridgePayload(
     },
     expected_head_sha: null,
     expected_base: verifierPolicy.expected_base,
-    required_github_checks: verifierPolicy.required_github_checks,
     allowed_changed_paths: verifierPolicy.allowed_changed_paths,
     forbidden_changed_paths: verifierPolicy.forbidden_changed_paths,
     required_local_commands: verifierPolicy.required_local_commands,

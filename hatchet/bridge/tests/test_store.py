@@ -34,20 +34,35 @@ from hatchet_hermes_bridge.store import (
 from test_support import connect_migrate as connect
 
 
-def verifier_payload(repository="Driftward-LLC/driftward-host"):
+def canonical_verifier_policy(repository="Driftward-LLC/driftward-host"):
     catalog = json.loads((Path(__file__).resolve().parents[2] / "workers" / "verifier-policy.json").read_text())
     policy = next(item for item in catalog["policies"] if item["repo"] == repository)
-    canonical = {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}
-    return {"repo": policy["repo"], "dry_run": False, "verification_policy": canonical, "expected_base": policy["expected_base"], "required_github_checks": policy["required_github_checks"], "allowed_changed_paths": policy["allowed_changed_paths"], "forbidden_changed_paths": policy["forbidden_changed_paths"], "required_local_commands": policy["required_local_commands"], "secret_check_command": policy["secret_check_command"]}
+    return {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}
+
+
+def verifier_payload(repository="Driftward-LLC/driftward-host"):
+    canonical = canonical_verifier_policy(repository)
+    policy = canonical
+    return {"repo": policy["repo"], "dry_run": False, "verification_policy": canonical, "expected_base": policy["expected_base"], "allowed_changed_paths": policy["allowed_changed_paths"], "forbidden_changed_paths": policy["forbidden_changed_paths"], "required_local_commands": policy["required_local_commands"], "secret_check_command": policy["secret_check_command"]}
+
+
+def legacy_verifier_payload(repository="Driftward-LLC/driftward-host"):
+    payload = verifier_payload(repository)
+    legacy_checks = ["legacy-check", "repo-specific-check"]
+    policy = {key: payload["verification_policy"][key] for key in ("id", "repo", "expected_base", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command")}
+    policy["required_github_checks"] = legacy_checks
+    legacy = {"catalog_version": payload["verification_policy"]["catalog_version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}
+    return {**payload, "verification_policy": legacy, "required_github_checks": legacy_checks}
 
 
 def verification_receipt(job, commit_sha):
     changed_file = "src/example.ts" if job["payload"]["repo"] == "Driftward-LLC/capykit" else "hatchet/bridge/tests/test_store.py"
+    policy = canonical_verifier_policy(job["payload"]["repo"])
     return {
         "version": "draft-pr-verification-v1", "verifier_version": "bridge-executor-v2", "verified_at": "2026-08-16T00:00:00Z",
         "repo": job["payload"]["repo"], "pr_url": job["pr_url"], "branch": job["branch"], "commit_sha": commit_sha,
-        "policy_id": job["payload"]["verification_policy"]["id"], "policy_catalog_version": job["payload"]["verification_policy"]["catalog_version"], "policy_digest": job["payload"]["verification_policy"]["digest"],
-        "checks": [{"name": name, "conclusion": "SUCCESS"} for name in job["payload"]["required_github_checks"]],
+        "policy_id": policy["id"], "policy_catalog_version": policy["catalog_version"], "policy_digest": policy["digest"],
+        "checks": {"status": "SUCCESS", "total_count": 2},
         "pr_identity": {"base": job["payload"]["expected_base"], "draft": True, "author": "factory-hermes[bot]", "linear_reference": f"Refs Linear {job['payload'].get('linear_issue')}"},
         "file_policy": {"allowed_changed_paths": job["payload"]["allowed_changed_paths"], "forbidden_changed_paths": job["payload"]["forbidden_changed_paths"], "files": [changed_file]},
         "local_policy": {"required_commands": job["payload"]["required_local_commands"], "results": [{"command": command, "exit_code": 0} for command in job["payload"]["required_local_commands"]]},
@@ -188,6 +203,40 @@ class BridgeStoreTests(unittest.TestCase):
 
         self.assertEqual(ready["state"], "ready_for_human_review")
         self.assertEqual(ready["verification_receipt"]["pr_identity"]["author"], "app/factory-hermes")
+
+    def test_verification_accepts_legacy_payload_policy_check_digest(self):
+        job, _ = submit_job(
+            self.conn,
+            {
+                "idempotency_key": "hatchet:run-legacy-policy:create-pr",
+                "requested_action": "create_draft_pr",
+                "payload": legacy_verifier_payload(),
+            },
+        )
+        transition_job(self.conn, job["job_id"], state="running")
+        transition_job(
+            self.conn,
+            job["job_id"],
+            state="effect_committed",
+            details={
+                "commit_sha": "abc123",
+                "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/97",
+            },
+        )
+        pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+        receipt = verification_receipt(pending, "abc123")
+        self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="legacy-policy")["acquired"])
+        self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="legacy-policy"))
+        record_verification_observation(self.conn, pending["job_id"], attempt_id="legacy-policy", receipt=receipt)
+        ready = transition_job(
+            self.conn,
+            job["job_id"],
+            state="ready_for_human_review",
+            details={"reason_code": "draft_pr_verified", "verification_attempt_id": "legacy-policy", "verification_receipt": receipt},
+        )
+
+        self.assertEqual(ready["state"], "ready_for_human_review")
+        self.assertEqual(ready["verification_receipt"]["checks"], {"status": "SUCCESS", "total_count": 2})
 
     def test_verified_ready_requires_a_pr_and_verification_reason(self):
         job, _ = submit_job(self.conn, {
