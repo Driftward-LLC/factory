@@ -182,6 +182,7 @@ services:
         required: false
     environment:
       <<: *hatchet-client-env
+      HATCHET_RECONCILIATION_ALLOW_DOCKER_INGRESS: "1"
     cpus: "0.25"
     mem_limit: 192m
 

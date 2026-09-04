@@ -80,6 +80,9 @@ test('checks Hatchet provenance for jobs made by current workers', () => {
 
 test('rejects non-loopback observation endpoints and safely reports unavailable ingress', async () => {
   assert.throws(() => new IngressObservationClient({ baseUrl: 'https://api.linear.app' }), /loopback/);
+  assert.throws(() => new IngressObservationClient({ baseUrl: 'http://event-ingress:19878' }), /loopback/);
+  assert.doesNotThrow(() => new IngressObservationClient({ baseUrl: 'http://event-ingress:19878', allowDockerServiceHost: true }));
+  assert.throws(() => new IngressObservationClient({ baseUrl: 'http://example.com', allowDockerServiceHost: true }), /loopback/);
   const client = new IngressObservationClient({ baseUrl: 'http://127.0.0.1:1', timeoutMs: 100 });
   assert.deepEqual(await client.latest('linear', 'ENG-39'), { status: 'unavailable' });
 });

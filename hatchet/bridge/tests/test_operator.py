@@ -81,6 +81,32 @@ class FactoryOperatorTests(unittest.TestCase):
         with self.assertRaisesRegex(OperatorError, "eligibility"):
             preview_retry(**self.kwargs())
 
+    def test_eligibility_skips_factory_lifecycle_actor_observations(self):
+        conn = sqlite3.connect(self.ingress_db)
+        lifecycle = observation(
+            dispatchEligible=False,
+            decision="observe_only",
+            reasonCode="linear_issue_factory_lifecycle_actor",
+            actorName="Shipwright",
+        )
+        conn.execute("INSERT INTO ingress_events VALUES ('event-lifecycle','linear','ENG-8',?,2)", (json.dumps(lifecycle),))
+        conn.commit(); conn.close()
+        preview = preview_retry(**self.kwargs())
+        self.assertTrue(preview["eligible"])
+
+        conn = sqlite3.connect(self.ingress_db)
+        terminal = observation(
+            status="Done",
+            dispatchEligible=False,
+            decision="observe_only",
+            reasonCode="linear_issue_status_not_ready",
+        )
+        conn.execute("INSERT INTO ingress_events VALUES ('event-terminal','linear','ENG-8',?,3)", (json.dumps(terminal),))
+        conn.execute("INSERT INTO ingress_events VALUES ('event-lifecycle-new','linear','ENG-8',?,4)", (json.dumps(lifecycle),))
+        conn.commit(); conn.close()
+        with self.assertRaisesRegex(OperatorError, "eligibility"):
+            preview_retry(**self.kwargs())
+
     def test_prior_artifacts_require_exact_supersession_and_never_mutate(self):
         preview = preview_retry(**self.kwargs()); first = reserve_retry(**self.kwargs(), request_id="first", reason="failed", actor="uid:0", snapshot_digest=preview["snapshot_digest"])
         conn = connect(self.bridge_db); transition_job(conn, first["job"]["job_id"], state="failed", details={"reason_code":"test"}); conn.execute("UPDATE factory_attempts SET prior_pr_url=? WHERE attempt_id=?", ("https://github.com/Driftward-LLC/capykit/pull/20", first["attempt"]["attempt_id"])); conn.commit(); conn.close()
