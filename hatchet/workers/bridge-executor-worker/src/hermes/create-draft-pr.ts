@@ -123,6 +123,13 @@ export type DraftPrVerification = {
   receipt: JsonObject;
 };
 
+export function verificationCompletionPlan(job: BridgeJob, verification: DraftPrVerification): { receipt: JsonObject; recordObservation: boolean } {
+  if (job.verification_observed_context) {
+    return { receipt: job.verification_observed_context, recordObservation: false };
+  }
+  return { receipt: verification.receipt, recordObservation: true };
+}
+
 type VerificationPolicy = {
   catalogVersion: number;
   digest: string;

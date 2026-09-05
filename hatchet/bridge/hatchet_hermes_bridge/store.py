@@ -49,6 +49,7 @@ TERMINAL_STATES = {"completed", "ready_for_human_review", "failed"}
 ALL_STATES = ACTIVE_STATES | TERMINAL_STATES
 FACTORY_ATTEMPT_ACTIVE = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
 FACTORY_ATTEMPT_TERMINAL = {"completed", "failed", "verified_ready", "canceled", "canceled_after_effect", "superseded"}
+INSPECTION_CAPABILITY_TTL_SECONDS = 120
 MIGRATION_FAILPOINT_STAGES = {
     "after-ddl", "during-backfill", "during-resolution-insertion",
     "during-attestation-insertion",
@@ -414,6 +415,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         _migrate_canonical_times(conn, "bridge_jobs", ("created_at", "updated_at"))
         _migrate_canonical_times(conn, "bridge_events", ("created_at",))
         _backfill_factory_attempts(conn)
+        _backfill_factory_inspections(conn)
         _migration_failpoint("during-backfill")
         _append_deterministic_conflict_resolutions(conn, operator="migration")
         _migration_failpoint("during-resolution-insertion")
@@ -1599,6 +1601,115 @@ def _parse_pr_reference(repository: str, url: str) -> tuple[str, int, str]:
     return repository, int(url.rsplit("/", 1)[1]), url
 
 
+def _inspection_age_seconds(value: Any, *, label: str) -> float:
+    try:
+        created = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise BridgeValidationError(f"{label} timestamp is invalid") from exc
+    return (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
+
+
+def _inspection_result_is_fresh(row: sqlite3.Row) -> bool:
+    if row["state"] != "completed" or not row["result_json"] or not row["observed_at"]:
+        return False
+    try:
+        age = _inspection_age_seconds(row["observed_at"], label="inspection result")
+    except BridgeValidationError:
+        return False
+    return 0 <= age <= INSPECTION_CAPABILITY_TTL_SECONDS
+
+
+def _inspection_request_is_expired(row: sqlite3.Row) -> bool:
+    if row["state"] == "completed" or row["result_json"]:
+        return False
+    try:
+        age = _inspection_age_seconds(row["created_at"], label="inspection capability")
+    except BridgeValidationError:
+        return False
+    return age > INSPECTION_CAPABILITY_TTL_SECONDS
+
+
+def _expire_incomplete_inspection_request(conn: sqlite3.Connection, request: sqlite3.Row, *, reason_code: str = "inspection_capability_expired") -> None:
+    now = utc_now()
+    conn.execute(
+        "UPDATE factory_inspection_requests SET state='expired', reason=?, updated_at=? WHERE request_key=? AND state!='completed' AND result_json IS NULL",
+        (reason_code, now, request["request_key"]),
+    )
+    conn.execute(
+        """
+        UPDATE factory_inspection_outbox
+        SET state='expired', acknowledged_at=COALESCE(acknowledged_at,?), delivery_lease_id=NULL,
+            delivery_lease_expires_at=NULL, updated_at=?
+        WHERE request_key=? AND acknowledged_at IS NULL
+        """,
+        (now, now, request["request_key"]),
+    )
+    if isinstance(request["job_id"], str) and request["job_id"]:
+        job = conn.execute("SELECT state FROM bridge_jobs WHERE job_id=?", (request["job_id"],)).fetchone()
+        if job and job["state"] in {"accepted", "running"}:
+            conn.execute(
+                "UPDATE bridge_jobs SET state='failed', reason_code=?, error=?, updated_at=? WHERE job_id=?",
+                (reason_code, "inspection capability expired before completion", now, request["job_id"]),
+            )
+            _append_event(conn, job_id=request["job_id"], event_type="inspection_expired", state="failed", details={"reason_code": reason_code})
+
+
+def _inspection_request_base_key(work_item_key: str, prior_attempt_id: str | None, repository: str, number: int) -> str:
+    return f"factory:inspect:{work_item_key}:{prior_attempt_id or 'legacy'}:{repository}:{number}"
+
+
+def _validated_stranded_inspection_job(
+    conn: sqlite3.Connection,
+    request_key: str,
+    *,
+    repository: str,
+    number: int,
+    url: str,
+) -> dict[str, Any] | None:
+    stranded = conn.execute("SELECT * FROM bridge_jobs WHERE idempotency_key=?", (request_key,)).fetchone()
+    if not stranded:
+        return None
+    job = _row_to_job(stranded)
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    inspection = payload.get("inspection") if isinstance(payload.get("inspection"), dict) else {}
+    capability = payload.get("inspection_capability")
+    if (
+        job.get("requested_action") != "inspect_draft_pr_state"
+        or payload.get("repo") != repository
+        or payload.get("inspection_request_key") != request_key
+        or not isinstance(capability, str)
+        or len(capability) < 20
+        or inspection.get("repository") != repository
+        or inspection.get("number") != number
+        or inspection.get("url") != url
+        or payload.get("dry_run") is not False
+    ):
+        raise BridgeConflict("inspection idempotency key conflicts with a different inspection job")
+    return job if job["state"] in ACTIVE_STATES else None
+
+
+def _next_inspection_request_key(
+    conn: sqlite3.Connection,
+    base_key: str,
+    *,
+    repository: str,
+    number: int,
+    url: str,
+) -> tuple[str, dict[str, Any] | None]:
+    sequence = 1
+    while True:
+        request_key = base_key if sequence == 1 else f"{base_key}:refresh:{sequence}"
+        if conn.execute("SELECT 1 FROM factory_inspection_requests WHERE request_key=?", (request_key,)).fetchone():
+            sequence += 1
+            continue
+        stranded = _validated_stranded_inspection_job(conn, request_key, repository=repository, number=number, url=url)
+        if stranded:
+            return request_key, stranded
+        if not conn.execute("SELECT 1 FROM bridge_jobs WHERE idempotency_key=?", (request_key,)).fetchone():
+            return request_key, None
+        sequence += 1
+
+
 def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str, prior_attempt_id: str | None = None) -> None:
     """Durably enqueue the one fixed, read-only inspection action.
 
@@ -1614,29 +1725,30 @@ def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str,
         repository = url.split("/pull/")[0].removeprefix("https://github.com/")
     repository, number, url = _parse_pr_reference(repository, url)
     # A request is bound to the artifact lineage rather than globally to PR
-    # number, so a later retry cannot silently reuse a stale observation.
-    request_key = f"factory:inspect:{work_item_key}:{prior_attempt_id or 'legacy'}:{repository}:{number}"
-    existing = conn.execute("SELECT request_key FROM factory_inspection_requests WHERE request_key=?", (request_key,)).fetchone()
-    if existing:
+    # number. The base key is stable, while refresh suffixes let expired or
+    # stale incomplete evidence be replaced without mutating prior rows.
+    base_key = _inspection_request_base_key(work_item_key, prior_attempt_id, repository, number)
+    clause, args = ("prior_attempt_id IS NULL", (repository, number, url, work_item_key)) if prior_attempt_id is None else ("prior_attempt_id=?", (repository, number, url, work_item_key, prior_attempt_id))
+    existing_requests = conn.execute(
+        f"""
+        SELECT * FROM factory_inspection_requests
+        WHERE repository=? AND number=? AND url=? AND work_item_key=? AND {clause}
+        ORDER BY created_at DESC, request_key DESC
+        """,
+        args,
+    ).fetchall()
+    for existing in existing_requests:
+        if _inspection_result_is_fresh(existing):
+            return
+        if existing["state"] == "completed" and existing["result_json"]:
+            continue
+        if _inspection_request_is_expired(existing):
+            _expire_incomplete_inspection_request(conn, existing)
+            continue
         return
-    stranded = conn.execute("SELECT * FROM bridge_jobs WHERE idempotency_key=?", (request_key,)).fetchone()
-    if stranded:
-        job = _row_to_job(stranded)
-        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-        inspection = payload.get("inspection") if isinstance(payload.get("inspection"), dict) else {}
-        capability = payload.get("inspection_capability")
-        if (
-            job.get("requested_action") != "inspect_draft_pr_state"
-            or payload.get("repo") != repository
-            or payload.get("inspection_request_key") != request_key
-            or not isinstance(capability, str)
-            or len(capability) < 20
-            or inspection.get("repository") != repository
-            or inspection.get("number") != number
-            or inspection.get("url") != url
-            or payload.get("dry_run") is not False
-        ):
-            raise BridgeConflict("inspection idempotency key conflicts with a different inspection job")
+    request_key, job = _next_inspection_request_key(conn, base_key, repository=repository, number=number, url=url)
+    if job:
+        capability = job["payload"]["inspection_capability"]
         now = utc_now()
         conn.execute("INSERT INTO factory_inspection_requests (request_key,repository,number,url,job_id,work_item_key,prior_attempt_id,capability,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (request_key, repository, number, url, job["job_id"], work_item_key, prior_attempt_id, capability, "pending", now, now))
         outbox_key = f"{request_key}:accepted"
@@ -1657,6 +1769,29 @@ def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str,
     now = utc_now()
     conn.execute("INSERT INTO factory_inspection_requests (request_key,repository,number,url,job_id,work_item_key,prior_attempt_id,capability,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (request_key, repository, number, url, job["job_id"], work_item_key, prior_attempt_id, capability, "pending", now, now))
     conn.execute("INSERT INTO factory_inspection_outbox (outbox_key,request_key,job_id,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", (f"{request_key}:accepted", request_key, job["job_id"], canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", now, now))
+
+
+def _backfill_factory_inspections(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT a.attempt_id,a.work_item_key,a.job_id,a.prior_pr_url
+        FROM factory_attempts a
+        WHERE a.action='create_draft_pr'
+          AND a.prior_pr_url IS NOT NULL
+          AND a.prior_pr_url != ''
+          AND a.generation = (
+              SELECT MAX(b.generation)
+              FROM factory_attempts b
+              WHERE b.work_item_key=a.work_item_key AND b.action=a.action AND b.mode=a.mode
+          )
+        ORDER BY a.work_item_key,a.mode,a.generation
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            _queue_pr_inspection(conn, row["work_item_key"], row["prior_pr_url"], row["attempt_id"])
+        except BridgeValidationError:
+            _record_import_conflict(conn, row["work_item_key"], row["job_id"] or row["attempt_id"], "inspection_repository_not_canonical")
 
 
 def get_pr_inspection(conn: sqlite3.Connection, repository: str, url: str, *, prior_attempt_id: str | None = None) -> dict[str, Any] | None:
@@ -1690,33 +1825,39 @@ def complete_pr_inspection(conn: sqlite3.Connection, job_id: str, result: dict[s
     if result["number"] != number:
         raise BridgeValidationError("inspection result does not match request")
     stored_result = sanitize_detail(result)
+    capability_expired = False
+    prior_attempt_id = None
     with conn:
         request = conn.execute("SELECT * FROM factory_inspection_requests WHERE job_id=?", (job_id,)).fetchone()
         if not request or request_key != request["request_key"] or capability != request["capability"] or (request["repository"], request["number"], request["url"]) != (repository, number, url):
             raise BridgeValidationError("inspection result does not match a pending request")
+        prior_attempt_id = request["prior_attempt_id"]
         # A lost response may be redelivered after the one-time capability has
         # expired. It is safe only when the stored canonical result is exactly
         # identical; an expired capability can never create or alter evidence.
         if request["result_json"]:
             if canonical_json(json.loads(request["result_json"])) != canonical_json(stored_result):
                 raise BridgeConflict("inspection result is immutable")
-            return get_pr_inspection(conn, repository, url, prior_attempt_id=request["prior_attempt_id"]) or {}
+            return get_pr_inspection(conn, repository, url, prior_attempt_id=prior_attempt_id) or {}
         try:
-            capability_created = datetime.fromisoformat(str(request["created_at"]).replace("Z", "+00:00"))
-            capability_age = (datetime.now(timezone.utc) - capability_created.astimezone(timezone.utc)).total_seconds()
-        except (TypeError, ValueError) as exc:
+            capability_age = _inspection_age_seconds(request["created_at"], label="inspection capability")
+        except BridgeValidationError as exc:
             raise BridgeValidationError("inspection capability timestamp is invalid") from exc
-        if capability_age < 0 or capability_age > 120:
-            raise BridgeValidationError("inspection capability is expired")
-        job = get_job(conn, job_id)
-        if job["requested_action"] != "inspect_draft_pr_state" or job["payload"].get("inspection_request_key") != request_key or job["payload"].get("inspection_capability") != capability or job["state"] not in {"accepted", "running", "completed"}:
-            raise BridgeValidationError("inspection completion requires a running inspection job")
-        digest = hashlib.sha256(canonical_json(stored_result).encode()).hexdigest(); observed = utc_now()
-        if job["state"] != "completed":
-            conn.execute("UPDATE bridge_jobs SET state='completed',reason_code=?,updated_at=? WHERE job_id=?", (sanitize_detail(stored_result["reason"], 120), observed, job_id))
-            _append_event(conn, job_id=job_id, event_type="inspection_completed", state="completed", details={"reason": stored_result["reason"]})
-        conn.execute("UPDATE factory_inspection_requests SET state='completed',result_json=?,result_digest=?,observed_at=?,reason=?,updated_at=? WHERE request_key=?", (canonical_json(stored_result), digest, observed, sanitize_detail(stored_result["reason"], 120), observed, request["request_key"]))
-    return get_pr_inspection(conn, repository, url, prior_attempt_id=request["prior_attempt_id"]) or {}
+        if capability_age < 0 or capability_age > INSPECTION_CAPABILITY_TTL_SECONDS:
+            _expire_incomplete_inspection_request(conn, request)
+            capability_expired = True
+        else:
+            job = get_job(conn, job_id)
+            if job["requested_action"] != "inspect_draft_pr_state" or job["payload"].get("inspection_request_key") != request_key or job["payload"].get("inspection_capability") != capability or job["state"] not in {"accepted", "running", "completed"}:
+                raise BridgeValidationError("inspection completion requires a running inspection job")
+            digest = hashlib.sha256(canonical_json(stored_result).encode()).hexdigest(); observed = utc_now()
+            if job["state"] != "completed":
+                conn.execute("UPDATE bridge_jobs SET state='completed',reason_code=?,updated_at=? WHERE job_id=?", (sanitize_detail(stored_result["reason"], 120), observed, job_id))
+                _append_event(conn, job_id=job_id, event_type="inspection_completed", state="completed", details={"reason": stored_result["reason"]})
+            conn.execute("UPDATE factory_inspection_requests SET state='completed',result_json=?,result_digest=?,observed_at=?,reason=?,updated_at=? WHERE request_key=?", (canonical_json(stored_result), digest, observed, sanitize_detail(stored_result["reason"], 120), observed, request["request_key"]))
+    if capability_expired:
+        raise BridgeValidationError("inspection capability is expired")
+    return get_pr_inspection(conn, repository, url, prior_attempt_id=prior_attempt_id) or {}
 
 
 record_pr_inspection = complete_pr_inspection

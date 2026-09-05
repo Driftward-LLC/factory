@@ -190,9 +190,15 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("DRIFTWARD_HERMES_GRPC_TARGET", source)
         self.assertIn("driftward-hermes-factory-gateway.service", source)
         self.assertIn('factory_operator_env_file="${DRIFTWARD_FACTORY_OPERATOR_ENV_FILE:-/etc/driftward/factory-operator.env}"', source)
+        self.assertIn('bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"', source)
+        self.assertIn('reconciliation_env_file="${DRIFTWARD_HATCHET_WORKER_RECONCILIATION_ENV_FILE:-/etc/driftward/hatchet-worker-reconciliation.env}"', source)
         self.assertIn('hatchet_workers_env_file="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"', source)
         self.assertIn('operator_dry_run="$(awk -F= ', source)
         self.assertIn('upsert_env "$factory_operator_env_file" HATCHET_INTAKE_DRY_RUN "$operator_dry_run"', source)
+        self.assertIn('ensure_env_secret "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN', source)
+        self.assertIn('ensure_env_secret "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN', source)
+        self.assertIn('upsert_env "$bridge_executor_env_file" HATCHET_HERMES_INSPECTION_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN)"', source)
+        self.assertIn('upsert_env "$reconciliation_env_file" HATCHET_HERMES_RECOVERY_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN)"', source)
 
     def test_hermes_gateway_systemd_unit_is_local_socket_boundary(self) -> None:
         unit = (ROOT / "deploy/systemd/driftward-hermes-factory-gateway.service").read_text(encoding="utf-8")

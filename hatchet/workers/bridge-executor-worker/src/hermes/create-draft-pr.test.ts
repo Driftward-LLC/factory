@@ -14,6 +14,7 @@ import {
   resumeHermesDraftPrResult,
   sanitizeText,
   validateRealCreateDraftPrJob,
+  verificationCompletionPlan,
   verifyDraftPrEvidence,
   waitForHermesDraftPrVerification,
   type DraftPrVerification,
@@ -186,6 +187,23 @@ test('restart resumes the original PR and durable validation context', () => {
   assert.equal(resumed.prUrl, 'https://github.com/Driftward-LLC/capykit/pull/61');
   assert.deepEqual(resumed.validation, validation(policy().required_local_commands));
   assertFailure(() => resumeHermesDraftPrResult({ ...greenJob(), verification_context: null }), 'verification_evidence_unavailable');
+});
+
+test('recovery completes from an existing durable observation without rewriting it', () => {
+  const observed = { ...greenVerification().receipt, verified_at: '2026-09-04T12:03:04.504Z' };
+  const current = greenVerification();
+  const plan = verificationCompletionPlan({ ...greenJob(), verification_observed_context: observed }, current);
+
+  assert.equal(plan.recordObservation, false);
+  assert.deepEqual(plan.receipt, observed);
+});
+
+test('first verification records its fresh observation before completion', () => {
+  const current = greenVerification();
+  const plan = verificationCompletionPlan(greenJob(), current);
+
+  assert.equal(plan.recordObservation, true);
+  assert.deepEqual(plan.receipt, current.receipt);
 });
 
 test('Hermes prompt delimits Linear text as untrusted data', () => {
