@@ -276,15 +276,25 @@ def preview_retry(*, bridge_db: str, ingress_db: str, registry_path: str, policy
         # The connection above is deliberately closed before this point. Open a
         # separate read-only handle; preview never queues or executes inspection.
         check = connect_readonly(bridge_db)
-        try: recorded = get_pr_inspection(check, repo, prior["prior_pr_url"], prior_attempt_id=prior["attempt_id"])
+        prior_job = None
+        try:
+            recorded = get_pr_inspection(check, repo, prior["prior_pr_url"], prior_attempt_id=prior["attempt_id"])
+            if prior.get("job_id"):
+                try:
+                    prior_job = get_job(check, prior["job_id"])
+                except BridgeNotFound:
+                    prior_job = None
         finally: check.close()
         if not recorded or recorded["state"] != "completed" or not isinstance(recorded.get("result"), dict) or not _inspection_fresh(recorded):
             raise OperatorError("prior_draft_pr_inspection_pending")
         inspection = recorded["result"]
+        expected_branch = prior["branch"]
+        if prior_job and isinstance(prior_job.get("branch"), str) and prior_job["branch"]:
+            expected_branch = prior_job["branch"]
         artifact_fence = {"prior_attempt_id": prior["attempt_id"], "prior_job_id": prior.get("job_id"), "prior_pr_url": prior["prior_pr_url"], "repository": repo, "inspection_request_id": recorded["request_key"], "inspection_job_id": recorded["job_id"], "result_digest": recorded["result_digest"], "observed_at": recorded["observed_at"], "state": inspection["state"], "merged": inspection["merged"], "draft": inspection["draft"], "head_branch": inspection["head_branch"], "head_sha": inspection["head_sha"], "base_ref": inspection["base_ref"]}
         if inspection["state"] in {"open", "unknown"}: raise OperatorError("prior_draft_pr_blocks_retry")
         if inspection["merged"]: raise OperatorError("prior_draft_pr_merged_create_new_issue")
-        if not isinstance(inspection.get("head_branch"), str) or inspection["head_branch"] != prior["branch"] or not isinstance(inspection.get("head_sha"), str) or not isinstance(inspection.get("base_ref"), str):
+        if not isinstance(inspection.get("head_branch"), str) or inspection["head_branch"] != expected_branch or not isinstance(inspection.get("head_sha"), str) or not isinstance(inspection.get("base_ref"), str):
             raise OperatorError("prior_draft_pr_head_branch_mismatch")
         if inspection["state"] != "closed" or supersede_pr_url != inspection["url"]: raise OperatorError("closed_unmerged_pr_requires_exact_supersede_pr")
     return {"action": "create_draft_pr", "issue": issue, "repository": repo, "mode": mode, "routing_registry_version": version, "next_generation": next_generation, "prior_attempt_id": prior["attempt_id"] if prior else None, "prior_pr": inspection, "artifact_fence": artifact_fence, "superseded_bridge_job": superseded_bridge_job, "policy_id": policy["id"], "snapshot_digest": _snapshot(normalized, repo, version, policy, artifact_fence, superseded_bridge_job), "snapshot_updated_at": normalized.get("updatedAt"), "eligible": True, "reason": "ok", "input": normalized}

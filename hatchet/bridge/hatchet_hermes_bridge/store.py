@@ -22,7 +22,7 @@ from .legacy_artifacts import (
 from .runtime import acquire_shared, migration_capability, release
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
 # identity also binds the transitive source closure that implements these
@@ -348,8 +348,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             request_key TEXT PRIMARY KEY, repository TEXT NOT NULL, number INTEGER NOT NULL,
             url TEXT NOT NULL, job_id TEXT, work_item_key TEXT, prior_attempt_id TEXT,
             capability TEXT, state TEXT NOT NULL, result_json TEXT, result_digest TEXT, observed_at TEXT, reason TEXT,
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-            UNIQUE(repository, number, url)
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS factory_recovery_requests (
             request_key TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE, job_id TEXT NOT NULL,
@@ -917,6 +916,7 @@ def _migrate_factory_retry_columns(conn: sqlite3.Connection) -> None:
     for column in ("job_id TEXT", "work_item_key TEXT", "prior_attempt_id TEXT", "capability TEXT", "result_digest TEXT", "observed_at TEXT"):
         if column.split()[0] not in columns:
             conn.execute(f"ALTER TABLE factory_inspection_requests ADD COLUMN {column}")
+    _migrate_factory_inspection_request_uniqueness(conn)
     outbox = {row[1] for row in conn.execute("PRAGMA table_info(factory_attempt_outbox)")}
     # Older pilot databases legitimately have no delivery lease fields.  The
     # migration is idempotent and is intentionally never called by read paths.
@@ -931,6 +931,42 @@ def _migrate_factory_retry_columns(conn: sqlite3.Connection) -> None:
     for column in ("artifact_fence_json TEXT", "trusted_snapshot_digest TEXT"):
         if column.split()[0] not in attempts:
             conn.execute(f"ALTER TABLE factory_attempts ADD COLUMN {column}")
+
+
+def _migrate_factory_inspection_request_uniqueness(conn: sqlite3.Connection) -> None:
+    """Inspection requests are keyed by attempt lineage, not globally by PR."""
+    for index in conn.execute("PRAGMA index_list(factory_inspection_requests)").fetchall():
+        unique = index["unique"] if isinstance(index, sqlite3.Row) else index[2]
+        if not unique:
+            continue
+        name = str(index["name"] if isinstance(index, sqlite3.Row) else index[1]).replace('"', '""')
+        fields = [
+            row["name"] if isinstance(row, sqlite3.Row) else row[2]
+            for row in conn.execute(f'PRAGMA index_info("{name}")').fetchall()
+        ]
+        if fields != ["repository", "number", "url"]:
+            continue
+        conn.executescript(
+            """
+            ALTER TABLE factory_inspection_requests RENAME TO factory_inspection_requests_legacy_unique;
+            CREATE TABLE factory_inspection_requests (
+                request_key TEXT PRIMARY KEY, repository TEXT NOT NULL, number INTEGER NOT NULL,
+                url TEXT NOT NULL, job_id TEXT, work_item_key TEXT, prior_attempt_id TEXT,
+                capability TEXT, state TEXT NOT NULL, result_json TEXT, result_digest TEXT, observed_at TEXT, reason TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO factory_inspection_requests (
+                request_key, repository, number, url, job_id, work_item_key, prior_attempt_id,
+                capability, state, result_json, result_digest, observed_at, reason, created_at, updated_at
+            )
+            SELECT
+                request_key, repository, number, url, job_id, work_item_key, prior_attempt_id,
+                capability, state, result_json, result_digest, observed_at, reason, created_at, updated_at
+            FROM factory_inspection_requests_legacy_unique;
+            DROP TABLE factory_inspection_requests_legacy_unique;
+            """
+        )
+        return
 
 
 def _migrate_canonical_times(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> None:
@@ -1582,6 +1618,33 @@ def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str,
     request_key = f"factory:inspect:{work_item_key}:{prior_attempt_id or 'legacy'}:{repository}:{number}"
     existing = conn.execute("SELECT request_key FROM factory_inspection_requests WHERE request_key=?", (request_key,)).fetchone()
     if existing:
+        return
+    stranded = conn.execute("SELECT * FROM bridge_jobs WHERE idempotency_key=?", (request_key,)).fetchone()
+    if stranded:
+        job = _row_to_job(stranded)
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        inspection = payload.get("inspection") if isinstance(payload.get("inspection"), dict) else {}
+        capability = payload.get("inspection_capability")
+        if (
+            job.get("requested_action") != "inspect_draft_pr_state"
+            or payload.get("repo") != repository
+            or payload.get("inspection_request_key") != request_key
+            or not isinstance(capability, str)
+            or len(capability) < 20
+            or inspection.get("repository") != repository
+            or inspection.get("number") != number
+            or inspection.get("url") != url
+            or payload.get("dry_run") is not False
+        ):
+            raise BridgeConflict("inspection idempotency key conflicts with a different inspection job")
+        now = utc_now()
+        conn.execute("INSERT INTO factory_inspection_requests (request_key,repository,number,url,job_id,work_item_key,prior_attempt_id,capability,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (request_key, repository, number, url, job["job_id"], work_item_key, prior_attempt_id, capability, "pending", now, now))
+        outbox_key = f"{request_key}:accepted"
+        outbox = conn.execute("SELECT acknowledged_at FROM factory_inspection_outbox WHERE outbox_key=?", (outbox_key,)).fetchone()
+        if outbox:
+            conn.execute("UPDATE factory_inspection_outbox SET state='pending', delivery_lease_id=NULL, delivery_lease_expires_at=NULL, acknowledged_at=NULL, updated_at=? WHERE outbox_key=? AND acknowledged_at IS NOT NULL", (now, outbox_key))
+        else:
+            conn.execute("INSERT INTO factory_inspection_outbox (outbox_key,request_key,job_id,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", (outbox_key, request_key, job["job_id"], canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", now, now))
         return
     capability = str(uuid.uuid4())
     job, created = submit_job(conn, {
