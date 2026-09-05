@@ -196,16 +196,16 @@ class LifecycleWriterTest(unittest.TestCase):
         self.assertEqual(writer.deliver()["delivered"], 1)
         self.assertIn("Factory deterministic draft-PR verification passed", writer.linear.created[1][1])
 
-    def test_attempt_marker_matches_attempt_outbox_key(self):
+        attempt_ready = event(state="verified_ready", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/2")
+        attempt_ready.update(sourceKind="factory_attempt", eventType="attempt_verified_ready", attemptId="attempt-1", generation=1)
+        self.assertIsNone(writer._bridge_candidate(attempt_ready))
+        self.assertEqual(writer.deliver()["delivered"], 0)
+
+    def test_attempt_verified_ready_is_silent(self):
         writer, _ = self.make()
         candidate = event(state="verified_ready", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/2")
         candidate.update(sourceKind="factory_attempt", eventType="attempt_verified_ready", attemptId="attempt-1", generation=1)
-        item = writer._bridge_candidate(candidate)
-
-        self.assertIn(item["outbox_key"], item["marker"])
-        self.assertIn(item["outbox_key"], item["body"])
-        self.assertIn("Factory attempt 1 passed", item["body"])
-        self.assertNotIn("Factory retry attempt 1", item["body"])
+        self.assertIsNone(writer._bridge_candidate(candidate))
 
     def test_bridge_running_is_silent_and_attempt_start_is_single_comment(self):
         writer, outbox = self.make()

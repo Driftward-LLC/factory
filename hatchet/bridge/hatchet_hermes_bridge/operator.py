@@ -28,6 +28,7 @@ REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$")
 ACTIVE_ATTEMPT_STATUSES = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
 OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "list_active_attempts", "show_attempt", "show_attempt_events", "show_lifecycle", "cancel_attempt"}
+RETRY_IGNORED_LINEAR_REASON_CODES = frozenset({"linear_issue_factory_lifecycle_actor"})
 
 
 class OperatorError(BridgeError):
@@ -94,16 +95,24 @@ def _load_route(project_id: Any, registry_path: str) -> tuple[str, int]:
         raise OperatorError("linear_issue_project_execution_policy_invalid") from exc
 
 
-def _latest_linear(ingress_db: str, issue: str) -> dict[str, Any] | None:
+def _latest_linear(ingress_db: str, issue: str, *, skip_reason_codes: frozenset[str] = frozenset()) -> dict[str, Any] | None:
     import sqlite3
     try:
         path = Path(ingress_db)
         if not path.is_file(): raise OSError
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT normalized_json FROM ingress_events WHERE source='linear' AND subject=? ORDER BY provider_updated_at_us DESC,event_id DESC LIMIT 1", (issue,)).fetchone()
+        rows = conn.execute(
+            "SELECT normalized_json FROM ingress_events WHERE source='linear' AND subject=? ORDER BY provider_updated_at_us DESC,event_id DESC LIMIT ?",
+            (issue, 25 if skip_reason_codes else 1),
+        ).fetchall()
         conn.close()
-        return json.loads(row["normalized_json"]) if row else None
+        for row in rows:
+            normalized = json.loads(row["normalized_json"])
+            if normalized.get("reasonCode") in skip_reason_codes:
+                continue
+            return normalized
+        return None
     except (sqlite3.Error, OSError, json.JSONDecodeError) as exc:
         raise OperatorError("trusted_ingress_unavailable") from exc
 
@@ -168,7 +177,7 @@ def _policy(repo: str, policy_path: str) -> dict[str, Any]:
 
 
 def _eligibility(issue: str, ingress_db: str, registry_path: str) -> tuple[dict[str, Any], str, int]:
-    normalized = _latest_linear(ingress_db, issue)
+    normalized = _latest_linear(ingress_db, issue, skip_reason_codes=RETRY_IGNORED_LINEAR_REASON_CODES)
     if not normalized:
         raise OperatorError("trusted_ingress_observation_missing")
     if normalized.get("identifier") != issue or normalized.get("team") != "Engineering" or normalized.get("status") != "Ready" or normalized.get("dispatchEligible") is not True or normalized.get("decision") != "ready_for_implementation" or normalized.get("reasonCode") != "linear_issue_ready_for_implementation" or normalized.get("delegate") == "Driftward Factory" or normalized.get("blockedBy"):

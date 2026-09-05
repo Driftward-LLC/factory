@@ -64,7 +64,10 @@ an event even when no findings exist.
 - `HATCHET_CLIENT_TOKEN` and Hatchet connection settings from the worker env.
 - `HATCHET_HERMES_BRIDGE_URL`, default `http://127.0.0.1:19877`.
 - `HATCHET_HERMES_BRIDGE_TOKEN`, required bearer token for the managed local bridge.
-- `HATCHET_EVENT_INGRESS_URL`, loopback-only, default `http://127.0.0.1:19878`.
+- `HATCHET_EVENT_INGRESS_URL`, loopback-only by default, default
+  `http://127.0.0.1:19878`. Docker Compose sets
+  `HATCHET_RECONCILIATION_ALLOW_DOCKER_INGRESS=1` so the worker may call the
+  internal `http://event-ingress:19878` service hostname.
 - `RECONCILIATION_OBSERVATION_TIMEOUT_MS`, bounded to 250-3000ms, default `1500`.
 - `RECONCILIATION_OBSERVATION_MAX_AGE_MS`, bounded to 1 minute through 7 days,
   default `86400000`; stale snapshots are distinct warning findings.

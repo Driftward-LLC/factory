@@ -264,10 +264,12 @@ class LifecycleWriter:
         return self._dead_letter(base, "draft_pr_identity_invalid")
 
     def _attempt_candidate(self, event: dict[str, Any]) -> dict[str, Any] | None:
-        """Attempt lineage is the sole retry-comment source; bridge events stay
-        silent for these phases to prevent duplicate old/new status comments."""
+        """Attempt lineage announces retry/start progress; bridge verification
+        remains the sole source for success comments."""
         event_type = event.get("eventType")
-        phase = {"retry_requested": "retry_requested", "repair_requested": "repair_requested", "attempt_started": "started", "attempt_failed": "failed", "attempt_verified_ready": "succeeded", "superseded": "superseded"}.get(event_type)
+        if event_type == "attempt_verified_ready":
+            return None
+        phase = {"retry_requested": "retry_requested", "repair_requested": "repair_requested", "attempt_started": "started", "attempt_failed": "failed", "superseded": "superseded"}.get(event_type)
         if not phase:
             return None
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
@@ -287,7 +289,6 @@ class LifecycleWriter:
             "repair_requested": f"Factory repair requested for `{base['identifier']}` (attempt {generation}) in `{base['repo']}` against the existing draft PR: {base['pr_url']}.",
             "started": f"{attempt_label} {generation} started for `{base['identifier']}` in `{base['repo']}`.",
             "failed": f"{attempt_label} {generation} failed for `{base['identifier']}` in `{base['repo']}`. An operator can inspect the sanitized bridge record.",
-            "succeeded": f"{attempt_label} {generation} passed deterministic draft-PR verification for `{base['identifier']}` in `{base['repo']}`. Ready for human review: {base['pr_url']}",
             "superseded": f"{attempt_label} {generation} for `{base['identifier']}` was superseded after the exact closed-unmerged PR acknowledgement.",
         }[phase]
         item = self._item(phase=phase, reason_code=None, body=text, **base)

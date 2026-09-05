@@ -62,8 +62,13 @@ export class IngressObservationClient implements ObservationClient {
   private readonly timeoutMs: number;
   private readonly maxAgeMs: number;
 
-  constructor(options: { baseUrl?: string; timeoutMs?: number } = {}) {
-    this.baseUrl = loopbackUrl(options.baseUrl || process.env.HATCHET_EVENT_INGRESS_URL || 'http://127.0.0.1:19878');
+  constructor(options: { baseUrl?: string; timeoutMs?: number; allowDockerServiceHost?: boolean } = {}) {
+    const allowDockerServiceHost = options.allowDockerServiceHost
+      ?? process.env.HATCHET_RECONCILIATION_ALLOW_DOCKER_INGRESS === '1';
+    this.baseUrl = ingressUrl(
+      options.baseUrl || process.env.HATCHET_EVENT_INGRESS_URL || 'http://127.0.0.1:19878',
+      allowDockerServiceHost,
+    );
     this.timeoutMs = boundedInteger(options.timeoutMs || Number(process.env.RECONCILIATION_OBSERVATION_TIMEOUT_MS), 250, 3000, 1500);
     this.maxAgeMs = Math.min(7 * 24 * 60 * 60 * 1000, Math.max(60 * 1000, Number(process.env.RECONCILIATION_OBSERVATION_MAX_AGE_MS) || 24 * 60 * 60 * 1000));
   }
@@ -128,10 +133,12 @@ export class IngressObservationClient implements ObservationClient {
 
 }
 
-function loopbackUrl(value: string): URL {
+function ingressUrl(value: string, allowDockerServiceHost: boolean): URL {
   const url = new URL(value);
-  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(url.hostname)) {
-    throw new Error('HATCHET_EVENT_INGRESS_URL must use HTTP loopback');
+  const loopback = ['127.0.0.1', 'localhost', '::1'].includes(url.hostname);
+  const dockerService = allowDockerServiceHost && url.hostname === 'event-ingress';
+  if (url.protocol !== 'http:' || (!loopback && !dockerService)) {
+    throw new Error('HATCHET_EVENT_INGRESS_URL must use HTTP loopback or the Factory Docker ingress service hostname');
   }
   return url;
 }
