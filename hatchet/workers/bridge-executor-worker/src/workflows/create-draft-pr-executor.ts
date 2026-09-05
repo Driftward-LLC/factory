@@ -10,6 +10,7 @@ import {
   NonRetryableBridgeExecutionError,
   dispatchHermesCreateDraftPrReceipt,
   realCreateDraftPrEnabled,
+  verificationCompletionPlan,
   hermesReceiptEventExpression,
   hermesReceiptEventScope,
   hermesReceiptWaitDuration,
@@ -348,8 +349,11 @@ async function finishVerification(bridge: BridgeClient, pending: BridgeJob, resu
       return { executed: false, blockedReason: 'verification_attempt_in_progress', job: pending, prUrl: result.prUrl, dryRun: false, reused: true };
     }
     const verification = await waitForHermesDraftPrVerification(pending, result);
-    await bridge.recordVerificationObservation(pending.job_id, attemptId, verification.receipt);
-    const ready = await bridge.completeVerifiedReady(pending.job_id, attemptId, verification.receipt);
+    const completion = verificationCompletionPlan(pending, verification);
+    if (completion.recordObservation) {
+      await bridge.recordVerificationObservation(pending.job_id, attemptId, completion.receipt);
+    }
+    const ready = await bridge.completeVerifiedReady(pending.job_id, attemptId, completion.receipt);
     await emitBestEffort(() => emitReadyForHumanReview(ready.job));
     return { executed: true, job: ready.job, prUrl: result.prUrl, dryRun: false, reused };
   } catch (error) {

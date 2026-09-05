@@ -11,7 +11,9 @@ hermes_gateway_service_name="$(basename "$hermes_gateway_unit")"
 factory_image_dropin_dir="${service_unit}.d"
 factory_image_dropin="$factory_image_dropin_dir/10-image-tag.conf"
 hatchet_env_file="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
+bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"
 bridge_executor_env_file="${DRIFTWARD_HERMES_BRIDGE_EXECUTOR_ENV_FILE:-/etc/driftward/hatchet-worker-bridge-executor.env}"
+reconciliation_env_file="${DRIFTWARD_HATCHET_WORKER_RECONCILIATION_ENV_FILE:-/etc/driftward/hatchet-worker-reconciliation.env}"
 hatchet_workers_env_file="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"
 factory_operator_env_file="${DRIFTWARD_FACTORY_OPERATOR_ENV_FILE:-/etc/driftward/factory-operator.env}"
 legacy_hatchet_unit="${DRIFTWARD_LEGACY_HATCHET_UNIT:-driftward-hatchet.service}"
@@ -191,6 +193,24 @@ ensure_env_default() {
   fi
 }
 
+env_file_value() {
+  local file="$1"
+  local key="$2"
+
+  awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }' "$file" 2>/dev/null || true
+}
+
+ensure_env_secret() {
+  local file="$1"
+  local key="$2"
+  local value
+
+  value="$(env_file_value "$file" "$key")"
+  if [[ ! "$value" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+    upsert_env "$file" "$key" "$(openssl rand -hex 32)"
+  fi
+}
+
 for source in "$factory_cli_source" "$factory_hatchet_doctor_source" "$factory_hatchet_desired_state_source" "$hermes_gateway_source" "$hermes_gateway_proto_source" "$verifier_policy_source" "$script_dir/systemd/driftward-factory.service" "$script_dir/systemd/driftward-hermes-factory-gateway.service"; do
   if [[ ! -f "$source" ]]; then
     echo "missing Factory install source: $source" >&2
@@ -221,7 +241,13 @@ install -d -m 0750 -o root -g root \
   "$runtime_root/data/linear-token" \
   "$runtime_root/keys/hatchet"
 install -d -m 0755 -o root -g root /etc/driftward
+ensure_env_file "$bridge_env_file"
 ensure_env_file "$bridge_executor_env_file"
+ensure_env_file "$reconciliation_env_file"
+ensure_env_secret "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN
+ensure_env_secret "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN
+upsert_env "$bridge_executor_env_file" HATCHET_HERMES_INSPECTION_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN)"
+upsert_env "$reconciliation_env_file" HATCHET_HERMES_RECOVERY_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN)"
 ensure_env_default "$bridge_executor_env_file" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
 ensure_env_file "$factory_operator_env_file"
 operator_dry_run="true"

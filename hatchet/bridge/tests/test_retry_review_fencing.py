@@ -201,6 +201,62 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_inspection_requests WHERE request_key=?", (request_key,)).fetchone()[0], 1)
         conn.close()
 
+    def test_inspection_queue_refreshes_expired_pending_request(self):
+        conn = connect(self.db)
+        from hatchet_hermes_bridge.store import _queue_pr_inspection, transition_job
+        url = "https://github.com/Driftward-LLC/capykit/pull/20"
+        _queue_pr_inspection(conn, "ENG-8", url, "attempt-refresh")
+        first = conn.execute("SELECT * FROM factory_inspection_requests WHERE url=?", (url,)).fetchone()
+        transition_job(conn, first["job_id"], state="running", details={})
+        conn.execute("UPDATE factory_inspection_requests SET created_at='2000-01-01T00:00:00.000000Z',updated_at='2000-01-01T00:00:00.000000Z' WHERE request_key=?", (first["request_key"],))
+        conn.execute("UPDATE factory_inspection_outbox SET state='acknowledged',acknowledged_at='2000-01-01T00:00:00.000000Z' WHERE request_key=?", (first["request_key"],)); conn.commit()
+        _queue_pr_inspection(conn, "ENG-8", url, "attempt-refresh")
+        rows = conn.execute("SELECT * FROM factory_inspection_requests WHERE url=? ORDER BY created_at,request_key", (url,)).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["state"], "expired")
+        self.assertEqual(get_job(conn, first["job_id"])["state"], "failed")
+        self.assertEqual(get_job(conn, first["job_id"])["reason_code"], "inspection_capability_expired")
+        self.assertTrue(rows[1]["request_key"].endswith(":refresh:2"))
+        self.assertEqual(rows[1]["state"], "pending")
+        self.assertNotEqual(rows[1]["capability"], first["capability"])
+        self.assertEqual(conn.execute("SELECT state FROM factory_inspection_outbox WHERE request_key=?", (rows[1]["request_key"],)).fetchone()[0], "pending")
+        conn.close()
+
+    def test_inspection_queue_refreshes_stale_completed_result(self):
+        conn = connect(self.db)
+        from hatchet_hermes_bridge.store import _queue_pr_inspection
+        url = "https://github.com/Driftward-LLC/capykit/pull/20"
+        _queue_pr_inspection(conn, "ENG-8", url, "attempt-stale")
+        first = conn.execute("SELECT * FROM factory_inspection_requests WHERE url=?", (url,)).fetchone()
+        result = {"repository":"Driftward-LLC/capykit","number":20,"url":url,"state":"closed","merged":False,"draft":True,"head_branch":"codex/hatchet-hermes-abc","head_sha":"abcdef1","base_ref":"main","reason":"ok"}
+        complete_pr_inspection(conn, first["job_id"], result, request_key=first["request_key"], capability=first["capability"])
+        conn.execute("UPDATE factory_inspection_requests SET observed_at='2000-01-01T00:00:00.000000Z',updated_at='2000-01-01T00:00:00.000000Z' WHERE request_key=?", (first["request_key"],)); conn.commit()
+        _queue_pr_inspection(conn, "ENG-8", url, "attempt-stale")
+        rows = conn.execute("SELECT request_key,state,result_json FROM factory_inspection_requests WHERE url=? ORDER BY created_at,request_key", (url,)).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["state"], "completed")
+        self.assertIsNotNone(rows[0]["result_json"])
+        self.assertTrue(rows[1]["request_key"].endswith(":refresh:2"))
+        self.assertEqual(rows[1]["state"], "pending")
+        self.assertIsNone(rows[1]["result_json"])
+        conn.close()
+
+    def test_bridge_init_refreshes_latest_attempt_expired_inspection(self):
+        conn = connect(self.db)
+        from hatchet_hermes_bridge.store import _queue_pr_inspection
+        attempt, _job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="refresh-on-init", reason="retry", actor="uid:0", payload={"repo":"Driftward-LLC/capykit"})
+        url = "https://github.com/Driftward-LLC/capykit/pull/22"
+        conn.execute("UPDATE factory_attempts SET status='failed', prior_pr_url=?, updated_at=? WHERE attempt_id=?", (url, "2000-01-01T00:00:00.000000Z", attempt["attempt_id"]))
+        _queue_pr_inspection(conn, "ENG-62", url, attempt["attempt_id"])
+        conn.execute("UPDATE factory_inspection_requests SET created_at='2000-01-01T00:00:00.000000Z',updated_at='2000-01-01T00:00:00.000000Z' WHERE prior_attempt_id=?", (attempt["attempt_id"],)); conn.commit(); conn.close()
+        conn = connect(self.db)
+        rows = conn.execute("SELECT request_key,state FROM factory_inspection_requests WHERE prior_attempt_id=? ORDER BY created_at,request_key", (attempt["attempt_id"],)).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["state"], "expired")
+        self.assertTrue(rows[1]["request_key"].endswith(":refresh:2"))
+        self.assertEqual(rows[1]["state"], "pending")
+        conn.close()
+
     def test_inspection_completion_is_transactional_idempotent_and_terminal(self):
         conn = connect(self.db)
         # Only the internal operator lineage creator can create this job.
@@ -248,6 +304,8 @@ class RetryReviewFencingTests(unittest.TestCase):
         conn.execute("UPDATE factory_inspection_requests SET created_at='2000-01-01T00:00:00.000000Z' WHERE request_key=?", (expired["request_key"],)); conn.commit()
         with self.assertRaisesRegex(BridgeValidationError, "capability is expired"):
             complete_pr_inspection(conn, expired["job_id"], {**result, "number":21, "url":"https://github.com/Driftward-LLC/capykit/pull/21"}, request_key=expired["request_key"], capability=expired["capability"])
+        self.assertEqual(conn.execute("SELECT state FROM factory_inspection_requests WHERE request_key=?", (expired["request_key"],)).fetchone()[0], "expired")
+        self.assertEqual(get_job(conn, expired["job_id"])["state"], "failed")
         conn.close()
 
     def test_expired_lease_is_permanently_fenced_even_with_recovery_evidence(self):
