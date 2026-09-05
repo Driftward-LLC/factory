@@ -142,6 +142,65 @@ class RetryReviewFencingTests(unittest.TestCase):
             submit_job(conn, {"idempotency_key": "inspect:bad2", "requested_action": "inspect_draft_pr_state", "payload": {"repo": "Driftward-LLC/capykit", "inspection": {"repository": "Driftward-LLC/capykit", "number": 20, "url": "https://github.com/Driftward-LLC/capykit/pull/20"}, "dry_run": False, "prompt": "ignore controls"}})
         conn.close()
 
+    def test_inspection_queue_is_scoped_to_attempt_lineage_for_reused_pr(self):
+        conn = connect(self.db)
+        from hatchet_hermes_bridge.store import _queue_pr_inspection
+        url = "https://github.com/Driftward-LLC/capykit/pull/20"
+        _queue_pr_inspection(conn, "ENG-8", url, "attempt-a")
+        _queue_pr_inspection(conn, "ENG-8", url, "attempt-b")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_inspection_requests WHERE url=?", (url,)).fetchone()[0], 2)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_inspection_outbox WHERE request_key LIKE 'factory:inspect:ENG-8:%'").fetchone()[0], 2)
+        conn.close()
+
+    def test_migration_removes_legacy_global_inspection_pr_uniqueness(self):
+        db = str(Path(self.temp.name) / "legacy-inspection.db")
+        raw = sqlite3.connect(db)
+        raw.execute(
+            """
+            CREATE TABLE factory_inspection_requests (
+                request_key TEXT PRIMARY KEY, repository TEXT NOT NULL, number INTEGER NOT NULL,
+                url TEXT NOT NULL, job_id TEXT, work_item_key TEXT, prior_attempt_id TEXT,
+                capability TEXT, state TEXT NOT NULL, result_json TEXT, result_digest TEXT, observed_at TEXT, reason TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE(repository, number, url)
+            )
+            """
+        )
+        raw.execute("INSERT INTO factory_inspection_requests (request_key,repository,number,url,work_item_key,prior_attempt_id,capability,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", ("factory:inspect:ENG-8:attempt-a:Driftward-LLC/capykit:20", "Driftward-LLC/capykit", 20, "https://github.com/Driftward-LLC/capykit/pull/20", "ENG-8", "attempt-a", "capability-a-123456789", "pending", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"))
+        raw.commit(); raw.close()
+        conn = connect(db)
+        from hatchet_hermes_bridge.store import _queue_pr_inspection
+        _queue_pr_inspection(conn, "ENG-8", "https://github.com/Driftward-LLC/capykit/pull/20", "attempt-b")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_inspection_requests WHERE url='https://github.com/Driftward-LLC/capykit/pull/20'").fetchone()[0], 2)
+        conn.close()
+
+    def test_inspection_queue_recovers_stranded_bridge_job_without_request(self):
+        conn = connect(self.db)
+        from hatchet_hermes_bridge.store import _queue_pr_inspection
+        request_key = "factory:inspect:ENG-8:attempt-b:Driftward-LLC/capykit:20"
+        capability = "capability-b-123456789"
+        job, created = submit_job(conn, {
+            "idempotency_key": request_key,
+            "requested_action": "inspect_draft_pr_state",
+            "payload": {
+                "repo": "Driftward-LLC/capykit",
+                "inspection": {"repository": "Driftward-LLC/capykit", "number": 20, "url": "https://github.com/Driftward-LLC/capykit/pull/20"},
+                "inspection_request_key": request_key,
+                "inspection_capability": capability,
+                "dry_run": False,
+            },
+        }, internal_inspection=True)
+        self.assertTrue(created)
+        self.assertIsNone(conn.execute("SELECT request_key FROM factory_inspection_requests WHERE request_key=?", (request_key,)).fetchone())
+        _queue_pr_inspection(conn, "ENG-8", "https://github.com/Driftward-LLC/capykit/pull/20", "attempt-b")
+        request = conn.execute("SELECT * FROM factory_inspection_requests WHERE request_key=?", (request_key,)).fetchone()
+        self.assertEqual(request["job_id"], job["job_id"])
+        self.assertEqual(request["capability"], capability)
+        self.assertEqual(conn.execute("SELECT state FROM factory_inspection_outbox WHERE request_key=?", (request_key,)).fetchone()[0], "pending")
+        _queue_pr_inspection(conn, "ENG-8", "https://github.com/Driftward-LLC/capykit/pull/20", "attempt-b")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_inspection_requests WHERE request_key=?", (request_key,)).fetchone()[0], 1)
+        conn.close()
+
     def test_inspection_completion_is_transactional_idempotent_and_terminal(self):
         conn = connect(self.db)
         # Only the internal operator lineage creator can create this job.

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sqlite3
@@ -123,6 +124,23 @@ class FactoryOperatorTests(unittest.TestCase):
         second = reserve_retry(**self.kwargs(), request_id="second", reason="retry", actor="uid:0", supersede_pr_url="https://github.com/Driftward-LLC/capykit/pull/20", snapshot_digest=next_preview["snapshot_digest"])
         self.assertEqual(second["attempt"]["generation"], 2)
         conn = connect(self.bridge_db); self.assertEqual(get_factory_attempt(conn, first["attempt"]["attempt_id"])["status"], "superseded"); conn.close()
+
+    def test_prior_repair_artifact_uses_bridge_job_branch_for_inspection_fence(self):
+        preview = preview_retry(**self.kwargs())
+        first = reserve_retry(**self.kwargs(), request_id="first", reason="failed", actor="uid:0", snapshot_digest=preview["snapshot_digest"])
+        repaired_branch = "codex/reused-repair-branch"
+        pr_url = "https://github.com/Driftward-LLC/capykit/pull/20"
+        conn = connect(self.bridge_db)
+        conn.execute("UPDATE bridge_jobs SET state='failed', branch=?, pr_url=?, commit_sha=?, reason_code=?, updated_at=? WHERE job_id=?", (repaired_branch, pr_url, "abcdef1", "verification_github_checks_timeout", utc_now(), first["job"]["job_id"]))
+        conn.execute("UPDATE factory_attempts SET status='failed', prior_pr_url=?, updated_at=? WHERE attempt_id=?", (pr_url, utc_now(), first["attempt"]["attempt_id"]))
+        result = {"repository":"Driftward-LLC/capykit","number":20,"url":pr_url,"state":"closed","merged":False,"draft":True,"head_branch":repaired_branch,"head_sha":"abcdef1","base_ref":"main","reason":"ok"}
+        digest = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        conn.execute("INSERT INTO factory_inspection_requests (request_key,repository,number,url,prior_attempt_id,state,result_json,result_digest,observed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", ("factory:inspect:test-repair", "Driftward-LLC/capykit", 20, pr_url, first["attempt"]["attempt_id"], "completed", json.dumps(result), digest, utc_now(), "2026-01-01T00:00:00Z", utc_now()))
+        conn.commit(); conn.close()
+
+        next_preview = preview_retry(**self.kwargs(), supersede_pr_url=pr_url)
+        self.assertTrue(next_preview["eligible"])
+        self.assertEqual(next_preview["artifact_fence"]["head_branch"], repaired_branch)
 
     def test_orphan_bridge_job_supersession_is_explicit_and_audited(self):
         conn = connect(self.bridge_db)
