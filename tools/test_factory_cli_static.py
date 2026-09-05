@@ -147,6 +147,14 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertNotIn("HATCHET_INTAKE_DRY_RUN: ${HATCHET_INTAKE_DRY_RUN", compose)
         self.assertNotIn("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: ${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED", compose)
 
+    def test_compose_allows_docker_ingress_only_for_reconciliation_worker(self) -> None:
+        compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+        intake = compose.split("\n  intake-worker:", 1)[1].split("\n  execution-dispatch-worker:", 1)[0]
+        reconciliation = compose.split("\n  reconciliation-worker:", 1)[1].split("\n  factory-lifecycle-writer:", 1)[0]
+
+        self.assertNotIn("HATCHET_RECONCILIATION_ALLOW_DOCKER_INGRESS", intake)
+        self.assertIn('HATCHET_RECONCILIATION_ALLOW_DOCKER_INGRESS: "1"', reconciliation)
+
     def test_compose_accepts_pinned_factory_image_env(self) -> None:
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
         service = (ROOT / "deploy/systemd/driftward-factory.service").read_text(encoding="utf-8")
