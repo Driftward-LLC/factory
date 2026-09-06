@@ -127,6 +127,7 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
       const recovered = await recoverClaimedVerification({
         bridge, job, attemptId, attemptReserved: Boolean(input.verificationAttemptId),
         ensurePending: () => ensureVerificationPending(bridge, job),
+        completeObserved: (pending, claimedAttemptId) => completeObservedVerification(bridge, pending, claimedAttemptId),
         resume: resumeHermesDraftPrResult,
         verify: (pending, result, claimedAttemptId) => finishVerification(bridge, pending, result, true, claimedAttemptId, true),
         emitFailure: async (failed) => {
@@ -365,6 +366,13 @@ async function finishVerification(bridge: BridgeClient, pending: BridgeJob, resu
     }
     throw error;
   }
+}
+
+async function completeObservedVerification(bridge: BridgeClient, pending: BridgeJob, attemptId: string): Promise<BridgeExecutorOutput['execute-create-draft-pr'] | null> {
+  if (!pending.verification_observed_context) return null;
+  const ready = await bridge.completeVerifiedReady(pending.job_id, attemptId, pending.verification_observed_context);
+  await emitBestEffort(() => emitReadyForHumanReview(ready.job));
+  return { executed: true, job: ready.job, prUrl: ready.job.pr_url || undefined, dryRun: false, reused: true };
 }
 
 async function acquireAndClaimVerificationLease(bridge: BridgeClient, jobId: string, attemptId: string): Promise<boolean> {

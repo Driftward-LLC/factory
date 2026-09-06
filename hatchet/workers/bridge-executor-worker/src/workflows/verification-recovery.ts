@@ -22,6 +22,7 @@ export async function recoverClaimedVerification<Result>(input: {
   attemptId: string;
   attemptReserved?: boolean;
   ensurePending: () => Promise<BridgeJob>;
+  completeObserved?: (job: BridgeJob, attemptId: string) => Promise<VerificationRecoveryResult | null>;
   resume: (job: BridgeJob) => Result;
   verify: (job: BridgeJob, result: Result, attemptId: string) => Promise<VerificationRecoveryResult>;
   emitFailure: (job: BridgeJob) => Promise<void>;
@@ -36,6 +37,8 @@ export async function recoverClaimedVerification<Result>(input: {
   if (!claimed) return { blockedReason: 'verification_attempt_in_progress', job: input.job };
   try {
     const pending = await input.ensurePending();
+    const observed = input.completeObserved ? await input.completeObserved(pending, input.attemptId) : null;
+    if (observed) return observed;
     return await input.verify(pending, input.resume(pending), input.attemptId);
   } catch (error) {
     const failure = failureReason(error);
