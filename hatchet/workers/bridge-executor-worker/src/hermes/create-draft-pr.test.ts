@@ -252,6 +252,23 @@ test('direct real dispatch must match the checked-in repository policy', () => {
   } finally { if (previous === undefined) delete process.env.DRIFTWARD_HERMES_ALLOWED_REPOS; else process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = previous; }
 });
 
+test('Docker real dispatch rejects host verifier policy paths', () => {
+  const job = { ...greenJob(), payload: { ...greenJob().payload, implementation_prompt: 'test' } };
+  const previousRuntime = process.env.HATCHET_FACTORY_RUNTIME;
+  const previousPolicy = process.env.HATCHET_VERIFIER_POLICY_PATH;
+  const previousAllowed = process.env.DRIFTWARD_HERMES_ALLOWED_REPOS;
+  try {
+    process.env.HATCHET_FACTORY_RUNTIME = 'docker';
+    process.env.HATCHET_VERIFIER_POLICY_PATH = '/etc/driftward/hatchet-verifier-policy.json';
+    process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = 'Driftward-LLC/capykit';
+    assertFailure(() => validateRealCreateDraftPrJob(job), 'verification_policy_unavailable');
+  } finally {
+    if (previousRuntime === undefined) delete process.env.HATCHET_FACTORY_RUNTIME; else process.env.HATCHET_FACTORY_RUNTIME = previousRuntime;
+    if (previousPolicy === undefined) delete process.env.HATCHET_VERIFIER_POLICY_PATH; else process.env.HATCHET_VERIFIER_POLICY_PATH = previousPolicy;
+    if (previousAllowed === undefined) delete process.env.DRIFTWARD_HERMES_ALLOWED_REPOS; else process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = previousAllowed;
+  }
+});
+
 test('secret-shaped command output is redacted and bounded before durable errors', () => {
   const value = sanitizeText(`failure github_pat_abcdefghijklmnopqrstuvwxyz0123456789 and Bearer ghp_abcdefghijklmnopqrstuvwxyz0123456789\n${'x'.repeat(400)}`);
   assert.doesNotMatch(value, /github_pat_|ghp_/);

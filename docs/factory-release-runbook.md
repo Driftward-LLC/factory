@@ -131,8 +131,9 @@ git switch --detach <previous-tag>
 bash deploy/install-docker.sh --image-tag <previous-tag> --start
 ```
 
-Preserve `/docker/driftward/factory/data/*` unless there is a separately
-approved record migration or restore plan.
+Preserve the `driftward-factory-*` Docker volumes and
+`/docker/driftward/factory/keys/*` unless there is a separately approved record
+migration or restore plan.
 
 ## Return To Development
 

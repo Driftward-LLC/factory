@@ -36,6 +36,10 @@ factory_image_override="${FACTORY_IMAGE:-}"
 smoke_timeout="${DRIFTWARD_FACTORY_SMOKE_TIMEOUT:-90}"
 smoke_interval="${DRIFTWARD_FACTORY_SMOKE_INTERVAL:-5}"
 start=0
+hatchet_postgres_volume=driftward-factory-hatchet-postgres-data
+bridge_volume=driftward-factory-bridge-data
+ingress_volume=driftward-factory-ingress-data
+lifecycle_volume=driftward-factory-lifecycle-data
 
 usage() {
   cat <<'USAGE'
@@ -151,6 +155,47 @@ wait_for_factory_smoke() {
   done
 }
 
+compose_service_file_exists() {
+  local service="$1"
+  local path="$2"
+
+  "${compose_env[@]}" docker compose "${compose_args[@]}" run --rm --no-deps --entrypoint sh "$service" \
+    -c 'test -f "$1"' sh "$path" >/dev/null 2>&1
+}
+
+require_compose_volume_file() {
+  local service="$1"
+  local path="$2"
+  local volume="$3"
+  local label="$4"
+  local legacy_path="${5:-}"
+
+  if compose_service_file_exists "$service" "$path"; then
+    return 0
+  fi
+  echo "$label data is missing from Docker volume $volume at $path" >&2
+  if [[ -n "$legacy_path" && -e "$legacy_path" ]]; then
+    echo "legacy host bind data exists at $legacy_path; migrate it into $volume before starting" >&2
+  fi
+  exit 1
+}
+
+require_legacy_file_migrated() {
+  local service="$1"
+  local path="$2"
+  local volume="$3"
+  local label="$4"
+  local legacy_path="$5"
+
+  [[ -e "$legacy_path" ]] || return 0
+  if compose_service_file_exists "$service" "$path"; then
+    return 0
+  fi
+  echo "$label legacy host bind data exists at $legacy_path but Docker volume $volume is not populated at $path" >&2
+  echo "migrate the legacy data into the Docker volume before starting Factory" >&2
+  exit 1
+}
+
 if [[ "$(id -u)" != "0" ]]; then
   echo "Factory Docker install requires root" >&2
   exit 1
@@ -232,14 +277,7 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 install -d -m 0750 -o root -g root "$runtime_root"
-install -d -m 0750 -o root -g root \
-  "$runtime_root/data/bridge" \
-  "$runtime_root/data/hatchet/config" \
-  "$runtime_root/data/hatchet/postgres" \
-  "$runtime_root/data/ingress" \
-  "$runtime_root/data/lifecycle" \
-  "$runtime_root/data/linear-token" \
-  "$runtime_root/keys/hatchet"
+install -d -m 0750 -o root -g root "$runtime_root/keys/hatchet"
 install -d -m 0755 -o root -g root /etc/driftward
 ensure_env_file "$bridge_env_file"
 ensure_env_file "$bridge_executor_env_file"
@@ -336,7 +374,7 @@ echo "Factory CLI installed: $factory_cli_target"
 
 if (( start )); then
   if systemctl is-active --quiet "$legacy_hatchet_unit"; then
-    echo "$legacy_hatchet_unit is still active; stop it after migrating Hatchet data into $runtime_root/data/hatchet" >&2
+    echo "$legacy_hatchet_unit is still active; stop it after migrating Hatchet data into Docker volume $hatchet_postgres_volume" >&2
     exit 1
   fi
   for key_file in master.key private_ec256.key public_ec256.key; do
@@ -346,11 +384,6 @@ if (( start )); then
       exit 1
     fi
   done
-  if [[ ! -f "$runtime_root/data/hatchet/postgres/PG_VERSION" ]]; then
-    echo "Hatchet Postgres data is missing under $runtime_root/data/hatchet/postgres" >&2
-    echo "Migrate historical Hatchet data before starting the standalone Factory runtime." >&2
-    exit 1
-  fi
   if [[ ! -r /etc/driftward/factory-linear-token.env ]]; then
     echo "Factory Linear token credentials are missing: /etc/driftward/factory-linear-token.env" >&2
     echo "Create this protected env file before starting the standalone Factory runtime." >&2
@@ -358,6 +391,10 @@ if (( start )); then
   fi
 
   docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"
+  require_compose_volume_file postgres /var/lib/postgresql/data/PG_VERSION "$hatchet_postgres_volume" "Hatchet Postgres" "$runtime_root/data/hatchet/postgres/PG_VERSION"
+  require_legacy_file_migrated bridge /var/lib/driftward-hatchet-bridge/bridge.db "$bridge_volume" "Bridge ledger" "$runtime_root/data/bridge/bridge.db"
+  require_legacy_file_migrated event-ingress /var/lib/driftward-hatchet-event-ingress/ingress.db "$ingress_volume" "Ingress ledger" "$runtime_root/data/ingress/ingress.db"
+  require_legacy_file_migrated factory-lifecycle-writer /var/lib/driftward-factory-lifecycle-writer/outbox.db "$lifecycle_volume" "Lifecycle outbox" "$runtime_root/data/lifecycle/outbox.db"
   systemctl enable "$hermes_gateway_service_name"
   systemctl restart "$hermes_gateway_service_name"
   systemctl enable "$service_name"

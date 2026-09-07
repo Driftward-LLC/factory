@@ -30,6 +30,7 @@ from hatchet_hermes_bridge.store import (
     cancel_factory_attempt,
     get_factory_attempt,
     get_factory_lifecycle,
+    _canonical_verifier_policy,
 )
 from test_support import connect_migrate as connect
 
@@ -104,6 +105,24 @@ class BridgeStoreTests(unittest.TestCase):
 
         events = list_events(self.conn, first["job_id"])
         self.assertEqual([event["event_type"] for event in events], ["accepted", "submit_deduplicated"])
+
+    def test_docker_runtime_rejects_non_image_verifier_policy_path(self):
+        old_runtime = os.environ.get("HATCHET_FACTORY_RUNTIME")
+        old_policy = os.environ.get("HATCHET_VERIFIER_POLICY_PATH")
+        try:
+            os.environ["HATCHET_FACTORY_RUNTIME"] = "docker"
+            os.environ["HATCHET_VERIFIER_POLICY_PATH"] = "/etc/driftward/hatchet-verifier-policy.json"
+            with self.assertRaisesRegex(BridgeValidationError, "must be /app/hatchet/workers/verifier-policy.json"):
+                _canonical_verifier_policy("Driftward-LLC/capykit")
+        finally:
+            if old_runtime is None:
+                os.environ.pop("HATCHET_FACTORY_RUNTIME", None)
+            else:
+                os.environ["HATCHET_FACTORY_RUNTIME"] = old_runtime
+            if old_policy is None:
+                os.environ.pop("HATCHET_VERIFIER_POLICY_PATH", None)
+            else:
+                os.environ["HATCHET_VERIFIER_POLICY_PATH"] = old_policy
 
     def test_submit_conflicts_for_same_key_different_payload(self):
         request = {

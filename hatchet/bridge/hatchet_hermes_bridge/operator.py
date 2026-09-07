@@ -29,6 +29,10 @@ PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull
 ACTIVE_ATTEMPT_STATUSES = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
 OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "list_active_attempts", "show_attempt", "show_attempt_events", "show_lifecycle", "cancel_attempt"}
 RETRY_IGNORED_LINEAR_REASON_CODES = frozenset({"linear_issue_factory_lifecycle_actor"})
+DOCKER_BRIDGE_DB = "/var/lib/driftward-hatchet-bridge/bridge.db"
+DOCKER_INGRESS_DB = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
+DOCKER_ROUTING_REGISTRY = "/app/hatchet/workers/routing-registry.json"
+DOCKER_VERIFIER_POLICY = "/app/hatchet/workers/verifier-policy.json"
 
 
 class OperatorError(BridgeError):
@@ -64,6 +68,31 @@ def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str) -> 
     if limit < 1 or limit > 250:
         raise OperatorError(f"{label} must be between 1 and 250")
     return limit
+
+
+def _required_env_path(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise OperatorError(f"{name} is required")
+    return value
+
+
+def _operator_paths() -> tuple[str, str, str, str]:
+    bridge_db = os.environ.get("HATCHET_FACTORY_OPERATOR_BRIDGE_DB", DOCKER_BRIDGE_DB)
+    ingress_db = os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", DOCKER_INGRESS_DB)
+    registry = os.environ.get("HATCHET_INTAKE_ROUTING_REGISTRY_PATH", DOCKER_ROUTING_REGISTRY)
+    policy = _required_env_path("HATCHET_VERIFIER_POLICY_PATH")
+    if os.environ.get("HATCHET_FACTORY_OPERATOR_RUNTIME") == "docker":
+        expected = {
+            "HATCHET_FACTORY_OPERATOR_BRIDGE_DB": (bridge_db, DOCKER_BRIDGE_DB),
+            "HATCHET_FACTORY_OPERATOR_INGRESS_DB": (ingress_db, DOCKER_INGRESS_DB),
+            "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": (registry, DOCKER_ROUTING_REGISTRY),
+            "HATCHET_VERIFIER_POLICY_PATH": (policy, DOCKER_VERIFIER_POLICY),
+        }
+        for name, (actual, expected_value) in expected.items():
+            if actual != expected_value:
+                raise OperatorError(f"{name} must be {expected_value} for Docker Factory")
+    return bridge_db, ingress_db, registry, policy
 
 
 def _mode(env_file: str = "/etc/driftward/hatchet-workers.env") -> str:
@@ -515,7 +544,7 @@ class OperatorHandler(BaseHTTPRequestHandler):
         if not isinstance(value, dict): raise OperatorError("body must be an object")
         return value
     def _paths(self) -> tuple[str, str, str, str]:
-        return (os.environ.get("HATCHET_FACTORY_OPERATOR_BRIDGE_DB", "/var/lib/driftward-hatchet-bridge/bridge.db"), os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/driftward-hatchet-event-ingress/ingress.db"), os.environ.get("HATCHET_INTAKE_ROUTING_REGISTRY_PATH", "/root/driftward/repos/factory/hatchet/workers/routing-registry.json"), os.environ.get("HATCHET_VERIFIER_POLICY_PATH", "/etc/driftward/hatchet-verifier-policy.json"))
+        return _operator_paths()
     def do_POST(self) -> None:
         if not self._auth(): return
         try:

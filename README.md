@@ -11,12 +11,12 @@ contracts, desired-state manifest, and drift tooling.
 Factory deploys through Docker Compose from this repository. The Compose app
 owns Hatchet Lite/Postgres plus Factory bridge, ingress, worker, lifecycle,
 Linear token-renewal, and operator services. The host should own Docker,
-systemd supervision, runtime directories, protected env files, and migrated
-key/data placement.
+systemd supervision, the runtime root, protected env files, and migrated key
+placement. Durable Factory state lives in Docker named volumes.
 
 Historical bridge, ingress, lifecycle, and Hatchet control-plane records are
 intentionally not copied into the repository. They should be migrated into the
-Factory runtime directory during the standalone deployment cutover.
+Factory Docker volumes during the standalone deployment cutover.
 
 ## Layout
 

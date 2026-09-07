@@ -22,6 +22,7 @@ from .legacy_artifacts import (
 from .runtime import acquire_shared, migration_capability, release
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
+DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
 SCHEMA_VERSION = 5
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
@@ -2895,6 +2896,8 @@ def _canonical_verifier_policy(repo: str) -> dict[str, Any]:
     configured = os.environ.get("HATCHET_VERIFIER_POLICY_PATH")
     if not configured:
         raise BridgeValidationError("HATCHET_VERIFIER_POLICY_PATH is required for real verification")
+    if os.environ.get("HATCHET_FACTORY_RUNTIME") == "docker" and configured != DOCKER_VERIFIER_POLICY_PATH:
+        raise BridgeValidationError(f"HATCHET_VERIFIER_POLICY_PATH must be {DOCKER_VERIFIER_POLICY_PATH} for Docker Factory")
     path = Path(configured)
     try:
         catalog = json.loads(path.read_text())

@@ -14,7 +14,7 @@ bridge_env="/etc/driftward/hatchet-bridge.env"
 verifier_env="/etc/driftward/hatchet-verifier.env"
 operator_env="/etc/driftward/factory-operator.env"
 policy_src="$workers_root/verifier-policy.json"
-policy_dst="/etc/driftward/hatchet-verifier-policy.json"
+policy_dst="$policy_src"
 units=(
   driftward-hatchet-hermes-gateway.service
   driftward-hatchet-worker-intake.service
@@ -30,14 +30,6 @@ if [[ "$(id -u)" != "0" ]]; then
 fi
 
 install -d -m 0750 -o root -g root /etc/driftward
-policy_tmp="$(mktemp "${policy_dst}.tmp.XXXXXX")"
-trap 'rm -f "${policy_tmp:-}"' EXIT
-install -m 0640 -o root -g root "$policy_src" "$policy_tmp"
-sync "$policy_tmp" 2>/dev/null || true
-[[ "$(sha256sum "$policy_src" | awk '{print $1}')" == "$(sha256sum "$policy_tmp" | awk '{print $1}')" ]] || { echo "verifier policy copy digest mismatch" >&2; exit 1; }
-mv -f "$policy_tmp" "$policy_dst"
-sync -d /etc/driftward 2>/dev/null || true
-[[ "$(sha256sum "$policy_src" | awk '{print $1}')" == "$(sha256sum "$policy_dst" | awk '{print $1}')" ]] || { echo "verifier policy publish digest mismatch" >&2; exit 1; }
 install -d -m 0755 -o root -g root "$unit_dst"
 
 ensure_env_file() {

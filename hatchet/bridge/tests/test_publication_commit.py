@@ -16,15 +16,14 @@ class PublicationCommitTests(unittest.TestCase):
     self.etc=root/"etc"; self.systemd=root/"systemd"; self.release=root/"release"
     for p in (self.etc,self.systemd,self.release): p.mkdir(); p.chmod(0o750 if p==self.etc else 0o755)
     self.stage=root/"stage"; (self.stage/"etc/driftward").mkdir(parents=True); (self.stage/"units").mkdir(); (self.stage/"release").mkdir()
-    (self.stage/"etc/driftward/hatchet-verifier-policy.json").write_text('{"v":1}')
     (self.stage/"etc/driftward/hatchet-routing-registry.json").write_text('{"v":1}')
     (self.stage/"units/test.service").write_text("[Service]\n")
-    self.p=pubmod.Publication(etc=self.etc,systemd=self.systemd,release=self.release,targets=(str(self.etc/"hatchet-verifier-policy.json"),str(self.etc/"hatchet-routing-registry.json"),str(self.systemd/"test.service"),str(self.release/"current")),directories=(str(self.etc),str(self.systemd),str(self.release)),transients=(str(self.release/".current.new"),),uid=uid,gid=gid,state=root/"state")
+    self.p=pubmod.Publication(etc=self.etc,systemd=self.systemd,release=self.release,targets=(str(self.etc/"hatchet-routing-registry.json"),str(self.systemd/"test.service"),str(self.release/"current")),directories=(str(self.etc),str(self.systemd),str(self.release)),transients=(str(self.release/".current.new"),),uid=uid,gid=gid,state=root/"state")
     self.old=pubmod.INVENTORY; pubmod.INVENTORY={"units":["test.service"]}
   def tearDown(self): pubmod.INVENTORY=self.old; self.tmp.cleanup()
   def test_reproof_blocks_target_mutation_and_absent_race(self):
     snap=pubmod.snapshot(self.p)
-    (self.etc/"hatchet-verifier-policy.json").write_text("race")
+    (self.etc/"hatchet-routing-registry.json").write_text("race")
     with self.assertRaises(pubmod.PublicationError): pubmod.commit(self.p,self.stage,"a"*40,snap)
   def test_commit_uses_atomic_targets_and_removes_temp_names(self):
     snap=pubmod.snapshot(self.p); result=pubmod.commit(self.p,self.stage,"a"*40,snap)
@@ -49,7 +48,7 @@ class PublicationCommitTests(unittest.TestCase):
     import shutil
     shutil.rmtree(self.etc); shutil.rmtree(self.release)
     self.release=Path(nested)/"releases"/"bridge"
-    self.p=pubmod.Publication(etc=self.etc,systemd=self.systemd,release=self.release,targets=(str(self.etc/"hatchet-verifier-policy.json"),str(self.etc/"hatchet-routing-registry.json"),str(self.systemd/"test.service"),str(self.release/"current")),directories=(str(self.etc),str(self.release.parent),str(self.release)),transients=(str(self.release/".current.new"),),uid=os.getuid(),gid=os.getgid(),state=Path(nested)/"state")
+    self.p=pubmod.Publication(etc=self.etc,systemd=self.systemd,release=self.release,targets=(str(self.etc/"hatchet-routing-registry.json"),str(self.systemd/"test.service"),str(self.release/"current")),directories=(str(self.etc),str(self.release.parent),str(self.release)),transients=(str(self.release/".current.new"),),uid=os.getuid(),gid=os.getgid(),state=Path(nested)/"state")
     snap=pubmod.snapshot(self.p)
     with self.assertRaises(pubmod.PublicationError): pubmod.commit(self.p,self.stage,"c"*40,snap,fail_after=5)
     journal=next(self.p.state.glob("publication-*.journal")); pubmod.rollback(self.p,journal)

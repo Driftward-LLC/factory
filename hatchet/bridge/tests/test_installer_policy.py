@@ -153,14 +153,40 @@ class InstallerPolicyTests(unittest.TestCase):
         self.assertIn("/tmp/gitleaks git --redact --verbose .", workflow)
 
     def test_runtime_uses_one_explicit_policy_path_and_separate_verifier_env(self):
-        bridge_unit = (ROOT / "systemd" / "driftward-hatchet-bridge.service").read_text()
+        compose = (ROOT.parent / "deploy" / "docker-compose.yml").read_text()
+        smoke = (ROOT.parent / "deploy" / "factory-docker-smoke").read_text()
+        operator = (ROOT / "bridge" / "hatchet_hermes_bridge" / "operator.py").read_text()
+        verifier_env = (ROOT / "bridge" / "verifier-env.sh").read_text()
         executor_unit = (ROOT / "workers" / "systemd" / "driftward-hatchet-worker-bridge-executor.service").read_text()
         workers_install = (ROOT / "workers" / "install.sh").read_text()
-        self.assertIn('HATCHET_VERIFIER_POLICY_PATH=/etc/driftward/hatchet-verifier-policy.json', bridge_unit)
-        self.assertIn('EnvironmentFile=-/etc/driftward/hatchet-verifier.env', bridge_unit)
+        self.assertIn('HATCHET_VERIFIER_POLICY_PATH: /app/hatchet/workers/verifier-policy.json', compose)
+        self.assertIn('HATCHET_FACTORY_OPERATOR_RUNTIME: docker', compose)
+        self.assertIn('expected_policy_path="/app/hatchet/workers/verifier-policy.json"', smoke)
+        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH", "/etc/driftward/hatchet-verifier-policy.json"', operator)
+        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-/etc/driftward/hatchet-verifier-policy.json', verifier_env)
         self.assertIn('EnvironmentFile=-/etc/driftward/hatchet-verifier.env', executor_unit)
         self.assertIn('upsert_env "$common_env" HATCHET_VERIFIER_POLICY_PATH "$policy_dst"', workers_install)
         self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-', workers_install)
+
+    def test_verifier_env_requires_explicit_policy_path(self):
+        helper = ROOT / "bridge" / "verifier-env.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "hatchet-verifier.env"
+            env_file.write_text("HATCHET_HERMES_VERIFIER_TOKEN=" + "a" * 64 + "\n")
+            env_file.chmod(0o600)
+            result = subprocess.run(
+                [str(helper), "status"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **{key: value for key, value in os.environ.items() if key != "HATCHET_VERIFIER_POLICY_PATH"},
+                    "HATCHET_VERIFIER_TEST_MODE": "1",
+                    "HATCHET_VERIFIER_ENV_PATH": str(env_file),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("HATCHET_VERIFIER_POLICY_PATH is required", result.stderr)
 
     def test_verifier_env_provisioning_is_atomic_idempotent_and_non_disclosing(self):
         helper = ROOT / "bridge" / "verifier-env.sh"
