@@ -292,17 +292,15 @@ HATCHET_BRIDGE_STAGE_ROOT="$stage" DRIFTWARD_BRIDGE_RELEASE_VERSION="$release_ve
 verify_staged_release
 mkdir -p "$stage/etc/driftward" "$stage/units" "$stage/rollback"
 if [[ "${BRIDGE_TEST_MODE:-}" == 1 ]]; then
-  cp "$repo_root/hatchet/workers/verifier-policy.json" "$stage/etc/driftward/hatchet-verifier-policy.json"
   cp "$repo_root/hatchet/workers/routing-registry.json" "$stage/etc/driftward/hatchet-routing-registry.json"
   for unit in "${units[@]}"; do cp "$repo_root/hatchet/systemd/$unit" "$stage/units/$unit"; done
 else
-  git -C "$repo_root" show "$release_version:hatchet/workers/verifier-policy.json" >"$stage/etc/driftward/hatchet-verifier-policy.json"
   git -C "$repo_root" show "$release_version:hatchet/workers/routing-registry.json" >"$stage/etc/driftward/hatchet-routing-registry.json"
   for unit in "${units[@]}"; do git -C "$repo_root" show "$release_version:hatchet/systemd/$unit" >"$stage/units/$unit"; done
 fi
 chmod 0640 "$stage/etc/driftward/"*.json; chmod 0644 "$stage/units/"*
 grep -R -E '/root/driftward-host|__REPO_ROOT__' "$stage/units" && { echo "staged unit references mutable checkout" >&2; exit 1; } || true
-python3 -m json.tool "$stage/etc/driftward/hatchet-verifier-policy.json" >/dev/null; python3 -m json.tool "$stage/etc/driftward/hatchet-routing-registry.json" >/dev/null
+python3 -m json.tool "$stage/release/verifier-policy.json" >/dev/null; python3 -m json.tool "$stage/etc/driftward/hatchet-routing-registry.json" >/dev/null
 python3 "$script_dir/release_hygiene.py" scan --tree "$stage"
 expected_attestation_delta="$(attestation_delta_required)"
 

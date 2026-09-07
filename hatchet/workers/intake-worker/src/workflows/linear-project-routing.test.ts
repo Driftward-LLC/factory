@@ -283,6 +283,19 @@ test('verifier policy fails closed when required enforcement is missing or empty
   });
 });
 
+test('Docker verifier policy resolution rejects host policy paths', () => {
+  const previousRuntime = process.env.HATCHET_FACTORY_RUNTIME;
+  try {
+    process.env.HATCHET_FACTORY_RUNTIME = 'docker';
+    assert.throws(
+      () => resolveDraftPrVerifierPolicy('Driftward-LLC/capykit', { policyPath: '/etc/driftward/hatchet-verifier-policy.json' }),
+      (error: unknown) => error instanceof DraftPrVerifierPolicyError && error.code === 'verification_policy_unavailable'
+    );
+  } finally {
+    restoreEnvironment('HATCHET_FACTORY_RUNTIME', previousRuntime);
+  }
+});
+
 function withRegistry(value: unknown, fn: (registryPath: string) => void): void {
   withRawRegistry(JSON.stringify(value), fn);
 }

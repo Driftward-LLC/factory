@@ -7,6 +7,13 @@ bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env
 operator_env_file="${FACTORY_OPERATOR_ENV:-/etc/driftward/factory-operator.env}"
 operator_socket="${FACTORY_OPERATOR_SOCKET:-/run/driftward-factory-operator/operator.sock}"
 operator_preview_smoke_issue="${FACTORY_OPERATOR_PREVIEW_SMOKE_ISSUE:-ENG-999999999}"
+expected_policy_path="/app/hatchet/workers/verifier-policy.json"
+hatchet_postgres_volume=driftward-factory-hatchet-postgres-data
+hatchet_config_volume=driftward-factory-hatchet-config-data
+bridge_volume=driftward-factory-bridge-data
+ingress_volume=driftward-factory-ingress-data
+lifecycle_volume=driftward-factory-lifecycle-data
+linear_token_volume=driftward-factory-linear-token-data
 
 env_file_value() {
   local file="$1"
@@ -53,6 +60,53 @@ running="$(docker compose "${compose_args[@]}" ps --services --filter status=run
 for service in "${required_services[@]}"; do
   if ! grep -qx "$service" <<<"$running"; then
     echo "Factory Docker service is not running: $service" >&2
+    exit 1
+  fi
+done
+
+require_named_volume_mount() {
+  local service="$1"
+  local destination="$2"
+  local expected="$3"
+  local cid mount
+
+  cid="$(docker compose "${compose_args[@]}" ps -q "$service")"
+  if [[ -z "$cid" ]]; then
+    echo "Factory Docker service has no container id: $service" >&2
+    exit 1
+  fi
+  mount="$(
+    docker inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\n" .Type .Name .Destination}}{{end}}' "$cid" |
+      awk -F '\t' -v dest="$destination" '$3 == dest { print $1 " " $2; found=1 } END { exit found ? 0 : 1 }'
+  )" || {
+    echo "Factory Docker service $service is missing mount: $destination" >&2
+    exit 1
+  }
+  if [[ "$mount" != "volume $expected" ]]; then
+    echo "Factory Docker service $service has unexpected mount for $destination: $mount" >&2
+    exit 1
+  fi
+}
+
+require_named_volume_mount postgres /var/lib/postgresql/data "$hatchet_postgres_volume"
+require_named_volume_mount hatchet-lite /config "$hatchet_config_volume"
+require_named_volume_mount bridge /var/lib/driftward-hatchet-bridge "$bridge_volume"
+require_named_volume_mount event-ingress /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
+require_named_volume_mount factory-lifecycle-writer /var/lib/driftward-factory-lifecycle-writer "$lifecycle_volume"
+require_named_volume_mount factory-linear-token-refresh /var/lib/driftward-factory-linear-token "$linear_token_volume"
+require_named_volume_mount factory-operator /var/lib/driftward-hatchet-bridge "$bridge_volume"
+require_named_volume_mount factory-operator /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
+require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-bridge "$bridge_volume"
+
+for service in bridge intake-worker bridge-executor-worker factory-operator; do
+  runtime="$(docker compose "${compose_args[@]}" exec -T "$service" printenv HATCHET_FACTORY_RUNTIME || true)"
+  if [[ "$runtime" != "docker" ]]; then
+    echo "Factory Docker service $service has unexpected runtime marker: $runtime" >&2
+    exit 1
+  fi
+  actual="$(docker compose "${compose_args[@]}" exec -T "$service" printenv HATCHET_VERIFIER_POLICY_PATH || true)"
+  if [[ "$actual" != "$expected_policy_path" ]]; then
+    echo "Factory Docker service $service has unexpected verifier policy path: $actual" >&2
     exit 1
   fi
 done

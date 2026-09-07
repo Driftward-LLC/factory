@@ -8,7 +8,6 @@
     "driftward-factory-outbox-dispatcher.timer"
   ],
   "targets": [
-    "/etc/driftward/hatchet-verifier-policy.json",
     "/etc/driftward/hatchet-routing-registry.json",
     "/etc/driftward/hatchet.env",
     "/etc/driftward/hatchet-bridge.env",

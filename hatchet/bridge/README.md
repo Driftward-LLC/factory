@@ -729,11 +729,15 @@ pending effect remains unresolved and blocks safely.
 ## Verifier Policy And Authority
 
 All production processes use the explicit non-secret
-`HATCHET_VERIFIER_POLICY_PATH`, normally
-`/etc/driftward/hatchet-verifier-policy.json`. The bridge and worker installers
-atomically publish the same root-owned catalog and compare its SHA-256 before
-and after rename. A missing or unreadable path fails real verification closed;
-checkout-relative paths are test-only.
+`HATCHET_VERIFIER_POLICY_PATH`. Standalone Docker Factory must use the
+image-baked `/app/hatchet/workers/verifier-policy.json`; the Docker-installed
+host gateway unit uses the installer-published Factory share copy. A missing,
+unreadable, or Docker-mismatched path fails real verification closed.
+Checkout-relative paths are test-only. The older direct systemd bridge path
+uses the immutable bridge release copy at
+`/docker/driftward/hatchet/releases/bridge/current/verifier-policy.json`.
+The historical `/etc` verifier-policy path is kept only in negative tests and
+is not accepted by Docker-marked Factory verification.
 
 `ready_for_human_review` additionally requires
 `HATCHET_HERMES_VERIFIER_TOKEN` through `/etc/driftward/hatchet-verifier.env`.

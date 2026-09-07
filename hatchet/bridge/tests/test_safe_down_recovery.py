@@ -45,7 +45,8 @@ class SafeDownFixture(unittest.TestCase):
         digest = hashlib.sha256(self.backup.read_bytes()).hexdigest()
         self.checksum = self.backup.with_suffix(self.backup.suffix + ".sha256")
         self.checksum.write_text(f"{digest}  {self.backup.name}\n"); self.checksum.chmod(0o600)
-        self.targets = (str(self.etc / "hatchet-verifier-policy.json"), str(self.etc / "hatchet-routing-registry.json"), str(self.release / "current"))
+        self.mutable_target = self.etc / "bridge-publication-proof.json"
+        self.targets = (str(self.mutable_target), str(self.etc / "hatchet-routing-registry.json"), str(self.release / "current"))
         self.paths = safe.Paths(state=self.state, backups=self.backups, db=self.db, marker=self.marker, archive=self.state / "incidents", transition=self.state / "transition.json", release_root=self.release, routing=self.etc / "hatchet-routing-registry.json", lock=self.lock, targets=self.targets, repository=self.repository, expected_uid=os.getuid(), expected_gid=os.getgid())
         self.fd = os.open(self.lock, os.O_RDWR); os.dup2(self.fd, 3); fcntl.flock(3, fcntl.LOCK_EX)
         self.code = "a" * 40
@@ -140,7 +141,7 @@ class SafeDownFixture(unittest.TestCase):
         record = safe.adopt(paths=self.paths, code_commit=self.code)
         self.assertEqual(record["decision"], "safe_down_fresh_install")
         self.assertTrue((self.paths.archive / record["incident"] / "marker").exists())
-        self.assertEqual(record["publication_targets"]["states"], [{"path": str(self.etc / "hatchet-verifier-policy.json"), "state": "absent"}, {"path": str(self.etc / "hatchet-routing-registry.json"), "state": "absent"}, {"path": str(self.release / "current"), "state": "absent"}, {"path": str(self.release / "9342db181033ff783d645973e5d4c7a54ae4c6f9"), "state": "absent"}])
+        self.assertEqual(record["publication_targets"]["states"], [{"path": str(self.mutable_target), "state": "absent"}, {"path": str(self.etc / "hatchet-routing-registry.json"), "state": "absent"}, {"path": str(self.release / "current"), "state": "absent"}, {"path": str(self.release / "9342db181033ff783d645973e5d4c7a54ae4c6f9"), "state": "absent"}])
 
     def test_prepare_rehands_existing_v1_without_reconstruction(self):
         self.prepare()

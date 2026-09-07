@@ -16,13 +16,13 @@ manifests, and checked-in runtime code.
   `driftward-hermes.service` and `driftward-hermes-factory-gateway.service`.
 - Hermes gateway: `driftward-hermes-factory-gateway.service`, listening on
   `unix:///run/driftward-hermes-factory/hermes.sock`.
-- Durable data:
-  - `/docker/driftward/factory/data/hatchet/postgres`
-  - `/docker/driftward/factory/data/hatchet/config`
-  - `/docker/driftward/factory/data/bridge`
-  - `/docker/driftward/factory/data/ingress`
-  - `/docker/driftward/factory/data/lifecycle`
-  - `/docker/driftward/factory/data/linear-token`
+- Durable data lives in Docker named volumes:
+  - `driftward-factory-hatchet-postgres-data`
+  - `driftward-factory-hatchet-config-data`
+  - `driftward-factory-bridge-data`
+  - `driftward-factory-ingress-data`
+  - `driftward-factory-lifecycle-data`
+  - `driftward-factory-linear-token-data`
 - Hatchet key material: `/docker/driftward/factory/keys/hatchet`
 - Local operator socket: `/run/driftward-factory-operator/operator.sock`.
 - Local Hermes gateway socket: `/run/driftward-hermes-factory/hermes.sock`.
@@ -95,14 +95,21 @@ runtime secrets and must not be checked into this repository.
 ## Cutover Gate
 
 This PR does not migrate historical records. Before starting the standalone
-Factory runtime, migrate the existing Hatchet Postgres data and key material
-from the current Hatchet runtime into:
+Factory runtime, migrate existing Hatchet state into Docker named volumes and
+key material into the runtime root:
 
 ```text
-/docker/driftward/factory/data/hatchet/postgres
-/docker/driftward/factory/data/hatchet/config
+driftward-factory-hatchet-postgres-data
+driftward-factory-hatchet-config-data
+driftward-factory-bridge-data
+driftward-factory-ingress-data
+driftward-factory-lifecycle-data
+driftward-factory-linear-token-data
 /docker/driftward/factory/keys/hatchet
 ```
+
+Legacy host-bind state under `/docker/driftward/factory/data/*`, if present,
+is a migration source or archive only. It is not the live Docker runtime store.
 
 Then stop the legacy host-managed Hatchet unit:
 
@@ -112,8 +119,10 @@ systemctl disable --now driftward-hatchet.service
 
 `deploy/install-docker.sh --start` fails closed while
 `driftward-hatchet.service` is active or the migrated Hatchet DB/key material is
-missing. That prevents accidentally starting a second empty Hatchet control
-plane on the same ports.
+missing. If legacy bridge, ingress, or lifecycle SQLite files exist under the
+old host-bind path, start also fails until matching files exist inside the
+Docker volumes. That prevents accidentally starting an empty Factory control
+plane on the same ports and ledgers.
 
 ## Release Deployment
 
@@ -189,6 +198,6 @@ factory-docker-smoke
 ```
 
 Rollback to the previous release by checking out the prior tag and running
-`bash deploy/install-docker.sh --image-tag <tag> --start`. Preserve
-`/docker/driftward/factory/data/*` unless there is a separately approved record
-migration or restore plan.
+`bash deploy/install-docker.sh --image-tag <tag> --start`. Preserve the
+`driftward-factory-*` Docker volumes and `/docker/driftward/factory/keys/*`
+unless there is a separately approved record migration or restore plan.

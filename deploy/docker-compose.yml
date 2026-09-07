@@ -23,6 +23,7 @@ x-hatchet-client-env: &hatchet-client-env
   HATCHET_EVENT_PUBLISHER_COMMAND: /usr/local/bin/node /app/hatchet/workers/pr-event-worker/dist/events/push-generic-event.js
   HATCHET_INTAKE_ROUTING_REGISTRY_PATH: /app/hatchet/workers/routing-registry.json
   HATCHET_VERIFIER_POLICY_PATH: /app/hatchet/workers/verifier-policy.json
+  HATCHET_FACTORY_RUNTIME: docker
   DRIFTWARD_HERMES_RECEIPT_USE_SYSTEMD: "0"
   DRIFTWARD_HERMES_RECEIPT_REQUIRE_SYSTEMD: "0"
 
@@ -36,7 +37,7 @@ services:
       POSTGRES_PASSWORD: ${HATCHET_POSTGRES_PASSWORD:?HATCHET_POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${HATCHET_POSTGRES_DB:-hatchet}
     volumes:
-      - ./data/hatchet/postgres:/var/lib/postgresql/data
+      - factory-hatchet-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d ${HATCHET_POSTGRES_DB:-hatchet} -U ${HATCHET_POSTGRES_USER:-hatchet}"]
       interval: 10s
@@ -88,7 +89,7 @@ services:
       SERVER_LOGGER_LEVEL: "info"
       SERVER_LOGGER_FORMAT: "console"
     volumes:
-      - ./data/hatchet/config:/config
+      - factory-hatchet-config-data:/config
       - ./keys/hatchet:/keys:ro
     cpus: "0.75"
     mem_limit: 768m
@@ -105,8 +106,9 @@ services:
         required: false
     environment:
       HATCHET_VERIFIER_POLICY_PATH: /app/hatchet/workers/verifier-policy.json
+      HATCHET_FACTORY_RUNTIME: docker
     volumes:
-      - ./data/bridge:/var/lib/driftward-hatchet-bridge
+      - factory-bridge-data:/var/lib/driftward-hatchet-bridge
     ports:
       - "127.0.0.1:19877:19877"
     healthcheck:
@@ -134,7 +136,7 @@ services:
     environment:
       <<: *hatchet-client-env
     volumes:
-      - ./data/ingress:/var/lib/driftward-hatchet-event-ingress
+      - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress
     ports:
       - "127.0.0.1:19878:19878"
     healthcheck:
@@ -285,7 +287,7 @@ services:
       FACTORY_LIFECYCLE_INGRESS_URL: http://event-ingress:19878
       FACTORY_LIFECYCLE_ENV_FILE: /etc/driftward/factory-lifecycle-writer.env
     volumes:
-      - ./data/lifecycle:/var/lib/driftward-factory-lifecycle-writer
+      - factory-lifecycle-data:/var/lib/driftward-factory-lifecycle-writer
       - type: bind
         source: /etc/driftward/factory-lifecycle-writer.env
         target: /etc/driftward/factory-lifecycle-writer.env
@@ -312,7 +314,7 @@ services:
       FACTORY_LIFECYCLE_ENV_FILE: /etc/driftward/factory-lifecycle-writer.env
       FACTORY_LIFECYCLE_RESTART_SERVICE: "0"
     volumes:
-      - ./data/linear-token:/var/lib/driftward-factory-linear-token
+      - factory-linear-token-data:/var/lib/driftward-factory-linear-token
       - type: bind
         source: /etc/driftward/factory-lifecycle-writer.env
         target: /etc/driftward/factory-lifecycle-writer.env
@@ -337,8 +339,8 @@ services:
       HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/driftward-hatchet-event-ingress/ingress.db
     volumes:
       - /run/driftward-factory-operator:/run/driftward-factory-operator
-      - ./data/bridge:/var/lib/driftward-hatchet-bridge
-      - ./data/ingress:/var/lib/driftward-hatchet-event-ingress:ro
+      - factory-bridge-data:/var/lib/driftward-hatchet-bridge
+      - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro
     cpus: "0.10"
     mem_limit: 128m
 
@@ -355,9 +357,23 @@ services:
       <<: *hatchet-client-env
       DRIFTWARD_BRIDGE_RELEASE_ROOT: /app
     volumes:
-      - ./data/bridge:/var/lib/driftward-hatchet-bridge
+      - factory-bridge-data:/var/lib/driftward-hatchet-bridge
     cpus: "0.10"
     mem_limit: 128m
+
+volumes:
+  factory-hatchet-postgres-data:
+    name: driftward-factory-hatchet-postgres-data
+  factory-hatchet-config-data:
+    name: driftward-factory-hatchet-config-data
+  factory-bridge-data:
+    name: driftward-factory-bridge-data
+  factory-ingress-data:
+    name: driftward-factory-ingress-data
+  factory-lifecycle-data:
+    name: driftward-factory-lifecycle-data
+  factory-linear-token-data:
+    name: driftward-factory-linear-token-data
 
 networks:
   factory:

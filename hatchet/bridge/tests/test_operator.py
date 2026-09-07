@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _bounded_limit, _mode, _services_healthy
+from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _bounded_limit, _mode, _operator_paths, _services_healthy
 from test_support import connect_migrate as connect
 from hatchet_hermes_bridge.store import BridgeConflict, authorize_factory_effect, claim_factory_execution, commit_factory_execution, get_factory_attempt, list_events, list_factory_attempt_events, settle_factory_execution, submit_job, transition_job, utc_now
 
@@ -290,6 +290,28 @@ class FactoryOperatorTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch("hatchet_hermes_bridge.operator._http_healthy", return_value=True) as health:
             self.assertFalse(_services_healthy())
         health.assert_not_called()
+
+    def test_docker_operator_paths_are_fixed_and_explicit(self):
+        env = {
+            "HATCHET_FACTORY_OPERATOR_RUNTIME": "docker",
+            "HATCHET_VERIFIER_POLICY_PATH": "/app/hatchet/workers/verifier-policy.json",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                _operator_paths(),
+                (
+                    "/var/lib/driftward-hatchet-bridge/bridge.db",
+                    "/var/lib/driftward-hatchet-event-ingress/ingress.db",
+                    "/app/hatchet/workers/routing-registry.json",
+                    "/app/hatchet/workers/verifier-policy.json",
+                ),
+            )
+        with patch.dict(os.environ, {"HATCHET_FACTORY_OPERATOR_RUNTIME": "docker"}, clear=True):
+            with self.assertRaisesRegex(OperatorError, "HATCHET_VERIFIER_POLICY_PATH is required"):
+                _operator_paths()
+        with patch.dict(os.environ, {**env, "HATCHET_VERIFIER_POLICY_PATH": "/etc/driftward/hatchet-verifier-policy.json"}, clear=True):
+            with self.assertRaisesRegex(OperatorError, "HATCHET_VERIFIER_POLICY_PATH must be /app/hatchet/workers/verifier-policy.json"):
+                _operator_paths()
 
     def test_operator_mode_prefers_environment_before_host_env_file(self):
         with patch.dict(os.environ, {"HATCHET_INTAKE_DRY_RUN": "false"}):

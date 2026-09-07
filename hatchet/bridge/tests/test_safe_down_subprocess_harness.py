@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = ROOT.parent
 POINTS = (
     "archive", "transition", "installer-adoption", "prepared-journal",
-    "publication-applied-directories", "publication-applied-policy", "publication-applied-routing",
+    "publication-applied-directories", "publication-applied-routing",
     "publication-applied-units", "publication-applied-release", "publication-applied-current", "committed-journal",
 )
 SUPERSESSION_POINTS = (

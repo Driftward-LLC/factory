@@ -1450,6 +1450,7 @@ function verificationPolicy(job: BridgeJob): VerificationPolicy {
 function loadCanonicalPolicy(repo: string): VerificationPolicy {
   const policyPath = process.env.HATCHET_VERIFIER_POLICY_PATH || (process.env.NODE_ENV === 'test' ? path.resolve(process.cwd(), '..', 'verifier-policy.json') : undefined);
   if (!policyPath) throw new NonRetryableBridgeExecutionError('verification_policy_unavailable', 'HATCHET_VERIFIER_POLICY_PATH is required outside test mode');
+  if (process.env.HATCHET_FACTORY_RUNTIME === 'docker' && policyPath !== '/app/hatchet/workers/verifier-policy.json') throw new NonRetryableBridgeExecutionError('verification_policy_unavailable', 'HATCHET_VERIFIER_POLICY_PATH must be /app/hatchet/workers/verifier-policy.json for Docker Factory');
   try {
     const catalog = JSON.parse(readFileSync(policyPath, 'utf8')) as { version?: unknown; policies?: unknown };
     if (!Number.isInteger(catalog.version) || !Array.isArray(catalog.policies)) throw new Error('invalid catalog');

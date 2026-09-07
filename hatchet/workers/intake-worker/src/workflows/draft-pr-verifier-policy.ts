@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 
+const DOCKER_VERIFIER_POLICY_PATH = '/app/hatchet/workers/verifier-policy.json';
+
 export type DraftPrVerifierPolicy = {
   catalog_version: number;
   digest: string;
@@ -27,6 +29,7 @@ export class DraftPrVerifierPolicyError extends Error {
 export function resolveDraftPrVerifierPolicy(repo: string, options: { policyPath?: string } = {}): DraftPrVerifierPolicy {
   const policyPath = options.policyPath || process.env.HATCHET_VERIFIER_POLICY_PATH || (process.env.NODE_ENV === 'test' ? path.resolve(process.cwd(), '..', 'verifier-policy.json') : undefined);
   if (!policyPath) throw new DraftPrVerifierPolicyError('verification_policy_unavailable', 'HATCHET_VERIFIER_POLICY_PATH is required outside test mode');
+  if (process.env.HATCHET_FACTORY_RUNTIME === 'docker' && policyPath !== DOCKER_VERIFIER_POLICY_PATH) throw new DraftPrVerifierPolicyError('verification_policy_unavailable', `HATCHET_VERIFIER_POLICY_PATH must be ${DOCKER_VERIFIER_POLICY_PATH} for Docker Factory`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(policyPath, 'utf8'));
