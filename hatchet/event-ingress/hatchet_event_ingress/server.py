@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .normalizer import IngressValidationError, normalize_github_pull_request, normalize_linear_issue
 from .publisher import PublishError, publish_hatchet_event
-from .store import IngressConflict, IngressNotFound, connect, count_reconciliation_observations, get_event, latest_observation, list_events, list_lifecycle_observations, list_reconciliation_observations, mark_published, record_event
+from .store import IngressConflict, IngressNotFound, claim_pending_publication, connect, count_reconciliation_observations, get_event, latest_observation, list_events, list_lifecycle_observations, list_reconciliation_observations, mark_publication_failed, mark_published, publication_status, record_event
 
 
 def _single_query_value(query: dict[str, list[str]], key: str) -> str | None:
@@ -121,6 +121,12 @@ class IngressHandler(BaseHTTPRequestHandler):
             parts = [unquote(part) for part in path.split("/") if part]
 
             if path == "/health":
+                status = publication_status(self.conn)
+                ok = status["unpublished"] == 0
+                self._write_json(200 if ok else 503, {"ok": ok, "publication": status})
+                return
+
+            if path == "/ready":
                 self._write_json(200, {"ok": True})
                 return
 
@@ -187,8 +193,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 normalized = normalize_github_pull_request(body, delivery_id=delivery)
                 event, created = record_event(self.conn, normalized=normalized, raw_payload=body)
                 if not event["hatchet_published"]:
-                    event_id = publish_hatchet_event(event["hatchet_event_name"], event["normalized"])
-                    event = mark_published(self.conn, event["event_key"], event_id)
+                    event = _publish_event(self.conn, event)
                 self._write_json(201 if created else 200, {"created": created, "event": event})
                 return
 
@@ -200,14 +205,26 @@ class IngressHandler(BaseHTTPRequestHandler):
                 normalized = normalize_linear_issue(body, delivery_id=delivery)
                 event, created = record_event(self.conn, normalized=normalized, raw_payload=body)
                 if not event["hatchet_published"]:
-                    event_id = publish_hatchet_event(event["hatchet_event_name"], event["normalized"])
-                    event = mark_published(self.conn, event["event_key"], event_id)
+                    event = _publish_event(self.conn, event)
                 self._write_json(201 if created else 200, {"created": created, "event": event})
                 return
 
             self._write_json(404, {"error": "not found"})
         except Exception as exc:
             self._handle_error(exc)
+
+
+def _publish_event(conn, event: dict[str, Any]) -> dict[str, Any]:
+    claimed = claim_pending_publication(conn, event["event_key"])
+    if not claimed:
+        return get_event(conn, event["event_key"])
+    lease_id = claimed["publish_lease_id"]
+    try:
+        event_id = publish_hatchet_event(claimed["hatchet_event_name"], claimed["normalized"])
+    except PublishError:
+        mark_publication_failed(conn, claimed["event_key"], lease_id)
+        raise
+    return mark_published(conn, claimed["event_key"], event_id, lease_id=lease_id)
 
 
 def serve(db_path: str, host: str, port: int) -> None:

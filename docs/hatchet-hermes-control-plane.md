@@ -256,20 +256,19 @@ key or fail with a conflict if the requested outcome differs.
 
 ## Placement
 
-If Hatchet is adopted as a durable host runtime, follow
-`docs/containerized-service-runbook.md` before adding Docker or systemd state.
-The expected scope is `host-level` because Hatchet would support shared
-bridge-backed work coordination across repos.
+Hatchet is deployed as part of the standalone Factory Compose application.
+`driftward-host` supplies Docker and protected secret files but does not own the
+Factory product runtime.
 
-Recommended paths:
+Current paths:
 
 ```text
-/docker/driftward/hatchet/              # Hatchet control-plane runtime
-/docker/driftward/hatchet/data/         # Hatchet durable state
+/docker/driftward/factory/              # Factory Compose runtime
+/var/lib/docker/volumes/driftward-factory-*  # Docker-managed durable state
 /etc/driftward/hatchet.env              # Hatchet control-plane env, mode 0600
-/etc/driftward/hatchet-worker.env       # Worker token only, mode 0600
+/etc/driftward/hatchet-workers.env      # Worker token only, mode 0600
 /var/lib/driftward-hatchet-bridge/      # Binding/control store for pilot
-/usr/local/bin/driftward-hatchet-smoke  # Host smoke test
+/usr/local/bin/factory-docker-smoke     # Factory runtime smoke test
 ```
 
 Bind all service ports to localhost unless a separate ingress, authentication,

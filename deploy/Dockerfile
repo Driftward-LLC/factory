@@ -1,3 +1,6 @@
+ARG FACTORY_RELEASE_COMMIT=development-unversioned
+ARG FACTORY_RELEASE_VERSION=local
+
 FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
@@ -19,6 +22,13 @@ RUN npm ci --prefix hatchet/workers \
 
 FROM node:22-bookworm-slim AS runtime
 
+ARG FACTORY_RELEASE_COMMIT
+ARG FACTORY_RELEASE_VERSION
+
+LABEL org.opencontainers.image.source="https://github.com/Driftward-LLC/factory" \
+      org.opencontainers.image.revision="$FACTORY_RELEASE_COMMIT" \
+      org.opencontainers.image.version="$FACTORY_RELEASE_VERSION"
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 tini \
   && rm -rf /var/lib/apt/lists/* \
@@ -26,6 +36,9 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=build /app /app
+
+RUN printf '{"commit":"%s","version":"%s"}\n' "$FACTORY_RELEASE_COMMIT" "$FACTORY_RELEASE_VERSION" \
+  > /app/hatchet/bridge/RELEASE_METADATA.json
 
 ENV NODE_ENV=production \
     PYTHONDONTWRITEBYTECODE=1 \

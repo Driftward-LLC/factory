@@ -396,27 +396,19 @@ factory logs reconciliation
 factory logs linear -f
 ```
 
-Use direct worker units only for focused worker debugging or remediation after
-`factory status` or the smoke test points at a specific service:
+The direct worker units are retired migration artifacts. Debug the current
+Compose services after `factory status` or the smoke test points at one:
 
 ```bash
-systemctl status driftward-hatchet-worker-execution-dispatch.service --no-pager
-systemctl status driftward-hatchet-worker-intake.service --no-pager
-systemctl status driftward-hatchet-worker-bridge-executor.service --no-pager
-systemctl status driftward-hatchet-worker-pr-event.service --no-pager
-systemctl status driftward-hatchet-worker-reconciliation.service --no-pager
-
-systemctl restart driftward-hatchet-worker-execution-dispatch.service
-systemctl restart driftward-hatchet-worker-intake.service
-systemctl restart driftward-hatchet-worker-bridge-executor.service
-systemctl restart driftward-hatchet-worker-pr-event.service
-systemctl restart driftward-hatchet-worker-reconciliation.service
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100 <service>
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory up -d --no-deps <service>
 ```
 
 Run the full Hatchet smoke, including a managed worker dry-run job:
 
 ```bash
-driftward-hatchet-smoke
+factory-docker-smoke
 ```
 
 Use `hatchet worker dev --profile prod` only for local development from an

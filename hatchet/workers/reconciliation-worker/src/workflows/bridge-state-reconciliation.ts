@@ -26,6 +26,7 @@ const CONCURRENCY = 4;
 
 export const bridgeStateReconciliation = hatchet.workflow<BridgeStateReconciliationInput, BridgeStateReconciliationOutput>({
   name: 'reconciliation-bridge-state-check',
+  on: { cron: '*/15 * * * *' },
   concurrency: {
     expression: '"reconciliation-bridge-state-check"',
     maxRuns: 1,
@@ -39,7 +40,7 @@ bridgeStateReconciliation.task({
   fn: async (input, ctx) => {
     const bridge = new BridgeClient();
     const observationClient = new IngressObservationClient();
-    const maxJobs = boundedInteger(input.maxJobs, 1, 250, 100);
+    const maxJobs = boundedInteger(input.maxJobs, 1, 250, 250);
     const maxEventsPerJob = boundedInteger(input.maxEventsPerJob, 1, 250, 100);
     const staleAfterMinutes = boundedInteger(input.staleAfterMinutes, 1, 10080, 30);
     const cutoff = Date.now() - staleAfterMinutes * 60 * 1000;

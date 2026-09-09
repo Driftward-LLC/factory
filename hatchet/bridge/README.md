@@ -39,34 +39,23 @@ Linear comments.
   mode `0600`; delivered only to scoped worker envs)
 - Allowed external-effect action: `create_draft_pr`
 - Allowed retry-inspection action: `inspect_draft_pr_state`
-- Managed API service: `driftward-hatchet-bridge.service`
+- Compose API service: `bridge`
 - Legacy bridge reconciler service/timer: retired; keep disabled except for a
   reviewed break-glass recovery action
-- Root-only retry operator: `driftward-factory-operator.service`, Unix socket
+- Root-only retry operator: Compose service `factory-operator`, Unix socket
   `/run/driftward-factory-operator/operator.sock`
-- Retry/inspection outbox: `driftward-factory-outbox-dispatcher.timer`
+- Retry/inspection outbox: Compose service `outbox-dispatcher`
 
-Current live release as of 2026-08-20 UTC:
+Current release provenance is embedded in the Factory image as OCI version and
+revision labels and in `/app/hatchet/bridge/RELEASE_METADATA.json`. The bridge
+health response exposes the same commit for smoke/status comparison.
 
-```text
-/docker/driftward/hatchet/releases/bridge/current
-  -> a797fa39aa62012a1ac3c8961099eda7ca989454
-```
+## Legacy publication and migration boundary
 
-The selected release records `commit:
-a797fa39aa62012a1ac3c8961099eda7ca989454`, `schema:
-bridge-release-v1`, and manifest digest
-`1547bce7b61d03fed29cd61392e96f0c82ffe1f148633224bb1eaeaa4482e430`
-in `RELEASE_METADATA.json`. It corresponds to
-`fix(hatchet): attest semantic legacy conflict upgrades` (PR #156). The source
-checkout may be ahead of this release; production bridge services continue to
-run the immutable `current` release until the bridge installer publishes and
-selects a newer one.
-
-## Runtime publication and migration boundary
-
-The checkout is development input, never runtime authority. Bridge services and
-timers execute only from the root-owned immutable release selected by
+The standalone Compose deployment supersedes this direct-host publication path.
+The tooling remains checked in for migration compatibility and reviewed
+break-glass recovery. In that legacy mode, bridge services and timers execute
+only from the root-owned immutable release selected by
 `/docker/driftward/hatchet/releases/bridge/current`; that symlink is switched
 atomically by `bridge/publish-release.sh`. Publication rejects dirty relevant
 source and extracts a named Git commit with `git archive`; `MANIFEST.json` and
@@ -770,8 +759,7 @@ policy path/digest without disclosure. Both installers run those checks before
 they enable or restart services.
 
 Post-merge rollout: set Factory to dry-run, confirm no active real bridge jobs,
-run the bridge installer and worker installer, run the preflight/status command
-and `driftward-hatchet-smoke`, then restore real mode only after health and
-queue gates pass. Rollback: return to dry-run, restore the prior policy/source,
-rerun the installers, verify the same gates and smoke, and investigate any
-legacy-ready count before restoring real mode.
+run `deploy/install-docker.sh --image-tag <tag> --start`, and run
+`factory-docker-smoke`. Restore real mode only after health and queue gates
+pass. The installer automatically restores the previously running image after
+a failed deploy smoke; later rollback uses the prior known-good Factory tag.

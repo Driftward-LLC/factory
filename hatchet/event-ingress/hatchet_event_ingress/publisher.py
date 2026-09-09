@@ -30,15 +30,18 @@ def publish_hatchet_event(
             "event_key": str(payload.get("eventKey") or ""),
         },
     }
-    result = subprocess.run(
-        shlex.split(command),
-        input=json.dumps(request, sort_keys=True),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            shlex.split(command),
+            input=json.dumps(request, sort_keys=True),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PublishError(f"publisher unavailable: {type(exc).__name__}") from exc
     if result.returncode != 0:
         raise PublishError(result.stderr.strip() or result.stdout.strip() or "publisher failed")
 

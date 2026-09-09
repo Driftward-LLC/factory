@@ -93,9 +93,10 @@ jobs:
           npm run test --prefix hatchet/workers/bridge-executor-worker
           npm run test --prefix hatchet/workers/reconciliation-worker
 
-      - name: Test bridge and lifecycle writer
+      - name: Test bridge, ingress, and lifecycle writer
         run: |
           PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests
+          PYTHONPATH=hatchet/event-ingress python3 -m unittest discover -s hatchet/event-ingress/tests
           PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/factory-lifecycle-writer/tests
 
       - name: Validate Docker deployment
@@ -105,7 +106,10 @@ jobs:
             HATCHET_ADMIN_PASSWORD=ci-admin-password \
             FACTORY_SOURCE_ROOT="$PWD" \
             docker compose -f deploy/docker-compose.yml config >/dev/null
-          docker build -f deploy/Dockerfile -t driftward/factory:ci .
+          docker build \
+            --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" \
+            --build-arg FACTORY_RELEASE_VERSION="$RELEASE_TAG" \
+            -f deploy/Dockerfile -t driftward/factory:ci .
 
       - name: Check changed-file whitespace
         run: git diff --check HEAD
@@ -141,7 +145,7 @@ jobs:
           - Generated and checked Hatchet contracts.
           - Ran repository tool tests.
           - Built and tested Hatchet workers.
-          - Ran bridge and lifecycle writer tests.
+          - Ran bridge, ingress, and lifecycle writer tests.
           - Validated Docker Compose config and built the Factory image.
           - Checked whitespace and scanned committed content with gitleaks.
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry
 from hatchet_hermes_bridge.store import (
     BridgeValidationError, BridgeConflict, acknowledge_factory_outbox, claim_factory_execution,
-    claim_factory_outbox_delivery, connect_readonly, get_factory_attempt,
+    claim_factory_outbox_delivery, connect_readonly, fail_factory_outbox_delivery, get_factory_attempt,
     list_factory_outbox, list_factory_attempt_events, reserve_factory_retry, cancel_factory_attempt, submit_job,
     complete_pr_inspection, get_job, recover_factory_execution,
 )
@@ -61,6 +61,9 @@ class RetryReviewFencingTests(unittest.TestCase):
         claimed = claim_factory_outbox_delivery(conn, row["outbox_key"])
         self.assertIsNotNone(claimed)
         self.assertIsNone(claim_factory_outbox_delivery(conn, row["outbox_key"]))
+        fail_factory_outbox_delivery(conn, row["outbox_key"], claimed["delivery_lease_id"])
+        claimed = claim_factory_outbox_delivery(conn, row["outbox_key"])
+        self.assertIsNotNone(claimed)
         # A crash before acknowledgement leaves the same immutable event for a
         # lease-expiry replay, never a second attempt/job/event row.
         conn.execute("UPDATE factory_attempt_outbox SET delivery_lease_expires_at='2000-01-01T00:00:00.000000Z' WHERE outbox_key=?", (row["outbox_key"],)); conn.commit()

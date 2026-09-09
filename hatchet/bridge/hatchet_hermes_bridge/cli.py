@@ -22,9 +22,11 @@ from .store import (
     list_factory_outbox,
     claim_factory_outbox_delivery,
     acknowledge_factory_outbox,
+    fail_factory_outbox_delivery,
     list_factory_inspection_outbox,
     claim_factory_inspection_outbox,
     acknowledge_factory_inspection_outbox,
+    fail_factory_inspection_outbox_delivery,
 )
 
 
@@ -133,23 +135,31 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print_json({"dry_run": args.dry_run, "results": results})
             elif args.command == "dispatch-factory-outbox":
-                delivered = 0
+                delivered = failed = 0
                 release_root = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_ROOT")
                 if not release_root:
                     raise BridgeError("immutable bridge release root is required for outbox dispatch")
-                deliveries = [(row, claim_factory_outbox_delivery, acknowledge_factory_outbox) for row in list_factory_outbox(conn, max(1, min(args.limit, 250)))]
-                deliveries += [(row, claim_factory_inspection_outbox, acknowledge_factory_inspection_outbox) for row in list_factory_inspection_outbox(conn, max(1, min(args.limit, 250)))]
-                for row, claim, acknowledge in deliveries:
+                deliveries = [(row, claim_factory_outbox_delivery, acknowledge_factory_outbox, fail_factory_outbox_delivery) for row in list_factory_outbox(conn, max(1, min(args.limit, 250)))]
+                deliveries += [(row, claim_factory_inspection_outbox, acknowledge_factory_inspection_outbox, fail_factory_inspection_outbox_delivery) for row in list_factory_inspection_outbox(conn, max(1, min(args.limit, 250)))]
+                for row, claim, acknowledge, fail in deliveries:
                     claimed = claim(conn, row["outbox_key"])
                     if not claimed or (claimed.get("event_type") and claimed["event_type"] != "hermes_job_accepted"):
                         continue
                     payload = claimed["payload"]
                     env = {key: value for key, value in os.environ.items() if key.startswith("HATCHET_CLIENT_")}
                     env.update({"BRIDGE_JOB_ID": str(payload["job_id"]), "BRIDGE_IDEMPOTENCY_KEY": str(payload["idempotency_key"])})
-                    result = subprocess.run(["/usr/bin/node", f"{release_root}/worker-triggers/push-accepted-event.js"], env=env, capture_output=True, timeout=15, check=False)
-                    if result.returncode == 0:
+                    try:
+                        result = subprocess.run(["/usr/bin/node", f"{release_root}/worker-triggers/push-accepted-event.js"], env=env, capture_output=True, timeout=15, check=False)
+                    except (OSError, subprocess.TimeoutExpired):
+                        result = None
+                    if result is not None and result.returncode == 0:
                         acknowledge(conn, claimed["outbox_key"]); delivered += 1
-                print_json({"delivered": delivered})
+                    else:
+                        fail(conn, claimed["outbox_key"], claimed["delivery_lease_id"]); failed += 1
+                        print(f"factory outbox delivery failed: {claimed['outbox_key']}", file=sys.stderr)
+                print_json({"delivered": delivered, "failed": failed})
+                if failed:
+                    return 1
             else:
                 parser.error(f"unknown command {args.command}")
         finally:

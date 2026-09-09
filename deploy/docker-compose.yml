@@ -6,6 +6,9 @@ x-factory-image: &factory-image
     context: ${FACTORY_SOURCE_ROOT:-/root/driftward/repos/factory}
     dockerfile: deploy/Dockerfile
     target: runtime
+    args:
+      FACTORY_RELEASE_COMMIT: ${FACTORY_RELEASE_COMMIT:-development-unversioned}
+      FACTORY_RELEASE_VERSION: ${FACTORY_RELEASE_VERSION:-local}
   restart: unless-stopped
   extra_hosts:
     - "host.docker.internal:host-gateway"
@@ -30,7 +33,7 @@ x-hatchet-client-env: &hatchet-client-env
 services:
   postgres:
     image: postgres:15.6@sha256:0b723c153bca6ffdc3d8084d3b4d493a945b955456bb4318c74f7a66d371a1fd
-    command: postgres -c 'max_connections=200'
+    command: postgres -c 'max_connections=100'
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${HATCHET_POSTGRES_USER:-hatchet}
@@ -45,8 +48,8 @@ services:
       retries: 5
       start_period: 10s
     cpus: "0.50"
-    mem_limit: 1g
-    memswap_limit: 1152m
+    mem_limit: 2g
+    memswap_limit: 2304m
     networks:
       - factory
 
@@ -86,6 +89,9 @@ services:
       DEFAULT_TENANT_SLUG: ${HATCHET_DEFAULT_TENANT_SLUG:-driftward}
       DATABASE_LOGGER_LEVEL: "warn"
       DATABASE_LOGGER_FORMAT: "console"
+      DATABASE_MAX_CONNS: ${HATCHET_DATABASE_MAX_CONNS:-20}
+      DATABASE_MAX_QUEUE_CONNS: ${HATCHET_DATABASE_MAX_QUEUE_CONNS:-20}
+      DATABASE_MIN_QUEUE_CONNS: ${HATCHET_DATABASE_MIN_QUEUE_CONNS:-5}
       SERVER_LOGGER_LEVEL: "info"
       SERVER_LOGGER_FORMAT: "console"
     volumes:
@@ -93,6 +99,12 @@ services:
       - ./keys/hatchet:/keys:ro
     cpus: "0.75"
     mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8733/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     networks:
       - factory
 
@@ -125,7 +137,7 @@ services:
     command: ["python3", "-m", "hatchet_event_ingress.cli", "--db", "/var/lib/driftward-hatchet-event-ingress/ingress.db", "serve", "--host", "0.0.0.0", "--port", "19878"]
     depends_on:
       hatchet-lite:
-        condition: service_started
+        condition: service_healthy
       bridge:
         condition: service_healthy
     env_file:
@@ -140,7 +152,7 @@ services:
     ports:
       - "127.0.0.1:19878:19878"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:19878/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:19878/ready"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -176,7 +188,7 @@ services:
     command: ["node", "dist/worker.js"]
     depends_on:
       hatchet-lite:
-        condition: service_started
+        condition: service_healthy
       bridge:
         condition: service_healthy
     env_file:
@@ -193,7 +205,7 @@ services:
     command: ["node", "dist/worker.js"]
     depends_on:
       hatchet-lite:
-        condition: service_started
+        condition: service_healthy
       bridge:
         condition: service_healthy
     env_file:
@@ -210,7 +222,7 @@ services:
     command: ["node", "dist/worker.js"]
     depends_on:
       hatchet-lite:
-        condition: service_started
+        condition: service_healthy
       bridge:
         condition: service_healthy
     env_file:
@@ -233,7 +245,7 @@ services:
     command: ["node", "dist/worker.js"]
     depends_on:
       hatchet-lite:
-        condition: service_started
+        condition: service_healthy
     env_file:
       - path: /etc/driftward/hatchet-workers.env
         required: false
@@ -248,7 +260,7 @@ services:
     command: ["node", "dist/worker.js"]
     depends_on:
       hatchet-lite:
-        condition: service_started
+        condition: service_healthy
       bridge:
         condition: service_healthy
       event-ingress:
@@ -273,7 +285,7 @@ services:
       event-ingress:
         condition: service_healthy
       factory-linear-token-refresh:
-        condition: service_started
+        condition: service_healthy
     env_file:
       - path: /etc/driftward/factory-lifecycle-writer.env
         required: false
@@ -305,7 +317,7 @@ services:
 
   factory-linear-token-refresh:
     <<: *factory-image
-    command: ["sh", "-c", "while true; do python3 /app/hatchet/factory-lifecycle-writer/factory-lifecycle-token-refresh; sleep \"$${FACTORY_LINEAR_TOKEN_REFRESH_INTERVAL_SECONDS:-3600}\"; done"]
+    command: ["sh", "-ec", "while true; do python3 /app/hatchet/factory-lifecycle-writer/factory-lifecycle-token-refresh; sleep \"$${FACTORY_LINEAR_TOKEN_REFRESH_INTERVAL_SECONDS:-3600}\"; done"]
     env_file:
       - path: /etc/driftward/factory-linear-token.env
         required: false
@@ -320,6 +332,12 @@ services:
         target: /etc/driftward/factory-lifecycle-writer.env
     cpus: "0.05"
     mem_limit: 96m
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/driftward-factory-linear-token/factory_actor.json && find /var/lib/driftward-factory-linear-token/factory_actor.json -mmin -120 | grep -q ."]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
 
   factory-operator:
     <<: *factory-image
@@ -343,12 +361,22 @@ services:
       - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro
     cpus: "0.10"
     mem_limit: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/driftward-factory-operator/operator.sock"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   outbox-dispatcher:
     <<: *factory-image
-    command: ["sh", "-c", "while true; do python3 -m hatchet_hermes_bridge.cli --db /var/lib/driftward-hatchet-bridge/bridge.db dispatch-factory-outbox --limit 50 || true; sleep \"$${FACTORY_OUTBOX_DISPATCH_INTERVAL_SECONDS:-30}\"; done"]
+    command: ["sh", "-ec", "while true; do python3 -m hatchet_hermes_bridge.cli --db /var/lib/driftward-hatchet-bridge/bridge.db dispatch-factory-outbox --limit 50; python3 -m hatchet_event_ingress.cli --db /var/lib/driftward-hatchet-event-ingress/ingress.db dispatch-pending --limit 50; date +%s > /tmp/factory-outbox-last-success; sleep \"$${FACTORY_OUTBOX_DISPATCH_INTERVAL_SECONDS:-30}\"; done"]
     depends_on:
+      hatchet-lite:
+        condition: service_healthy
       bridge:
+        condition: service_healthy
+      event-ingress:
         condition: service_healthy
     env_file:
       - path: /etc/driftward/factory-operator.env
@@ -358,8 +386,15 @@ services:
       DRIFTWARD_BRIDGE_RELEASE_ROOT: /app
     volumes:
       - factory-bridge-data:/var/lib/driftward-hatchet-bridge
+      - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress
     cpus: "0.10"
     mem_limit: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/factory-outbox-last-success && find /tmp/factory-outbox-last-success -mmin -2 | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   factory-hatchet-postgres-data:

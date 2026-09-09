@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from hatchet_event_ingress.normalizer import normalize_github_pull_request, normalize_linear_issue
-from hatchet_event_ingress.store import IngressConflict, connect, latest_observation, list_lifecycle_observations, list_reconciliation_observations, mark_published, record_event
+from hatchet_event_ingress.store import IngressConflict, claim_pending_publication, connect, latest_observation, list_lifecycle_observations, list_pending_publications, list_reconciliation_observations, mark_publication_failed, mark_published, publication_status, record_event
 
 
 class IngressStoreTest(unittest.TestCase):
@@ -57,6 +57,30 @@ class IngressStoreTest(unittest.TestCase):
 
         self.assertTrue(published["hatchet_published"])
         self.assertEqual(published["hatchet_event_id"], "hatchet-event-1")
+
+    def test_pending_publication_is_leased_retried_and_visible_in_health_state(self) -> None:
+        payload = _payload()
+        normalized = normalize_github_pull_request(payload, delivery_id="delivery-lease")
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(f"{tmp}/ingress.db")
+            try:
+                event, _ = record_event(conn, normalized=normalized, raw_payload=payload)
+                claimed = claim_pending_publication(conn, event["event_key"])
+                self.assertIsNotNone(claimed)
+                self.assertIsNone(claim_pending_publication(conn, event["event_key"]))
+                with self.assertRaises(IngressConflict):
+                    mark_published(conn, event["event_key"], "wrong-owner", lease_id="wrong-lease")
+                mark_publication_failed(conn, event["event_key"], claimed["publish_lease_id"])
+                retried = claim_pending_publication(conn, event["event_key"])
+                published = mark_published(conn, event["event_key"], "hatchet-event-2", lease_id=retried["publish_lease_id"])
+                status = publication_status(conn)
+                pending = list_pending_publications(conn)
+            finally:
+                conn.close()
+
+        self.assertEqual(published["publish_attempts"], 2)
+        self.assertEqual(status["unpublished"], 0)
+        self.assertEqual(pending, [])
 
     def test_record_event_accepts_generic_subject(self) -> None:
         payload = _linear_payload()
