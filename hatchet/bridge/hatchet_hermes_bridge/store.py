@@ -2789,7 +2789,7 @@ def record_reconciliation_findings(conn: sqlite3.Connection, findings: list[dict
             key, job_id, subject, kind = finding["finding_key"], finding["job_id"], finding["subject"], finding["kind"]
             row = conn.execute("SELECT occurrence_count FROM reconciliation_findings WHERE finding_key = ?", (key,)).fetchone()
             if row:
-                conn.execute("UPDATE reconciliation_findings SET last_seen_at = ?, occurrence_count = occurrence_count + 1 WHERE finding_key = ?", (now, key))
+                conn.execute("UPDATE reconciliation_findings SET details_json = ?, last_seen_at = ?, occurrence_count = occurrence_count + 1 WHERE finding_key = ?", (canonical_json(finding), now, key))
                 existing.append(key)
             else:
                 conn.execute(

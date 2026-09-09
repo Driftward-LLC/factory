@@ -68,7 +68,9 @@ test('requires a Hermes execution reference and its append-only bridge event', (
   const absentEventFindings = compareCrossProvider(absentEvent, [], {}, CUTOFF);
 
   assert.equal(missingReferenceFindings[0].kind, 'hermes_execution_ref_missing');
+  assert.equal(missingReferenceFindings[0].severity, 'warning');
   assert.equal(absentEventFindings[0].kind, 'hermes_receipt_contradicts_bridge_history');
+  assert.equal(compareCrossProvider(missingReference, [], {}, Date.parse('2026-08-13T09:59:00Z'))[0].severity, 'critical');
 });
 
 test('does not require an effect receipt for read-only inspection jobs', () => {
