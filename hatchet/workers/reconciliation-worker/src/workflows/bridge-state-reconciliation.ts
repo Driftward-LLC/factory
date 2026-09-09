@@ -6,11 +6,11 @@ import { observeHatchetRun, observeHatchetRuns, type HatchetRunLookup } from '..
 import { compareCrossProvider, expectedJob, finding, type ReconciliationFinding } from './cross-provider-reconciliation';
 import { bridgeEventHistoryIncomplete, incompleteBridgeScan, inspectHatchetInventory, inspectIngressInventory } from './inventory-reconciliation';
 import { recordFindingBatches } from './finding-batches';
+import { reconciliationInput, type BridgeStateReconciliationInput } from './reconciliation-input';
 import { redispatchStaleVerification } from './verification-lease-recovery';
 
 type BridgeEvent = { event_id: string; job_id: string; event_type: string; state: string; details: Record<string, unknown>; created_at: string };
 
-export type BridgeStateReconciliationInput = { requestId?: string; maxJobs?: number; maxEventsPerJob?: number; staleAfterMinutes?: number; emitWhenClean?: boolean };
 export type BridgeStateReconciliationOutput = {
   'inspect-bridge-ledger': {
     checkedJobs: number;
@@ -38,11 +38,12 @@ bridgeStateReconciliation.task({
   name: 'inspect-bridge-ledger',
   executionTimeout: '60s',
   fn: async (input, ctx) => {
+    const options = reconciliationInput(input);
     const bridge = new BridgeClient();
     const observationClient = new IngressObservationClient();
-    const maxJobs = boundedInteger(input.maxJobs, 1, 250, 250);
-    const maxEventsPerJob = boundedInteger(input.maxEventsPerJob, 1, 250, 100);
-    const staleAfterMinutes = boundedInteger(input.staleAfterMinutes, 1, 10080, 30);
+    const maxJobs = boundedInteger(options.maxJobs, 1, 250, 250);
+    const maxEventsPerJob = boundedInteger(options.maxEventsPerJob, 1, 250, 100);
+    const staleAfterMinutes = boundedInteger(options.staleAfterMinutes, 1, 10080, 30);
     const cutoff = Date.now() - staleAfterMinutes * 60 * 1000;
     const [{ jobs, total }, ingressInventory, hatchetInventory] = await Promise.all([
       bridge.listJobs(maxJobs), observationClient.inventory(maxJobs), observeHatchetRuns(hatchet.runs, maxJobs),
@@ -73,11 +74,11 @@ bridgeStateReconciliation.task({
     const recoveryDispatchFailures = await redispatchStaleVerification(findings, jobById, bridge, (event, data, options) => hatchet.events.push(event, data, options));
     const sourceCounts = { bridge: jobs.length, ingress: ingressInventory.status === 'matched' ? ingressInventory.observations.length : 0, hatchet: hatchetInventory.status === 'matched' ? hatchetInventory.runs.length : 0 };
 
-    ctx.logger.info('Bridge reconciliation check completed', { ...sourceCounts, bridgeTotal: total, complete, findingCount: findings.length, newFindingCount: newFindings.length, findingWriteFailures: recorded.failedBatches || 0, recoveryDispatchFailures, requestId: input.requestId });
-    if (newFindings.length > 0 || input.emitWhenClean === true) {
+    ctx.logger.info('Bridge reconciliation check completed', { ...sourceCounts, bridgeTotal: total, complete, findingCount: findings.length, newFindingCount: newFindings.length, findingWriteFailures: recorded.failedBatches || 0, recoveryDispatchFailures, requestId: options.requestId });
+    if (newFindings.length > 0 || options.emitWhenClean === true) {
       await hatchet.events.push(HATCHET_EVENTS.RECONCILIATION_DETECTED, {
-        requestId: input.requestId || null, checkedJobs: jobs.length, sourceCounts, complete, findingCount: findings.length, findingWriteFailures: recorded.failedBatches || 0, findings: newFindings, clean: complete && findings.length === 0,
-      }, { additionalMetadata: { source: 'reconciliation-worker', request_id: input.requestId || '' } });
+        requestId: options.requestId || null, checkedJobs: jobs.length, sourceCounts, complete, findingCount: findings.length, findingWriteFailures: recorded.failedBatches || 0, findings: newFindings, clean: complete && findings.length === 0,
+      }, { additionalMetadata: { source: 'reconciliation-worker', request_id: options.requestId || '' } });
     }
     return { checkedJobs: jobs.length, sourceCounts, complete, findingCount: findings.length, findings };
   },
