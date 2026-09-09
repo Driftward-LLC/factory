@@ -99,7 +99,7 @@ function inspectJob(job: BridgeJob, events: BridgeEvent[], cutoff: number): Reco
     if (job.state === 'completed' && !job.pr_url) findings.push(finding(job, 'critical', 'completed_create_draft_pr_without_pr_url', 'completed create_draft_pr job is missing pr_url'));
     if (job.state === 'ready_for_human_review' && !job.pr_url) findings.push(finding(job, 'critical', 'ready_for_human_review_without_pr_url', 'verified ready create_draft_pr job is missing pr_url'));
   }
-  if (job.state === 'failed' && (job.pr_url || job.commit_sha)) findings.push(finding(job, 'critical', 'failed_job_has_external_effect_refs', 'failed bridge job records external effect references'));
+  if (job.state === 'failed' && (job.pr_url || job.commit_sha) && !eventTypes.has('transition:effect_committed')) findings.push(finding(job, 'critical', 'failed_job_has_external_effect_refs', 'failed bridge job has external references without a committed-effect event'));
   return findings;
 }
 

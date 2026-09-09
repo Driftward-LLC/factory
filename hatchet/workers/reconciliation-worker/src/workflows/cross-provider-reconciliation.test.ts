@@ -71,6 +71,11 @@ test('requires a Hermes execution reference and its append-only bridge event', (
   assert.equal(absentEventFindings[0].kind, 'hermes_receipt_contradicts_bridge_history');
 });
 
+test('does not require an effect receipt for read-only inspection jobs', () => {
+  const inspection = completedRealJob({ requested_action: 'inspect_draft_pr_state', hermes_session_id: null, pr_url: null, commit_sha: null });
+  assert.equal(compareCrossProvider(inspection, [], {}, CUTOFF).length, 0);
+});
+
 test('checks Hatchet provenance for jobs made by current workers', () => {
   const job = activeRealJob({ hatchet_workflow_run_id: null, hatchet_step_run_id: null });
   const findings = compareCrossProvider(job, hermesEvents(job), {}, CUTOFF);
