@@ -62,12 +62,25 @@ set -euo pipefail
 if [[ "${{1:-}}" == "inspect" ]]; then
   shift
   cid=""
+  format=""
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
-      --format) shift 2 ;;
+      --format) format="$2"; shift 2 ;;
       *) cid="$1"; shift ;;
     esac
   done
+  if [[ "$format" == *'.State.Status'* ]]; then
+    if [[ "$cid" == "cid-postgres" && "${{FAKE_POSTGRES_OOM:-false}}" == "true" ]]; then
+      printf 'running|true|0|healthy\\n'
+    else
+      printf 'running|false|0|healthy\\n'
+    fi
+    exit 0
+  fi
+  if [[ "$format" == *'org.opencontainers.image.revision'* ]]; then
+    printf '0123456789012345678901234567890123456789\\n'
+    exit 0
+  fi
   case "$cid" in
     cid-postgres) printf 'volume\\tdriftward-factory-hatchet-postgres-data\\t/var/lib/postgresql/data\\n' ;;
     cid-hatchet-lite) printf 'volume\\tdriftward-factory-hatchet-config-data\\t/config\\n' ;;
@@ -79,7 +92,10 @@ if [[ "${{1:-}}" == "inspect" ]]; then
       printf 'volume\\tdriftward-factory-bridge-data\\t/var/lib/driftward-hatchet-bridge\\n'
       printf 'volume\\tdriftward-factory-ingress-data\\t/var/lib/driftward-hatchet-event-ingress\\n'
       ;;
-    cid-outbox-dispatcher) printf 'volume\\tdriftward-factory-bridge-data\\t/var/lib/driftward-hatchet-bridge\\n' ;;
+    cid-outbox-dispatcher)
+      printf 'volume\\tdriftward-factory-bridge-data\\t/var/lib/driftward-hatchet-bridge\\n'
+      printf 'volume\\tdriftward-factory-ingress-data\\t/var/lib/driftward-hatchet-event-ingress\\n'
+      ;;
     *) exit 1 ;;
   esac
   exit 0
@@ -130,10 +146,14 @@ if [[ "$args" == *" /v1/retry/preview"* || "$args" == *" http://localhost/v1/ret
   printf '\\n%s' "$status"
   exit 0
 fi
+if [[ "$args" == *"19877/health"* ]]; then
+  printf '{"ok":true,"release_commit":"0123456789012345678901234567890123456789"}'
+fi
 exit 0
 """
         self._write_executable(self.fake_bin / "docker", docker)
         self._write_executable(self.fake_bin / "curl", curl)
+        self._write_executable(self.fake_bin / "factory", "#!/usr/bin/env sh\nexit 0\n")
 
     def _write_executable(self, path: Path, body: str) -> None:
         path.write_text(textwrap.dedent(body), encoding="utf-8")
@@ -185,6 +205,18 @@ exit 0
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("unexpected mount for /var/lib/driftward-hatchet-bridge", result.stderr)
+
+    def test_rejects_oom_killed_container_even_when_docker_health_is_green(self) -> None:
+        result = subprocess.run(
+            [str(ROOT / "deploy/factory-docker-smoke"), str(self.runtime)],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=self._env(FAKE_POSTGRES_OOM="true"),
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("postgres state=running health=healthy oom=true", result.stderr)
 
 
 if __name__ == "__main__":

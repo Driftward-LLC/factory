@@ -170,11 +170,17 @@ class Outbox:
         connection = sqlite3.connect(self.path)
         try:
             states = {str(row[0]): int(row[1]) for row in connection.execute("SELECT delivery_state, COUNT(*) FROM lifecycle_outbox GROUP BY delivery_state")}
+            dead_letter_reasons = {
+                str(row[0] or "unknown"): int(row[1])
+                for row in connection.execute(
+                    "SELECT reason_code, COUNT(*) FROM lifecycle_outbox WHERE delivery_state = 'dead_letter' GROUP BY reason_code"
+                )
+            }
             row = connection.execute("SELECT MIN(first_seen_at) FROM lifecycle_outbox WHERE delivery_state IN ('pending', 'retrying', 'claimed')").fetchone()
             oldest = row[0] if row and row[0] else None
             age = None
             if oldest:
                 age = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(oldest.replace("Z", "+00:00"))).total_seconds()))
-            return {"states": states, "oldest_pending_at": oldest, "oldest_queue_age_seconds": age, "dead_letters": states.get("dead_letter", 0)}
+            return {"states": states, "oldest_pending_at": oldest, "oldest_queue_age_seconds": age, "dead_letters": states.get("dead_letter", 0), "dead_letter_reasons": dead_letter_reasons}
         finally:
             connection.close()

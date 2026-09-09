@@ -148,9 +148,14 @@ For release-shaped tags such as `v2026.8.26`, the installer verifies that the
 checkout is clean and that `HEAD` matches the requested tag before building.
 It writes the selected image into
 `/etc/systemd/system/driftward-factory.service.d/10-image-tag.conf`, reloads
-systemd, builds `driftward/factory:<tag>`, restarts
-`driftward-factory.service`, and retries `factory-docker-smoke` until the
-runtime is healthy or the deploy smoke timeout expires.
+systemd, builds `driftward/factory:<tag>` with immutable commit/version labels,
+and reloads `driftward-factory.service`. Compose recreates only changed
+services; unchanged PostgreSQL and Hatchet containers remain running. The
+installer retries `factory-docker-smoke` until healthy and restores the
+previously running image automatically if validation fails.
+After validation succeeds, it disables the retired direct-host worker, bridge,
+ingress, lifecycle, token, operator, outbox, and reconciliation units so the
+Compose application remains the only active Factory runtime.
 The smoke check also calls the retry operator's read-only preview endpoint for
 a sentinel ENG issue, so missing ingress mounts fail before a release is
 reported healthy.
@@ -192,7 +197,7 @@ journalctl -u driftward-factory.service -n 100 --no-pager
 journalctl -u driftward-hermes-factory-gateway.service -n 100 --no-pager
 docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
 docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100
-systemctl restart driftward-factory.service
+systemctl reload driftward-factory.service
 systemctl restart driftward-hermes-factory-gateway.service
 factory-docker-smoke
 ```
@@ -201,3 +206,11 @@ Rollback to the previous release by checking out the prior tag and running
 `bash deploy/install-docker.sh --image-tag <tag> --start`. Preserve the
 `driftward-factory-*` Docker volumes and `/docker/driftward/factory/keys/*`
 unless there is a separately approved record migration or restore plan.
+
+`factory status` treats container OOM state, unexpected restarts, failed Docker
+health checks, Hatchet readiness, desired-state drift, release provenance, and
+current reconciliation findings as first-class signals. The ingress health
+endpoint is unhealthy while persisted events await Hatchet publication; the
+shared outbox dispatcher retries those rows with a lease every 30 seconds.
+Lifecycle status reports permanent dead letters by bounded reason code.
+Reconciliation runs natively in Hatchet every 15 minutes.

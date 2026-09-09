@@ -88,6 +88,7 @@ export function compareCrossProvider(
   const active = ACTIVE.has(job.state);
   const stale = Date.parse(job.updated_at) <= cutoff;
   const dryRun = job.payload.dry_run === true;
+  const effectAction = job.requested_action === 'create_draft_pr' || job.requested_action === 'repair_draft_pr';
   const issue = stringPayload(job, 'linear_issue');
   const expected = expectedJob(job);
 
@@ -103,11 +104,12 @@ export function compareCrossProvider(
   }
 
   if (job.idempotency_key.startsWith('hatchet:') && (!job.hatchet_workflow_run_id || !job.hatchet_step_run_id)) findings.push(finding(job, 'warning', 'hatchet_provenance_missing', 'Hatchet-originated bridge job lacks workflow/task correlation', expected, { workflowRunId: job.hatchet_workflow_run_id, stepRunId: job.hatchet_step_run_id }));
-  if (!dryRun && (job.state === 'effect_committed' || job.state === 'verification_pending' || job.state === 'ready_for_human_review' || job.state === 'completed') && !job.reason_code?.startsWith('reconciled_')) {
+  if (!dryRun && effectAction && (job.state === 'effect_committed' || job.state === 'verification_pending' || job.state === 'ready_for_human_review' || job.state === 'completed') && !job.reason_code?.startsWith('reconciled_')) {
+    const receiptSeverity = !active && stale ? 'warning' : 'critical';
     if (!job.hermes_session_id) {
-      findings.push(finding(job, 'critical', 'hermes_execution_ref_missing', 'real effect lacks a Hermes execution receipt', expected, { receiptPresent: false }));
+      findings.push(finding(job, receiptSeverity, 'hermes_execution_ref_missing', 'real effect lacks a Hermes execution receipt', expected, { receiptPresent: false }));
     } else if (!events.some((event) => event.details.hermes_session_id === job.hermes_session_id)) {
-      findings.push(finding(job, 'critical', 'hermes_receipt_contradicts_bridge_history', 'Hermes execution receipt is absent from append-only bridge history', expected, { receiptPresent: false, bridgeReceiptRef: job.hermes_session_id }));
+      findings.push(finding(job, receiptSeverity, 'hermes_receipt_contradicts_bridge_history', 'Hermes execution receipt is absent from append-only bridge history', expected, { receiptPresent: false, bridgeReceiptRef: job.hermes_session_id }));
     }
   }
   if (job.pr_url && !dryRun && lookups.github) {

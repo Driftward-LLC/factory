@@ -96,11 +96,15 @@ bash deploy/install-docker.sh --image-tag "$release_tag" --start
 
 For release-shaped tags, the installer verifies that `HEAD` matches the tag and
 that the checkout is clean before building. It then writes the systemd image
-pin, reloads systemd, builds the selected image, restarts
-`driftward-factory.service`, and retries `factory-docker-smoke` until the
-runtime is healthy or the deploy smoke timeout expires. The default timeout is
-90 seconds. Override it with `DRIFTWARD_FACTORY_SMOKE_TIMEOUT` only for a
-specific operator-approved deploy.
+pin, embeds the release commit and version in the image, and reloads
+`driftward-factory.service`. Compose recreates changed services without first
+stopping PostgreSQL or other unchanged containers. The installer retries
+`factory-docker-smoke` until healthy and restores the previously running image
+automatically after a failed validation. The default timeout is 90 seconds.
+Override it with `DRIFTWARD_FACTORY_SMOKE_TIMEOUT` only for a specific
+operator-approved deploy.
+Once smoke passes, the installer disables the retired direct-host Factory
+units; Compose remains the only active runtime.
 
 ## Verify
 
@@ -120,6 +124,10 @@ Confirm the Factory containers use the intended image tag:
 docker compose --env-file /etc/driftward/hatchet.env \
   --project-directory /docker/driftward/factory images
 ```
+
+`factory status` also verifies that the bridge-reported commit matches the OCI
+image revision label and that live Hatchet workflows/workers conform to the
+checked-in desired state.
 
 ## Rollback
 

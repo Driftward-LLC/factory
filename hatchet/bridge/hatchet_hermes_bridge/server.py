@@ -19,6 +19,7 @@ from .store import (
     list_events,
     list_lifecycle_events,
     list_jobs,
+    reconciliation_findings_status,
     record_reconciliation_findings,
     record_job_correlation,
     reserve_factory_intake,
@@ -165,6 +166,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
             if parts == ["factory", "outbox"]:
                 self._write_json(200, {"outbox": list_factory_outbox(self.conn, 250)})
+                return
+
+            if parts == ["reconciliation", "findings"]:
+                query = parse_qs(parsed.query)
+                active_minutes = _bounded_limit(query, default=30, label="active_within_minutes", key="active_within_minutes", maximum=1440)
+                self._write_json(200, {"findings": reconciliation_findings_status(self.conn, active_within_minutes=active_minutes)})
                 return
 
             if len(parts) == 2 and parts[0] == "jobs":
@@ -315,8 +322,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._handle_error(exc)
 
 
-def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str) -> int:
-    values = query.get("limit", [])
+def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str, key: str = "limit", maximum: int = 250) -> int:
+    values = query.get(key, [])
     if not values:
         return default
     if len(values) != 1:
@@ -325,8 +332,8 @@ def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str) -> 
         value = int(values[0])
     except (TypeError, ValueError) as exc:
         raise BridgeValidationError(f"{label} must be an integer") from exc
-    if value < 1 or value > 250:
-        raise BridgeValidationError(f"{label} must be between 1 and 250")
+    if value < 1 or value > maximum:
+        raise BridgeValidationError(f"{label} must be between 1 and {maximum}")
     return value
 
 

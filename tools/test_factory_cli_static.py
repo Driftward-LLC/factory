@@ -61,9 +61,15 @@ class FactoryCliStaticTests(unittest.TestCase):
             self._write_executable(
                 fake_bin / "systemctl",
                 "#!/usr/bin/env sh\n"
+                "unit=\n"
+                "for arg in \"$@\"; do unit=\"$arg\"; done\n"
                 "case \"$1\" in\n"
-                "  is-active) echo active ;;\n"
-                "  is-enabled) echo enabled ;;\n"
+                "  is-active)\n"
+                "    case \"$unit\" in driftward-factory.service|driftward-hermes-factory-gateway.service|driftward-hermes.service) echo active ;; *) echo inactive ;; esac\n"
+                "    ;;\n"
+                "  is-enabled)\n"
+                "    case \"$unit\" in driftward-factory.service|driftward-hermes-factory-gateway.service|driftward-hermes.service) echo enabled ;; *) echo disabled ;; esac\n"
+                "    ;;\n"
                 "  list-timers) ;;\n"
                 "esac\n",
             )
@@ -71,6 +77,9 @@ class FactoryCliStaticTests(unittest.TestCase):
                 fake_bin / "docker",
                 "#!/usr/bin/env sh\n"
                 "case \" $* \" in\n"
+                "  *' inspect '*'org.opencontainers.image.version'*) printf 'test|0123456789012345678901234567890123456789\\n' ;;\n"
+                "  *' inspect '*) printf 'running|false|0|healthy|driftward/factory:test\\n' ;;\n"
+                "  *' ps -q '*) printf 'cid-test\\n' ;;\n"
                 "  *' ps '*|*' ps')\n"
                 "    printf '%s\\n' \\\n"
                 "      postgres \\\n"
@@ -94,7 +103,14 @@ class FactoryCliStaticTests(unittest.TestCase):
                 fake_bin / "curl",
                 "#!/usr/bin/env sh\n"
                 "printf '%s\\n' \"$@\" >> \"$FACTORY_TEST_CURL_ARGS\"\n"
-                "case \" $* \" in *' --write-out '*) printf '200' ;; *) printf '{}' ;; esac\n",
+                "if echo \" $* \" | grep -q '19877/health' && echo \" $* \" | grep -q -- '--write-out'; then printf '200'; exit 0; fi\n"
+                "case \" $* \" in\n"
+                "  *'reconciliation/findings'*) printf '{\"findings\":{\"current\":0,\"historical\":0,\"severity\":{\"critical\":0,\"warning\":0}}}' ;;\n"
+                "  *'19877/health'*) printf '{\"release_commit\":\"0123456789012345678901234567890123456789\"}' ;;\n"
+                "  *'19880/status'*) printf '{\"outbox\":{\"dead_letters\":0},\"last_success\":1}\\n200' ;;\n"
+                "  *' --write-out '*) printf '200' ;;\n"
+                "  *) printf '{}' ;;\n"
+                "esac\n",
             )
             self._write_executable(
                 fake_bin / "tailscale",
@@ -106,6 +122,15 @@ class FactoryCliStaticTests(unittest.TestCase):
                 "fi\n",
             )
             self._write_executable(fake_bin / "driftward-hermes", "#!/usr/bin/env sh\nexit 0\n")
+            self._write_executable(
+                fake_bin / "hatchet",
+                "#!/usr/bin/env sh\n"
+                "case \" $* \" in\n"
+                "  *' workflows list '*) printf '{\"rows\":[]}' ;;\n"
+                "  *' worker list '*) printf '{\"rows\":[]}' ;;\n"
+                "  *' cron list '*) printf '{\"rows\":[{\"workflowName\":\"reconciliation-bridge-state-check\",\"cron\":\"*/15 * * * *\",\"enabled\":true}]}' ;;\n"
+                "esac\n",
+            )
 
             env = os.environ.copy()
             env.update(
@@ -119,13 +144,14 @@ class FactoryCliStaticTests(unittest.TestCase):
             )
             result = subprocess.run(
                 [str(factory), "status"],
-                check=True,
+                check=False,
                 env=env,
                 text=True,
                 capture_output=True,
                 timeout=5,
             )
 
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Linear webhook readiness", result.stdout)
             self.assertIn("Linear webhook public readiness", result.stdout)
             self.assertIn("url=https://factory.test/ready", result.stdout)
@@ -169,8 +195,32 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("Environment=COMPOSE_PROJECT_NAME=driftward-factory", service)
         self.assertIn("Environment=FACTORY_SOURCE_ROOT=__SOURCE_ROOT__", service)
         self.assertIn("driftward-hermes-factory-gateway.service", service)
+        self.assertIn("Type=oneshot", service)
+        self.assertIn("RemainAfterExit=yes", service)
+        self.assertIn("ExecReload=/usr/bin/docker compose", service)
+        self.assertIn("ExecStop=/usr/bin/docker compose", service)
+        self.assertIn(" stop", service)
+        self.assertNotIn(" down", service)
         self.assertNotIn("Environment=FACTORY_IMAGE_TAG=", service)
         self.assertNotIn("Environment=FACTORY_IMAGE=", service)
+
+    def test_compose_has_truthful_health_tuning_and_durable_ingress_replay(self) -> None:
+        compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+
+        self.assertIn("command: postgres -c 'max_connections=100'", compose)
+        self.assertIn("mem_limit: 2g", compose)
+        self.assertIn("DATABASE_MAX_CONNS: ${HATCHET_DATABASE_MAX_CONNS:-20}", compose)
+        self.assertIn('http://127.0.0.1:8733/ready', compose)
+        self.assertIn("dispatch-pending --limit 50", compose)
+        self.assertIn("factory-ingress-data:/var/lib/driftward-hatchet-event-ingress", compose)
+        self.assertNotIn("dispatch-factory-outbox --limit 50 || true", compose)
+
+    def test_release_image_embeds_oci_and_bridge_provenance(self) -> None:
+        dockerfile = (ROOT / "deploy/Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("org.opencontainers.image.revision", dockerfile)
+        self.assertIn("FACTORY_RELEASE_COMMIT", dockerfile)
+        self.assertIn("/app/hatchet/bridge/RELEASE_METADATA.json", dockerfile)
 
     def test_install_docker_persists_factory_image_selection(self) -> None:
         source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
@@ -182,8 +232,11 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("Environment=FACTORY_IMAGE_TAG=%s", source)
         self.assertIn("Environment=FACTORY_IMAGE=%s", source)
         self.assertIn("env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG", source)
-        self.assertIn('docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"', source)
-        self.assertIn('systemctl restart "$service_name"', source)
+        self.assertIn('--build-arg "FACTORY_RELEASE_COMMIT=$factory_release_commit"', source)
+        self.assertIn('-f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"', source)
+        self.assertIn('systemctl reload "$service_name"', source)
+        self.assertIn("rollback_factory_runtime()", source)
+        self.assertIn('systemctl disable --now "$legacy_unit"', source)
         self.assertIn('DRIFTWARD_FACTORY_SMOKE_TIMEOUT:-90', source)
         self.assertIn('DRIFTWARD_FACTORY_SMOKE_INTERVAL:-5', source)
         self.assertIn("wait_for_factory_smoke()", source)
@@ -245,7 +298,9 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("python3 tools/hatchet-contracts.py check", workflow)
         self.assertIn("python3 -m unittest discover -s tools -p 'test_*.py'", workflow)
         self.assertIn("npm run build --prefix hatchet/workers", workflow)
-        self.assertIn("docker build -f deploy/Dockerfile -t driftward/factory:ci .", workflow)
+        self.assertIn('FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)"', workflow)
+        self.assertIn('FACTORY_RELEASE_VERSION="$RELEASE_TAG"', workflow)
+        self.assertIn("-f deploy/Dockerfile -t driftward/factory:ci .", workflow)
         self.assertIn("Ensure checkout remains clean", workflow)
         self.assertIn('git status --short', workflow)
         self.assertIn("/tmp/gitleaks git --redact --verbose .", workflow)

@@ -16,6 +16,7 @@ from hatchet_hermes_bridge.store import (
     submit_job,
     transition_job,
     record_reconciliation_findings,
+    reconciliation_findings_status,
     acquire_verification_lease,
     claim_verification_lease,
     claim_factory_execution,
@@ -505,6 +506,12 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertEqual(existing, [])
         self.assertEqual(retry_created, [])
         self.assertEqual(retry_existing, ["reconciliation:v1:github_pr_branch_mismatch:test"])
+        status = reconciliation_findings_status(self.conn, active_within_minutes=30)
+        self.assertEqual(status["current"], 1)
+        self.assertEqual(status["historical"], 0)
+        self.assertEqual(status["severity"], {"critical": 0, "warning": 1})
+        record_reconciliation_findings(self.conn, [{**finding, "severity": "critical"}])
+        self.assertEqual(reconciliation_findings_status(self.conn, active_within_minutes=30)["severity"], {"critical": 1, "warning": 0})
 
     def test_reconciliation_findings_require_known_kind_existing_job_and_sanitized_details(self):
         job, _ = submit_job(self.conn, {

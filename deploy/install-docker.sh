@@ -17,6 +17,26 @@ reconciliation_env_file="${DRIFTWARD_HATCHET_WORKER_RECONCILIATION_ENV_FILE:-/et
 hatchet_workers_env_file="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"
 factory_operator_env_file="${DRIFTWARD_FACTORY_OPERATOR_ENV_FILE:-/etc/driftward/factory-operator.env}"
 legacy_hatchet_unit="${DRIFTWARD_LEGACY_HATCHET_UNIT:-driftward-hatchet.service}"
+legacy_factory_units=(
+  "$legacy_hatchet_unit"
+  driftward-hatchet-bridge.service
+  driftward-hatchet-event-ingress.service
+  driftward-hatchet-linear-webhook-proxy.service
+  driftward-hatchet-worker-intake.service
+  driftward-hatchet-worker-execution-dispatch.service
+  driftward-hatchet-worker-bridge-executor.service
+  driftward-hatchet-worker-pr-event.service
+  driftward-hatchet-worker-reconciliation.service
+  driftward-hatchet-hermes-gateway.service
+  driftward-factory-lifecycle-writer.service
+  driftward-factory-linear-token.service
+  driftward-factory-linear-token.timer
+  driftward-factory-operator.service
+  driftward-factory-outbox-dispatcher.service
+  driftward-factory-outbox-dispatcher.timer
+  driftward-hatchet-bridge-reconciler.service
+  driftward-hatchet-bridge-reconciler.timer
+)
 factory_cli_source="$repo_root/factory/factory"
 factory_cli_target="${DRIFTWARD_FACTORY_CLI_TARGET:-/usr/local/bin/factory}"
 factory_share_dir="${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}"
@@ -49,7 +69,7 @@ Installs the Docker Compose deployment wrapper for Driftward Factory.
 It does not create or print secrets. Required env files stay under /etc/driftward.
 
 Options:
-  --start          Build the selected Factory image and restart the systemd unit.
+  --start          Build the selected Factory image and converge the systemd unit.
   --image-tag TAG  Persist the Factory image tag used by systemd and Compose.
   --image IMAGE    Persist a full Factory image reference instead of a tag.
 USAGE
@@ -87,6 +107,8 @@ if [[ -z "$factory_image_override" ]]; then
 else
   factory_image="$factory_image_override"
 fi
+factory_release_commit="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'development-unversioned')"
+factory_release_version="${factory_image##*:}"
 
 if [[ ! "$smoke_timeout" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid smoke timeout: $smoke_timeout" >&2
@@ -153,6 +175,27 @@ wait_for_factory_smoke() {
     echo "Factory Docker smoke is not ready; retrying in ${smoke_interval}s" >&2
     sleep "$smoke_interval"
   done
+}
+
+activate_factory_runtime() {
+  systemctl enable "$service_name"
+  if systemctl is-active --quiet "$service_name"; then
+    systemctl reload "$service_name"
+  else
+    systemctl start "$service_name"
+  fi
+}
+
+rollback_factory_runtime() {
+  local rollback_image="$1"
+  [[ -n "$rollback_image" ]] || return 1
+  local rollback_dropin
+  rollback_dropin="$(mktemp)"
+  printf '[Service]\nEnvironment=FACTORY_IMAGE=%s\n' "$rollback_image" >"$rollback_dropin"
+  install -D -m 0644 "$rollback_dropin" "$factory_image_dropin"
+  rm -f "$rollback_dropin"
+  systemctl daemon-reload
+  activate_factory_runtime
 }
 
 compose_service_file_exists() {
@@ -356,7 +399,7 @@ if [[ -r "$hatchet_env_file" ]]; then
   compose_args=(--env-file "$hatchet_env_file" "${compose_args[@]}")
 fi
 
-compose_env=(env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG FACTORY_SOURCE_ROOT="$repo_root")
+compose_env=(env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG FACTORY_SOURCE_ROOT="$repo_root" FACTORY_RELEASE_COMMIT="$factory_release_commit" FACTORY_RELEASE_VERSION="$factory_release_version")
 if [[ -n "$factory_image_override" ]]; then
   compose_env+=(FACTORY_IMAGE="$factory_image_override")
 else
@@ -390,16 +433,40 @@ if (( start )); then
     exit 1
   fi
 
-  docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"
+  rollback_image=""
+  previous_bridge_cid="$("${compose_env[@]}" docker compose "${compose_args[@]}" ps -q bridge 2>/dev/null || true)"
+  if [[ -n "$previous_bridge_cid" ]]; then
+    previous_image_id="$(docker inspect --format '{{.Image}}' "$previous_bridge_cid")"
+    rollback_image="driftward/factory:rollback-$(date +%s)"
+    docker image tag "$previous_image_id" "$rollback_image"
+  fi
+  docker build \
+    --build-arg "FACTORY_RELEASE_COMMIT=$factory_release_commit" \
+    --build-arg "FACTORY_RELEASE_VERSION=$factory_release_version" \
+    -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"
   require_compose_volume_file postgres /var/lib/postgresql/data/PG_VERSION "$hatchet_postgres_volume" "Hatchet Postgres" "$runtime_root/data/hatchet/postgres/PG_VERSION"
   require_legacy_file_migrated bridge /var/lib/driftward-hatchet-bridge/bridge.db "$bridge_volume" "Bridge ledger" "$runtime_root/data/bridge/bridge.db"
   require_legacy_file_migrated event-ingress /var/lib/driftward-hatchet-event-ingress/ingress.db "$ingress_volume" "Ingress ledger" "$runtime_root/data/ingress/ingress.db"
   require_legacy_file_migrated factory-lifecycle-writer /var/lib/driftward-factory-lifecycle-writer/outbox.db "$lifecycle_volume" "Lifecycle outbox" "$runtime_root/data/lifecycle/outbox.db"
   systemctl enable "$hermes_gateway_service_name"
   systemctl restart "$hermes_gateway_service_name"
-  systemctl enable "$service_name"
-  systemctl restart "$service_name"
-  wait_for_factory_smoke
+  if ! activate_factory_runtime || ! wait_for_factory_smoke; then
+    echo "Factory deploy failed health validation; restoring the previous runtime image" >&2
+    if rollback_factory_runtime "$rollback_image"; then
+      wait_for_factory_smoke || echo "Factory rollback started but did not pass the current smoke check" >&2
+    else
+      echo "Factory rollback image is unavailable" >&2
+    fi
+    exit 1
+  fi
+  for legacy_unit in "${legacy_factory_units[@]}"; do
+    if systemctl cat "$legacy_unit" >/dev/null 2>&1; then
+      systemctl disable --now "$legacy_unit"
+    fi
+  done
+  if [[ -n "$rollback_image" ]]; then
+    docker image rm "$rollback_image" >/dev/null 2>&1 || true
+  fi
 else
   echo "Start the Hermes Factory gateway with: systemctl enable --now $hermes_gateway_service_name"
   echo "Start after the selected image exists with: systemctl enable --now $service_name"

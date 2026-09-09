@@ -95,12 +95,12 @@ but they are not execution requests.
 
 ## Runtime
 
-- Service: `driftward-hatchet-event-ingress.service`
+- Compose service: `event-ingress`
 - Local API: `http://127.0.0.1:19878`
 - Database: `/var/lib/driftward-hatchet-event-ingress/ingress.db`
 - Optional env: `/etc/driftward/hatchet-event-ingress.env`
 - Hatchet token: inherited from `/etc/driftward/hatchet-workers.env`
-- Public proxy service: `driftward-hatchet-linear-webhook-proxy.service`
+- Public proxy Compose service: `linear-webhook-proxy`
 - Public Linear webhook URL: `https://srv1379035.tail5c6a78.ts.net/events/linear/issue`
 
 The full ingress service binds to `127.0.0.1` only. The public webhook URL is a
@@ -114,6 +114,20 @@ Health:
 
 ```bash
 curl -fsS http://127.0.0.1:19878/health
+```
+
+Health includes the unpublished event count and becomes unavailable while any
+persisted event still awaits Hatchet publication. Each publication is leased
+in SQLite before the external call. The Factory outbox dispatcher retries
+unpublished rows every 30 seconds and records attempt count plus the last
+bounded error code, so recovery does not depend on provider redelivery.
+Container readiness uses `/ready`, which confirms the ledger is initialized
+without creating a dependency cycle with the dispatcher that drains it.
+
+Focused manual replay:
+
+```bash
+python3 -m hatchet_event_ingress.cli --db /var/lib/driftward-hatchet-event-ingress/ingress.db dispatch-pending --limit 50
 ```
 
 Public Linear webhook proxy readiness:

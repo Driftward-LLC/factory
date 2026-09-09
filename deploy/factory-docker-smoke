@@ -64,6 +64,21 @@ for service in "${required_services[@]}"; do
   fi
 done
 
+require_container_health() {
+  local service="$1" cid inspection state oom restarts health
+  cid="$(docker compose "${compose_args[@]}" ps -q "$service")"
+  inspection="$(docker inspect --format '{{.State.Status}}|{{.State.OOMKilled}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid")"
+  IFS='|' read -r state oom restarts health <<<"$inspection"
+  if [[ "$state" != "running" || "$oom" != "false" || "$restarts" != "0" || ( "$health" != "healthy" && "$health" != "none" ) ]]; then
+    echo "Factory Docker service is degraded: $service state=$state health=$health oom=$oom restarts=$restarts" >&2
+    exit 1
+  fi
+}
+
+for service in "${required_services[@]}"; do
+  require_container_health "$service"
+done
+
 require_named_volume_mount() {
   local service="$1"
   local destination="$2"
@@ -97,6 +112,7 @@ require_named_volume_mount factory-linear-token-refresh /var/lib/driftward-facto
 require_named_volume_mount factory-operator /var/lib/driftward-hatchet-bridge "$bridge_volume"
 require_named_volume_mount factory-operator /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
 require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-bridge "$bridge_volume"
+require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
 
 for service in bridge intake-worker bridge-executor-worker factory-operator; do
   runtime="$(docker compose "${compose_args[@]}" exec -T "$service" printenv HATCHET_FACTORY_RUNTIME || true)"
@@ -185,14 +201,20 @@ hatchet_postgres_user="${hatchet_postgres_user:-hatchet}"
 docker compose "${compose_args[@]}" exec -T postgres pg_isready \
   -d "$hatchet_postgres_db" \
   -U "$hatchet_postgres_user" >/dev/null
-if ! curl -fsS http://127.0.0.1:8733/health >/dev/null 2>&1; then
-  curl -fsS http://127.0.0.1:8888/ >/dev/null
-fi
+curl -fsS http://127.0.0.1:8733/ready >/dev/null
 
-curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health >/dev/null
+bridge_health="$(curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health)"
+bridge_cid="$(docker compose "${compose_args[@]}" ps -q bridge)"
+image_revision="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$bridge_cid")"
+bridge_revision="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("release_commit", ""))' <<<"$bridge_health")"
+if [[ -z "$image_revision" || "$image_revision" == "development-unversioned" || "$bridge_revision" != "$image_revision" ]]; then
+  echo "Factory release provenance mismatch: image=${image_revision:-missing} bridge=${bridge_revision:-missing}" >&2
+  exit 1
+fi
 curl -fsS http://127.0.0.1:19878/health >/dev/null
 curl -fsS http://127.0.0.1:19879/health >/dev/null
 curl -fsS http://127.0.0.1:19880/health >/dev/null
 operator_preview_smoke
+factory doctor hatchet --profile "${FACTORY_HATCHET_PROFILE:-prod}" --json >/dev/null
 
 echo "Factory Docker runtime is healthy: $runtime_root"

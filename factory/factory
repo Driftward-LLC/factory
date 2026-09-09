@@ -13,6 +13,26 @@ HERMES_FACTORY_GATEWAY_SERVICE="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SERVICE:-drif
 HERMES_FACTORY_GATEWAY_SOCKET="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SOCKET:-/run/driftward-hermes-factory/hermes.sock}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 FACTORY_SHARE_DIR="${FACTORY_SHARE_DIR:-${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}}"
+RETIRED_FACTORY_UNITS=(
+  driftward-hatchet.service
+  driftward-hatchet-bridge.service
+  driftward-hatchet-event-ingress.service
+  driftward-hatchet-linear-webhook-proxy.service
+  driftward-hatchet-worker-intake.service
+  driftward-hatchet-worker-execution-dispatch.service
+  driftward-hatchet-worker-bridge-executor.service
+  driftward-hatchet-worker-pr-event.service
+  driftward-hatchet-worker-reconciliation.service
+  driftward-hatchet-hermes-gateway.service
+  driftward-factory-lifecycle-writer.service
+  driftward-factory-linear-token.service
+  driftward-factory-linear-token.timer
+  driftward-factory-operator.service
+  driftward-factory-outbox-dispatcher.service
+  driftward-factory-outbox-dispatcher.timer
+  driftward-hatchet-bridge-reconciler.service
+  driftward-hatchet-bridge-reconciler.timer
+)
 
 usage() {
   cat <<'EOF'
@@ -583,11 +603,28 @@ retired_timer_status() {
   fi
 }
 
+retired_factory_units_status() {
+  local unit active enabled offenders=""
+  for unit in "${RETIRED_FACTORY_UNITS[@]}"; do
+    active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    if [[ "$active" == "active" || "$enabled" == "enabled" || "$enabled" == "enabled-runtime" ]]; then
+      offenders="${offenders:+$offenders,}$unit(active=${active:-unknown},enabled=${enabled:-unknown})"
+    fi
+  done
+  if [[ -z "$offenders" ]]; then
+    status_line OK "Retired direct-host Factory units" "inactive and disabled"
+  else
+    status_line FAIL "Retired direct-host Factory units" "$offenders"
+    mark_failure
+  fi
+}
+
 docker_service_status() {
   local label="$1"
   local service="$2"
   local required="${3:-required}"
-  local running detail
+  local cid inspection state oom restarts health image detail
 
   if ! factory_docker_runtime_available; then
     detail="missing compose runtime: $RUNTIME_ROOT/docker-compose.yml"
@@ -600,15 +637,21 @@ docker_service_status() {
     return
   fi
 
-  running="$(docker_compose ps --services --filter status=running 2>/dev/null || true)"
-  detail="compose_service=$service"
-  if grep -qx "$service" <<<"$running"; then
+  cid="$(docker_compose ps -q "$service" 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$cid" ]]; then
+    detail="compose_service=$service running=no"
+  else
+    inspection="$(docker inspect --format '{{.State.Status}}|{{.State.OOMKilled}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+    IFS='|' read -r state oom restarts health image <<<"$inspection"
+    detail="compose_service=$service state=${state:-unknown} health=${health:-unknown} oom=${oom:-unknown} restarts=${restarts:-unknown} image=${image:-unknown}"
+  fi
+  if [[ "$state" == "running" && "$oom" == "false" && "${restarts:-0}" == "0" && ( "$health" == "healthy" || "$health" == "none" ) ]]; then
     status_line OK "$label" "$detail"
   elif [[ "$required" == "required" ]]; then
-    status_line FAIL "$label" "$detail running=no"
+    status_line FAIL "$label" "$detail"
     mark_failure
   else
-    status_line WARN "$label" "$detail running=no"
+    status_line WARN "$label" "$detail"
   fi
 }
 
@@ -693,6 +736,83 @@ bridge_token() {
   fi
 }
 
+hatchet_conformance_status() {
+  local script desired output critical warning
+  script="$(factory_hatchet_doctor_script)"
+  desired="$(factory_hatchet_desired_state)"
+  if [[ ! -f "$script" || ! -f "$desired" || ! -x "$(command -v hatchet 2>/dev/null || true)" ]]; then
+    status_line FAIL "Hatchet desired-state conformance" "doctor, desired state, or Hatchet CLI unavailable"
+    mark_failure
+    return
+  fi
+  output="$(python3 "$script" --desired "$desired" --profile "${FACTORY_HATCHET_PROFILE:-prod}" --json 2>/dev/null || true)"
+  critical="$(jq -r '.criticalCount // empty' <<<"$output" 2>/dev/null || true)"
+  warning="$(jq -r '.warningCount // empty' <<<"$output" 2>/dev/null || true)"
+  if [[ ! "$critical" =~ ^[0-9]+$ || ! "$warning" =~ ^[0-9]+$ ]]; then
+    status_line FAIL "Hatchet desired-state conformance" "inventory unavailable"
+    mark_failure
+  elif (( critical > 0 )); then
+    status_line FAIL "Hatchet desired-state conformance" "critical=$critical warning=$warning"
+    mark_failure
+  elif (( warning > 0 )); then
+    status_line WARN "Hatchet desired-state conformance" "critical=0 warning=$warning"
+  else
+    status_line OK "Hatchet desired-state conformance" "critical=0 warning=0"
+  fi
+}
+
+bridge_reconciliation_status() {
+  local token="$1" payload current critical warning historical
+  payload="$(curl --silent --show-error --fail --max-time 3 -H "Authorization: Bearer $token" 'http://127.0.0.1:19877/reconciliation/findings?active_within_minutes=30' 2>/dev/null || true)"
+  current="$(jq -r '.findings.current // empty' <<<"$payload" 2>/dev/null || true)"
+  critical="$(jq -r '.findings.severity.critical // empty' <<<"$payload" 2>/dev/null || true)"
+  warning="$(jq -r '.findings.severity.warning // empty' <<<"$payload" 2>/dev/null || true)"
+  historical="$(jq -r '.findings.historical // empty' <<<"$payload" 2>/dev/null || true)"
+  if [[ ! "$current" =~ ^[0-9]+$ || ! "$critical" =~ ^[0-9]+$ || ! "$warning" =~ ^[0-9]+$ ]]; then
+    status_line FAIL "Current reconciliation findings" "unavailable"
+    mark_failure
+  elif (( critical > 0 )); then
+    status_line FAIL "Current reconciliation findings" "current=$current critical=$critical warning=$warning historical=${historical:-unknown}"
+    mark_failure
+  elif (( warning > 0 )); then
+    status_line WARN "Current reconciliation findings" "current=$current critical=0 warning=$warning historical=${historical:-unknown}"
+  else
+    status_line OK "Current reconciliation findings" "current=0 historical=${historical:-unknown}"
+  fi
+}
+
+lifecycle_writer_status() {
+  local response code payload dead_letters dead_letter_reasons last_success
+  response="$(curl --silent --show-error --max-time 3 --write-out $'\n%{http_code}' http://127.0.0.1:19880/status 2>/dev/null || true)"
+  code="${response##*$'\n'}"
+  payload="${response%$'\n'*}"
+  dead_letters="$(jq -r '.outbox.dead_letters // empty' <<<"$payload" 2>/dev/null || true)"
+  dead_letter_reasons="$(jq -c '.outbox.dead_letter_reasons // {}' <<<"$payload" 2>/dev/null || true)"
+  last_success="$(jq -r '.last_success // empty' <<<"$payload" 2>/dev/null || true)"
+  if [[ "$code" != "200" ]]; then
+    status_line FAIL "Factory lifecycle writer status" "http=${code:-000} last_success=${last_success:-unknown}"
+    mark_failure
+  elif [[ "$dead_letters" =~ ^[0-9]+$ ]] && (( dead_letters > 0 )); then
+    status_line WARN "Factory lifecycle writer status" "http=200 dead_letters=$dead_letters reasons=${dead_letter_reasons:-unknown} last_success=${last_success:-unknown}"
+  else
+    status_line OK "Factory lifecycle writer status" "http=200 dead_letters=${dead_letters:-0} last_success=${last_success:-unknown}"
+  fi
+}
+
+factory_release_status() {
+  local token="$1" cid labels version revision health_commit
+  cid="$(docker_compose ps -q bridge 2>/dev/null | head -n 1 || true)"
+  labels="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}|{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid" 2>/dev/null || true)"
+  IFS='|' read -r version revision <<<"$labels"
+  health_commit="$(curl --silent --show-error --fail --max-time 3 -H "Authorization: Bearer $token" http://127.0.0.1:19877/health 2>/dev/null | jq -r '.release_commit // empty' 2>/dev/null || true)"
+  if [[ -n "$revision" && "$revision" != "development-unversioned" && "$health_commit" == "$revision" ]]; then
+    status_line OK "Factory release provenance" "version=${version:-unknown} commit=$revision"
+  else
+    status_line FAIL "Factory release provenance" "version=${version:-unknown} image_commit=${revision:-missing} bridge_commit=${health_commit:-missing}"
+    mark_failure
+  fi
+}
+
 command_status() {
   local label="$1"
   local required="${2:-required}"
@@ -751,6 +871,7 @@ show_status() {
     docker_service_status "Factory Linear token refresh" factory-linear-token-refresh required
     docker_service_status "Factory retry operator" factory-operator required
     docker_service_status "Factory outbox dispatcher" outbox-dispatcher required
+    retired_factory_units_status
   else
     unit_status "Hatchet control plane" driftward-hatchet.service required
     unit_status "Hatchet Hermes gRPC gateway" driftward-hatchet-hermes-gateway.service required
@@ -768,10 +889,14 @@ show_status() {
 
   printf '\nRequired endpoints\n'
   printf '%s\n' '------------------'
-  http_status "Hatchet dashboard/API" http://127.0.0.1:8888/ "200 302 401" required
+  http_status "Hatchet readiness" http://127.0.0.1:8733/ready "200" required
   token="$(bridge_token)"
   if [[ -n "$token" ]]; then
     http_status "Hatchet bridge health" http://127.0.0.1:19877/health "200" required -H "Authorization: Bearer $token"
+    bridge_reconciliation_status "$token"
+    if factory_docker_runtime_active; then
+      factory_release_status "$token"
+    fi
   else
     status_line FAIL "Hatchet bridge token" "missing or unreadable $BRIDGE_ENV_FILE"
     mark_failure
@@ -779,10 +904,11 @@ show_status() {
   http_status "Hatchet ingress health" http://127.0.0.1:19878/health "200" required
   http_status "Linear webhook readiness" http://127.0.0.1:19879/ready "200" required
   linear_webhook_public_readiness_status "Linear webhook public readiness" required
-  http_status "Factory lifecycle writer status" http://127.0.0.1:19880/status "200" required
+  lifecycle_writer_status
   http_status "Driftward Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
   command_status "Driftward Hermes Codex auth" required driftward-hermes hermes auth status openai-codex
   socket_status "Hermes Factory gRPC socket" "$HERMES_FACTORY_GATEWAY_SOCKET" advisory
+  hatchet_conformance_status
 
   printf '\nAdvisory / recovery\n'
   printf '%s\n' '-------------------'

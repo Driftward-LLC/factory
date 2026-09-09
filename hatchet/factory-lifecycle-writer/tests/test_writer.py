@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory_lifecycle_writer.cli import lifecycle_bind_host, status_health
+from factory_lifecycle_writer.cli import lifecycle_bind_host, status_health, status_warnings
 from factory_lifecycle_writer.linear import LinearClient, LinearError
 from factory_lifecycle_writer.outbox import Outbox
 from factory_lifecycle_writer.writer import Config, LifecycleWriter, _canonical_timestamp
@@ -232,6 +232,7 @@ class LifecycleWriterTest(unittest.TestCase):
             status_health({}, {"retried": 0}, {"dead_letters": 1, "oldest_queue_age_seconds": None}),
             (True, None),
         )
+        self.assertEqual(status_warnings({"dead_letters": 1}), [{"kind": "dead_letters", "count": 1}])
         self.assertEqual(
             status_health({"bridge": "bridge_source_unavailable"}, {"retried": 0}, {"dead_letters": 0, "oldest_queue_age_seconds": None}),
             (False, "source_or_outbox_degraded"),
@@ -244,6 +245,11 @@ class LifecycleWriterTest(unittest.TestCase):
             status_health({}, {"retried": 0}, {"dead_letters": 0, "oldest_queue_age_seconds": 601}),
             (False, "source_or_outbox_degraded"),
         )
+
+    def test_status_groups_dead_letters_by_safe_reason_code(self):
+        writer, outbox = self.make()
+        outbox.record(writer._bridge_candidate(event(created=None)))
+        self.assertEqual(outbox.status()["dead_letter_reasons"], {"source_timestamp_missing": 1})
 
     def test_lifecycle_bind_host_defaults_to_loopback_and_allows_container_override(self):
         with mock.patch.dict("os.environ", {}, clear=True):

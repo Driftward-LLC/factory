@@ -2625,6 +2625,11 @@ def acknowledge_factory_outbox(conn: sqlite3.Connection, outbox_key: str) -> Non
         conn.execute("UPDATE factory_attempt_outbox SET state='acknowledged', acknowledged_at=?, delivery_lease_id=NULL, delivery_lease_expires_at=NULL, updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL", (utc_now(), utc_now(), outbox_key))
 
 
+def fail_factory_outbox_delivery(conn: sqlite3.Connection, outbox_key: str, lease_id: str) -> None:
+    with conn:
+        conn.execute("UPDATE factory_attempt_outbox SET state='retrying', delivery_lease_id=NULL, delivery_lease_expires_at=NULL, updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL AND delivery_lease_id=?", (utc_now(), outbox_key, lease_id))
+
+
 def list_factory_inspection_outbox(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM factory_inspection_outbox WHERE acknowledged_at IS NULL ORDER BY created_at,outbox_key LIMIT ?", (limit,)).fetchall()
     return [{key: row[key] for key in row.keys() if key != "payload_json"} | {"payload": json.loads(row["payload_json"])} for row in rows]
@@ -2644,6 +2649,11 @@ def acknowledge_factory_inspection_outbox(conn: sqlite3.Connection, outbox_key: 
     with conn:
         now = utc_now()
         conn.execute("UPDATE factory_inspection_outbox SET state='acknowledged',acknowledged_at=?,delivery_lease_id=NULL,delivery_lease_expires_at=NULL,updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL", (now, now, outbox_key))
+
+
+def fail_factory_inspection_outbox_delivery(conn: sqlite3.Connection, outbox_key: str, lease_id: str) -> None:
+    with conn:
+        conn.execute("UPDATE factory_inspection_outbox SET state='retrying',delivery_lease_id=NULL,delivery_lease_expires_at=NULL,updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL AND delivery_lease_id=?", (utc_now(), outbox_key, lease_id))
 
 
 def _sync_factory_attempt_state(conn: sqlite3.Connection, job: dict[str, Any], state: str) -> None:
@@ -2779,7 +2789,7 @@ def record_reconciliation_findings(conn: sqlite3.Connection, findings: list[dict
             key, job_id, subject, kind = finding["finding_key"], finding["job_id"], finding["subject"], finding["kind"]
             row = conn.execute("SELECT occurrence_count FROM reconciliation_findings WHERE finding_key = ?", (key,)).fetchone()
             if row:
-                conn.execute("UPDATE reconciliation_findings SET last_seen_at = ?, occurrence_count = occurrence_count + 1 WHERE finding_key = ?", (now, key))
+                conn.execute("UPDATE reconciliation_findings SET details_json = ?, last_seen_at = ?, occurrence_count = occurrence_count + 1 WHERE finding_key = ?", (canonical_json(finding), now, key))
                 existing.append(key)
             else:
                 conn.execute(
@@ -2788,6 +2798,30 @@ def record_reconciliation_findings(conn: sqlite3.Connection, findings: list[dict
                 )
                 created.append(key)
     return created, existing
+
+
+def reconciliation_findings_status(conn: sqlite3.Connection, *, active_within_minutes: int = 30) -> dict[str, Any]:
+    if active_within_minutes < 1 or active_within_minutes > 1440:
+        raise BridgeValidationError("active_within_minutes must be between 1 and 1440")
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=active_within_minutes)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    rows = conn.execute(
+        "SELECT details_json FROM reconciliation_findings WHERE last_seen_at >= ?",
+        (cutoff,),
+    ).fetchall()
+    severity = {"critical": 0, "warning": 0}
+    for row in rows:
+        value = json.loads(row["details_json"])
+        level = value.get("severity")
+        if level in severity:
+            severity[level] += 1
+    total = int(conn.execute("SELECT COUNT(*) FROM reconciliation_findings").fetchone()[0])
+    return {
+        "active_within_minutes": active_within_minutes,
+        "current": len(rows),
+        "historical": total - len(rows),
+        "total": total,
+        "severity": severity,
+    }
 
 
 def _sanitize_finding(conn: sqlite3.Connection, finding: Any) -> dict[str, Any]:

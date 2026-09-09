@@ -9,7 +9,8 @@ or mutating external systems.
 - Workflow: `reconciliation-bridge-state-check`
 - Task: `inspect-bridge-ledger`
 - Event emitted: `driftward.reconciliation.detected`
-- Trigger: `hatchet trigger bridge-check --profile prod`
+- Schedule: every 15 minutes (`*/15 * * * *`)
+- Manual trigger: `hatchet trigger bridge-check --profile prod`
 
 The worker checks bounded bridge, sanitized ingress, and Hatchet inventories.
 It never reports clean when an inventory is unavailable or reaches its safe
@@ -49,7 +50,7 @@ break-glass recovery from the immutable bridge release.
 ```json
 {
   "requestId": "manual-check",
-  "maxJobs": 100,
+  "maxJobs": 250,
   "maxEventsPerJob": 100,
   "staleAfterMinutes": 30,
   "emitWhenClean": false
@@ -58,6 +59,10 @@ break-glass recovery from the immutable bridge release.
 
 `emitWhenClean` is useful for smoke tests because it proves the worker can emit
 an event even when no findings exist.
+
+The bridge exposes a 30-minute current projection separately from the complete
+append-only findings history. This makes recent drift actionable without
+discarding earlier evidence.
 
 ## Environment
 

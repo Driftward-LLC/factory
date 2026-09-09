@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             hatchet_event_name TEXT NOT NULL,
             hatchet_event_id TEXT,
             hatchet_published INTEGER NOT NULL DEFAULT 0,
+            publish_attempts INTEGER NOT NULL DEFAULT 0,
+            publish_lease_id TEXT,
+            publish_lease_expires_at TEXT,
+            publish_last_error TEXT,
             decision TEXT NOT NULL,
             reason_code TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -84,6 +88,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON ingress_events(source, created_at, event_id);
         """
     )
+    _migrate_publication_columns(conn)
     _migrate_provider_updated_at(conn)
     _migrate_lifecycle_times(conn)
     conn.executescript(
@@ -99,6 +104,18 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+
+
+def _migrate_publication_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(ingress_events)")}
+    for definition in (
+        "publish_attempts INTEGER NOT NULL DEFAULT 0",
+        "publish_lease_id TEXT",
+        "publish_lease_expires_at TEXT",
+        "publish_last_error TEXT",
+    ):
+        if definition.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE ingress_events ADD COLUMN {definition}")
 
 
 def _migrate_lifecycle_times(conn: sqlite3.Connection) -> None:
@@ -160,6 +177,8 @@ def row_to_event(row: sqlite3.Row) -> dict[str, Any]:
         "hatchet_event_name": row["hatchet_event_name"],
         "hatchet_event_id": row["hatchet_event_id"],
         "hatchet_published": bool(row["hatchet_published"]),
+        "publish_attempts": row["publish_attempts"],
+        "publish_last_error": row["publish_last_error"],
         "decision": row["decision"],
         "reason_code": row["reason_code"],
         "created_at": row["created_at"],
@@ -236,7 +255,61 @@ def record_event(
     return get_event(conn, event_key), True
 
 
-def mark_published(conn: sqlite3.Connection, event_key: str, hatchet_event_id: str | None) -> dict[str, Any]:
+def list_pending_publications(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    if limit < 1 or limit > 250:
+        raise ValueError("limit must be between 1 and 250")
+    rows = conn.execute(
+        "SELECT * FROM ingress_events WHERE hatchet_published = 0 ORDER BY created_at, event_id LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [row_to_event(row) for row in rows]
+
+
+def publication_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT COUNT(*), MIN(created_at), MAX(publish_attempts) FROM ingress_events WHERE hatchet_published = 0"
+    ).fetchone()
+    return {
+        "unpublished": int(row[0]),
+        "oldest_unpublished_at": row[1],
+        "max_publish_attempts": int(row[2] or 0),
+    }
+
+
+def claim_pending_publication(conn: sqlite3.Connection, event_key: str, *, lease_seconds: int = 60) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc)
+    now_text = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    lease_id = str(uuid.uuid4())
+    expires = (now + timedelta(seconds=max(1, min(lease_seconds, 300)))).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    with conn:
+        changed = conn.execute(
+            """
+            UPDATE ingress_events
+            SET publish_attempts = publish_attempts + 1,
+                publish_lease_id = ?, publish_lease_expires_at = ?,
+                publish_last_error = NULL, updated_at = ?
+            WHERE event_key = ? AND hatchet_published = 0
+              AND (publish_lease_expires_at IS NULL OR publish_lease_expires_at <= ?)
+            """,
+            (lease_id, expires, now_text, event_key, now_text),
+        )
+    return get_event(conn, event_key) | {"publish_lease_id": lease_id} if changed.rowcount == 1 else None
+
+
+def mark_publication_failed(conn: sqlite3.Connection, event_key: str, lease_id: str, reason: str = "publisher_failed") -> None:
+    with conn:
+        conn.execute(
+            """
+            UPDATE ingress_events
+            SET publish_lease_id = NULL, publish_lease_expires_at = NULL,
+                publish_last_error = ?, updated_at = ?
+            WHERE event_key = ? AND hatchet_published = 0 AND publish_lease_id = ?
+            """,
+            (reason[:120], utc_now(), event_key, lease_id),
+        )
+
+
+def mark_published(conn: sqlite3.Connection, event_key: str, hatchet_event_id: str | None, *, lease_id: str | None = None) -> dict[str, Any]:
     with conn:
         row = conn.execute(
             "SELECT * FROM ingress_events WHERE event_key = ?",
@@ -244,16 +317,21 @@ def mark_published(conn: sqlite3.Connection, event_key: str, hatchet_event_id: s
         ).fetchone()
         if not row:
             raise IngressNotFound(f"event not found: {event_key}")
-        conn.execute(
+        changed = conn.execute(
             """
             UPDATE ingress_events
             SET hatchet_event_id = ?,
                 hatchet_published = 1,
+                publish_lease_id = NULL,
+                publish_lease_expires_at = NULL,
+                publish_last_error = NULL,
                 updated_at = ?
-            WHERE event_key = ?
+            WHERE event_key = ? AND (? IS NULL OR publish_lease_id = ?)
             """,
-            (hatchet_event_id, utc_now(), event_key),
+            (hatchet_event_id, utc_now(), event_key, lease_id, lease_id),
         )
+        if lease_id is not None and changed.rowcount != 1:
+            raise IngressConflict("publication lease is no longer current")
     return get_event(conn, event_key)
 
 

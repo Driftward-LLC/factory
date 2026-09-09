@@ -48,16 +48,25 @@ class EventTrigger:
     active: bool = True
 
 
+@dataclass(frozen=True)
+class CronTrigger:
+    workflow: str
+    expression: str
+    active: bool = True
+
+
 @dataclass
 class LiveInventory:
     workflows: list[Workflow] = field(default_factory=list)
     workers: list[Worker] = field(default_factory=list)
     task_actions: list[TaskAction] = field(default_factory=list)
     event_triggers: list[EventTrigger] = field(default_factory=list)
+    cron_triggers: list[CronTrigger] = field(default_factory=list)
     has_workflows: bool = False
     has_workers: bool = False
     has_task_actions: bool = False
     has_event_triggers: bool = False
+    has_cron_triggers: bool = False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -146,9 +155,21 @@ def collect_live(hatchet_bin: str, profile: str, workflow_limit: int) -> LiveInv
         "-p",
         profile,
     ])
+    crons = run_hatchet_json([
+        hatchet_bin,
+        "cron",
+        "list",
+        "-o",
+        "json",
+        "-p",
+        profile,
+        "--limit",
+        str(limit),
+    ])
     return normalize_live({
         "workflows": rows(workflows),
         "workers": rows(workers),
+        "cronTriggers": rows(crons),
     })
 
 
@@ -336,6 +357,37 @@ def compare_live(desired: dict[str, Any], live: LiveInventory) -> list[dict[str,
                         {"workflow": workflow["name"], "event": event},
                     ))
 
+    for trigger in (trigger for trigger in live.cron_triggers if trigger.active):
+        desired_workflow = desired_workflows.get(trigger.workflow)
+        if not desired_workflow:
+            kind = "retired_cron_trigger_still_active" if trigger.workflow in retired_workflows else "unknown_cron_trigger"
+            findings.append(finding(
+                "critical",
+                kind,
+                f"cron trigger {trigger.expression} is active for workflow {trigger.workflow} outside desired state",
+                {"workflow": trigger.workflow, "expression": trigger.expression},
+            ))
+            continue
+        if trigger.expression not in desired_workflow_crons(desired_workflow):
+            findings.append(finding(
+                "warning",
+                "unexpected_cron_trigger",
+                f"workflow {trigger.workflow} has unexpected active cron trigger {trigger.expression}",
+                {"workflow": trigger.workflow, "expression": trigger.expression},
+            ))
+
+    if live.has_cron_triggers:
+        live_cron_pairs = {(trigger.workflow, trigger.expression) for trigger in live.cron_triggers if trigger.active}
+        for workflow in desired_workflows.values():
+            for expression in desired_workflow_crons(workflow):
+                if (workflow["name"], expression) not in live_cron_pairs:
+                    findings.append(finding(
+                        "critical",
+                        "desired_cron_trigger_not_live",
+                        f"desired cron trigger {expression} for workflow {workflow['name']} was not found active in live inventory",
+                        {"workflow": workflow["name"], "expression": expression},
+                    ))
+
     return findings
 
 
@@ -382,6 +434,10 @@ def desired_workflow_events(workflow: dict[str, Any]) -> set[str]:
     return events
 
 
+def desired_workflow_crons(workflow: dict[str, Any]) -> set[str]:
+    return set(strings(workflow.get("cron_triggers")))
+
+
 def normalize_live(data: Any) -> LiveInventory:
     inventory = LiveInventory()
     if isinstance(data, list):
@@ -412,6 +468,11 @@ def normalize_live(data: Any) -> LiveInventory:
     if trigger_items is not None:
         inventory.has_event_triggers = True
         inventory.event_triggers = [trigger for item in trigger_items if (trigger := parse_event_trigger(item))]
+
+    cron_items = first_list(data, "cronTriggers", "cron_triggers", "crons", "cronJobs", "cron_jobs")
+    if cron_items is not None:
+        inventory.has_cron_triggers = True
+        inventory.cron_triggers = [trigger for item in cron_items if (trigger := parse_cron_trigger(item))]
 
     if not inventory.has_task_actions and inventory.workers:
         inventory.has_task_actions = True
@@ -484,6 +545,18 @@ def parse_event_trigger(item: Any) -> EventTrigger | None:
     event = first_string(item, "event", "eventName", "event_name", "name")
     if workflow and event:
         return EventTrigger(workflow=workflow, event=event, active=is_active(item))
+    return None
+
+
+def parse_cron_trigger(item: Any) -> CronTrigger | None:
+    if not isinstance(item, dict):
+        return None
+    workflow = first_string(item, "workflowName", "workflow_name", "workflow")
+    if not workflow and isinstance(item.get("workflow"), dict):
+        workflow = first_string(item["workflow"], "name", "displayName", "display_name")
+    expression = first_string(item, "cron", "expression", "cronExpression", "cron_expression", "schedule")
+    if workflow and expression:
+        return CronTrigger(workflow=workflow, expression=expression, active=is_active(item))
     return None
 
 

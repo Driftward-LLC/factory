@@ -30,13 +30,18 @@ def status_health(source_errors: dict, delivery: dict, outbox_status: dict) -> t
     return (not unhealthy, "source_or_outbox_degraded" if unhealthy else None)
 
 
+def status_warnings(outbox_status: dict) -> list[dict]:
+    dead_letters = int(outbox_status.get("dead_letters") or 0)
+    return [{"kind": "dead_letters", "count": dead_letters}] if dead_letters else []
+
+
 def lifecycle_bind_host() -> str:
     return os.environ.get("FACTORY_LIFECYCLE_HOST", "127.0.0.1")
 
 
 def serve(interval: int) -> int:
     outbox = Outbox(os.environ.get("FACTORY_LIFECYCLE_DB", "/var/lib/driftward-factory-lifecycle-writer/outbox.db"))
-    state = {"ok": False, "last_error": "starting", "last_scan": None, "source_errors": {}}
+    state = {"ok": False, "last_error": "starting", "last_attempt": None, "last_success": None, "source_errors": {}}
     def loop() -> None:
         while True:
             try:
@@ -44,17 +49,21 @@ def serve(interval: int) -> int:
                 result = scan_and_deliver(writer)
                 status = outbox.status()
                 ok, last_error = status_health(writer.source_errors, result["delivery"], status)
-                state.update(ok=ok, last_error=last_error, last_scan=time.time(), source_errors=writer.source_errors)
+                now = time.time()
+                state.update(ok=ok, last_error=last_error, last_attempt=now, source_errors=writer.source_errors)
+                if ok:
+                    state["last_success"] = now
             except Exception as exc:  # details stay in local journal, never Linear
                 logging.getLogger(__name__).warning("factory lifecycle cycle failed: %s", type(exc).__name__)
-                state.update(ok=False, last_error=type(exc).__name__, last_scan=time.time())
+                state.update(ok=False, last_error=type(exc).__name__, last_attempt=time.time())
             time.sleep(interval)
     threading.Thread(target=loop, daemon=True).start()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path not in {"/health", "/status"}:
                 self.send_error(404); return
-            payload = json.dumps({"ok": state["ok"], "last_error": state["last_error"], "source_errors": state["source_errors"], "outbox": outbox.status()}, sort_keys=True).encode()
+            outbox_status = outbox.status()
+            payload = json.dumps({**state, "warnings": status_warnings(outbox_status), "outbox": outbox_status}, sort_keys=True).encode()
             self.send_response(200 if state["ok"] else 503); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
         def log_message(self, format, *args):
             return

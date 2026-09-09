@@ -3,14 +3,26 @@ name: Hatchet Quality
 on:
   pull_request:
     paths:
+      - 'factory/**'
       - 'hatchet/**'
       - 'deploy/**'
+      - 'tools/**'
+      - 'README.md'
+      - 'AGENTS.md'
+      - '.dockerignore'
+      - '.github/workflows/factory-release.yml'
       - '.github/workflows/hatchet-quality.yml'
   push:
     branches: [main]
     paths:
+      - 'factory/**'
       - 'hatchet/**'
       - 'deploy/**'
+      - 'tools/**'
+      - 'README.md'
+      - 'AGENTS.md'
+      - '.dockerignore'
+      - '.github/workflows/factory-release.yml'
       - '.github/workflows/hatchet-quality.yml'
 
 permissions:
@@ -36,15 +48,18 @@ jobs:
           python3 tools/hatchet-contracts.py generate
           python3 tools/hatchet-contracts.py check
           git diff --exit-code -- hatchet/event-ingress/hatchet_event_ingress/contracts.py hatchet/workers/shared/src/contracts.ts
+      - name: Run tool tests
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
       - name: Build and test workers
         run: |
           npm run build --prefix hatchet/workers
           npm run test --prefix hatchet/workers/intake-worker
           npm run test --prefix hatchet/workers/bridge-executor-worker
           npm run test --prefix hatchet/workers/reconciliation-worker
-      - name: Test bridge and lifecycle writer
+      - name: Test bridge, ingress, and lifecycle writer
         run: |
           PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests
+          PYTHONPATH=hatchet/event-ingress python3 -m unittest discover -s hatchet/event-ingress/tests
           PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/factory-lifecycle-writer/tests
       - name: Validate Docker deployment
         run: |
@@ -53,7 +68,10 @@ jobs:
             HATCHET_ADMIN_PASSWORD=ci-admin-password \
             FACTORY_SOURCE_ROOT="$PWD" \
             docker compose -f deploy/docker-compose.yml config >/dev/null
-          docker build -f deploy/Dockerfile -t driftward/factory:ci .
+          docker build \
+            --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" \
+            --build-arg FACTORY_RELEASE_VERSION=ci \
+            -f deploy/Dockerfile -t driftward/factory:ci .
       - name: Check changed-file whitespace
         run: |
           base="${{ github.event.pull_request.base.sha }}"

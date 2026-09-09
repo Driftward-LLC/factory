@@ -1,25 +1,22 @@
 # Driftward Hatchet Lite
 
-This is the host-level Hatchet Lite pilot for Driftward bridge-backed intake
-and control-plane experiments. It is intentionally local-only and low-volume.
-
-ENG-97 proposes extracting the Factory product/runtime surface into a
-standalone repository. Until that boundary is approved, this tree remains the
-transitional source of truth. See `docs/factory-standalone-app-boundary.md` for
-the proposed split and `hatchet/desired-state/factory-hatchet.json` for the
-checked-in workflow/task/worker/event-trigger desired state.
+This is the Factory-owned Hatchet Lite control plane for Driftward
+bridge-backed intake. It is deployed with the standalone Factory Docker
+Compose application and remains intentionally local-only and low-volume. See
+`docs/factory-standalone-app-boundary.md` for the ownership split and
+`hatchet/desired-state/factory-hatchet.json` for checked-in desired state.
 
 ## Scope
 
-- Runtime root: `/docker/driftward/hatchet`
-- Systemd unit: `driftward-hatchet.service`
-- Compose project: `driftward-hatchet`
+- Runtime root: `/docker/driftward/factory`
+- Systemd unit: `driftward-factory.service`
+- Compose project: `driftward-factory`
 - Local dashboard/API: `http://127.0.0.1:8888`
 - Private dashboard/API URL: `https://srv1379035.tail5c6a78.ts.net:8888/`
 - Worker gRPC: `127.0.0.1:7077`
 - Health port: `127.0.0.1:8733`
 - Secret env: `/etc/driftward/hatchet.env`
-- Smoke test: `driftward-hatchet-smoke`
+- Smoke test: `factory-docker-smoke`
 
 Hatchet remains a control plane only. Do not mount Driftward Hermes provider
 credentials, browser credentials, GitHub credentials, Linear credentials, MCP
@@ -37,7 +34,7 @@ execution happens behind allowlisted actions.
 
 Runtime:
 
-- API service: `driftward-hatchet-bridge.service`
+- Compose service: `bridge`
 - Database: `/var/lib/driftward-hatchet-bridge/bridge.db`
 - Local API: `http://127.0.0.1:19877`
 
@@ -54,7 +51,7 @@ only from the immutable bridge release.
 Worker plans, event names, and source live under `hatchet/workers`. The first
 workers are `intake-worker`, `execution-dispatch-worker`,
 `bridge-executor-worker`, `pr-event-worker`, and `reconciliation-worker`. They
-run as managed systemd services and prove the bridge-backed intake paths:
+run as Factory Compose services and prove the bridge-backed intake paths:
 dispatch a `create_draft_pr` job manually or from a gated Linear ready event,
 fence it through the bridge ledger, emit Hatchet events, observe the synthetic
 PR-created event, and inspect bridge ledger consistency.
@@ -78,8 +75,8 @@ workers provider credentials.
 
 Runtime:
 
-- API service: `driftward-hatchet-event-ingress.service`
-- Public Linear webhook proxy: `driftward-hatchet-linear-webhook-proxy.service`
+- Compose service: `event-ingress`
+- Public Linear webhook proxy: `linear-webhook-proxy`
 - Database: `/var/lib/driftward-hatchet-event-ingress/ingress.db`
 - Local API: `http://127.0.0.1:19878`
 - Public Linear webhook URL: `https://srv1379035.tail5c6a78.ts.net/events/linear/issue`
@@ -129,23 +126,22 @@ Reach for direct `systemctl`, `curl`, Docker, or Tailscale commands only when
 installing, debugging a specific component named by `factory status`, or doing
 break-glass recovery.
 
-Install or refresh the complete managed Hatchet runtime and its host smoke
+Install or refresh the complete Factory Compose runtime and its host smoke
 helper together:
 
 ```bash
-bash hatchet/install.sh
-cmp hatchet/driftward-hatchet-smoke /usr/local/bin/driftward-hatchet-smoke
+bash deploy/install-docker.sh
+cmp deploy/factory-docker-smoke /usr/local/bin/factory-docker-smoke
 ```
 
-`bootstrap-host.sh` publishes the same checked-in helper. Use the Hatchet
-installer for focused runtime refreshes so `/usr/local/bin/driftward-hatchet-smoke`
-cannot lag the source under review.
+Use the Factory installer so the runtime Compose file, CLI, desired state, and
+`/usr/local/bin/factory-docker-smoke` cannot lag the source under review.
 
 Check factory path health:
 
 ```bash
 factory status
-driftward-hatchet-smoke
+factory-docker-smoke
 ```
 
 Read recent logs:
@@ -237,46 +233,37 @@ Check Docker and Tailscale only when debugging the Hatchet control plane or
 exposure layer directly:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/hatchet ps
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/hatchet logs --tail=100
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100
 tailscale serve status
 tailscale funnel status
-driftward-hatchet-smoke
+factory-docker-smoke
 ```
 
 Restart individual services only for focused remediation after the CLI or smoke
 test identifies a component:
 
 ```bash
-systemctl restart driftward-hatchet.service
-systemctl restart driftward-hatchet-bridge.service
-systemctl restart driftward-hatchet-worker-intake.service
-systemctl restart driftward-hatchet-worker-execution-dispatch.service
-systemctl restart driftward-hatchet-worker-bridge-executor.service
-systemctl restart driftward-hatchet-worker-pr-event.service
-systemctl restart driftward-hatchet-worker-reconciliation.service
-systemctl restart driftward-hatchet-event-ingress.service
-systemctl restart driftward-hatchet-linear-webhook-proxy.service
-driftward-hatchet-smoke
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory up -d --no-deps <service>
+factory-docker-smoke
 ```
 
 ### Post-Restart Validation And Rollback
 
-Restarting `driftward-hatchet.service` replaces the Hatchet containers. The
-managed workers can record transient `UNAVAILABLE` listener and heartbeat
-errors while the gRPC listener returns. Treat those records as expected only
-inside the restart window; wait for the containers to become healthy, run the
-smoke test in the current intake mode, then observe at least two clean minutes
-before treating the control plane as recovered.
+Reloading `driftward-factory.service` converges the Compose application without
+stopping unchanged services or PostgreSQL. Workers recreated by an image
+change can record transient `UNAVAILABLE` listener and heartbeat errors while
+they reconnect. Treat those records as expected only inside that deploy
+window; wait for health, run the smoke test, then observe two clean minutes.
 
 ```bash
 for unit in intake execution-dispatch bridge-executor pr-event reconciliation; do
-  journalctl -u "driftward-hatchet-worker-${unit}.service" --since '2 minutes ago' --no-pager -o cat \
+  docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --since 2m "${unit}-worker" \
     | rg -i 'failed to send heartbeat|heartbeat interval delay|listener encountered an error|unavailable|unauthenticated' \
     || true
 done
 
-postgres_pid="$(docker inspect -f '{{.State.Pid}}' driftward-hatchet-postgres-1)"
+postgres_pid="$(docker inspect -f '{{.State.Pid}}' driftward-factory-postgres-1)"
 postgres_cgroup="/sys/fs/cgroup$(awk -F: '$1 == \"0\" { print $3 }' "/proc/${postgres_pid}/cgroup")"
 cat "${postgres_cgroup}/memory.current"
 cat "${postgres_cgroup}/memory.peak"
@@ -285,36 +272,32 @@ cat "${postgres_cgroup}/memory.events"
 ```
 
 For the PostgreSQL capacity guardrail, require a healthy container with the
-configured 1 GiB memory cap and a 128 MiB cgroup swap allowance (`memswap_limit:
-1152m`). Require no increase in `memory.events` `max`, `oom`, or `oom_kill`, and
-keep `memory.peak` below 90% of the 1 GiB cap during the observation window.
+configured 2 GiB memory cap and 256 MiB cgroup swap allowance (`memswap_limit:
+2304m`). Require no increase in `memory.events` `oom` or `oom_kill`, and keep
+`memory.peak` below 90% of the 2 GiB cap during the observation window.
 Small, bounded cgroup swap use is permitted, but investigate sustained growth or
 material host `pswpin`/`pswpout` churn. Memory and CPU PSI `full` must remain
 zero throughout the window.
 
-To roll back a Compose-only deployment, publish a known-good versioned Compose
-file to the runtime root and restart the managed service, then repeat the smoke
-and clean-window checks above:
+The installer automatically restores the previously running image if a new
+image fails smoke validation. To roll back later, deploy a known-good Factory
+release tag and repeat the smoke and clean-window checks:
 
 ```bash
-rollback_file="$(mktemp)"
-git show <known-good-revision>:hatchet/docker-compose.yml >"${rollback_file}"
-install -m 0644 "${rollback_file}" /docker/driftward/hatchet/docker-compose.yml
-rm -f "${rollback_file}"
-systemctl restart driftward-hatchet.service
-driftward-hatchet-smoke
+git switch --detach <known-good-release-tag>
+bash deploy/install-docker.sh --image-tag <known-good-release-tag> --start
 ```
 
 Manual start without systemd:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/hatchet up -d
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory up -d
 ```
 
 Manual stop:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/hatchet down
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory stop
 ```
 
 Restore the Tailscale dashboard route:
@@ -330,8 +313,8 @@ password, cookie secrets, Hatchet server URL, and cookie domain. Keep it mode
 `0600`; do not commit or paste its contents into Linear, GitHub, Codex, or
 logs.
 
-The key files under `/docker/driftward/hatchet/keys` are generated by the
-Hatchet admin image and mounted read-only into `hatchet-lite`.
+The key files under `/docker/driftward/factory/keys/hatchet` are generated by
+the Hatchet admin image and mounted read-only into `hatchet-lite`.
 
 `/etc/driftward/hatchet-bridge.env` contains the bridge-local bearer token.
 `hatchet/bridge/install.sh` generates it when absent and keeps the file mode
