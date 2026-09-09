@@ -22,17 +22,17 @@ RUN npm ci --prefix hatchet/workers \
 
 FROM node:22-bookworm-slim AS runtime
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 tini \
+  && rm -rf /var/lib/apt/lists/* \
+  && ln -sf /usr/local/bin/node /usr/bin/node
+
 ARG FACTORY_RELEASE_COMMIT
 ARG FACTORY_RELEASE_VERSION
 
 LABEL org.opencontainers.image.source="https://github.com/Driftward-LLC/factory" \
       org.opencontainers.image.revision="$FACTORY_RELEASE_COMMIT" \
       org.opencontainers.image.version="$FACTORY_RELEASE_VERSION"
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 tini \
-  && rm -rf /var/lib/apt/lists/* \
-  && ln -sf /usr/local/bin/node /usr/bin/node
 
 WORKDIR /app
 COPY --from=build /app /app
