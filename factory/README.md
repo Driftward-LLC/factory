@@ -68,6 +68,9 @@ factory retry ENG-62 --reason "prior draft PR was closed unmerged" --request-id 
 factory retry ENG-62 --reason "orphaned bridge job is obsolete" --request-id eng-62-orphan-20260823 --snapshot-digest PREVIEW_DIGEST --supersede-job BRIDGE-JOB-ID --yes
 factory lifecycle ENG-62
 factory lifecycle ENG-62 --json --limit 100
+factory lifecycle dead-letters list
+factory lifecycle dead-letters preview OUTBOX-KEY
+factory lifecycle dead-letters archive OUTBOX-KEY --reason "reviewed historical record" --snapshot-digest PREVIEW_DIGEST --yes
 factory attempts active
 factory attempts list ENG-62 --json
 factory attempts show ATTEMPT-ID
@@ -85,12 +88,15 @@ It reports intake mode, the active Docker Compose runtime or legacy systemd
 layout, loopback health endpoints, public Linear webhook readiness, and
 advisory recovery/operator components.
 Required failures return a nonzero exit status; advisory warnings are shown
-without failing the command.
+without failing the command. Reconciliation findings for active jobs and
+system inventory are actionable; findings attached to terminal jobs are shown
+separately as historical debt and do not fail live health.
 
 `factory console` prints the private URL for the read-only Factory Operations
-Console. The console shows active and recent attempts plus the complete
-sanitized lifecycle for an Engineering issue. It does not expose operator
-mutations or credentials. Production requests must arrive through Tailscale
+Console. The console shows active and recent attempts, actionable versus
+terminal reconciliation findings, lifecycle dead-letter counts, and the
+complete sanitized lifecycle for an Engineering issue. It does not expose
+operator mutations or credentials. Production requests must arrive through Tailscale
 Serve so the console receives an authenticated `Tailscale-User-Login` header.
 The console's FastAPI schema is available to authenticated operators at
 `/api/openapi.json`.
@@ -109,6 +115,12 @@ and includes the associated bridge job and execution lease summary when present.
 `factory lifecycle ENG-X` shows the issue-level Factory record: attempts,
 bridge jobs, execution leases, and a bounded timeline of attempt and bridge
 events. Use `--json` on either command for scripts or deeper inspection.
+
+`factory lifecycle dead-letters` is a root-only review surface. List and
+preview return sanitized metadata without comment bodies or markers. Archive
+requires an exact outbox key, a bounded reason, the latest preview digest, and
+`--yes`; it retains the row and records the local socket actor, timestamp, and
+reason instead of deleting or replaying the event.
 
 Use `factory status` first, then direct `systemctl`, `curl`, Docker, or
 service-specific commands only for

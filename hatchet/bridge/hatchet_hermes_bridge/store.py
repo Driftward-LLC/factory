@@ -2741,11 +2741,11 @@ def list_lifecycle_events(conn: sqlite3.Connection, *, after_created_at: str | N
     rows = conn.execute("""
         SELECT * FROM (
         SELECT e.event_id, e.job_id, e.event_type, e.state, e.created_at,
-               j.idempotency_key, j.pr_url, j.reason_code, j.payload_json, NULL AS attempt_id, NULL AS generation
+               j.requested_action, j.idempotency_key, j.pr_url, j.reason_code, j.payload_json, NULL AS attempt_id, NULL AS generation
         FROM bridge_events e JOIN bridge_jobs j ON j.job_id = e.job_id
         UNION ALL
         SELECT ae.event_id, a.job_id, ae.event_type, a.status, ae.created_at,
-               j.idempotency_key, a.prior_pr_url, j.reason_code, j.payload_json, a.attempt_id, a.generation
+               j.requested_action, j.idempotency_key, a.prior_pr_url, j.reason_code, j.payload_json, a.attempt_id, a.generation
         FROM factory_attempt_events ae JOIN factory_attempts a ON a.attempt_id=ae.attempt_id
         LEFT JOIN bridge_jobs j ON j.job_id=a.job_id
         ) ORDER BY created_at ASC, event_id ASC
@@ -2759,7 +2759,7 @@ def list_lifecycle_events(conn: sqlite3.Connection, *, after_created_at: str | N
         events.append({
             "eventId": row["event_id"], "jobId": row["job_id"], "eventType": row["event_type"],
             "state": row["state"], "createdAt": row["created_at"], "idempotencyKey": row["idempotency_key"],
-            "prUrl": row["pr_url"], "reasonCode": row["reason_code"],
+            "requestedAction": row["requested_action"], "prUrl": row["pr_url"], "reasonCode": row["reason_code"],
             "payload": {key: payload.get(key) for key in ("linear_issue_id", "linear_issue", "linear_issue_url", "source_event_key", "source_delivery_id", "repo", "dry_run")},
             "attemptId": row["attempt_id"], "generation": row["generation"], "sourceKind": "factory_attempt" if row["attempt_id"] else "bridge_event",
         })
@@ -2815,15 +2815,31 @@ def reconciliation_findings_status(conn: sqlite3.Connection, *, active_within_mi
         raise BridgeValidationError("active_within_minutes must be between 1 and 1440")
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=active_within_minutes)).isoformat(timespec="microseconds").replace("+00:00", "Z")
     rows = conn.execute(
-        "SELECT details_json FROM reconciliation_findings WHERE last_seen_at >= ?",
+        """
+        SELECT r.details_json, r.job_id, j.state
+        FROM reconciliation_findings r
+        LEFT JOIN bridge_jobs j ON j.job_id = r.job_id
+        WHERE r.last_seen_at >= ?
+        """,
         (cutoff,),
     ).fetchall()
     severity = {"critical": 0, "warning": 0}
+    actionable_severity = {"critical": 0, "warning": 0}
+    scope = {"active_work": 0, "terminal_work": 0, "system": 0}
     for row in rows:
         value = json.loads(row["details_json"])
         level = value.get("severity")
         if level in severity:
             severity[level] += 1
+        if row["job_id"] is None:
+            finding_scope = "system"
+        elif row["state"] in ACTIVE_STATES:
+            finding_scope = "active_work"
+        else:
+            finding_scope = "terminal_work"
+        scope[finding_scope] += 1
+        if finding_scope != "terminal_work" and level in actionable_severity:
+            actionable_severity[level] += 1
     total = int(conn.execute("SELECT COUNT(*) FROM reconciliation_findings").fetchone()[0])
     return {
         "active_within_minutes": active_within_minutes,
@@ -2831,6 +2847,9 @@ def reconciliation_findings_status(conn: sqlite3.Connection, *, active_within_mi
         "historical": total - len(rows),
         "total": total,
         "severity": severity,
+        "scope": scope,
+        "actionable": scope["active_work"] + scope["system"],
+        "actionable_severity": actionable_severity,
     }
 
 

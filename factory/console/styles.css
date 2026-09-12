@@ -291,6 +291,39 @@ h3 {
   line-height: 1.15;
 }
 
+.signals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  background: #edf0ec;
+}
+
+.signal {
+  min-width: 0;
+  padding: 13px 16px;
+  border-right: 1px solid var(--line-strong);
+}
+
+.signal:last-child {
+  border-right: 0;
+}
+
+.signal span,
+.signal small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.signal strong {
+  display: block;
+  margin: 5px 0;
+  font-size: 1.15rem;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(280px, 0.8fr);
@@ -607,18 +640,26 @@ td code {
   }
 
   .metrics,
+  .signals,
   .issue-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .metric:nth-child(2),
+  .signal:nth-child(2),
   .summary-item:nth-child(2) {
     border-right: 0;
   }
 
   .metric:nth-child(-n + 2),
+  .signal:nth-child(-n + 2),
   .summary-item:nth-child(-n + 2) {
     border-bottom: 1px solid var(--line);
+  }
+
+  .signal:last-child {
+    grid-column: 1 / -1;
+    border-right: 0;
   }
 }
 
@@ -633,18 +674,25 @@ td code {
   }
 
   .metrics,
+  .signals,
   .issue-summary {
     grid-template-columns: 1fr;
   }
 
   .metric,
+  .signal,
   .summary-item {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
 
   .metric:last-child,
+  .signal:last-child,
   .summary-item:last-child {
     border-bottom: 0;
+  }
+
+  .signal:last-child {
+    grid-column: auto;
   }
 }

@@ -7,9 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _bounded_limit, _mode, _operator_paths, _services_healthy
+from hatchet_hermes_bridge.operator import OperatorError, archive_lifecycle_dead_letter, list_lifecycle_dead_letters, preview_lifecycle_dead_letter_archive, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _bounded_limit, _mode, _operator_lifecycle_path, _operator_paths, _services_healthy
 from test_support import connect_migrate as connect
 from hatchet_hermes_bridge.store import BridgeConflict, authorize_factory_effect, claim_factory_execution, commit_factory_execution, get_factory_attempt, list_events, list_factory_attempt_events, settle_factory_execution, submit_job, transition_job, utc_now
+from factory_lifecycle_writer.outbox import Outbox
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -29,6 +30,7 @@ class FactoryOperatorTests(unittest.TestCase):
         self.work = tempfile.TemporaryDirectory(); self.addCleanup(self.work.cleanup)
         self.bridge_db = str(Path(self.work.name) / "bridge.db")
         self.ingress_db = str(Path(self.work.name) / "ingress.db")
+        self.lifecycle_db = str(Path(self.work.name) / "lifecycle.db")
         connect(self.bridge_db).close()
         conn = sqlite3.connect(self.ingress_db)
         conn.execute("CREATE TABLE ingress_events (event_id TEXT, source TEXT, subject TEXT, normalized_json TEXT, provider_updated_at_us INTEGER)")
@@ -269,6 +271,33 @@ class FactoryOperatorTests(unittest.TestCase):
         with self.assertRaisesRegex(OperatorError, "snapshot"):
             reserve_retry(**self.kwargs(), request_id="request", reason="x", actor="uid:0", snapshot_digest="forged")
 
+    def test_dead_letter_archive_is_snapshot_fenced_and_audited(self):
+        outbox = Outbox(self.lifecycle_db)
+        outbox.record({
+            "outbox_key": "lifecycle:v2:test", "phase": "unresolved", "delivery_state": "dead_letter",
+            "issue_id": None, "identifier": None, "issue_url": None, "job_id": "job-inspect",
+            "idempotency_key": "inspect:test", "source_event_key": None, "source_delivery_id": None,
+            "repo": "Driftward-LLC/capykit", "pr_url": None, "reason_code": "linear_issue_identity_invalid",
+            "execution_mode": "real", "source_kind": "bridge_event", "source_recorded_at": utc_now(),
+            "marker": "private marker", "body": "private body", "next_attempt_at": None,
+            "delivered_at": None, "suppressed_at": None, "last_error_code": None,
+        })
+        outbox.close()
+
+        listed = list_lifecycle_dead_letters(self.lifecycle_db)
+        self.assertEqual([record["outbox_key"] for record in listed], ["lifecycle:v2:test"])
+        self.assertNotIn("body", listed[0])
+        preview = preview_lifecycle_dead_letter_archive(self.lifecycle_db, "lifecycle:v2:test")
+        with self.assertRaisesRegex(OperatorError, "snapshot"):
+            archive_lifecycle_dead_letter(self.lifecycle_db, "lifecycle:v2:test", "reviewed", "uid:0", "forged")
+        result = archive_lifecycle_dead_letter(
+            self.lifecycle_db, "lifecycle:v2:test", "reviewed historical record", "uid:0", preview["snapshot_digest"]
+        )
+        self.assertTrue(result["archived"])
+        self.assertEqual(result["dead_letter"]["archive_reason"], "reviewed historical record")
+        self.assertEqual(result["dead_letter"]["archived_by"], "uid:0")
+        self.assertEqual(list_lifecycle_dead_letters(self.lifecycle_db), [])
+
     def test_docker_operator_health_uses_mounted_state_and_ingress_health(self):
         env = {
             "HATCHET_FACTORY_OPERATOR_RUNTIME": "docker",
@@ -312,6 +341,11 @@ class FactoryOperatorTests(unittest.TestCase):
         with patch.dict(os.environ, {**env, "HATCHET_VERIFIER_POLICY_PATH": "/etc/driftward/hatchet-verifier-policy.json"}, clear=True):
             with self.assertRaisesRegex(OperatorError, "HATCHET_VERIFIER_POLICY_PATH must be /app/hatchet/workers/verifier-policy.json"):
                 _operator_paths()
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(_operator_lifecycle_path(), "/var/lib/driftward-factory-lifecycle-writer/outbox.db")
+        with patch.dict(os.environ, {**env, "HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB": "/tmp/outbox.db"}, clear=True):
+            with self.assertRaisesRegex(OperatorError, "must be /var/lib/driftward-factory-lifecycle-writer/outbox.db"):
+                _operator_lifecycle_path()
 
     def test_operator_mode_prefers_environment_before_host_env_file(self):
         with patch.dict(os.environ, {"HATCHET_INTAKE_DRY_RUN": "false"}):

@@ -1,8 +1,8 @@
 """Root-only, bounded retry operator surface.
 
 This module deliberately is not part of the bridge HTTP API.  It owns a
-root-mode Unix socket and a separate bearer token, reads only the ingress
-projection, and can create only the one reviewed retry action.
+root-mode Unix socket and a separate bearer token for reviewed operator
+actions.
 """
 from __future__ import annotations
 
@@ -27,10 +27,11 @@ ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$")
 ACTIVE_ATTEMPT_STATUSES = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
-OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "list_active_attempts", "show_attempt", "show_attempt_events", "show_lifecycle", "cancel_attempt"}
+OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "list_active_attempts", "show_attempt", "show_attempt_events", "show_lifecycle", "cancel_attempt", "list_lifecycle_dead_letters", "preview_lifecycle_dead_letter_archive", "archive_lifecycle_dead_letter"}
 RETRY_IGNORED_LINEAR_REASON_CODES = frozenset({"linear_issue_factory_lifecycle_actor"})
 DOCKER_BRIDGE_DB = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_INGRESS_DB = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
+DOCKER_LIFECYCLE_DB = "/var/lib/driftward-factory-lifecycle-writer/outbox.db"
 DOCKER_ROUTING_REGISTRY = "/app/hatchet/workers/routing-registry.json"
 DOCKER_VERIFIER_POLICY = "/app/hatchet/workers/verifier-policy.json"
 
@@ -93,6 +94,13 @@ def _operator_paths() -> tuple[str, str, str, str]:
             if actual != expected_value:
                 raise OperatorError(f"{name} must be {expected_value} for Docker Factory")
     return bridge_db, ingress_db, registry, policy
+
+
+def _operator_lifecycle_path() -> str:
+    path = os.environ.get("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB", DOCKER_LIFECYCLE_DB)
+    if os.environ.get("HATCHET_FACTORY_OPERATOR_RUNTIME") == "docker" and path != DOCKER_LIFECYCLE_DB:
+        raise OperatorError(f"HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB must be {DOCKER_LIFECYCLE_DB} for Docker Factory")
+    return path
 
 
 def _mode(env_file: str = "/etc/driftward/hatchet-workers.env") -> str:
@@ -223,6 +231,52 @@ def _snapshot(normalized: dict[str, Any], repo: str, version: int, policy: dict[
 
 def _digest(value: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+
+
+def list_lifecycle_dead_letters(path: str, limit: int = 100) -> list[dict[str, Any]]:
+    from factory_lifecycle_writer.outbox import Outbox
+
+    outbox = Outbox(path, readonly=True)
+    try:
+        return outbox.list_dead_letters(limit)
+    finally:
+        outbox.close()
+
+
+def preview_lifecycle_dead_letter_archive(path: str, outbox_key: str) -> dict[str, Any]:
+    from factory_lifecycle_writer.outbox import Outbox
+
+    key = _bounded_text(outbox_key, name="outbox_key", limit=200)
+    outbox = Outbox(path, readonly=True)
+    try:
+        record = outbox.get_dead_letter(key)
+    finally:
+        outbox.close()
+    if not record:
+        raise BridgeNotFound("lifecycle dead letter not found")
+    return {"eligible": True, "dead_letter": record, "snapshot_digest": _digest(record)}
+
+
+def archive_lifecycle_dead_letter(path: str, outbox_key: str, reason: str, actor: str, snapshot_digest: str) -> dict[str, Any]:
+    preview = preview_lifecycle_dead_letter_archive(path, outbox_key)
+    if _bounded_text(snapshot_digest, name="snapshot_digest", limit=128) != preview["snapshot_digest"]:
+        raise OperatorError("trusted_snapshot_changed_preview_again")
+    from factory_lifecycle_writer.outbox import Outbox
+
+    outbox = Outbox(path)
+    try:
+        try:
+            archived = outbox.archive_dead_letter(
+                preview["dead_letter"]["outbox_key"],
+                actor=_bounded_text(actor, name="actor"),
+                reason=_bounded_text(reason, name="reason"),
+                expected_last_seen_at=preview["dead_letter"]["last_seen_at"],
+            )
+        except ValueError as exc:
+            raise OperatorError(str(exc)) from exc
+    finally:
+        outbox.close()
+    return {"archived": True, "dead_letter": archived}
 
 
 def _parse_fresh_time(value: Any, *, name: str, max_age_seconds: int = 120) -> datetime:
@@ -548,7 +602,12 @@ class OperatorHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._auth(): return
         try:
-            body = self._body(); bridge_db, ingress_db, routes, policy = self._paths(); path = urlparse(self.path).path
+            body = self._body(); path = urlparse(self.path).path
+            if path == "/v1/lifecycle/dead-letters/archive/preview" and set(body) == {"outbox_key"}:
+                self._reply(200, preview_lifecycle_dead_letter_archive(_operator_lifecycle_path(), body["outbox_key"])); return
+            if path == "/v1/lifecycle/dead-letters/archive" and set(body) == {"outbox_key", "reason", "snapshot_digest"}:
+                self._reply(200, archive_lifecycle_dead_letter(_operator_lifecycle_path(), actor=self._actor(), **body)); return
+            bridge_db, ingress_db, routes, policy = self._paths()
             if path == "/v1/retry/preview" and set(body) <= {"issue", "mode", "supersede_pr_url", "supersede_job_id"}:
                 self._reply(200, preview_retry(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes, policy_path=policy, **body)); return
             if path == "/v1/retry/reserve" and set(body) <= {"issue", "mode", "supersede_pr_url", "supersede_job_id", "request_id", "reason", "snapshot_digest"}:
@@ -573,7 +632,11 @@ class OperatorHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._auth(): return
         try:
-            bridge_db, _, _, _ = self._paths(); parsed = urlparse(self.path); path = parsed.path; query = parse_qs(parsed.query, keep_blank_values=True); conn = connect_readonly(bridge_db)
+            parsed = urlparse(self.path); path = parsed.path; query = parse_qs(parsed.query, keep_blank_values=True)
+            if path == "/v1/lifecycle/dead-letters":
+                limit = _bounded_limit(query, default=100, label="lifecycle dead letter limit")
+                self._reply(200, {"dead_letters": list_lifecycle_dead_letters(_operator_lifecycle_path(), limit)}); return
+            bridge_db, _, _, _ = self._paths(); conn = connect_readonly(bridge_db)
             try:
                 if path == "/v1/attempts/active": value = {"attempts": list_active_factory_attempts(conn)}
                 elif path.startswith("/v1/attempts/work-item/"): value = {"attempts": list_factory_attempts(conn, unquote(path.rsplit("/", 1)[1]))}

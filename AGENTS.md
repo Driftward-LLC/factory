@@ -40,6 +40,9 @@ browser state, and Hermes session retention.
   containers.
 - `factory doctor hatchet` is read-only. Pause/remove/apply paths for live
   Hatchet workflows require explicit reviewed operator approval.
+- Lifecycle dead-letter archive must use the root-only operator preview and
+  snapshot digest. Retain the audited row; do not delete or edit outbox data
+  directly from the browser console.
 - Historical bridge, ingress, lifecycle, and Hatchet records are not migrated
   by source-copy changes. Migrate records only after the standalone deployment
   path is approved.

@@ -26,11 +26,26 @@ the Driftward workspace, and Engineering-only access before every scan, and
 creates at most one marked Linear comment per issue/job/phase.
 
 `dry_run` source snapshots are written as permanently `suppressed` outbox rows;
-switching Factory to real mode cannot replay them. Missing immutable Linear
-issue UUIDs are dead-lettered rather than resolved by identifier. The only
+switching Factory to real mode cannot replay them. Internal draft-PR inspection
+jobs are not lifecycle-comment sources. Missing immutable Linear issue UUIDs
+are dead-lettered rather than resolved by identifier. The only
 routing failure currently commentable is
 `linear_issue_project_execution_policy_invalid`; intentional
 `linear_issue_project_execution_disabled` observations stay silent.
+
+Reviewed historical dead letters can be archived through the root-only Factory
+operator. The archive path is one record at a time, snapshot-fenced, and
+audited; it retains the original reason code and never exposes the stored
+comment body to the browser console.
+
+```bash
+factory lifecycle dead-letters list
+factory lifecycle dead-letters preview OUTBOX-KEY
+factory lifecycle dead-letters archive OUTBOX-KEY \
+  --reason "reviewed historical record" \
+  --snapshot-digest PREVIEW_DIGEST \
+  --yes
+```
 
 ## Success Boundary
 

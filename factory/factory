@@ -48,6 +48,9 @@ Usage:
   factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
   factory retry ENG-X force-absence --attempt-id ATTEMPT-ID --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory lifecycle ENG-X [--json] [--limit N]
+  factory lifecycle dead-letters list [--json] [--limit N]
+  factory lifecycle dead-letters preview OUTBOX-KEY
+  factory lifecycle dead-letters archive OUTBOX-KEY --reason TEXT --snapshot-digest DIGEST --yes
   factory attempts active [--json]
   factory attempts list ENG-X [--json]
   factory attempts show ATTEMPT-ID
@@ -148,7 +151,7 @@ factory_docker_runtime_active() {
 }
 
 operator_token() {
-  [[ -r "$OPERATOR_ENV_FILE" ]] || die "factory retry operator credentials are unavailable"
+  [[ -r "$OPERATOR_ENV_FILE" ]] || die "factory operator credentials are unavailable"
   awk -F= '$1 == "HATCHET_FACTORY_OPERATOR_TOKEN" { print $2; exit }' "$OPERATOR_ENV_FILE"
 }
 
@@ -156,7 +159,7 @@ operator_request() {
   local method="$1" path="$2" data="${3:-}" token
   require_root
   token="$(operator_token)"
-  [[ -n "$token" && -S "$OPERATOR_SOCKET" ]] || die "factory retry operator is unavailable"
+  [[ -n "$token" && -S "$OPERATOR_SOCKET" ]] || die "factory operator is unavailable"
   if [[ "$method" == "GET" ]]; then
     curl --silent --show-error --fail --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" "http://localhost$path"
   else
@@ -238,6 +241,25 @@ format_lifecycle() {
   '
 }
 
+format_lifecycle_dead_letters() {
+  require_jq_for_view
+  jq -r '
+    if (.dead_letters | length) == 0 then
+      "No lifecycle dead letters."
+    else
+      "Lifecycle dead letters",
+      "======================",
+      (.dead_letters[] |
+        "",
+        "\(.outbox_key)",
+        "  reason: \(.reason_code // "unknown")",
+        "  source: \(.source_kind)  recorded=\(.source_recorded_at)",
+        "  issue: \(.identifier // "-")  job=\(.job_id // "-")"
+      )
+    end
+  '
+}
+
 github_absence_evidence() {
   local repo="$1" branch="$2" encoded_branch pr_json branch_exists api_error observed
   command -v gh >/dev/null 2>&1 || die "GitHub CLI gh is required for force-absence evidence"
@@ -294,6 +316,11 @@ force_absence_retry() {
 }
 
 lifecycle() {
+  if [[ "${1:-}" == "dead-letters" ]]; then
+    shift
+    lifecycle_dead_letters "$@"
+    return
+  fi
   local issue="" json=0 limit=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -327,6 +354,49 @@ lifecycle() {
   else
     format_lifecycle <<<"$response"
   fi
+}
+
+lifecycle_dead_letters() {
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    list)
+      local json=0 limit="" path response
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) json=1; shift ;;
+          --limit) [[ $# -ge 2 ]] || die "--limit requires a value"; limit="$2"; shift 2 ;;
+          *) die "usage: factory lifecycle dead-letters list [--json] [--limit N]" ;;
+        esac
+      done
+      path="/v1/lifecycle/dead-letters"
+      [[ -z "$limit" ]] || path="$path?limit=$limit"
+      response="$(operator_request GET "$path")"
+      if [[ "$json" == "1" ]]; then printf '%s\n' "$response"; else format_lifecycle_dead_letters <<<"$response"; fi
+      ;;
+    preview)
+      [[ $# -eq 1 ]] || die "usage: factory lifecycle dead-letters preview OUTBOX-KEY"
+      operator_request POST /v1/lifecycle/dead-letters/archive/preview "$(jq -cn --arg outbox_key "$1" '{outbox_key:$outbox_key}')"
+      ;;
+    archive)
+      local outbox_key="${1:-}" reason="" snapshot_digest="" yes=""
+      [[ -n "$outbox_key" ]] || die "usage: factory lifecycle dead-letters archive OUTBOX-KEY --reason TEXT --snapshot-digest DIGEST --yes"
+      shift || true
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
+          --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the digest returned by preview"; snapshot_digest="$2"; shift 2 ;;
+          --yes) yes="--yes"; shift ;;
+          *) die "unknown lifecycle archive option: $1" ;;
+        esac
+      done
+      [[ "$yes" == "--yes" ]] || die "lifecycle dead-letter archive requires reviewed approval; rerun with --yes"
+      [[ -n "$reason" ]] || die "lifecycle dead-letter archive requires --reason"
+      [[ -n "$snapshot_digest" ]] || die "lifecycle dead-letter archive requires --snapshot-digest from a fresh preview"
+      operator_request POST /v1/lifecycle/dead-letters/archive "$(jq -cn --arg outbox_key "$outbox_key" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" '{outbox_key:$outbox_key,reason:$reason,snapshot_digest:$snapshot_digest}')"
+      ;;
+    *) die "usage: factory lifecycle dead-letters {list|preview|archive}" ;;
+  esac
 }
 
 retry_issue() {
@@ -763,22 +833,31 @@ hatchet_conformance_status() {
 }
 
 bridge_reconciliation_status() {
-  local token="$1" payload current critical warning historical
+  local token="$1" payload actionable critical warning terminal active system current historical
   payload="$(curl --silent --show-error --fail --max-time 3 -H "Authorization: Bearer $token" 'http://127.0.0.1:19877/reconciliation/findings?active_within_minutes=30' 2>/dev/null || true)"
+  actionable="$(jq -r '.findings.actionable // empty' <<<"$payload" 2>/dev/null || true)"
+  critical="$(jq -r '.findings.actionable_severity.critical // empty' <<<"$payload" 2>/dev/null || true)"
+  warning="$(jq -r '.findings.actionable_severity.warning // empty' <<<"$payload" 2>/dev/null || true)"
+  active="$(jq -r '.findings.scope.active_work // empty' <<<"$payload" 2>/dev/null || true)"
+  system="$(jq -r '.findings.scope.system // empty' <<<"$payload" 2>/dev/null || true)"
+  terminal="$(jq -r '.findings.scope.terminal_work // empty' <<<"$payload" 2>/dev/null || true)"
   current="$(jq -r '.findings.current // empty' <<<"$payload" 2>/dev/null || true)"
-  critical="$(jq -r '.findings.severity.critical // empty' <<<"$payload" 2>/dev/null || true)"
-  warning="$(jq -r '.findings.severity.warning // empty' <<<"$payload" 2>/dev/null || true)"
   historical="$(jq -r '.findings.historical // empty' <<<"$payload" 2>/dev/null || true)"
-  if [[ ! "$current" =~ ^[0-9]+$ || ! "$critical" =~ ^[0-9]+$ || ! "$warning" =~ ^[0-9]+$ ]]; then
-    status_line FAIL "Current reconciliation findings" "unavailable"
+  if [[ ! "$actionable" =~ ^[0-9]+$ || ! "$critical" =~ ^[0-9]+$ || ! "$warning" =~ ^[0-9]+$ || ! "$active" =~ ^[0-9]+$ || ! "$system" =~ ^[0-9]+$ || ! "$terminal" =~ ^[0-9]+$ ]]; then
+    status_line FAIL "Actionable reconciliation findings" "unavailable"
     mark_failure
   elif (( critical > 0 )); then
-    status_line FAIL "Current reconciliation findings" "current=$current critical=$critical warning=$warning historical=${historical:-unknown}"
+    status_line FAIL "Actionable reconciliation findings" "actionable=$actionable active=$active system=$system critical=$critical warning=$warning"
     mark_failure
   elif (( warning > 0 )); then
-    status_line WARN "Current reconciliation findings" "current=$current critical=0 warning=$warning historical=${historical:-unknown}"
+    status_line WARN "Actionable reconciliation findings" "actionable=$actionable active=$active system=$system critical=0 warning=$warning"
   else
-    status_line OK "Current reconciliation findings" "current=0 historical=${historical:-unknown}"
+    status_line OK "Actionable reconciliation findings" "actionable=0 active=0 system=0"
+  fi
+  if [[ "$terminal" =~ ^[0-9]+$ ]] && (( terminal > 0 )); then
+    status_line WARN "Terminal reconciliation debt" "current=$terminal all_current=${current:-unknown} historical=${historical:-unknown}"
+  elif [[ "$terminal" =~ ^[0-9]+$ ]]; then
+    status_line OK "Terminal reconciliation debt" "current=0 historical=${historical:-unknown}"
   fi
 }
 

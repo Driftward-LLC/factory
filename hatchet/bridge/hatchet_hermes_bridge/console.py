@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import socket
+import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from .store import (
     get_factory_lifecycle,
     list_active_factory_attempts,
     list_recent_factory_attempts,
+    reconciliation_findings_status,
 )
 
 
@@ -64,7 +66,26 @@ def _status_counts(conn: Any) -> dict[str, int]:
     return {str(row["status"]): int(row["count"]) for row in rows}
 
 
-def overview(db_path: str, viewer: str) -> dict[str, Any]:
+def _lifecycle_status(path: str | None) -> dict[str, Any]:
+    unavailable = {"available": False, "dead_letters": 0, "dead_letter_reasons": {}, "archived": 0}
+    if not path:
+        return unavailable
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            states = {str(row[0]): int(row[1]) for row in conn.execute("SELECT delivery_state, COUNT(*) FROM lifecycle_outbox GROUP BY delivery_state")}
+            reasons = {
+                str(row[0] or "unknown"): int(row[1])
+                for row in conn.execute("SELECT reason_code, COUNT(*) FROM lifecycle_outbox WHERE delivery_state = 'dead_letter' GROUP BY reason_code")
+            }
+        finally:
+            conn.close()
+        return {"available": True, "dead_letters": states.get("dead_letter", 0), "dead_letter_reasons": reasons, "archived": states.get("archived", 0)}
+    except (OSError, sqlite3.Error):
+        return unavailable
+
+
+def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None) -> dict[str, Any]:
     conn = connect_readonly(db_path)
     try:
         return {
@@ -74,6 +95,8 @@ def overview(db_path: str, viewer: str) -> dict[str, Any]:
             "active_attempts": list_active_factory_attempts(conn),
             "recent_attempts": list_recent_factory_attempts(conn),
             "status_counts": _status_counts(conn),
+            "reconciliation": reconciliation_findings_status(conn),
+            "lifecycle_outbox": _lifecycle_status(lifecycle_db_path),
             "links": {
                 "hatchet": os.environ.get("FACTORY_CONSOLE_HATCHET_URL", "http://127.0.0.1:8888/"),
             },
@@ -96,7 +119,7 @@ def _error(status: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": message})
 
 
-def create_console_app(db_path: str, asset_root: str | Path | None = None) -> FastAPI:
+def create_console_app(db_path: str, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None) -> FastAPI:
     assets = Path(asset_root or DEFAULT_ASSET_ROOT)
     app = FastAPI(
         title="Driftward Factory Console API",
@@ -142,13 +165,15 @@ def create_console_app(db_path: str, asset_root: str | Path | None = None) -> Fa
                 conn.close()
             if not all((assets / name).is_file() for name, _ in ASSETS.values()):
                 raise OSError("console assets unavailable")
+            if lifecycle_db_path and not _lifecycle_status(lifecycle_db_path)["available"]:
+                raise OSError("lifecycle outbox unavailable")
             return {"ok": True}
         except Exception as exc:
             raise HTTPException(status_code=503, detail="console unavailable") from exc
 
     @app.get("/api/overview")
     def api_overview(request: Request) -> dict[str, Any]:
-        return overview(db_path, request.state.viewer)
+        return overview(db_path, request.state.viewer, lifecycle_db_path)
 
     @app.get("/api/lifecycle/{issue}")
     def api_lifecycle(issue: str) -> dict[str, Any]:
@@ -193,12 +218,12 @@ class ConsoleServer:
         self._socket.close()
 
 
-def make_console_server(db_path: str, host: str, port: int, asset_root: str | Path | None = None) -> ConsoleServer:
-    return ConsoleServer(create_console_app(db_path, asset_root), host, port)
+def make_console_server(db_path: str, host: str, port: int, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None) -> ConsoleServer:
+    return ConsoleServer(create_console_app(db_path, asset_root, lifecycle_db_path), host, port)
 
 
-def serve_console(db_path: str, host: str, port: int, asset_root: str | Path | None = None) -> None:
-    server = make_console_server(db_path, host, port, asset_root)
+def serve_console(db_path: str, host: str, port: int, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None) -> None:
+    server = make_console_server(db_path, host, port, asset_root, lifecycle_db_path)
     try:
         server.serve_forever()
     finally:

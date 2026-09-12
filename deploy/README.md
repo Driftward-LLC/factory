@@ -223,8 +223,12 @@ unless there is a separately approved record migration or restore plan.
 
 `factory status` treats container OOM state, unexpected restarts, failed Docker
 health checks, Hatchet readiness, desired-state drift, release provenance, and
-current reconciliation findings as first-class signals. The ingress health
+actionable reconciliation findings for active work or system inventory as
+first-class signals. Findings attached to terminal jobs are reported
+separately as nonfatal reconciliation debt. The ingress health
 endpoint is unhealthy while persisted events await Hatchet publication; the
 shared outbox dispatcher retries those rows with a lease every 30 seconds.
-Lifecycle status reports permanent dead letters by bounded reason code.
+Lifecycle status reports permanent dead letters by bounded reason code. The
+operator mounts only the lifecycle named volume needed for root-only,
+snapshot-fenced dead-letter archival; the FastAPI console remains read-only.
 Reconciliation runs natively in Hatchet every 15 minutes.

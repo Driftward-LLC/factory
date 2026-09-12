@@ -137,7 +137,7 @@ class LifecycleWriterTest(unittest.TestCase):
             legacy.close()
             migrated = Outbox(path); self.addCleanup(migrated.close)
             columns = {row[1] for row in migrated.conn.execute("PRAGMA table_info(lifecycle_outbox)")}
-            self.assertTrue({"lease_owner", "lease_until"}.issubset(columns))
+        self.assertTrue({"lease_owner", "lease_until", "archived_at", "archived_by", "archive_reason"}.issubset(columns))
 
     def test_legacy_timestamps_and_cursor_are_canonicalized_before_comparison(self):
         writer, outbox = self.make()
@@ -226,6 +226,38 @@ class LifecycleWriterTest(unittest.TestCase):
         for value in (None, "false", 0):
             candidate = event(state="failed"); candidate["payload"]["dry_run"] = value
             self.assertEqual(writer._bridge_candidate(candidate)["delivery_state"], "dead_letter")
+
+    def test_internal_inspection_and_dry_run_attempt_events_are_suppressed(self):
+        writer, _ = self.make()
+        inspection = event(state="completed", issue_id=None)
+        inspection["requestedAction"] = "inspect_draft_pr_state"
+        self.assertIsNone(writer._bridge_candidate(inspection))
+
+        attempt = event(state="running", dry_run=True)
+        attempt.update(sourceKind="factory_attempt", eventType="attempt_started", attemptId="attempt-1", generation=1)
+        candidate = writer._bridge_candidate(attempt)
+        self.assertEqual(candidate["delivery_state"], "suppressed")
+        self.assertEqual(candidate["reason_code"], "dry_run_suppressed")
+
+    def test_dead_letter_archive_is_audited_and_excludes_comment_body(self):
+        writer, outbox = self.make()
+        item = writer._bridge_candidate(event(created=None))
+        outbox.record(item)
+        record = outbox.get_dead_letter(item["outbox_key"])
+        self.assertNotIn("body", record)
+        with self.assertRaisesRegex(ValueError, "preview again"):
+            outbox.archive_dead_letter(item["outbox_key"], actor="uid:0", reason="reviewed", expected_last_seen_at="stale")
+
+        archived = outbox.archive_dead_letter(
+            item["outbox_key"], actor="uid:0", reason="reviewed historical record",
+            expected_last_seen_at=record["last_seen_at"],
+        )
+        self.assertEqual(archived["delivery_state"], "archived")
+        self.assertEqual(archived["archived_by"], "uid:0")
+        self.assertEqual(archived["archive_reason"], "reviewed historical record")
+        outbox.record(item)
+        self.assertEqual(outbox.conn.execute("SELECT delivery_state FROM lifecycle_outbox WHERE outbox_key = ?", (item["outbox_key"],)).fetchone()[0], "archived")
+        self.assertEqual(outbox.status()["dead_letters"], 0)
 
     def test_status_health_keeps_historical_dead_letters_visible_but_nonfatal(self):
         self.assertEqual(
