@@ -485,6 +485,7 @@ class BridgeStoreTests(unittest.TestCase):
         )
         second = list_lifecycle_events(self.conn, after_created_at=first[0]["createdAt"], after_event_id=first[0]["eventId"], limit=10)
         self.assertEqual(first[0]["state"], "accepted")
+        self.assertEqual(first[0]["requestedAction"], "create_draft_pr")
         self.assertEqual([row["state"] for row in frozen], ["accepted"])
         self.assertEqual(second[0]["state"], "running")
         self.assertNotIn("error", first[0])
@@ -511,8 +512,36 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertEqual(status["current"], 1)
         self.assertEqual(status["historical"], 0)
         self.assertEqual(status["severity"], {"critical": 0, "warning": 1})
+        self.assertEqual(status["scope"], {"active_work": 1, "terminal_work": 0, "system": 0})
+        self.assertEqual(status["actionable"], 1)
+        self.assertEqual(status["actionable_severity"], {"critical": 0, "warning": 1})
         record_reconciliation_findings(self.conn, [{**finding, "severity": "critical"}])
         self.assertEqual(reconciliation_findings_status(self.conn, active_within_minutes=30)["severity"], {"critical": 1, "warning": 0})
+
+    def test_reconciliation_status_separates_terminal_debt_from_actionable_findings(self):
+        job, _ = submit_job(self.conn, {
+            "idempotency_key": "hatchet:reconciliation:scope",
+            "requested_action": "create_draft_pr",
+            "payload": {"repo": "Driftward-LLC/driftward-host"},
+        })
+        finding = {
+            "finding_key": "reconciliation:v1:github_pr_branch_mismatch:scope",
+            "job_id": job["job_id"], "subject": f"bridge:{job['job_id']}",
+            "kind": "github_pr_branch_mismatch", "severity": "warning",
+            "details": {"expected": {"branch": "codex/a"}, "observed": {"headRefName": "codex/b"}},
+        }
+        record_reconciliation_findings(self.conn, [finding])
+        transition_job(self.conn, job["job_id"], state="failed", details={"reason_code": "test"})
+        record_reconciliation_findings(self.conn, [{
+            "finding_key": "reconciliation:v1:ingress_inventory_unavailable:scope",
+            "job_id": None, "subject": "ingress", "kind": "ingress_inventory_unavailable",
+            "severity": "critical", "details": {"expected": {"available": True}, "observed": {"available": False}},
+        }])
+
+        status = reconciliation_findings_status(self.conn)
+        self.assertEqual(status["scope"], {"active_work": 0, "terminal_work": 1, "system": 1})
+        self.assertEqual(status["actionable"], 1)
+        self.assertEqual(status["actionable_severity"], {"critical": 1, "warning": 0})
 
     def test_reconciliation_findings_require_known_kind_existing_job_and_sanitized_details(self):
         job, _ = submit_job(self.conn, {

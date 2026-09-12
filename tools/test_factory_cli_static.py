@@ -106,7 +106,7 @@ class FactoryCliStaticTests(unittest.TestCase):
                 "printf '%s\\n' \"$@\" >> \"$FACTORY_TEST_CURL_ARGS\"\n"
                 "if echo \" $* \" | grep -q '19877/health' && echo \" $* \" | grep -q -- '--write-out'; then printf '200'; exit 0; fi\n"
                 "case \" $* \" in\n"
-                "  *'reconciliation/findings'*) printf '{\"findings\":{\"current\":0,\"historical\":0,\"severity\":{\"critical\":0,\"warning\":0}}}' ;;\n"
+                "  *'reconciliation/findings'*) printf '{\"findings\":{\"current\":0,\"historical\":0,\"severity\":{\"critical\":0,\"warning\":0},\"scope\":{\"active_work\":0,\"terminal_work\":0,\"system\":0},\"actionable\":0,\"actionable_severity\":{\"critical\":0,\"warning\":0}}}' ;;\n"
                 "  *'19877/health'*) printf '{\"release_commit\":\"0123456789012345678901234567890123456789\"}' ;;\n"
                 "  *'19880/status'*) printf '{\"outbox\":{\"dead_letters\":0},\"last_success\":1}\\n200' ;;\n"
                 "  *' --write-out '*) printf '200' ;;\n"
@@ -168,8 +168,10 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("/run/driftward-hermes-factory:/run/driftward-hermes-factory", compose)
         self.assertIn("HATCHET_FACTORY_OPERATOR_RUNTIME: docker", compose)
         self.assertIn("HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/driftward-hatchet-event-ingress/ingress.db", compose)
+        self.assertIn("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB: /var/lib/driftward-factory-lifecycle-writer/outbox.db", compose)
         self.assertIn("factory-bridge-data:/var/lib/driftward-hatchet-bridge", compose)
         self.assertIn("factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro", compose)
+        self.assertIn("factory-lifecycle-data:/var/lib/driftward-factory-lifecycle-writer", compose)
         self.assertIn("name: driftward-factory-bridge-data", compose)
         self.assertIn("name: driftward-factory-ingress-data", compose)
         self.assertNotIn("./data/bridge:/var/lib/driftward-hatchet-bridge", compose)

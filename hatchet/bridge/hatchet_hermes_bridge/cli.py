@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.console_host and args.console_port:
                 from .console import make_console_server
 
-                console_server = make_console_server(args.db, args.console_host, args.console_port, args.console_assets)
+                console_server = make_console_server(args.db, args.console_host, args.console_port, args.console_assets, os.environ.get("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB"))
                 console_thread = threading.Thread(target=console_server.serve_forever, daemon=True)
                 console_thread.start()
             try:
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "serve-console":
             from .console import serve_console
 
-            serve_console(args.db, args.host, args.port, args.assets)
+            serve_console(args.db, args.host, args.port, args.assets, os.environ.get("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB"))
             return 0
 
         conn = connect_migrate(args.db) if args.command == "init" else connect_runtime(args.db)

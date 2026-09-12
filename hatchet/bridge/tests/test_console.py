@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 from hatchet_hermes_bridge.console import make_console_server
 from hatchet_hermes_bridge.store import reserve_factory_attempt
+from factory_lifecycle_writer.outbox import Outbox
 from test_support import connect_migrate as connect
 
 
@@ -31,7 +32,19 @@ class FactoryConsoleTests(unittest.TestCase):
             actor="test",
         )
         conn.close()
-        self.server = make_console_server(self.db, "127.0.0.1", 0, ROOT / "factory/console")
+        self.lifecycle_db = str(Path(self.work.name) / "lifecycle.db")
+        outbox = Outbox(self.lifecycle_db)
+        outbox.record({
+            "outbox_key": "lifecycle:v2:console", "phase": "unresolved", "delivery_state": "dead_letter",
+            "issue_id": None, "identifier": None, "issue_url": None, "job_id": "job-inspect",
+            "idempotency_key": "inspect:console", "source_event_key": None, "source_delivery_id": None,
+            "repo": "Driftward-LLC/capykit", "pr_url": None, "reason_code": "linear_issue_identity_invalid",
+            "execution_mode": "real", "source_kind": "bridge_event", "source_recorded_at": "2026-01-01T00:00:00.000000Z",
+            "marker": "private", "body": "private", "next_attempt_at": None,
+            "delivered_at": None, "suppressed_at": None, "last_error_code": None,
+        })
+        outbox.close()
+        self.server = make_console_server(self.db, "127.0.0.1", 0, ROOT / "factory/console", self.lifecycle_db)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self._stop_server)
@@ -64,6 +77,10 @@ class FactoryConsoleTests(unittest.TestCase):
         self.assertEqual(value["mode"], "real")
         self.assertEqual(value["active_attempts"][0]["attempt"]["work_item_key"], "ENG-119")
         self.assertEqual(value["status_counts"], {"reserved": 1})
+        self.assertEqual(value["reconciliation"]["actionable"], 0)
+        self.assertEqual(value["reconciliation"]["scope"]["terminal_work"], 0)
+        self.assertEqual(value["lifecycle_outbox"]["dead_letters"], 1)
+        self.assertEqual(value["lifecycle_outbox"]["dead_letter_reasons"], {"linear_issue_identity_invalid": 1})
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
 

@@ -18,6 +18,11 @@ const elements = {
   notice: document.querySelector('#notice'),
   recent: document.querySelector('#recent-attempts'),
   refresh: document.querySelector('#refresh-button'),
+  signalActionable: document.querySelector('#signal-actionable'),
+  signalActionableDetail: document.querySelector('#signal-actionable-detail'),
+  signalDeadLetterDetail: document.querySelector('#signal-dead-letter-detail'),
+  signalDeadLetters: document.querySelector('#signal-dead-letters'),
+  signalTerminal: document.querySelector('#signal-terminal'),
   updated: document.querySelector('#updated-at'),
 };
 
@@ -176,6 +181,11 @@ function sumCounts(counts) {
   return Object.values(counts || {}).reduce((total, count) => total + Number(count || 0), 0);
 }
 
+function summarizeCounts(counts) {
+  const entries = Object.entries(counts || {}).filter(([, count]) => Number(count || 0) > 0);
+  return entries.length ? entries.map(([name, count]) => `${count} ${formatLabel(name)}`).join(', ') : 'None';
+}
+
 async function request(path) {
   const response = await fetch(path, { headers: { Accept: 'application/json' } });
   const value = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
@@ -190,6 +200,14 @@ async function loadOverview() {
   elements.metricActive.textContent = String(value.active_attempts?.length || 0);
   elements.metricReady.textContent = String(counts.verified_ready || 0);
   elements.metricTotal.textContent = String(sumCounts(counts));
+  const reconciliation = value.reconciliation || {};
+  const actionableSeverity = reconciliation.actionable_severity || {};
+  const lifecycle = value.lifecycle_outbox || {};
+  elements.signalActionable.textContent = String(reconciliation.actionable || 0);
+  elements.signalActionableDetail.textContent = `${Number(actionableSeverity.critical || 0)} critical, ${Number(actionableSeverity.warning || 0)} warning`;
+  elements.signalTerminal.textContent = String(reconciliation.scope?.terminal_work || 0);
+  elements.signalDeadLetters.textContent = lifecycle.available ? String(lifecycle.dead_letters || 0) : 'Unavailable';
+  elements.signalDeadLetterDetail.textContent = lifecycle.available ? summarizeCounts(lifecycle.dead_letter_reasons) : 'Lifecycle volume unavailable';
   elements.updated.textContent = `Updated ${formatTime(value.generated_at)}`;
   const configuredHatchet = value.links?.hatchet || '';
   elements.hatchetLink.href = configuredHatchet.includes('127.0.0.1')

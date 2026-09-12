@@ -347,6 +347,8 @@ services:
         condition: service_healthy
       event-ingress:
         condition: service_healthy
+      factory-lifecycle-writer:
+        condition: service_healthy
     env_file:
       - path: /etc/driftward/factory-operator.env
         required: false
@@ -355,10 +357,12 @@ services:
       HATCHET_FACTORY_OPERATOR_RUNTIME: docker
       HATCHET_FACTORY_OPERATOR_BRIDGE_DB: /var/lib/driftward-hatchet-bridge/bridge.db
       HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/driftward-hatchet-event-ingress/ingress.db
+      HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB: /var/lib/driftward-factory-lifecycle-writer/outbox.db
     volumes:
       - /run/driftward-factory-operator:/run/driftward-factory-operator
       - factory-bridge-data:/var/lib/driftward-hatchet-bridge
       - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro
+      - factory-lifecycle-data:/var/lib/driftward-factory-lifecycle-writer
     ports:
       - "127.0.0.1:19881:19881"
     cpus: "0.10"
