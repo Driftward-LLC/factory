@@ -214,6 +214,7 @@ fi
 curl -fsS http://127.0.0.1:19878/health >/dev/null
 curl -fsS http://127.0.0.1:19879/health >/dev/null
 curl -fsS http://127.0.0.1:19880/health >/dev/null
+curl -fsS http://127.0.0.1:19881/health >/dev/null
 operator_preview_smoke
 factory doctor hatchet --profile "${FACTORY_HATCHET_PROFILE:-prod}" --json >/dev/null
 

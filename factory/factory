@@ -38,6 +38,7 @@ usage() {
   cat <<'EOF'
 Usage:
   factory status
+  factory console
   factory logs [target] [-f|--follow] [-n|--lines N]
   factory mode
   factory mode dry-run
@@ -55,7 +56,7 @@ Usage:
   factory doctor hatchet [--profile PROFILE | --live-json PATH] [--json] [--fail-on-warning]
 
 Log targets:
-  all, ingress, intake, executor, bridge, pr, reconciliation, lifecycle, linear
+  all, ingress, intake, executor, bridge, pr, reconciliation, lifecycle, linear, console
 
 Modes:
   dry-run  Linear Ready events create dry-run bridge jobs.
@@ -903,6 +904,11 @@ show_status() {
   fi
   http_status "Hatchet ingress health" http://127.0.0.1:19878/health "200" required
   http_status "Linear webhook readiness" http://127.0.0.1:19879/ready "200" required
+  if factory_docker_runtime_active; then
+    http_status "Factory console" http://127.0.0.1:19881/health "200" required
+  else
+    http_status "Factory console" http://127.0.0.1:19881/health "200" advisory
+  fi
   linear_webhook_public_readiness_status "Linear webhook public readiness" required
   lifecycle_writer_status
   http_status "Driftward Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
@@ -1003,6 +1009,9 @@ docker_services_for_target() {
       printf '%s\n' \
         factory-lifecycle-writer \
         factory-linear-token-refresh
+      ;;
+    console)
+      printf '%s\n' factory-operator
       ;;
     linear)
       printf '%s\n' \
@@ -1115,11 +1124,26 @@ show_logs() {
   fi
 }
 
+show_console() {
+  local dns url="${FACTORY_CONSOLE_URL:-}"
+  curl -fsS http://127.0.0.1:19881/health >/dev/null || die "Factory console is unavailable"
+  if [[ -z "$url" ]] && command -v tailscale >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    dns="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' 2>/dev/null | sed 's/[.]$//' || true)"
+    [[ -z "$dns" || "$dns" == "null" ]] || url="https://$dns:19881/"
+  fi
+  [[ -n "$url" ]] || die "Factory console requires a Tailscale Serve URL; set FACTORY_CONSOLE_URL for local development"
+  printf '%s\n' "$url"
+}
+
 main() {
   local command="${1:-}"
   case "$command" in
     status)
       show_status
+      ;;
+    console)
+      [[ $# -eq 1 ]] || die "usage: factory console"
+      show_console
       ;;
     logs)
       shift

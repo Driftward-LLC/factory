@@ -25,6 +25,7 @@ manifests, and checked-in runtime code.
   - `driftward-factory-linear-token-data`
 - Hatchet key material: `/docker/driftward/factory/keys/hatchet`
 - Local operator socket: `/run/driftward-factory-operator/operator.sock`.
+- Local Factory Console: `http://127.0.0.1:19881/`.
 - Local Hermes gateway socket: `/run/driftward-hermes-factory/hermes.sock`.
 
 ## Boundaries
@@ -189,6 +190,19 @@ By default this pins and builds `driftward/factory:local`. Use
 image reference.
 
 ## Operations
+
+The Factory operator container also serves the read-only Factory Console on
+loopback port `19881`. Publish it privately through Tailscale Serve, never
+through Funnel or a public listener:
+
+```bash
+tailscale serve --bg --https=19881 http://127.0.0.1:19881
+factory console
+```
+
+The console requires the `Tailscale-User-Login` identity header on every page
+and API request; `/health` is the only unauthenticated endpoint. For local
+development only, set `FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED=1`.
 
 ```bash
 systemctl status driftward-factory.service --no-pager

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .pytest_cache/
+.venv/
 __pycache__/
 *.py[cod]
 .coverage

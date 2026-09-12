@@ -341,7 +341,7 @@ services:
 
   factory-operator:
     <<: *factory-image
-    command: ["python3", "-m", "hatchet_hermes_bridge.cli", "serve-operator", "--socket", "/run/driftward-factory-operator/operator.sock"]
+    command: ["python3", "-m", "hatchet_hermes_bridge.cli", "--db", "/var/lib/driftward-hatchet-bridge/bridge.db", "serve-operator", "--socket", "/run/driftward-factory-operator/operator.sock", "--console-host", "0.0.0.0", "--console-port", "19881"]
     depends_on:
       bridge:
         condition: service_healthy
@@ -359,10 +359,12 @@ services:
       - /run/driftward-factory-operator:/run/driftward-factory-operator
       - factory-bridge-data:/var/lib/driftward-hatchet-bridge
       - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro
+    ports:
+      - "127.0.0.1:19881:19881"
     cpus: "0.10"
     mem_limit: 128m
     healthcheck:
-      test: ["CMD-SHELL", "test -S /run/driftward-factory-operator/operator.sock"]
+      test: ["CMD-SHELL", "test -S /run/driftward-factory-operator/operator.sock && curl -fsS http://127.0.0.1:19881/health >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
