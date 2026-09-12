@@ -47,6 +47,15 @@ jobs:
           cache: npm
           cache-dependency-path: hatchet/workers/package-lock.json
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: hatchet/bridge/requirements.txt
+
+      - name: Install bridge dependencies
+        run: python3 -m pip install --requirement hatchet/bridge/requirements.txt
+
       - name: Validate release request
         run: |
           set -euo pipefail

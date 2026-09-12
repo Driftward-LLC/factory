@@ -23,9 +23,14 @@ RUN npm ci --prefix hatchet/workers \
 FROM node:22-bookworm-slim AS runtime
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 tini \
+  && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 python3-venv tini \
   && rm -rf /var/lib/apt/lists/* \
   && ln -sf /usr/local/bin/node /usr/bin/node
+
+COPY --from=build /app/hatchet/bridge/requirements.txt /tmp/factory-requirements.txt
+RUN python3 -m venv /opt/driftward-factory \
+  && /opt/driftward-factory/bin/pip install --no-cache-dir --requirement /tmp/factory-requirements.txt \
+  && rm /tmp/factory-requirements.txt
 
 ARG FACTORY_RELEASE_COMMIT
 ARG FACTORY_RELEASE_VERSION
@@ -41,6 +46,7 @@ RUN printf '{"commit":"%s","version":"%s"}\n' "$FACTORY_RELEASE_COMMIT" "$FACTOR
   > /app/hatchet/bridge/RELEASE_METADATA.json
 
 ENV NODE_ENV=production \
+    PATH=/opt/driftward-factory/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/hatchet/bridge:/app/hatchet/event-ingress:/app/hatchet/factory-lifecycle-writer \

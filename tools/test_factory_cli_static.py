@@ -42,6 +42,7 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("linear_webhook_public_readiness_status()", source)
         self.assertIn('http_status "Linear webhook readiness" http://127.0.0.1:19879/ready "200" required', source)
         self.assertIn('linear_webhook_public_readiness_status "Linear webhook public readiness" required', source)
+        self.assertIn('http_status "Factory console" http://127.0.0.1:19881/health "200" required', source)
         self.assertNotIn('http_status "Linear webhook proxy health" http://127.0.0.1:19879/health "200" required', source)
 
     def test_status_exercises_linear_webhook_public_readiness(self) -> None:
@@ -178,6 +179,21 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertNotIn("HATCHET_INTAKE_DRY_RUN: ${HATCHET_INTAKE_DRY_RUN", compose)
         self.assertNotIn("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: ${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED", compose)
 
+    def test_factory_console_is_read_only_loopback_and_tailscale_authenticated(self) -> None:
+        compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+        console = (ROOT / "hatchet/bridge/hatchet_hermes_bridge/console.py").read_text(encoding="utf-8")
+        cli = (ROOT / "factory/factory").read_text(encoding="utf-8")
+
+        self.assertIn('"--console-host", "0.0.0.0", "--console-port", "19881"', compose)
+        self.assertIn('"127.0.0.1:19881:19881"', compose)
+        self.assertIn("curl -fsS http://127.0.0.1:19881/health", compose)
+        self.assertIn('headers.get("Tailscale-User-Login")', console)
+        self.assertIn("FastAPI(", console)
+        self.assertIn('@app.get("/api/overview")', console)
+        self.assertIn('@app.get("/api/lifecycle/{issue}")', console)
+        self.assertNotIn("@app.post(", console)
+        self.assertIn("show_console()", cli)
+
     def test_compose_allows_docker_ingress_only_for_reconciliation_worker(self) -> None:
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
         intake = compose.split("\n  intake-worker:", 1)[1].split("\n  execution-dispatch-worker:", 1)[0]
@@ -221,6 +237,8 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("org.opencontainers.image.revision", dockerfile)
         self.assertIn("FACTORY_RELEASE_COMMIT", dockerfile)
         self.assertIn("/app/hatchet/bridge/RELEASE_METADATA.json", dockerfile)
+        self.assertIn("/app/hatchet/bridge/requirements.txt", dockerfile)
+        self.assertIn("/opt/driftward-factory/bin", dockerfile)
 
     def test_install_docker_persists_factory_image_selection(self) -> None:
         source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")

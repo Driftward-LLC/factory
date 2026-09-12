@@ -1476,6 +1476,16 @@ def list_active_factory_attempts(conn: sqlite3.Connection) -> list[dict[str, Any
     return [_factory_attempt_lifecycle_summary(conn, _row_to_factory_attempt(row)) for row in rows]
 
 
+def list_recent_factory_attempts(conn: sqlite3.Connection, limit: int = 30) -> list[dict[str, Any]]:
+    if limit < 1 or limit > 100:
+        raise BridgeValidationError("recent factory attempt limit must be between 1 and 100")
+    rows = conn.execute(
+        "SELECT * FROM factory_attempts ORDER BY updated_at DESC, generation DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [_factory_attempt_lifecycle_summary(conn, _row_to_factory_attempt(row)) for row in rows]
+
+
 def get_factory_attempt(conn: sqlite3.Connection, ref: str) -> dict[str, Any]:
     if not isinstance(ref, str) or not ref or len(ref) > 200:
         raise BridgeValidationError("factory attempt reference is invalid")
@@ -1585,7 +1595,7 @@ def get_factory_lifecycle(conn: sqlite3.Connection, work_item_key: str, limit: i
         "work_item_key": work_item_key,
         "attempts": attempt_records,
         "active_attempts": active_attempts,
-        "timeline": timeline[:limit],
+        "timeline": timeline[-limit:],
         "timeline_truncated": len(timeline) > limit,
     }
 

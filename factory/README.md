@@ -42,6 +42,7 @@ Use this command first when managing the current factory path:
 
 ```bash
 factory status
+factory console
 factory doctor hatchet --profile prod
 factory mode
 factory logs linear -f
@@ -54,6 +55,7 @@ Current scope:
 
 ```bash
 factory status
+factory console
 factory doctor hatchet --profile prod
 factory logs linear -f
 factory logs lifecycle
@@ -84,6 +86,14 @@ layout, loopback health endpoints, public Linear webhook readiness, and
 advisory recovery/operator components.
 Required failures return a nonzero exit status; advisory warnings are shown
 without failing the command.
+
+`factory console` prints the private URL for the read-only Factory Operations
+Console. The console shows active and recent attempts plus the complete
+sanitized lifecycle for an Engineering issue. It does not expose operator
+mutations or credentials. Production requests must arrive through Tailscale
+Serve so the console receives an authenticated `Tailscale-User-Login` header.
+The console's FastAPI schema is available to authenticated operators at
+`/api/openapi.json`.
 
 `factory doctor hatchet` is a read-only desired-state drift check. It collects
 live Hatchet inventory with `--profile`, or compares a saved sanitized inventory

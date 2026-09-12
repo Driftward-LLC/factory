@@ -435,6 +435,12 @@ post-effect and verification states are permanently non-claimable.
 Use a local database path for development:
 
 ```bash
+python3 -m venv .venv
+.venv/bin/pip install --requirement hatchet/bridge/requirements.txt
+source .venv/bin/activate
+```
+
+```bash
 PYTHONPATH=hatchet/bridge python3 -m hatchet_hermes_bridge.cli \
   --db /tmp/bridge.db init
 

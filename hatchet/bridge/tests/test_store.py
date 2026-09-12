@@ -25,6 +25,7 @@ from hatchet_hermes_bridge.store import (
     reserve_factory_attempt,
     reserve_factory_intake,
     list_active_factory_attempts,
+    list_recent_factory_attempts,
     list_factory_attempts,
     list_factory_attempt_events,
     reserve_factory_retry,
@@ -753,6 +754,7 @@ class BridgeStoreTests(unittest.TestCase):
         claim_factory_execution(self.conn, job["job_id"], owner="executor-secret-owner")
 
         active = list_active_factory_attempts(self.conn)
+        recent = list_recent_factory_attempts(self.conn, 1)
 
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0]["attempt"]["attempt_id"], attempt["attempt_id"])
@@ -764,6 +766,9 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertTrue(active[0]["execution_lease"]["currently_live"])
         self.assertTrue(active[0]["execution_lease"]["fence_token_present"])
         self.assertNotIn("fence_token", active[0]["execution_lease"])
+        self.assertEqual(recent[0]["attempt"]["attempt_id"], attempt["attempt_id"])
+        with self.assertRaises(BridgeValidationError):
+            list_recent_factory_attempts(self.conn, 0)
 
     def test_factory_lifecycle_stitches_attempt_job_and_lease_events(self):
         attempt, job, _ = reserve_factory_intake(
@@ -792,6 +797,7 @@ class BridgeStoreTests(unittest.TestCase):
         limited = get_factory_lifecycle(self.conn, "ENG-22", limit=1)
         self.assertEqual(len(limited["timeline"]), 1)
         self.assertTrue(limited["timeline_truncated"])
+        self.assertEqual(limited["timeline"][0]["event_id"], lifecycle["timeline"][-1]["event_id"])
         with self.assertRaises(BridgeValidationError):
             get_factory_lifecycle(self.conn, "ENG-22", limit=0)
 

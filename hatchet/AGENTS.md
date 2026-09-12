@@ -26,6 +26,7 @@ Authoritative docs:
 - Local dashboard/API: `http://127.0.0.1:8888`
 - Private dashboard/API URL:
   `https://srv1379035.tail5c6a78.ts.net:8888/`
+- Local Factory Console: `http://127.0.0.1:19881`
 - Worker gRPC: `127.0.0.1:7077`
 - Health port: `127.0.0.1:8733`
 - Secret env: `/etc/driftward/hatchet.env`

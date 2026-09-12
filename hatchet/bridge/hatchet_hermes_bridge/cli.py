@@ -5,6 +5,7 @@ import json
 import sys
 import os
 import subprocess
+import threading
 
 from .server import serve
 from .operator import serve_operator
@@ -57,6 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     operator = sub.add_parser("serve-operator", help="Serve root-only factory retry operator socket")
     operator.add_argument("--socket", default="/run/driftward-factory-operator/operator.sock")
+    operator.add_argument("--console-host")
+    operator.add_argument("--console-port", type=int, default=0)
+    operator.add_argument("--console-assets")
+
+    console = sub.add_parser("serve-console", help="Serve the read-only Factory web console")
+    console.add_argument("--host", default="127.0.0.1")
+    console.add_argument("--port", type=int, default=19881)
+    console.add_argument("--assets")
 
     submit = sub.add_parser("submit", help="Submit or deduplicate a job")
     submit.add_argument("--idempotency-key", required=True)
@@ -95,7 +104,27 @@ def main(argv: list[str] | None = None) -> int:
             serve(args.db, args.host, args.port)
             return 0
         if args.command == "serve-operator":
-            serve_operator(args.socket)
+            console_server = None
+            console_thread = None
+            if args.console_host and args.console_port:
+                from .console import make_console_server
+
+                console_server = make_console_server(args.db, args.console_host, args.console_port, args.console_assets)
+                console_thread = threading.Thread(target=console_server.serve_forever, daemon=True)
+                console_thread.start()
+            try:
+                serve_operator(args.socket)
+            finally:
+                if console_server:
+                    console_server.shutdown()
+                    if console_thread:
+                        console_thread.join(timeout=5)
+                    console_server.server_close()
+            return 0
+        if args.command == "serve-console":
+            from .console import serve_console
+
+            serve_console(args.db, args.host, args.port, args.assets)
             return 0
 
         conn = connect_migrate(args.db) if args.command == "init" else connect_runtime(args.db)

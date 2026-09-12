@@ -32,6 +32,7 @@ Factory Docker volumes during the standalone deployment cutover.
 
 ```bash
 factory status
+factory console
 factory doctor hatchet --profile prod
 python3 tools/hatchet-contracts.py check
 python3 -m unittest discover -s tools -p 'test_*.py'

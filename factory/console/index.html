@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Factory Console</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Factory Console home">
+      <span class="brand-mark" aria-hidden="true">F</span>
+      <span>
+        <strong>Factory</strong>
+        <small>Operations Console</small>
+      </span>
+    </a>
+    <nav class="top-actions" aria-label="Console links">
+      <span class="connection" id="connection-state"><span aria-hidden="true"></span>Connecting</span>
+      <a id="hatchet-link" href="http://127.0.0.1:8888/" target="_blank" rel="noopener">Hatchet</a>
+      <button id="refresh-button" type="button">Refresh</button>
+    </nav>
+  </header>
+
+  <main>
+    <section class="command-bar" aria-label="Issue lookup">
+      <div>
+        <p class="eyebrow">Driftward Engineering</p>
+        <h1>Factory activity</h1>
+      </div>
+      <form id="issue-form" class="issue-search">
+        <label for="issue-input">Issue</label>
+        <input id="issue-input" name="issue" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="ENG-119" pattern="[Ee][Nn][Gg]-[1-9][0-9]*" required>
+        <button type="submit">Open issue</button>
+      </form>
+    </section>
+
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section class="metrics" aria-label="Factory summary">
+      <div class="metric">
+        <span>Runtime mode</span>
+        <strong id="metric-mode">...</strong>
+      </div>
+      <div class="metric">
+        <span>Active attempts</span>
+        <strong id="metric-active">...</strong>
+      </div>
+      <div class="metric">
+        <span>Verified ready</span>
+        <strong id="metric-ready">...</strong>
+      </div>
+      <div class="metric">
+        <span>Recorded attempts</span>
+        <strong id="metric-total">...</strong>
+      </div>
+    </section>
+
+    <section class="workspace" aria-label="Factory queues">
+      <div class="queue-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Execution queue</p>
+            <h2>Active work</h2>
+          </div>
+          <span class="updated" id="updated-at">Waiting for data</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Issue</th>
+                <th>Generation</th>
+                <th>Attempt</th>
+                <th>Job</th>
+                <th>Lease</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody id="active-attempts">
+              <tr><td colspan="6" class="empty">Loading active work...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <aside class="recent-panel" aria-labelledby="recent-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Ledger</p>
+            <h2 id="recent-title">Recent attempts</h2>
+          </div>
+        </div>
+        <ol id="recent-attempts" class="recent-list">
+          <li class="empty">Loading recent work...</li>
+        </ol>
+      </aside>
+    </section>
+
+    <section id="issue-detail" class="issue-detail" aria-labelledby="issue-title" hidden>
+      <div class="issue-header">
+        <div>
+          <p class="eyebrow">Work item lifecycle</p>
+          <h2 id="issue-title">Issue</h2>
+        </div>
+        <div class="issue-links">
+          <a id="linear-link" href="#" target="_blank" rel="noopener">Linear</a>
+          <a id="github-link" href="#" target="_blank" rel="noopener" hidden>Pull request</a>
+        </div>
+      </div>
+
+      <div class="issue-summary" id="issue-summary"></div>
+
+      <div class="detail-grid">
+        <div class="attempt-history">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Generations</p>
+              <h3>Attempt history</h3>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Generation</th>
+                  <th>Attempt</th>
+                  <th>Job</th>
+                  <th>Branch</th>
+                  <th>Pull request</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="issue-attempts"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside class="timeline-panel" aria-labelledby="timeline-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Append-only events</p>
+              <h3 id="timeline-title">Timeline</h3>
+            </div>
+          </div>
+          <ol id="issue-timeline" class="timeline"></ol>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
