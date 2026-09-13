@@ -38,6 +38,31 @@ RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PR_URL_RE = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$")
 LINEAR_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[1-9][0-9]*$")
 ANALYTICS_DIMENSION_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,79}$")
+SECRET_SHAPE_RE = re.compile(
+    r"(?:^|[^A-Za-z0-9])(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-|hf_|gsk_|lin_api_|glpat-|"
+    r"npm_|pypi-|akia[a-z0-9]|asia[a-z0-9]|aiza[a-z0-9]|bearer(?:[._+-]|$))|"
+    r"eyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}",
+    re.I,
+)
+JWT_SHAPE_RE = re.compile(
+    r"eyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}",
+    re.I,
+)
+OPAQUE_SECRET_SHAPE_RE = re.compile(r"[A-Za-z0-9_.-]{128,}")
+EXECUTION_TRANSPORT_STATUSES = frozenset({
+    "client_setup_failed", "grpc_aborted", "grpc_already_exists", "grpc_cancelled",
+    "grpc_data_loss", "grpc_deadline_exceeded", "grpc_failed_precondition",
+    "grpc_internal", "grpc_invalid_argument", "grpc_not_found", "grpc_ok",
+    "grpc_out_of_range", "grpc_permission_denied", "grpc_resource_exhausted",
+    "grpc_unauthenticated", "grpc_unavailable", "grpc_unimplemented", "grpc_unknown",
+})
+EXECUTION_PROCESS_SIGNALS = frozenset({
+    "SIGABRT", "SIGALRM", "SIGBUS", "SIGCHLD", "SIGCONT", "SIGFPE", "SIGHUP",
+    "SIGILL", "SIGINT", "SIGIO", "SIGIOT", "SIGKILL", "SIGPIPE", "SIGPOLL",
+    "SIGPROF", "SIGPWR", "SIGQUIT", "SIGSEGV", "SIGSTKFLT", "SIGSTOP", "SIGSYS",
+    "SIGTERM", "SIGTRAP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGUSR1",
+    "SIGUSR2", "SIGVTALRM", "SIGWINCH", "SIGXCPU", "SIGXFSZ",
+})
 EFFECT_COMMIT_INSPECTION_MAX_ATTEMPTS = 3
 EXECUTION_ANALYTICS_COMMON_FIELDS = (
     "analytics_schema_version",
@@ -51,6 +76,45 @@ EXECUTION_FAILURE_EVENT_TYPES = frozenset({
     "execution_backend_failed",
     "execution_dispatch_failed",
     "execution_effect_commit_failed",
+})
+EXECUTION_ROUTE_FIELDS = frozenset({
+    "analytics_schema_version",
+    "assignment_id",
+    "experiment_id",
+    "variant",
+    "assignment_method",
+    "intended_backend",
+    "intended_transport",
+    "configured_provider",
+    "configured_model",
+    "configured_auth_mode",
+    "backend_version",
+    "factory_release_sha",
+    "factory_release_version",
+    "routing_registry_version",
+    "verifier_policy_digest",
+    "fallback_allowed",
+})
+EXECUTION_FAILURE_DOMAINS = frozenset({
+    "unknown", "factory", "executor", "executor_backend", "gateway_transport", "gateway",
+    "hermes_process", "hermes_protocol", "auth", "provider", "tool", "github",
+    "verification",
+})
+EXECUTION_FAILURE_STAGES = frozenset({
+    "unknown", "preflight", "artifact_fence", "effect_authorization", "receipt_dispatch",
+    "backend_invocation_fence", "backend_execution", "gateway_connect",
+    "gateway_handler", "hermes_spawn", "hermes_exit", "hermes_timeout",
+    "result_parse", "auth_resolve", "auth_refresh", "model_request",
+    "model_stream", "tool_execution", "effect_commit", "verification_checks",
+    "verification_recovery",
+})
+EXECUTION_FAILURE_OPTIONAL_FIELDS = frozenset({
+    "transport_status", "process_exit_code", "process_signal", "timed_out",
+    "buffer_exceeded",
+})
+EXECUTION_COMMIT_FIELDS = frozenset({
+    "commit_sha", "pr_url", "branch", "reason_code", "hermes_session_id",
+    *EXECUTION_ANALYTICS_COMMON_FIELDS, "backend_outcome", "backend_elapsed_ms",
 })
 
 ALLOWED_ACTIONS = {"create_draft_pr", "repair_draft_pr", "inspect_draft_pr_state"}
@@ -134,11 +198,25 @@ def canonical_json(value: Any) -> str:
 
 def sanitize_detail(value: Any, limit: int = 320) -> Any:
     if isinstance(value, str):
-        import re
-        return re.sub(r"(?:ghp_|github_pat_|xox[baprs]-|Bearer\s+)[A-Za-z0-9_.-]+", "[redacted]", value, flags=re.I).replace("\n", " ").replace("\r", " ")[:limit]
+        value = JWT_SHAPE_RE.sub("[redacted]", value)
+        value = OPAQUE_SECRET_SHAPE_RE.sub("[redacted]", value)
+        value = re.sub(
+            r"(^|[^A-Za-z0-9])(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-|hf_|gsk_|lin_api_|glpat-|"
+            r"npm_|pypi-|akia|asia|aiza|bearer(?:[._+-]|$))[A-Za-z0-9_.+/-]*",
+            r"\1[redacted]",
+            value,
+            flags=re.I | re.MULTILINE,
+        )
+        return re.sub(r"\bBearer\s+\S+", "[redacted]", value, flags=re.I).replace("\n", " ").replace("\r", " ")[:limit]
     if isinstance(value, list): return [sanitize_detail(item, limit) for item in value]
     if isinstance(value, dict): return {str(key): sanitize_detail(item, limit) for key, item in value.items()}
     return value
+
+
+def _secret_shaped(value: str) -> bool:
+    return bool(
+        SECRET_SHAPE_RE.search(value) or OPAQUE_SECRET_SHAPE_RE.search(value)
+    )
 
 
 CORRELATION_PAYLOAD_KEYS = {"source_event_key", "source_delivery_id", "source_event_keys", "source_delivery_ids"}
@@ -1184,6 +1262,36 @@ def _append_factory_attempt_event(conn: sqlite3.Connection, attempt_id: str, eve
         "INSERT INTO factory_attempt_events (event_id,attempt_id,event_type,details_json,created_at) VALUES (?,?,?,?,?)",
         (str(uuid.uuid4()), attempt_id, event_type, canonical_json(sanitize_detail(details or {})), utc_now()),
     )
+
+
+def _append_factory_attempt_event_once(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    event_type: str,
+    occurrence_key: str,
+) -> bool:
+    """Append a payload-free event once for one trusted decision key."""
+    event_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"driftward.factory.attempt-event:{attempt_id}:{event_type}:{occurrence_key}",
+    ))
+    existing = conn.execute(
+        "SELECT attempt_id,event_type,details_json FROM factory_attempt_events WHERE event_id=?",
+        (event_id,),
+    ).fetchone()
+    if existing:
+        if (
+            existing["attempt_id"] != attempt_id
+            or existing["event_type"] != event_type
+            or existing["details_json"] != "{}"
+        ):
+            raise BridgeConflict("factory attempt decision event is immutable")
+        return False
+    conn.execute(
+        "INSERT INTO factory_attempt_events (event_id,attempt_id,event_type,details_json,created_at) VALUES (?,?,?,?,?)",
+        (event_id, attempt_id, event_type, "{}", utc_now()),
+    )
+    return True
 
 
 def _append_event(
@@ -2610,6 +2718,10 @@ def reserve_factory_intake(
     """Atomically reserve fresh Linear intake through the factory attempt path."""
     if not isinstance(payload, dict):
         raise BridgeValidationError("factory intake payload must be an object")
+    if not all(isinstance(value, str) and value and len(value) <= 200 for value in (work_item_key, request_id, actor)) or mode not in {"real", "dry-run"}:
+        raise BridgeValidationError("factory intake request is invalid")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 320:
+        raise BridgeValidationError("factory intake reason is invalid")
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
@@ -2625,6 +2737,12 @@ def reserve_factory_intake(
                 raise BridgeConflict("existing factory intake is incomplete")
             if not _factory_intake_job_matches(job, work_item_key=work_item_key, mode=mode, payload=payload):
                 raise BridgeConflict("factory intake request_id conflicts with existing intent")
+            _append_factory_attempt_event_once(
+                conn,
+                attempt["attempt_id"],
+                "intake_request_deduplicated",
+                request_id,
+            )
             return attempt, job, False
 
         active = conn.execute(
@@ -2638,6 +2756,12 @@ def reserve_factory_intake(
                 raise BridgeConflict("active factory intake is incomplete")
             if not _factory_intake_job_matches(job, work_item_key=work_item_key, mode=attempt["mode"], payload=payload):
                 raise BridgeConflict("active factory intake conflicts with resolved route")
+            _append_factory_attempt_event_once(
+                conn,
+                attempt["attempt_id"],
+                "intake_active_job_reused",
+                request_id,
+            )
             correlation = {key: payload[key] for key in ("source_event_key", "source_delivery_id") if isinstance(payload.get(key), str)}
             if correlation:
                 merged_payload, new_event_keys = _merge_correlation_payload(job["payload"], correlation)
@@ -2794,6 +2918,117 @@ def execution_may_effect(conn: sqlite3.Connection, job_id: str, claim: dict[str,
     return _current_execution_lease(conn, job_id, claim) is not None
 
 
+def _execution_route_details(details: Any) -> dict[str, Any]:
+    if not isinstance(details, dict) or set(details) != EXECUTION_ROUTE_FIELDS:
+        raise BridgeValidationError("factory execution route is invalid")
+    if details.get("analytics_schema_version") != 1:
+        raise BridgeValidationError("factory execution route schema is invalid")
+    for field in (
+        "assignment_id", "experiment_id", "variant", "intended_backend",
+        "intended_transport", "configured_provider", "configured_model",
+    ):
+        if (
+            not isinstance(details.get(field), str)
+            or not ANALYTICS_DIMENSION_RE.fullmatch(details[field])
+            or _secret_shaped(details[field])
+        ):
+            raise BridgeValidationError(f"factory execution route {field} is invalid")
+    if details.get("assignment_method") not in {"static", "deterministic_hash", "operator_override"}:
+        raise BridgeValidationError("factory execution route assignment_method is invalid")
+    if details.get("intended_transport") not in {"grpc_uds", "grpc_tcp", "local_command"}:
+        raise BridgeValidationError("factory execution route intended_transport is invalid")
+    if details.get("configured_auth_mode") not in {"chatgpt_codex_oauth", "api_key", "unknown"}:
+        raise BridgeValidationError("factory execution route configured_auth_mode is invalid")
+    for field in ("backend_version", "factory_release_version"):
+        value = details.get(field)
+        if value is not None and (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,119}", value)
+            or _secret_shaped(value)
+        ):
+            raise BridgeValidationError(f"factory execution route {field} is invalid")
+    release_sha = details.get("factory_release_sha")
+    if release_sha is not None and (not isinstance(release_sha, str) or not RELEASE_SHA_RE.fullmatch(release_sha)):
+        raise BridgeValidationError("factory execution route factory_release_sha is invalid")
+    registry_version = details.get("routing_registry_version")
+    if registry_version is not None and (
+        not isinstance(registry_version, int)
+        or isinstance(registry_version, bool)
+        or not 1 <= registry_version <= 1_000_000
+    ):
+        raise BridgeValidationError("factory execution route routing_registry_version is invalid")
+    policy_digest = details.get("verifier_policy_digest")
+    if policy_digest is not None and (
+        not isinstance(policy_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", policy_digest)
+    ):
+        raise BridgeValidationError("factory execution route verifier_policy_digest is invalid")
+    if details.get("fallback_allowed") is not False:
+        raise BridgeValidationError("factory execution route fallback is not supported")
+    sanitized = sanitize_detail(details)
+    if sanitized != details:
+        raise BridgeValidationError("factory execution route contains disallowed material")
+    return dict(details)
+
+
+def record_factory_execution_route(
+    conn: sqlite3.Connection,
+    job_id: str,
+    details: dict[str, Any],
+) -> bool:
+    """Record the immutable intent-to-treat route before executor preflight."""
+    validated = _execution_route_details(details)
+    serialized = canonical_json(validated)
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        attempt = get_factory_attempt_for_job(conn, job_id)
+        if not attempt:
+            raise BridgeConflict("factory execution route requires an attempt")
+        job = get_job(conn, job_id)
+        if attempt["mode"] != "real" or job["requested_action"] not in DRAFT_PR_EFFECT_ACTIONS:
+            raise BridgeValidationError("factory execution route requires a real draft PR attempt")
+        if validated["assignment_id"] != f"route.{attempt['attempt_id']}":
+            raise BridgeValidationError("factory execution route assignment does not match the attempt")
+        rows = conn.execute(
+            "SELECT details_json FROM factory_attempt_events "
+            "WHERE attempt_id=? AND event_type='execution_route_selected'",
+            (attempt["attempt_id"],),
+        ).fetchall()
+        for row in rows:
+            if canonical_json(json.loads(row["details_json"])) == serialized:
+                return False
+            raise BridgeConflict("factory execution route is immutable")
+        if attempt["status"] != "accepted" or job["state"] != "accepted":
+            raise BridgeConflict("factory execution route must precede execution")
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "execution_route_selected", validated)
+        return True
+
+
+def _validate_execution_failure_boundary_fields(details: Mapping[str, Any]) -> None:
+    transport_status = details.get("transport_status")
+    if "transport_status" in details and transport_status is not None and (
+        not isinstance(transport_status, str)
+        or transport_status not in EXECUTION_TRANSPORT_STATUSES
+    ):
+        raise BridgeValidationError("factory failure classification transport_status is invalid")
+    exit_code = details.get("process_exit_code")
+    if "process_exit_code" in details and exit_code is not None and (
+        not isinstance(exit_code, int)
+        or isinstance(exit_code, bool)
+        or not -(2**31) <= exit_code < 2**31
+    ):
+        raise BridgeValidationError("factory failure classification process_exit_code is invalid")
+    process_signal = details.get("process_signal")
+    if "process_signal" in details and process_signal is not None and (
+        not isinstance(process_signal, str)
+        or process_signal not in EXECUTION_PROCESS_SIGNALS
+    ):
+        raise BridgeValidationError("factory failure classification process_signal is invalid")
+    for field in ("timed_out", "buffer_exceeded"):
+        if field in details and details.get(field) is not None and not isinstance(details.get(field), bool):
+            raise BridgeValidationError(f"factory failure classification {field} is invalid")
+
+
 def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any]:
     common = set(EXECUTION_ANALYTICS_COMMON_FIELDS)
     failure_fields = {
@@ -2812,7 +3047,11 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
         "execution_dispatch_failed": failure_fields,
         "execution_effect_commit_failed": failure_fields | receipt_fields,
     }
-    if event_type not in additions or not isinstance(details, dict) or set(details) != common | additions[event_type]:
+    if event_type not in additions or not isinstance(details, dict):
+        raise BridgeValidationError("factory execution analytics event is invalid")
+    required = common | additions[event_type]
+    allowed = required | (EXECUTION_FAILURE_OPTIONAL_FIELDS if event_type in EXECUTION_FAILURE_EVENT_TYPES else set())
+    if not required <= set(details) or not set(details) <= allowed:
         raise BridgeValidationError("factory execution analytics event is invalid")
     if details.get("analytics_schema_version") != 1:
         raise BridgeValidationError("factory execution analytics schema is invalid")
@@ -2820,19 +3059,34 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
     if not isinstance(invocation_id, str) or not invocation_id or len(invocation_id) > 200:
         raise BridgeValidationError("factory execution analytics invocation_id is invalid")
     for field in ("execution_backend", "execution_transport"):
-        if not isinstance(details.get(field), str) or not ANALYTICS_DIMENSION_RE.fullmatch(details[field]):
+        if (
+            not isinstance(details.get(field), str)
+            or not ANALYTICS_DIMENSION_RE.fullmatch(details[field])
+            or _secret_shaped(details[field])
+        ):
             raise BridgeValidationError(f"factory execution analytics {field} is invalid")
     backend_version = details.get("backend_version")
-    if backend_version is not None and (not isinstance(backend_version, str) or not backend_version or len(backend_version) > 120):
+    if backend_version is not None and (
+        not isinstance(backend_version, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,119}", backend_version)
+        or _secret_shaped(backend_version)
+    ):
         raise BridgeValidationError("factory execution analytics backend_version is invalid")
     if details.get("configured_auth_mode") not in {"chatgpt_codex_oauth", "api_key", "unknown"}:
         raise BridgeValidationError("factory execution analytics configured_auth_mode is invalid")
     if event_type == "execution_backend_completed" and details.get("backend_outcome") not in {"created", "reused", "unknown"}:
         raise BridgeValidationError("factory execution analytics backend_outcome is invalid")
     if event_type in {"execution_backend_failed", "execution_dispatch_failed", "execution_effect_commit_failed"}:
-        for field in ("failure_domain", "failure_stage", "reason_code"):
-            if not isinstance(details.get(field), str) or not ANALYTICS_DIMENSION_RE.fullmatch(details[field]):
-                raise BridgeValidationError(f"factory execution analytics {field} is invalid")
+        if details.get("failure_domain") not in EXECUTION_FAILURE_DOMAINS:
+            raise BridgeValidationError("factory execution analytics failure_domain is invalid")
+        if details.get("failure_stage") not in EXECUTION_FAILURE_STAGES:
+            raise BridgeValidationError("factory execution analytics failure_stage is invalid")
+        if (
+            not isinstance(details.get("reason_code"), str)
+            or not ANALYTICS_DIMENSION_RE.fullmatch(details["reason_code"])
+            or _secret_shaped(details["reason_code"])
+        ):
+            raise BridgeValidationError("factory execution analytics reason_code is invalid")
         for field in ("retryable", "operator_intervention_required"):
             if details.get(field) is not None and not isinstance(details.get(field), bool):
                 raise BridgeValidationError(f"factory execution analytics {field} is invalid")
@@ -2840,21 +3094,31 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
             raise BridgeValidationError("factory execution analytics failure_disposition is invalid")
         if details.get("effect_outcome") not in {"none", "observed", "unknown"}:
             raise BridgeValidationError("factory execution analytics effect_outcome is invalid")
+        _validate_execution_failure_boundary_fields(details)
     if event_type == "execution_effect_commit_failed":
         if details.get("failure_domain") != "factory" or details.get("failure_stage") != "effect_commit" or details.get("effect_outcome") != "observed":
             raise BridgeValidationError("factory execution effect commit classification is invalid")
         if not isinstance(details.get("observed_pr_url"), str) or not PR_URL_RE.fullmatch(details["observed_pr_url"]):
             raise BridgeValidationError("factory execution observed_pr_url is invalid")
         observed_sha = details.get("observed_commit_sha")
-        if observed_sha is not None and (not isinstance(observed_sha, str) or not observed_sha or len(observed_sha) > 200):
-            raise BridgeValidationError("factory execution observed_commit_sha is invalid")
+        if observed_sha is not None and (
+            not isinstance(observed_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{7,64}", observed_sha)
+        ):
+            # The concrete PR URL and branch are still useful recovery
+            # evidence when an untrusted backend supplies a malformed SHA.
+            # Drop the raw value instead of rejecting the whole settlement;
+            # the receipt remains effect-observed and exact PR inspection can
+            # recover the canonical head without persisting attacker-controlled
+            # text or authorizing another backend invocation.
+            details = {**details, "observed_commit_sha": None}
         observed_branch = details.get("observed_branch")
         if not isinstance(observed_branch, str) or not observed_branch or len(observed_branch) > 255:
             raise BridgeValidationError("factory execution observed_branch is invalid")
         if details.get("backend_outcome") not in {"created", "reused"}:
             raise BridgeValidationError("factory execution observed backend_outcome is invalid")
         session_id = details.get("observed_hermes_session_id")
-        if session_id is not None and (not isinstance(session_id, str) or not session_id or len(session_id) > 200):
+        if session_id is not None:
             raise BridgeValidationError("factory execution observed Hermes session is invalid")
         context = details.get("verification_context")
         if context is not None:
@@ -2877,18 +3141,26 @@ def _validate_failure_classification(details: dict[str, Any]) -> None:
         "failure_domain", "failure_stage", "reason_code", "retryable",
         "failure_disposition", "operator_intervention_required",
     }
-    if not (fields - {"reason_code"}) & set(details):
+    if not ((fields - {"reason_code"}) | EXECUTION_FAILURE_OPTIONAL_FIELDS) & set(details):
         return
     if not fields <= set(details):
         raise BridgeValidationError("factory failure classification is incomplete")
-    for field in ("failure_domain", "failure_stage", "reason_code"):
-        if not isinstance(details.get(field), str) or not ANALYTICS_DIMENSION_RE.fullmatch(details[field]):
-            raise BridgeValidationError(f"factory failure classification {field} is invalid")
+    if details.get("failure_domain") not in EXECUTION_FAILURE_DOMAINS:
+        raise BridgeValidationError("factory failure classification failure_domain is invalid")
+    if details.get("failure_stage") not in EXECUTION_FAILURE_STAGES:
+        raise BridgeValidationError("factory failure classification failure_stage is invalid")
+    if (
+        not isinstance(details.get("reason_code"), str)
+        or not ANALYTICS_DIMENSION_RE.fullmatch(details["reason_code"])
+        or _secret_shaped(details["reason_code"])
+    ):
+        raise BridgeValidationError("factory failure classification reason_code is invalid")
     for field in ("retryable", "operator_intervention_required"):
         if details.get(field) is not None and not isinstance(details.get(field), bool):
             raise BridgeValidationError(f"factory failure classification {field} is invalid")
     if details.get("failure_disposition") not in {"retry", "terminal", "recovery_required"}:
         raise BridgeValidationError("factory failure classification disposition is invalid")
+    _validate_execution_failure_boundary_fields(details)
 
 
 def _append_factory_execution_analytics_event(
@@ -2936,6 +3208,34 @@ def _append_factory_execution_analytics_event(
     return True
 
 
+def _validate_execution_route_identity(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    details: Mapping[str, Any],
+) -> None:
+    row = conn.execute(
+        "SELECT details_json FROM factory_attempt_events "
+        "WHERE attempt_id=? AND event_type='execution_route_selected' "
+        "ORDER BY created_at,event_id LIMIT 1",
+        (attempt_id,),
+    ).fetchone()
+    if not row:
+        # Historical or already-running attempts may predate route telemetry.
+        # Coverage remains explicit in analytics; do not invent an assignment.
+        return
+    route = json.loads(row["details_json"])
+    expected = {
+        "execution_backend": route.get("intended_backend"),
+        "execution_transport": route.get("intended_transport"),
+        "configured_auth_mode": route.get("configured_auth_mode"),
+        "backend_version": route.get("backend_version"),
+    }
+    if any(details.get(field) != value for field, value in expected.items()):
+        raise BridgeConflict("factory execution identity does not match its selected route")
+    if route.get("fallback_allowed") is not False:
+        raise BridgeConflict("factory execution route fallback is not supported")
+
+
 def record_factory_execution_analytics(
     conn: sqlite3.Connection,
     job_id: str,
@@ -2956,6 +3256,7 @@ def record_factory_execution_analytics(
         )
         if not row:
             raise BridgeConflict("factory execution analytics fence is stale or unauthorized")
+        _validate_execution_route_identity(conn, row["attempt_id"], validated)
         return _append_factory_execution_analytics_event(conn, row["attempt_id"], event_type, validated)
 
 
@@ -3183,6 +3484,14 @@ def settle_factory_execution(
                 _append_factory_attempt_event(conn, row["attempt_id"], "effect_authorized_observed", {})
                 return
             if validated_failure is not None:
+                if failure_event_type == "execution_effect_commit_failed":
+                    validated_failure = {
+                        **validated_failure,
+                        "verification_context": _bounded_verification_context_for_job(
+                            get_job(conn, job_id),
+                            validated_failure.get("verification_context"),
+                        ),
+                    }
                 _append_factory_execution_analytics_event(conn, row["attempt_id"], failure_event_type, validated_failure)
                 receipt_identity_valid = True
                 if failure_event_type == "execution_effect_commit_failed":
@@ -3248,8 +3557,16 @@ def settle_factory_execution(
 
 def commit_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     """Fence the only post-provider effect commit for a retry generation."""
-    if not isinstance(details, dict):
+    if (
+        not isinstance(details, dict)
+        or not {"commit_sha", "pr_url", "branch"} <= set(details)
+        or not set(details) <= EXECUTION_COMMIT_FIELDS
+    ):
         raise BridgeValidationError("factory execution commit details are invalid")
+    if details.get("hermes_session_id") is not None:
+        raise BridgeValidationError("factory execution commit cannot retain Hermes session material")
+    if "reason_code" in details and details.get("reason_code") not in {"hermes_created", "hermes_reused"}:
+        raise BridgeValidationError("factory execution commit reason is invalid")
     with conn:
         row = _current_execution_lease(conn, job_id, claim, allow_cancel=True, require_live=False, require_authorized=True)
         if not row:
@@ -3696,12 +4013,29 @@ def _validate_verification_context(value: Any) -> dict[str, Any]:
         raise BridgeValidationError("verification_context.local_commands must be a non-empty bounded list")
     normalized_commands = []
     for command in commands:
-        if not isinstance(command, dict) or set(command) != {"command", "exit_code"} or not isinstance(command["command"], str) or not command["command"].strip() or len(command["command"]) > 300 or not isinstance(command["exit_code"], int):
+        if not isinstance(command, dict) or set(command) != {"command", "exit_code"} or not isinstance(command["command"], str) or not command["command"].strip() or len(command["command"]) > 300 or not isinstance(command["exit_code"], int) or isinstance(command["exit_code"], bool) or not -(2**31) <= command["exit_code"] < 2**31:
             raise BridgeValidationError("verification_context.local_commands is malformed")
         normalized_commands.append({"command": command["command"].strip(), "exit_code": command["exit_code"]})
-    if not isinstance(secret, dict) or set(secret) != {"command", "exit_code"} or not isinstance(secret.get("command"), str) or not secret["command"].strip() or len(secret["command"]) > 300 or not isinstance(secret.get("exit_code"), int):
+    if not isinstance(secret, dict) or set(secret) != {"command", "exit_code"} or not isinstance(secret.get("command"), str) or not secret["command"].strip() or len(secret["command"]) > 300 or not isinstance(secret.get("exit_code"), int) or isinstance(secret.get("exit_code"), bool) or not -(2**31) <= secret["exit_code"] < 2**31:
         raise BridgeValidationError("verification_context.secret_check is malformed")
     return {"local_commands": normalized_commands, "secret_check": {"command": secret["command"].strip(), "exit_code": secret["exit_code"]}}
+
+
+def _bounded_verification_context_for_job(job: dict[str, Any], value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        context = _validate_verification_context(value)
+        policy = _validate_payload_policy(job)
+    except BridgeValidationError:
+        return None
+    expected = policy["required_local_commands"]
+    observed = context["local_commands"]
+    if len(observed) != len(expected) or [item["command"] for item in observed] != expected:
+        return None
+    if context["secret_check"]["command"] != policy["secret_check_command"]:
+        return None
+    return context
 
 
 def _canonical_verifier_policy(repo: str) -> dict[str, Any]:
@@ -3892,6 +4226,10 @@ def transition_job(
             if job.get("verification_context") is not None:
                 raise BridgeValidationError("verification_context is immutable once established")
             supplied_context = _validate_verification_context(supplied_context)
+            if factory_attempt and factory_attempt["mode"] == "real" and factory_attempt["actor"] != "legacy-import":
+                supplied_context = _bounded_verification_context_for_job(job, supplied_context)
+                if supplied_context is None:
+                    raise BridgeValidationError("verification_context does not match the checked-in verifier policy")
         verification_completion = current_state == "verification_pending" and state in {"ready_for_human_review", "failed"}
         if verification_completion and factory_attempt and factory_attempt["mode"] == "real" and factory_attempt["actor"] != "legacy-import" and not _factory_verifier_completion:
             raise BridgeValidationError("factory verification completion requires the verifier endpoint")

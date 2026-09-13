@@ -10,6 +10,7 @@ from typing import Any
 
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
+INGRESS_SCHEMA_VERSION = 3
 _UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
@@ -46,15 +47,23 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
         parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    init_db(conn)
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        _guard_supported_schema(conn)
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        init_db(conn)
+        return conn
+    except Exception:
+        conn.close()
+        raise
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    # Reject a database written by a newer runtime before DDL, migrations, or
+    # lifecycle timestamp rewrites can change it.
+    _guard_supported_schema(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS ingress_events (
@@ -71,6 +80,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             hatchet_event_name TEXT NOT NULL,
             hatchet_event_id TEXT,
             hatchet_published INTEGER NOT NULL DEFAULT 0,
+            published_at TEXT,
             publish_attempts INTEGER NOT NULL DEFAULT 0,
             publish_lease_id TEXT,
             publish_lease_expires_at TEXT,
@@ -79,18 +89,79 @@ def init_db(conn: sqlite3.Connection) -> None:
             reason_code TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            provider_updated_at_us INTEGER
+            provider_updated_at_us INTEGER,
+            provider_timestamp_source TEXT CHECK (
+                provider_timestamp_source IN ('provider', 'receipt_fallback')
+            )
+        );
+
+        CREATE TABLE IF NOT EXISTS ingress_schema_meta (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            schema_version INTEGER NOT NULL,
+            migrated_at TEXT NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_ingress_events_created
             ON ingress_events(created_at);
         CREATE INDEX IF NOT EXISTS idx_ingress_events_lifecycle_cursor
             ON ingress_events(source, created_at, event_id);
+
+        CREATE TABLE IF NOT EXISTS ingress_receipts (
+            receipt_id TEXT PRIMARY KEY,
+            event_key TEXT NOT NULL,
+            source TEXT NOT NULL,
+            provider_event TEXT NOT NULL,
+            delivery_id TEXT,
+            payload_hash TEXT NOT NULL,
+            signature_verified INTEGER NOT NULL DEFAULT 0 CHECK (
+                signature_verified IN (0, 1)
+            ),
+            disposition TEXT NOT NULL CHECK (
+                disposition IN ('accepted', 'duplicate', 'payload_conflict')
+            ),
+            received_at TEXT NOT NULL,
+            FOREIGN KEY (event_key) REFERENCES ingress_events(event_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ingress_receipts_received
+            ON ingress_receipts(received_at, receipt_id);
+        CREATE INDEX IF NOT EXISTS idx_ingress_receipts_event
+            ON ingress_receipts(event_key, received_at, receipt_id);
+
+        CREATE TRIGGER IF NOT EXISTS ingress_receipts_no_update
+        BEFORE UPDATE ON ingress_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'ingress receipts are append-only');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS ingress_receipts_no_delete
+        BEFORE DELETE ON ingress_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'ingress receipts are append-only');
+        END;
         """
     )
     _migrate_publication_columns(conn)
+    _migrate_receipt_provenance(conn)
     _migrate_provider_updated_at(conn)
     _migrate_lifecycle_times(conn)
+    schema = conn.execute(
+        "SELECT schema_version FROM ingress_schema_meta WHERE singleton = 1"
+    ).fetchone()
+    if schema is None:
+        conn.execute(
+            "INSERT INTO ingress_schema_meta(singleton, schema_version, migrated_at) "
+            "VALUES (1, ?, ?)",
+            (INGRESS_SCHEMA_VERSION, utc_now()),
+        )
+    elif int(schema["schema_version"]) < INGRESS_SCHEMA_VERSION:
+        conn.execute(
+            "UPDATE ingress_schema_meta SET schema_version = ?, migrated_at = ? "
+            "WHERE singleton = 1",
+            (INGRESS_SCHEMA_VERSION, utc_now()),
+        )
+    elif int(schema["schema_version"]) > INGRESS_SCHEMA_VERSION:
+        raise RuntimeError("ingress database schema is newer than this runtime")
     conn.executescript(
         """
         DROP INDEX IF EXISTS idx_ingress_events_latest_observation;
@@ -106,6 +177,24 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _guard_supported_schema(conn: sqlite3.Connection) -> None:
+    meta_table = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'ingress_schema_meta'"
+    ).fetchone()
+    if meta_table is None:
+        return
+    try:
+        schema = conn.execute(
+            "SELECT schema_version FROM ingress_schema_meta WHERE singleton = 1"
+        ).fetchone()
+        version = None if schema is None else int(schema[0])
+    except (sqlite3.DatabaseError, TypeError, ValueError) as exc:
+        raise RuntimeError("ingress database schema metadata is invalid") from exc
+    if version is not None and version > INGRESS_SCHEMA_VERSION:
+        raise RuntimeError("ingress database schema is newer than this runtime")
+
+
 def _migrate_publication_columns(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(ingress_events)")}
     for definition in (
@@ -113,9 +202,19 @@ def _migrate_publication_columns(conn: sqlite3.Connection) -> None:
         "publish_lease_id TEXT",
         "publish_lease_expires_at TEXT",
         "publish_last_error TEXT",
+        "published_at TEXT",
     ):
         if definition.split()[0] not in columns:
             conn.execute(f"ALTER TABLE ingress_events ADD COLUMN {definition}")
+
+
+def _migrate_receipt_provenance(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(ingress_receipts)")}
+    if "signature_verified" not in columns:
+        conn.execute(
+            "ALTER TABLE ingress_receipts ADD COLUMN "
+            "signature_verified INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _migrate_lifecycle_times(conn: sqlite3.Connection) -> None:
@@ -136,12 +235,15 @@ def _migrate_provider_updated_at(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(ingress_events)")}
     if "provider_updated_at_us" not in columns:
         conn.execute("ALTER TABLE ingress_events ADD COLUMN provider_updated_at_us INTEGER")
+    if "provider_timestamp_source" not in columns:
+        conn.execute("ALTER TABLE ingress_events ADD COLUMN provider_timestamp_source TEXT")
 
     rows = conn.execute(
         """
-        SELECT event_id, normalized_json, created_at
+        SELECT event_id, normalized_json, created_at, provider_updated_at_us,
+               provider_timestamp_source
         FROM ingress_events
-        WHERE provider_updated_at_us IS NULL
+        WHERE provider_updated_at_us IS NULL OR provider_timestamp_source IS NULL
         """
     ).fetchall()
     updates = []
@@ -150,14 +252,20 @@ def _migrate_provider_updated_at(conn: sqlite3.Connection) -> None:
             normalized = json.loads(row["normalized_json"])
         except json.JSONDecodeError:
             continue
-        provider_time = _provider_timestamp(normalized.get("updatedAt") if isinstance(normalized, dict) else None)
-        if not provider_time:
-            provider_time = _provider_timestamp(_row_value(row, "created_at"))
-        if provider_time:
-            updates.append((provider_time[1], row["event_id"]))
+        provider_time = _provider_timestamp(
+            normalized.get("updatedAt") if isinstance(normalized, dict) else None
+        )
+        ordering_time = provider_time or _provider_timestamp(_row_value(row, "created_at"))
+        if ordering_time:
+            updates.append((
+                row["provider_updated_at_us"] or ordering_time[1],
+                "provider" if provider_time else "receipt_fallback",
+                row["event_id"],
+            ))
     if updates:
         conn.executemany(
-            "UPDATE ingress_events SET provider_updated_at_us = ? WHERE event_id = ?",
+            "UPDATE ingress_events SET provider_updated_at_us = ?, "
+            "provider_timestamp_source = ? WHERE event_id = ?",
             updates,
         )
 
@@ -172,11 +280,11 @@ def row_to_event(row: sqlite3.Row) -> dict[str, Any]:
         "delivery_id": row["delivery_id"],
         "subject": row["subject"],
         "payload_hash": row["payload_hash"],
-        "raw_payload": json.loads(row["raw_payload_json"]),
         "normalized": json.loads(row["normalized_json"]),
         "hatchet_event_name": row["hatchet_event_name"],
         "hatchet_event_id": row["hatchet_event_id"],
         "hatchet_published": bool(row["hatchet_published"]),
+        "published_at": row["published_at"],
         "publish_attempts": row["publish_attempts"],
         "publish_last_error": row["publish_last_error"],
         "decision": row["decision"],
@@ -191,7 +299,10 @@ def record_event(
     *,
     normalized: dict[str, Any],
     raw_payload: dict[str, Any],
+    signature_verified: bool = False,
 ) -> tuple[dict[str, Any], bool]:
+    if not isinstance(signature_verified, bool):
+        raise ValueError("signature_verified must be a boolean")
     event_key = _required(normalized, "eventKey")
     source = _required(normalized, "source")
     provider_event = _required(normalized, "providerEvent")
@@ -210,49 +321,123 @@ def record_event(
 
     digest = payload_hash(raw_payload)
     now = utc_now()
-    provider_time = _provider_timestamp(normalized.get("updatedAt")) or _provider_timestamp(now)
+    provider_time = _provider_timestamp(normalized.get("updatedAt"))
+    ordering_time = provider_time or _provider_timestamp(now)
 
     with conn:
         existing = conn.execute(
             "SELECT * FROM ingress_events WHERE event_key = ?",
             (event_key,),
         ).fetchone()
-        if existing:
-            event = row_to_event(existing)
-            if event["payload_hash"] != digest:
-                raise IngressConflict("event_key already exists with different payload")
-            return event, False
+        if existing is None:
+            # A pre-digest runtime keyed canonical rows by an unsigned delivery
+            # header. Retain that row when the same signed body is replayed after
+            # upgrade so it cannot be published as a second canonical event.
+            existing = conn.execute(
+                """
+                SELECT * FROM ingress_events
+                WHERE source = ? AND provider_event = ? AND payload_hash = ?
+                ORDER BY hatchet_published DESC, created_at, event_id
+                LIMIT 1
+                """,
+                (source, provider_event, digest),
+            ).fetchone()
 
+        created = False
+        if existing is None:
+            inserted = conn.execute(
+                """
+                INSERT INTO ingress_events (
+                    event_id, event_key, source, provider_event, action, delivery_id,
+                    subject, payload_hash, raw_payload_json, normalized_json,
+                    hatchet_event_name, decision, reason_code, created_at, updated_at,
+                    provider_updated_at_us, provider_timestamp_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_key) DO NOTHING
+                """,
+                (
+                    str(uuid.uuid4()),
+                    event_key,
+                    source,
+                    provider_event,
+                    action,
+                    normalized.get("deliveryId"),
+                    subject,
+                    digest,
+                    # The digest is sufficient for idempotency/conflict evidence.
+                    # Do not retain provider bodies, review text, identities, or
+                    # any secret-shaped fields that normalization intentionally omits.
+                    "{}",
+                    canonical_json(normalized),
+                    event_name,
+                    decision,
+                    reason_code,
+                    now,
+                    now,
+                    ordering_time[1],
+                    "provider" if provider_time else "receipt_fallback",
+                ),
+            )
+            existing = conn.execute(
+                "SELECT * FROM ingress_events WHERE event_key = ?",
+                (event_key,),
+            ).fetchone()
+            created = inserted.rowcount == 1
+        if not existing:  # Defensive: the insert or its conflicting row must exist.
+            raise RuntimeError("ingress event insert did not produce a durable row")
+        event = row_to_event(existing)
+        disposition = (
+            "accepted"
+            if created
+            else "duplicate"
+            if event["payload_hash"] == digest
+            else "payload_conflict"
+        )
         conn.execute(
             """
-            INSERT INTO ingress_events (
-                event_id, event_key, source, provider_event, action, delivery_id,
-                subject, payload_hash, raw_payload_json, normalized_json,
-                hatchet_event_name, decision, reason_code, created_at, updated_at,
-                provider_updated_at_us
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO ingress_receipts (
+                receipt_id, event_key, source, provider_event, delivery_id,
+                payload_hash, signature_verified, disposition, received_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(uuid.uuid4()),
-                event_key,
+                event["event_key"],
                 source,
                 provider_event,
-                action,
                 normalized.get("deliveryId"),
-                subject,
                 digest,
-                canonical_json(raw_payload),
-                canonical_json(normalized),
-                event_name,
-                decision,
-                reason_code,
+                int(signature_verified),
+                disposition,
                 now,
-                now,
-                provider_time[1],
             ),
         )
 
-    return get_event(conn, event_key), True
+    # Raise only after the transaction commits so the conflicting receipt remains
+    # observable without mutating the canonical event.
+    if disposition == "payload_conflict":
+        raise IngressConflict("event_key already exists with different payload")
+    return event, created
+
+
+def list_ingress_receipts(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    """Return receipt metadata without webhook bodies or normalized content."""
+    if limit < 1 or limit > 250:
+        raise ValueError("limit must be between 1 and 250")
+    rows = conn.execute(
+        """
+        SELECT receipt_id, event_key, source, provider_event, delivery_id,
+               payload_hash, signature_verified, disposition, received_at
+        FROM ingress_receipts
+        ORDER BY received_at DESC, receipt_id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {**dict(row), "signature_verified": bool(row["signature_verified"])}
+        for row in rows
+    ]
 
 
 def list_pending_publications(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
@@ -310,6 +495,7 @@ def mark_publication_failed(conn: sqlite3.Connection, event_key: str, lease_id: 
 
 
 def mark_published(conn: sqlite3.Connection, event_key: str, hatchet_event_id: str | None, *, lease_id: str | None = None) -> dict[str, Any]:
+    now = utc_now()
     with conn:
         row = conn.execute(
             "SELECT * FROM ingress_events WHERE event_key = ?",
@@ -322,13 +508,14 @@ def mark_published(conn: sqlite3.Connection, event_key: str, hatchet_event_id: s
             UPDATE ingress_events
             SET hatchet_event_id = ?,
                 hatchet_published = 1,
+                published_at = COALESCE(published_at, ?),
                 publish_lease_id = NULL,
                 publish_lease_expires_at = NULL,
                 publish_last_error = NULL,
                 updated_at = ?
             WHERE event_key = ? AND (? IS NULL OR publish_lease_id = ?)
             """,
-            (hatchet_event_id, utc_now(), event_key, lease_id, lease_id),
+            (hatchet_event_id, now, now, event_key, lease_id, lease_id),
         )
         if lease_id is not None and changed.rowcount != 1:
             raise IngressConflict("publication lease is no longer current")

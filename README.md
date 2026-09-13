@@ -77,6 +77,10 @@ See [docs/factory-analytics.md](docs/factory-analytics.md) for the analytics
 cohort, event definitions, coverage rules, privacy boundary, and known evidence
 gaps.
 
+See
+[docs/execution-backend-evaluation.md](docs/execution-backend-evaluation.md)
+for the Hermes-versus-direct-Codex measurement and canary design.
+
 The Docker runtime lives under `/docker/driftward/factory` and is supervised by
 `driftward-factory.service`. The older direct host/systemd installers remain in
 tree for migration and recovery work, but Docker is the standalone Factory app

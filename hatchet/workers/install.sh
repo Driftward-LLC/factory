@@ -59,6 +59,13 @@ upsert_env() {
   rm -f "$tmp"
 }
 
+env_file_value() {
+  local file="$1"
+  local key="$2"
+
+  awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }' "$file" 2>/dev/null || true
+}
+
 remove_env() {
   local file="$1"
   local key="$2"
@@ -70,6 +77,48 @@ remove_env() {
   awk -F= -v key="$key" '$1 != key { print }' "$file" >"$tmp"
   install -m 0600 -o root -g root "$tmp" "$file"
   rm -f "$tmp"
+}
+
+analytics_label_secret_shaped() {
+  local value="${1,,}"
+  [[ "$value" =~ (^|[._+-])(sk-|gh[pousr]_|github_pat_|xox[baprs]-|hf_|gsk_|lin_api_|glpat-|npm_|pypi-|akia[a-z0-9]|asia[a-z0-9]|aiza[a-z0-9]|bearer([._+-]|$)) ]] \
+    || [[ "$value" =~ eyj[a-z0-9_-]{2,}\.[a-z0-9_-]{2,}\.[a-z0-9_-]{2,} ]] \
+    || [[ "$value" =~ [a-z0-9_.-]{128,} ]]
+}
+
+analytics_label_valid() {
+  local kind="$1"
+  local value="$2"
+  analytics_label_secret_shaped "$value" && return 1
+  case "$kind" in
+    auth) [[ "$value" == "chatgpt_codex_oauth" || "$value" == "api_key" || "$value" == "unknown" ]] ;;
+    dimension) [[ "$value" =~ ^[a-z][a-z0-9_.-]{0,79}$ ]] ;;
+    version) [[ "$value" != "unknown" && "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,119}$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_analytics_label() {
+  local file="$1"
+  local key="$2"
+  local kind="$3"
+  local configured="$4"
+  local value="$configured"
+  [[ -n "$value" ]] || value="$(env_file_value "$file" "$key")"
+  if [[ -n "$value" ]] && analytics_label_valid "$kind" "$value"; then
+    # Always rewrite the key, even when the existing first value is valid.
+    # upsert_env removes every occurrence before appending one canonical value,
+    # so a later duplicate cannot become the effective secret-shaped label.
+    upsert_env "$file" "$key" "$value"
+  elif [[ "$kind" == "version" ]]; then
+    remove_env "$file" "$key"
+  else
+    upsert_env "$file" "$key" unknown
+  fi
+  value="$(env_file_value "$file" "$key")"
+  if [[ -z "$value" || "$value" == "unknown" ]]; then
+    echo "warning: $key is unknown or invalid; execution attribution will be incomplete" >&2
+  fi
 }
 
 ensure_env_secret() {
@@ -162,7 +211,11 @@ done
 
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED "${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED:-1}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
-upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_AUTH_MODE "${DRIFTWARD_HERMES_AUTH_MODE:-unknown}"
+normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_AUTH_MODE auth "${DRIFTWARD_HERMES_AUTH_MODE:-}"
+normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_PROVIDER dimension "${DRIFTWARD_HERMES_PROVIDER:-}"
+normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_MODEL dimension "${DRIFTWARD_HERMES_MODEL:-}"
+normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_VERSION version "${DRIFTWARD_HERMES_VERSION:-}"
+normalize_analytics_label "$bridge_executor_env" FACTORY_RELEASE_VERSION version "${FACTORY_RELEASE_VERSION:-}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_COMMAND "${DRIFTWARD_HERMES_COMMAND:-driftward-hermes}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_ALLOWED_REPOS "${DRIFTWARD_HERMES_ALLOWED_REPOS:-Driftward-LLC/driftward-host,Driftward-LLC/capykit}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN "${DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN:-factory-hermes[bot]}"

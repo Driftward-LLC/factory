@@ -92,6 +92,8 @@ Supported events:
   payloads.
 - `driftward.github.pr.synchronized`, produced from GitHub
   `pull_request.synchronize` payloads.
+- `driftward.github.pr.reopened`, produced from GitHub
+  `pull_request.reopened` payloads as an open, unmerged observation.
 - `driftward.github.pr.closed_unmerged`, produced from GitHub
   `pull_request.closed` payloads where `merged=false`.
 - `driftward.github.pr.closed_merged`, produced from GitHub

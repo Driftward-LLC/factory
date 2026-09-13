@@ -140,6 +140,10 @@
           "owner": "hatchet/event-ingress"
         },
         {
+          "event": "driftward.github.pr.reopened",
+          "owner": "hatchet/event-ingress"
+        },
+        {
           "event": "driftward.github.pr.closed_unmerged",
           "owner": "hatchet/event-ingress"
         },

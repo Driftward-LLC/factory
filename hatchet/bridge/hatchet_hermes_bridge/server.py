@@ -40,6 +40,7 @@ from .store import (
     settle_factory_execution,
     recover_factory_execution,
     record_factory_execution_analytics,
+    record_factory_execution_route,
     list_factory_outbox,
     claim_factory_outbox_delivery,
     acknowledge_factory_outbox,
@@ -269,6 +270,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     failure_event_type=body.get("failure_event_type", "execution_backend_failed"),
                 )
                 self._write_json(200, {"ok": True})
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "route":
+                if set(body) != {"details"}:
+                    raise BridgeValidationError("factory execution route body is invalid")
+                recorded = record_factory_execution_route(self.conn, parts[1], body.get("details"))
+                self._write_json(201 if recorded else 200, {"recorded": recorded})
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "analytics":
                 if set(body) != {"lease_id", "owner", "epoch", "fence_token", "event_type", "details"}:

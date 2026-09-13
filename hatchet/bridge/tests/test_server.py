@@ -15,6 +15,42 @@ from test_support import connect_migrate as connect
 
 
 class BridgeServerTests(unittest.TestCase):
+    def test_factory_execution_route_endpoint_is_strict_and_idempotent(self):
+        with tempfile.NamedTemporaryFile() as database:
+            conn = connect(database.name); self.addCleanup(conn.close)
+            from hatchet_hermes_bridge.store import reserve_factory_retry
+            attempt, job, _ = reserve_factory_retry(
+                conn, work_item_key="ENG-40", mode="real", request_id="route-http",
+                reason="test", actor="uid:0", payload={"repo": "Driftward-LLC/capykit"},
+            )
+            details = {
+                "analytics_schema_version": 1,
+                "assignment_id": f"route.{attempt['attempt_id']}",
+                "experiment_id": "factory-default-v1",
+                "variant": "hermes",
+                "assignment_method": "static",
+                "intended_backend": "hermes",
+                "intended_transport": "grpc_uds",
+                "configured_provider": "unknown",
+                "configured_model": "unknown",
+                "configured_auth_mode": "unknown",
+                "backend_version": None,
+                "factory_release_sha": None,
+                "factory_release_version": None,
+                "routing_registry_version": None,
+                "verifier_policy_digest": None,
+                "fallback_allowed": False,
+            }
+            path = f"/jobs/{job['job_id']}/factory-execution/route"
+            created = _PostHandler(conn, {"details": details}, path); created.do_POST()
+            self.assertEqual(created.response, (201, {"recorded": True}))
+            replay = _PostHandler(conn, {"details": details}, path); replay.do_POST()
+            self.assertEqual(replay.response, (200, {"recorded": False}))
+            conflict = _PostHandler(conn, {"details": {**details, "variant": "codex"}}, path); conflict.do_POST()
+            self.assertEqual(conflict.response[0], 409)
+            invalid = _PostHandler(conn, {"details": details, "prompt": "forbidden"}, path); invalid.do_POST()
+            self.assertEqual(invalid.response[0], 400)
+
     def test_factory_execution_analytics_endpoint_is_fenced_and_idempotent(self):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)

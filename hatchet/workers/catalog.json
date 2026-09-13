@@ -82,6 +82,7 @@
       "consumes_events": [
         "driftward.github.pr.created",
         "driftward.github.pr.synchronized",
+        "driftward.github.pr.reopened",
         "driftward.github.pr.closed_unmerged",
         "driftward.github.pr.closed_merged",
         "driftward.github.checks.completed",
@@ -202,7 +203,8 @@
       ],
       "consumes_events": [
         "driftward.github.pr.created",
-        "driftward.github.pr.synchronized"
+        "driftward.github.pr.synchronized",
+        "driftward.github.pr.reopened"
       ]
     },
     {
@@ -354,6 +356,7 @@
       "consumes_events": [
         "driftward.github.pr.created",
         "driftward.github.pr.synchronized",
+        "driftward.github.pr.reopened",
         "driftward.github.pr.closed_unmerged",
         "driftward.github.pr.closed_merged",
         "driftward.github.checks.completed",
@@ -398,6 +401,7 @@
     "driftward.github.pr.creation_simulated",
     "driftward.github.pr.created",
     "driftward.github.pr.synchronized",
+    "driftward.github.pr.reopened",
     "driftward.github.pr.closed_unmerged",
     "driftward.github.pr.closed_merged",
     "driftward.github.checks.completed",

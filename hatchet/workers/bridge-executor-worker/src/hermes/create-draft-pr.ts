@@ -1,14 +1,20 @@
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { BridgeJob, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, FactoryAttempt, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 import type { Duration } from '@hatchet-dev/typescript-sdk/v1/client/duration';
+import {
+  boundedHermesDraftPrReceipt,
+  isSecretShaped,
+  processSignal,
+  redactSecretShapes,
+  type BoundedHermesDraftPrReceipt,
+} from './bounded-evidence';
 import { NonRetryableBridgeExecutionError } from './errors';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
-  hermesGrpcTarget,
   isHermesGrpcUnixTarget,
   inspectGitHubHeadViaGrpc,
   inspectDraftPrStateViaGrpc,
@@ -20,23 +26,14 @@ import {
 
 export { NonRetryableBridgeExecutionError } from './errors';
 
-export type HermesDraftPrResult = {
-  status: 'created' | 'reused';
-  prUrl: string;
-  prNumber: number;
-  commitSha: string | null;
-  branch: string;
-  hermesSessionId: string | null;
-  summary: string;
-  validation: JsonValue | null;
-};
+export type HermesDraftPrResult = BoundedHermesDraftPrReceipt;
+export { boundedHermesDraftPrReceipt } from './bounded-evidence';
 
 export function jobMatchesHermesDraftPrReceipt(job: BridgeJob, result: HermesDraftPrResult): boolean {
   return ['effect_committed', 'verification_pending', 'ready_for_human_review', 'failed'].includes(job.state)
     && job.pr_url === result.prUrl
     && job.branch === result.branch
-    && job.commit_sha === result.commitSha
-    && job.hermes_session_id === result.hermesSessionId;
+    && job.commit_sha === result.commitSha;
 }
 
 export type FactoryExecutionLease = {
@@ -61,23 +58,102 @@ export type FactoryExecutionAnalyticsIdentity = {
   configured_auth_mode: 'chatgpt_codex_oauth' | 'api_key' | 'unknown';
 };
 
+export type FactoryExecutionRouteSelection = {
+  analytics_schema_version: 1;
+  assignment_id: string;
+  experiment_id: string;
+  variant: 'hermes';
+  assignment_method: 'static';
+  intended_backend: 'hermes';
+  intended_transport: 'grpc_uds' | 'grpc_tcp' | 'local_command';
+  configured_provider: string;
+  configured_model: string;
+  configured_auth_mode: 'chatgpt_codex_oauth' | 'api_key' | 'unknown';
+  backend_version: string | null;
+  factory_release_sha: string | null;
+  factory_release_version: string | null;
+  routing_registry_version: number | null;
+  verifier_policy_digest: string | null;
+  fallback_allowed: false;
+};
+
+function configuredAuthMode(): FactoryExecutionAnalyticsIdentity['configured_auth_mode'] {
+  const configured = (process.env.DRIFTWARD_HERMES_AUTH_MODE || '').trim();
+  return configured === 'chatgpt_codex_oauth' || configured === 'api_key' ? configured : 'unknown';
+}
+
+function executionTransport(): FactoryExecutionAnalyticsIdentity['execution_transport'] {
+  const target = (process.env.DRIFTWARD_HERMES_GRPC_TARGET || '').trim();
+  if (!target) return 'local_command';
+  // Route telemetry observes configured intent. Transport policy is enforced
+  // by the gateway client after the immutable assignment has been recorded.
+  return isHermesGrpcUnixTarget(target) ? 'grpc_uds' : 'grpc_tcp';
+}
+
+function configuredDimension(name: string, fallback: string): string {
+  const value = (process.env[name] || '').trim();
+  return /^[a-z][a-z0-9_.-]{0,79}$/.test(value) && !isSecretShaped(value) ? value : fallback;
+}
+
+function configuredVersion(name: string): string | null {
+  const value = (process.env[name] || '').trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,119}$/.test(value) && !isSecretShaped(value) ? value : null;
+}
+
 export function factoryExecutionAnalyticsIdentity(invocationId: string): FactoryExecutionAnalyticsIdentity {
-  const configuredAuth = (process.env.DRIFTWARD_HERMES_AUTH_MODE || '').trim();
-  const authMode = configuredAuth === 'chatgpt_codex_oauth' || configuredAuth === 'api_key'
-    ? configuredAuth
-    : 'unknown';
-  const transport = hermesGrpcGatewayEnabled()
-    ? (isHermesGrpcUnixTarget(hermesGrpcTarget()) ? 'grpc_uds' : 'grpc_tcp')
-    : 'local_command';
-  const configuredVersion = (process.env.DRIFTWARD_HERMES_VERSION || '').trim();
   return {
     analytics_schema_version: 1,
     invocation_id: invocationId,
     execution_backend: 'hermes',
-    execution_transport: transport,
-    backend_version: configuredVersion ? configuredVersion.slice(0, 120) : null,
-    configured_auth_mode: authMode,
+    execution_transport: executionTransport(),
+    backend_version: configuredVersion('DRIFTWARD_HERMES_VERSION'),
+    configured_auth_mode: configuredAuthMode(),
   };
+}
+
+export function factoryExecutionRouteSelection(
+  job: Pick<BridgeJob, 'payload'>,
+  attempt: Pick<FactoryAttempt, 'attempt_id'>,
+): FactoryExecutionRouteSelection {
+  const routing = job.payload.routing;
+  const routingVersion = routing && typeof routing === 'object' && !Array.isArray(routing)
+    && Number.isInteger(routing.registry_version) && Number(routing.registry_version) >= 1
+    && Number(routing.registry_version) <= 1_000_000
+    ? Number(routing.registry_version)
+    : null;
+  const verificationPolicy = job.payload.verification_policy;
+  const policyDigest = verificationPolicy && typeof verificationPolicy === 'object' && !Array.isArray(verificationPolicy)
+    && typeof verificationPolicy.digest === 'string' && /^[0-9a-f]{64}$/.test(verificationPolicy.digest)
+    ? verificationPolicy.digest
+    : null;
+  const releaseSha = (process.env.FACTORY_RELEASE_COMMIT || '').trim();
+  return {
+    analytics_schema_version: 1,
+    assignment_id: `route.${attempt.attempt_id}`,
+    // The current executor has one route. Do not accept configuration that only
+    // labels a request as randomized without actually assigning its backend.
+    experiment_id: 'factory-default-v1',
+    variant: 'hermes',
+    assignment_method: 'static',
+    intended_backend: 'hermes',
+    intended_transport: executionTransport(),
+    configured_provider: configuredDimension('DRIFTWARD_HERMES_PROVIDER', 'unknown'),
+    configured_model: configuredDimension('DRIFTWARD_HERMES_MODEL', 'unknown'),
+    configured_auth_mode: configuredAuthMode(),
+    backend_version: configuredVersion('DRIFTWARD_HERMES_VERSION'),
+    factory_release_sha: /^[0-9a-f]{40}$/.test(releaseSha) ? releaseSha : null,
+    factory_release_version: configuredVersion('FACTORY_RELEASE_VERSION'),
+    routing_registry_version: routingVersion,
+    verifier_policy_digest: policyDigest,
+    fallback_allowed: false,
+  };
+}
+
+export function shouldRecordFactoryExecutionRoute(
+  job: Pick<BridgeJob, 'state'>,
+  attempt: Pick<FactoryAttempt, 'status'>,
+): boolean {
+  return job.state === 'accepted' && attempt.status === 'accepted';
 }
 
 type FactoryRepairContext = {
@@ -101,11 +177,14 @@ export function resumeHermesDraftPrResult(job: BridgeJob): HermesDraftPrResult {
   if (!match) {
     throw new NonRetryableBridgeExecutionError('verification_evidence_malformed', 'committed draft PR job has an invalid PR URL');
   }
-  return {
-    status: 'reused', prUrl: job.pr_url, prNumber: Number.parseInt(match[1], 10), commitSha: job.commit_sha,
-    branch: job.branch, hermesSessionId: job.hermes_session_id,
-    summary: 'resumed verification for existing deterministic draft PR', validation: job.verification_context
-  };
+  const result = boundedHermesDraftPrReceipt(job, {
+    status: 'reused', prUrl: job.pr_url, prNumber: Number.parseInt(match[1], 10),
+    commitSha: job.commit_sha, branch: job.branch, validation: job.verification_context,
+  });
+  if (!result || !result.validation) {
+    throw new NonRetryableBridgeExecutionError('verification_evidence_malformed', 'committed draft PR job has invalid bounded verification evidence');
+  }
+  return result;
 }
 
 export type GithubPrView = {
@@ -232,7 +311,7 @@ function commandErrorMessage(error: unknown): string {
 function sanitizeError(error: unknown): string { return sanitizeText(error instanceof Error ? error.message : String(error)); }
 
 export function sanitizeText(value: string, limit: number = 320): string {
-  return value.replace(/(?:ghp_|github_pat_|xox[baprs]-|Bearer\s+)[A-Za-z0-9_\-.]+/gi, '[redacted]').replace(/[\r\n\t]+/g, ' ').trim().slice(0, limit);
+  return redactSecretShapes(value).replace(/[\r\n\t]+/g, ' ').trim().slice(0, limit);
 }
 
 function celString(value: string): string {
@@ -261,54 +340,114 @@ export function hermesReceiptWaitDuration(): Duration {
 
 export function dispatchHermesCreateDraftPrReceipt(job: BridgeJob, lease: FactoryExecutionLease): HermesReceiptDispatch {
   if (!hermesReceiptRunnerEnabled()) {
-    throw new NonRetryableBridgeExecutionError('hermes_async_receipts_disabled', 'Hermes async receipt dispatch is disabled');
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_async_receipts_disabled',
+      'Hermes async receipt dispatch is disabled',
+      { failureDomain: 'executor', failureStage: 'receipt_dispatch', retryable: false },
+    );
   }
   validateRealCreateDraftPrJob(job);
   const runner = process.env.DRIFTWARD_HERMES_RECEIPT_RUNNER || path.resolve(__dirname, 'create-draft-pr-receipt-runner.js');
   if (!existsSync(runner)) {
-    throw new NonRetryableBridgeExecutionError('hermes_receipt_runner_missing', `Hermes receipt runner is missing at ${runner}`);
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_receipt_runner_missing',
+      `Hermes receipt runner is missing at ${runner}`,
+      { failureDomain: 'executor', failureStage: 'receipt_dispatch', retryable: false },
+    );
   }
   const dispatchId = `${job.job_id}:${lease.lease_id}:${lease.epoch}`;
   if (process.env.DRIFTWARD_HERMES_RECEIPT_USE_SYSTEMD !== '0') {
     const unit = `driftward-hatchet-hermes-receipt-${safeSystemdUnitPart(job.job_id)}-${safeSystemdUnitPart(lease.lease_id)}`;
-    const started = spawnSync('systemd-run', [
-      '--no-ask-password',
-      '--collect',
-      '--quiet',
-      `--unit=${unit}`,
-      `--working-directory=${process.cwd()}`,
-      ...receiptEnvironmentArgs(job, lease, dispatchId),
-      process.execPath,
-      runner,
-      job.job_id
-    ], { encoding: 'utf8' });
+    const environmentDirectory = mkdtempSync('/run/driftward-factory-receipt-');
+    const environmentFile = path.join(environmentDirectory, 'environment');
+    let started: ReturnType<typeof spawnSync>;
+    try {
+      writeFileSync(
+        environmentFile,
+        systemdReceiptEnvironment(selectedReceiptEnvironment(job, lease, dispatchId)),
+        { encoding: 'utf8', mode: 0o600, flag: 'wx' },
+      );
+      started = spawnSync(
+        'systemd-run',
+        systemdReceiptRunnerArgs(unit, runner, job.job_id, environmentFile),
+        {
+          encoding: 'utf8',
+          // systemd-run only needs its executable search path. Receipt
+          // credentials are read by PID 1 from the protected EnvironmentFile,
+          // never copied into the dispatcher's argv or inherited environment.
+          env: { PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' },
+        },
+      );
+    } finally {
+      // Without --no-block, systemd-run returns only after ExecStart begins and
+      // PID 1 has consumed EnvironmentFile. The running receipt keeps its own
+      // environment; the root-only source must not remain on disk.
+      rmSync(environmentDirectory, { recursive: true, force: true });
+    }
     if (started.status === 0) {
       return { dispatchId, runner: `${unit}.service` };
     }
     if (process.env.DRIFTWARD_HERMES_RECEIPT_REQUIRE_SYSTEMD === '1') {
-      throw new NonRetryableBridgeExecutionError('hermes_receipt_runner_dispatch_failed', sanitizeText(started.stderr || started.stdout || 'systemd-run failed'));
+      throw new NonRetryableBridgeExecutionError(
+        'hermes_receipt_runner_dispatch_failed',
+        'Factory could not dispatch the detached Hermes receipt runner',
+        {
+          failureDomain: 'executor',
+          failureStage: 'receipt_dispatch',
+          retryable: null,
+          processExitCode: started.status,
+          processSignal: started.signal,
+          timedOut: false,
+          bufferExceeded: false,
+        },
+      );
     }
   }
   const child = spawn(process.execPath, [runner, job.job_id], {
     detached: true,
     stdio: 'ignore',
-    env: {
-      ...process.env,
-      HATCHET_FACTORY_EXECUTION_LEASE: JSON.stringify(lease),
-      HATCHET_HERMES_RECEIPT_DISPATCH_ID: dispatchId,
-      DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS: String(parsePositiveInt(process.env.DRIFTWARD_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS, 4 * 60 * 60 * 1000))
-    }
+    env: Object.fromEntries(selectedReceiptEnvironment(job, lease, dispatchId)),
   });
   child.unref();
   return { dispatchId, pid: child.pid, runner };
 }
 
-function receiptEnvironmentArgs(job: BridgeJob, lease: FactoryExecutionLease, dispatchId: string): string[] {
-  return selectedReceiptEnvironment(job, lease, dispatchId)
-    .map(([key, value]) => `--setenv=${key}=${value}`);
+export function systemdReceiptRunnerArgs(
+  unit: string,
+  runner: string,
+  jobId: string,
+  environmentFile: string,
+): string[] {
+  return [
+    '--no-ask-password',
+    '--collect',
+    '--quiet',
+    `--unit=${unit}`,
+    `--working-directory=${process.cwd()}`,
+    `--property=EnvironmentFile=${environmentFile}`,
+    process.execPath,
+    runner,
+    jobId,
+  ];
 }
 
-export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecutionLease, dispatchId: string): Array<[string, string]> {
+export function systemdReceiptEnvironment(entries: Array<[string, string]>): string {
+  return entries.map(([key, value]) => {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key) || /[\0\r\n]/.test(value)) {
+      throw new NonRetryableBridgeExecutionError(
+        'hermes_receipt_environment_invalid',
+        'Factory receipt environment contains an unsupported value',
+        { failureDomain: 'executor', failureStage: 'receipt_dispatch', retryable: false },
+      );
+    }
+    // systemd.exec double-quoted EnvironmentFile values preserve arbitrary
+    // token punctuation when its metacharacters are escaped.
+    const quoted = value.replace(/[\\"`$]/g, (character) => `\\${character}`);
+    return `${key}="${quoted}"`;
+  }).join('\n') + '\n';
+}
+
+export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecutionLease, _dispatchId: string): Array<[string, string]> {
   const keys = [
     'PATH',
     'NODE_ENV',
@@ -316,11 +455,11 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
     'HATCHET_CLIENT_HOST_PORT',
     'HATCHET_CLIENT_TLS_STRATEGY',
     'HATCHET_CLIENT_TOKEN',
+    'HATCHET_CLIENT_LOG_LEVEL',
     'HATCHET_HERMES_BRIDGE_URL',
     'HATCHET_HERMES_BRIDGE_TOKEN',
-    'HATCHET_HERMES_VERIFIER_TOKEN',
-    'HATCHET_HERMES_INSPECTION_TOKEN',
-    'HATCHET_HERMES_RECOVERY_TOKEN',
+    'HATCHET_HERMES_BRIDGE_TIMEOUT_MS',
+    'HATCHET_FACTORY_RUNTIME',
     'HATCHET_VERIFIER_POLICY_PATH',
     'DRIFTWARD_HERMES_GRPC_TARGET',
     'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
@@ -330,9 +469,14 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
     'DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH',
     'DRIFTWARD_HERMES_GRPC_ALLOW_TCP',
     'DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP',
+    'DRIFTWARD_HERMES_IDENTITY_CHECK_TIMEOUT_MS',
     'DRIFTWARD_HERMES_AUTH_MODE',
     'DRIFTWARD_HERMES_VERSION',
     'DRIFTWARD_HERMES_COMMAND',
+    'DRIFTWARD_HERMES_ROOT',
+    'DRIFTWARD_HERMES_RUNTIME_USER',
+    'DRIFTWARD_HERMES_RUNTIME_UID',
+    'DRIFTWARD_HERMES_REPO_GROUP',
     'DRIFTWARD_HERMES_ALLOWED_REPOS',
     'DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN',
     'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME',
@@ -349,11 +493,8 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
     return typeof value === 'string' ? [[key, value]] : [];
   });
   entries.push(
-    ['HATCHET_BRIDGE_JOB_ID', job.job_id],
     ['HATCHET_BRIDGE_IDEMPOTENCY_KEY', job.idempotency_key],
-    ['HATCHET_BRIDGE_BRANCH', job.branch || ''],
     ['HATCHET_FACTORY_EXECUTION_LEASE', JSON.stringify(lease)],
-    ['HATCHET_HERMES_RECEIPT_DISPATCH_ID', dispatchId],
     ['DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS', String(parsePositiveInt(process.env.DRIFTWARD_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS, 4 * 60 * 60 * 1000))]
   );
   return entries;
@@ -437,18 +578,88 @@ export async function runHermesCreateDraftPrViaCommand(
   await assertHermesIdentityViaCommand(requiredPayloadString(job, 'repo'));
   const prompt = buildPrompt(job);
 
-  const result = await execFileAsync(command, ['--accept-hooks', '--pass-session-id', '-z', prompt], {
-    timeout,
-    maxBuffer,
-    env: {
-      ...process.env,
-      HATCHET_BRIDGE_JOB_ID: job.job_id,
-      HATCHET_BRIDGE_IDEMPOTENCY_KEY: job.idempotency_key,
-      HATCHET_BRIDGE_BRANCH: job.branch || ''
-    }
-  });
+  let result: ExecResult;
+  try {
+    result = await execFileAsync(command, ['--accept-hooks', '--pass-session-id', '-z', prompt], {
+      timeout,
+      maxBuffer,
+      env: {
+        ...process.env,
+        HATCHET_BRIDGE_JOB_ID: job.job_id,
+        HATCHET_BRIDGE_IDEMPOTENCY_KEY: job.idempotency_key,
+        HATCHET_BRIDGE_BRANCH: job.branch || ''
+      }
+    });
+  } catch (error) {
+    throw classifyHermesCommandFailure(error);
+  }
 
-  return normalizeHermesResult(job, result.stdout);
+  try {
+    return normalizeHermesResult(job, result.stdout);
+  } catch (error) {
+    if (error instanceof NonRetryableBridgeExecutionError) throw error;
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_protocol_result_invalid',
+      'Hermes completed but did not return a valid Factory receipt',
+      {
+        failureDomain: 'hermes_protocol',
+        failureStage: 'result_parse',
+        retryable: false,
+      },
+    );
+  }
+}
+
+export function classifyHermesCommandFailure(error: unknown): NonRetryableBridgeExecutionError {
+  if (error instanceof NonRetryableBridgeExecutionError) return error;
+  const value = error && typeof error === 'object'
+    ? error as { code?: string | number; signal?: string; killed?: boolean; message?: string }
+    : {};
+  const message = typeof value.message === 'string' ? value.message : '';
+  const bufferExceeded = value.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || /maxbuffer.*exceeded/i.test(message);
+  const timedOut = value.killed === true && !bufferExceeded;
+  const spawnFailed = value.code === 'ENOENT' || value.code === 'EACCES';
+  const processExitCode = typeof value.code === 'number' && Number.isSafeInteger(value.code) ? value.code : null;
+  const boundedSignal = processSignal(value.signal);
+
+  if (spawnFailed) {
+    return new NonRetryableBridgeExecutionError(
+      'hermes_process_spawn_failed',
+      'Factory could not start the configured Hermes command',
+      {
+        failureDomain: 'hermes_process', failureStage: 'hermes_spawn', retryable: false,
+        processExitCode, processSignal: boundedSignal, timedOut: false, bufferExceeded: false,
+      },
+    );
+  }
+  if (timedOut) {
+    return new NonRetryableBridgeExecutionError(
+      'hermes_process_timeout',
+      'The Hermes command exceeded the configured execution timeout',
+      {
+        failureDomain: 'hermes_process', failureStage: 'hermes_timeout', retryable: true,
+        processExitCode, processSignal: boundedSignal, timedOut: true, bufferExceeded: false,
+      },
+    );
+  }
+  if (bufferExceeded) {
+    return new NonRetryableBridgeExecutionError(
+      'hermes_process_output_limit_exceeded',
+      'The Hermes command exceeded the configured output limit',
+      {
+        failureDomain: 'hermes_process', failureStage: 'hermes_exit', retryable: false,
+        processExitCode, processSignal: boundedSignal, timedOut: false, bufferExceeded: true,
+      },
+    );
+  }
+  return new NonRetryableBridgeExecutionError(
+    'hermes_process_exit_nonzero',
+    'The Hermes command exited without a successful Factory receipt',
+    {
+      failureDomain: 'hermes_process', failureStage: 'hermes_exit', retryable: null,
+      processExitCode, processSignal: boundedSignal, timedOut: false, bufferExceeded: false,
+    },
+  );
 }
 
 export async function validateHermesDraftPrSideEffect(job: BridgeJob, result: HermesDraftPrResult): Promise<DraftPrVerification> {
@@ -873,10 +1084,19 @@ async function execHermesRuntimeCommand(args: string[], timeout: number, maxBuff
     if (error instanceof NonRetryableBridgeExecutionError) {
       throw error;
     }
-    const message = commandErrorMessage(error);
+    const classified = classifyHermesCommandFailure(error);
     throw new NonRetryableBridgeExecutionError(
       'hermes_runtime_identity_check_failed',
-      `Driftward Hermes runtime identity check failed: ${message}`
+      'The Driftward Hermes runtime command failed before returning bounded evidence',
+      {
+        failureDomain: classified.failureDomain,
+        failureStage: classified.failureStage,
+        retryable: classified.retryable,
+        processExitCode: classified.processExitCode,
+        processSignal: classified.processSignal,
+        timedOut: classified.timedOut,
+        bufferExceeded: classified.bufferExceeded,
+      },
     );
   }
 }
@@ -1182,8 +1402,8 @@ ${marker}
 - Report validation.local_commands as exactly one successful entry for each
   verifier_policy.required_local_commands item, using exact command text, and
   report the secret check once. Keep extra ad hoc checks out of
-  validation.local_commands; mention them only in summary if relevant. Do not
-  claim a command or secret check that did not run and pass.
+  validation.local_commands. Do not claim a command or secret check that did
+  not run and pass. Factory discards all free-form result text and session data.
 
 Context JSON:
 ${JSON.stringify(context, null, 2)}
@@ -1194,8 +1414,6 @@ Required JSON response:
   "pr_url": "https://github.com/OWNER/REPO/pull/NUMBER",
   "commit_sha": "head commit sha, or null if unavailable",
   "branch": "${job.branch}",
-  "hermes_session_id": "session id if available, otherwise null",
-  "summary": "short execution summary",
   "validation": {
     "local_commands": [{"command": "exact command", "exit_code": 0}],
     "secret_check": {"command": "exact secret-check command", "exit_code": 0}
@@ -1230,16 +1448,15 @@ function normalizeHermesResult(job: BridgeJob, stdout: string): HermesDraftPrRes
     throw new Error('Hermes repair output status must be reused');
   }
 
-  return {
+  const result = boundedHermesDraftPrReceipt(job, {
     status,
     prUrl,
-    prNumber: prNumberFromUrl(prUrl),
     commitSha: nullableStringField(payload, 'commit_sha'),
     branch,
-    hermesSessionId: nullableStringField(payload, 'hermes_session_id'),
-    summary: stringField(payload, 'summary') || status,
-    validation: payload.validation ?? null
-  };
+    validation: payload.validation,
+  });
+  if (!result) throw new Error('Hermes output did not match the bounded Factory receipt schema');
+  return result;
 }
 
 function extractJsonObject(stdout: string): JsonObject {

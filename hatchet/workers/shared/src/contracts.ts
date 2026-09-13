@@ -49,6 +49,13 @@ export const HATCHET_CONTRACT = {
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_pr_synchronized"
     },
+    "github_pr_reopened": {
+      "label": "GitHub PR reopened",
+      "wire_name": "driftward.github.pr.reopened",
+      "event_key_suffix": "reopened",
+      "default_decision_id": "observe_only",
+      "default_reason_code_id": "github_pr_reopened"
+    },
     "github_pr_closed_unmerged": {
       "label": "GitHub PR closed unmerged",
       "wire_name": "driftward.github.pr.closed_unmerged",
@@ -66,11 +73,13 @@ export const HATCHET_CONTRACT = {
     "github_checks_completed": {
       "label": "GitHub checks completed",
       "wire_name": "driftward.github.checks.completed",
+      "default_decision_id": "observe_only",
       "default_reason_code_id": "github_checks_completed"
     },
     "github_review_submitted": {
       "label": "GitHub review submitted",
       "wire_name": "driftward.github.review.submitted",
+      "default_decision_id": "observe_only",
       "default_reason_code_id": "github_review_submitted"
     },
     "linear_issue_observed": {
@@ -147,6 +156,9 @@ export const HATCHET_CONTRACT = {
     },
     "github_pr_synchronized": {
       "label": "GitHub PR head changed"
+    },
+    "github_pr_reopened": {
+      "label": "GitHub PR was reopened"
     },
     "github_pr_closed_unmerged": {
       "label": "GitHub PR was closed without merge"
@@ -468,8 +480,11 @@ export const HATCHET_CONTRACT = {
   "provider_action_mappings": {
     "github.pull_request.opened": "github_pr_created",
     "github.pull_request.synchronize": "github_pr_synchronized",
+    "github.pull_request.reopened": "github_pr_reopened",
     "github.pull_request.closed.unmerged": "github_pr_closed_unmerged",
-    "github.pull_request.closed.merged": "github_pr_closed_merged"
+    "github.pull_request.closed.merged": "github_pr_closed_merged",
+    "github.check_suite.completed": "github_checks_completed",
+    "github.pull_request_review.submitted": "github_review_submitted"
   }
 } as const;
 
@@ -484,6 +499,7 @@ export const EVENT_IDS = {
   "GITHUB_PR_CREATION_SIMULATED": "github_pr_creation_simulated",
   "GITHUB_PR_CREATED": "github_pr_created",
   "GITHUB_PR_SYNCHRONIZED": "github_pr_synchronized",
+  "GITHUB_PR_REOPENED": "github_pr_reopened",
   "GITHUB_PR_CLOSED_UNMERGED": "github_pr_closed_unmerged",
   "GITHUB_PR_CLOSED_MERGED": "github_pr_closed_merged",
   "GITHUB_CHECKS_COMPLETED": "github_checks_completed",
@@ -551,6 +567,13 @@ export const EVENTS = {
     "default_decision_id": "observe_only",
     "default_reason_code_id": "github_pr_synchronized"
   },
+  "github_pr_reopened": {
+    "label": "GitHub PR reopened",
+    "wire_name": "driftward.github.pr.reopened",
+    "event_key_suffix": "reopened",
+    "default_decision_id": "observe_only",
+    "default_reason_code_id": "github_pr_reopened"
+  },
   "github_pr_closed_unmerged": {
     "label": "GitHub PR closed unmerged",
     "wire_name": "driftward.github.pr.closed_unmerged",
@@ -568,11 +591,13 @@ export const EVENTS = {
   "github_checks_completed": {
     "label": "GitHub checks completed",
     "wire_name": "driftward.github.checks.completed",
+    "default_decision_id": "observe_only",
     "default_reason_code_id": "github_checks_completed"
   },
   "github_review_submitted": {
     "label": "GitHub review submitted",
     "wire_name": "driftward.github.review.submitted",
+    "default_decision_id": "observe_only",
     "default_reason_code_id": "github_review_submitted"
   },
   "linear_issue_observed": {
@@ -647,6 +672,7 @@ export const HATCHET_EVENT_WIRE_NAMES = {
   "GITHUB_PR_CREATION_SIMULATED": "driftward.github.pr.creation_simulated",
   "GITHUB_PR_CREATED": "driftward.github.pr.created",
   "GITHUB_PR_SYNCHRONIZED": "driftward.github.pr.synchronized",
+  "GITHUB_PR_REOPENED": "driftward.github.pr.reopened",
   "GITHUB_PR_CLOSED_UNMERGED": "driftward.github.pr.closed_unmerged",
   "GITHUB_PR_CLOSED_MERGED": "driftward.github.pr.closed_merged",
   "GITHUB_CHECKS_COMPLETED": "driftward.github.checks.completed",
@@ -678,6 +704,7 @@ export const HATCHET_EVENT_IDS_BY_WIRE_NAME = {
   "driftward.github.pr.creation_simulated": "github_pr_creation_simulated",
   "driftward.github.pr.created": "github_pr_created",
   "driftward.github.pr.synchronized": "github_pr_synchronized",
+  "driftward.github.pr.reopened": "github_pr_reopened",
   "driftward.github.pr.closed_unmerged": "github_pr_closed_unmerged",
   "driftward.github.pr.closed_merged": "github_pr_closed_merged",
   "driftward.github.checks.completed": "github_checks_completed",
@@ -701,6 +728,7 @@ export const HATCHET_EVENT_IDS_BY_WIRE_NAME = {
 export const HATCHET_EVENT_DEFAULT_REASON_CODES_BY_WIRE_NAME = {
   "driftward.github.pr.created": "github_pr_created",
   "driftward.github.pr.synchronized": "github_pr_synchronized",
+  "driftward.github.pr.reopened": "github_pr_reopened",
   "driftward.github.pr.closed_unmerged": "github_pr_closed_unmerged",
   "driftward.github.pr.closed_merged": "github_pr_closed_merged",
   "driftward.github.checks.completed": "github_checks_completed",
@@ -716,6 +744,7 @@ export const DECISIONS = {
 export const REASON_CODES = {
   "GITHUB_PR_CREATED": "github_pr_created",
   "GITHUB_PR_SYNCHRONIZED": "github_pr_synchronized",
+  "GITHUB_PR_REOPENED": "github_pr_reopened",
   "GITHUB_PR_CLOSED_UNMERGED": "github_pr_closed_unmerged",
   "GITHUB_PR_CLOSED_MERGED": "github_pr_closed_merged",
   "GITHUB_CHECKS_COMPLETED": "github_checks_completed",
@@ -775,8 +804,11 @@ export const BRIDGE_LOOKUP_STATUSES = {
 export const PROVIDER_ACTION_MAPPINGS = {
   "github.pull_request.opened": "github_pr_created",
   "github.pull_request.synchronize": "github_pr_synchronized",
+  "github.pull_request.reopened": "github_pr_reopened",
   "github.pull_request.closed.unmerged": "github_pr_closed_unmerged",
-  "github.pull_request.closed.merged": "github_pr_closed_merged"
+  "github.pull_request.closed.merged": "github_pr_closed_merged",
+  "github.check_suite.completed": "github_checks_completed",
+  "github.pull_request_review.submitted": "github_review_submitted"
 } as const;
 
 export type EventId = keyof typeof EVENTS;

@@ -154,6 +154,7 @@ python3 tools/hatchet-contracts.py check
 | `driftward.github.pr.creation_simulated` | Bridge executor | Analytics or operators | Dry-run PR creation path completed without a real GitHub side effect. |
 | `driftward.github.pr.created` | GitHub webhook or bridge executor | `pr-event-worker` | A real PR exists and should be inspected. |
 | `driftward.github.pr.synchronized` | GitHub webhook | `pr-event-worker` | PR head changed and evidence may be stale. |
+| `driftward.github.pr.reopened` | GitHub webhook | `pr-event-worker` | A closed PR became active again and needs fresh verification. |
 | `driftward.github.pr.closed_unmerged` | Event ingress | `pr-event-worker` | A PR was closed without merge; record observation and do not dispatch Hermes. |
 | `driftward.github.pr.closed_merged` | Event ingress | `pr-event-worker` | A PR was merged; record observation and do not dispatch Hermes. |
 | `driftward.github.checks.completed` | GitHub webhook | `verification-worker` | CI/check state changed. |

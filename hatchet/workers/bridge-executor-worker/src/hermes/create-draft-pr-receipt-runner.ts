@@ -1,23 +1,40 @@
 import { BridgeClient, HATCHET_EVENTS, type BridgeJob, type JsonObject } from '@driftward/hatchet-worker-shared';
-import { hatchet } from '../hatchet-client';
 import {
   NonRetryableBridgeExecutionError,
-  factoryExecutionAnalyticsIdentity,
   hermesReceiptEventScope,
   jobMatchesHermesDraftPrReceipt,
   runHermesCreateDraftPr,
   sanitizeText,
   type FactoryExecutionLease
 } from './create-draft-pr';
+import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 
 async function main(): Promise<void> {
   const jobId = process.argv[2];
   if (!jobId) throw new Error('job id is required');
   const lease = parseLease(process.env.HATCHET_FACTORY_EXECUTION_LEASE);
   const bridge = new BridgeClient();
-  const job = await bridge.getJob(jobId);
-  const invocationId = process.env.HATCHET_HERMES_RECEIPT_DISPATCH_ID || `${job.job_id}:${lease.lease_id}:${lease.epoch}`;
-  const analytics = factoryExecutionAnalyticsIdentity(invocationId);
+  const invocationId = process.env.HATCHET_HERMES_RECEIPT_DISPATCH_ID || `${jobId}:${lease.lease_id}:${lease.epoch}`;
+  const prepared = await prepareReceiptRunnerInvocation(bridge, jobId, lease, invocationId);
+  if (!prepared.ok) {
+    const idempotencyKey = process.env.HATCHET_BRIDGE_IDEMPOTENCY_KEY;
+    if (idempotencyKey) {
+      await emitFailureEvent(
+        { job_id: jobId, idempotency_key: idempotencyKey },
+        prepared.reasonCode,
+        new NonRetryableBridgeExecutionError(
+          prepared.reasonCode,
+          'Factory receipt runner could not load its durable pre-invocation context',
+          { failureDomain: 'factory', failureStage: 'backend_invocation_fence', retryable: null },
+        ),
+        invocationId,
+      );
+    }
+    console.error(`${prepared.reasonCode}; durable_settlement=${prepared.settled ? 'recorded' : 'unavailable'}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { job, analytics } = prepared;
 
   let invocationRecorded = false;
   let invocationRegistrationError: unknown = null;
@@ -56,19 +73,23 @@ async function main(): Promise<void> {
   try {
     result = await runHermesCreateDraftPr(job);
   } catch (error) {
-    const reasonCode = error instanceof NonRetryableBridgeExecutionError
-      ? error.reasonCode
-      : 'factory_execution_recovery_required';
+    const classified = error instanceof NonRetryableBridgeExecutionError ? error : null;
+    const reasonCode = classified?.reasonCode || 'factory_execution_recovery_required';
     const failure = {
       ...analytics,
-      failure_domain: 'executor_backend',
-      failure_stage: 'backend_execution',
+      failure_domain: classified?.failureDomain || 'unknown',
+      failure_stage: classified?.failureStage || 'unknown',
       reason_code: reasonCode,
-      retryable: error instanceof NonRetryableBridgeExecutionError ? false : null,
+      retryable: classified?.retryable ?? null,
       failure_disposition: 'recovery_required',
       operator_intervention_required: true,
       effect_outcome: 'unknown',
       elapsed_ms: elapsedMs(started),
+      transport_status: classified?.transportStatus || null,
+      process_exit_code: classified?.processExitCode ?? null,
+      process_signal: classified?.processSignal || null,
+      timed_out: classified?.timedOut ?? null,
+      buffer_exceeded: classified?.bufferExceeded ?? null,
     };
     await settleUnknown(bridge, job.job_id, lease, failure);
     await emitFailureEvent(job, reasonCode, error, invocationId);
@@ -88,10 +109,8 @@ async function main(): Promise<void> {
     committed = await bridge.commitFactoryExecution(job.job_id, lease, {
       commit_sha: result.commitSha,
       pr_url: result.prUrl,
-      hermes_session_id: result.hermesSessionId,
       reason_code: `hermes_${result.status}`,
       branch: result.branch,
-      summary: result.summary,
       ...analytics,
       backend_outcome: result.status,
       backend_elapsed_ms: elapsed,
@@ -119,18 +138,18 @@ async function main(): Promise<void> {
   }
 
   try {
-    await hatchet.events.push(HATCHET_EVENTS.HERMES_JOB_EFFECT_COMMITTED, {
+    await (await import('../hatchet-client')).hatchet.events.push(HATCHET_EVENTS.HERMES_JOB_EFFECT_COMMITTED, {
       jobId: committed.job.job_id,
       idempotencyKey: committed.job.idempotency_key,
       prUrl: committed.job.pr_url,
       prNumber: result.prNumber,
       branch: committed.job.branch,
       commitSha: committed.job.commit_sha,
-      hermesSessionId: committed.job.hermes_session_id,
+      hermesSessionId: null,
       status: result.status,
       summary: result.summary,
       validation: result.validation,
-      dispatchId: process.env.HATCHET_HERMES_RECEIPT_DISPATCH_ID || null,
+      dispatchId: invocationId,
       dryRun: false
     }, {
       scope: hermesReceiptEventScope(committed.job),
@@ -176,7 +195,7 @@ async function main(): Promise<void> {
 
   try {
     if (pending.job.state === 'verification_pending') {
-      await hatchet.events.push(HATCHET_EVENTS.HERMES_JOB_VERIFICATION_PENDING, {
+      await (await import('../hatchet-client')).hatchet.events.push(HATCHET_EVENTS.HERMES_JOB_VERIFICATION_PENDING, {
         jobId: pending.job.job_id,
         idempotencyKey: pending.job.idempotency_key,
         prUrl: pending.job.pr_url,
@@ -193,7 +212,7 @@ async function main(): Promise<void> {
 }
 
 async function emitPrCreated(job: { job_id: string; pr_url: string | null; payload: JsonObject }, prNumber: number): Promise<void> {
-  await hatchet.events.push(HATCHET_EVENTS.GITHUB_PR_CREATED, {
+  await (await import('../hatchet-client')).hatchet.events.push(HATCHET_EVENTS.GITHUB_PR_CREATED, {
     repo: String(job.payload.repo || ''),
     prNumber,
     prUrl: job.pr_url,
@@ -256,7 +275,7 @@ async function settleCommitUnknown(
       observed_pr_url: receipt.prUrl,
       observed_commit_sha: receipt.commitSha,
       observed_branch: receipt.branch,
-      observed_hermes_session_id: receipt.hermesSessionId,
+      observed_hermes_session_id: null,
       backend_outcome: receipt.status,
       verification_context: receipt.validation && typeof receipt.validation === 'object' && !Array.isArray(receipt.validation)
         ? receipt.validation
@@ -272,18 +291,20 @@ async function settleCommitUnknown(
 
 async function emitFailureEvent(job: { job_id: string; idempotency_key: string }, reasonCode: string, error: unknown, dispatchId: string, receipt?: Awaited<ReturnType<typeof runHermesCreateDraftPr>>): Promise<void> {
   try {
-    await hatchet.events.push(HATCHET_EVENTS.HERMES_JOB_FAILED, {
+    await (await import('../hatchet-client')).hatchet.events.push(HATCHET_EVENTS.HERMES_JOB_FAILED, {
       jobId: job.job_id,
       idempotencyKey: job.idempotency_key,
       reasonCode,
-      error: sanitizeText(error instanceof Error ? error.message : String(error)),
+      error: error instanceof NonRetryableBridgeExecutionError
+        ? sanitizeText(error.message)
+        : 'execution failed without structured bounded evidence',
       dispatchId,
       ...(receipt ? {
         prUrl: sanitizeText(receipt.prUrl),
         prNumber: receipt.prNumber,
         branch: sanitizeText(receipt.branch),
         commitSha: receipt.commitSha ? sanitizeText(receipt.commitSha) : null,
-        hermesSessionId: receipt.hermesSessionId ? sanitizeText(receipt.hermesSessionId) : null,
+        hermesSessionId: null,
         backendOutcome: receipt.status,
       } : {}),
       dryRun: false
@@ -306,7 +327,12 @@ function elapsedMs(started: bigint): number {
 
 function parseLease(raw: string | undefined): FactoryExecutionLease {
   if (!raw) throw new Error('HATCHET_FACTORY_EXECUTION_LEASE is required');
-  const value = JSON.parse(raw) as Partial<FactoryExecutionLease>;
+  let value: Partial<FactoryExecutionLease>;
+  try {
+    value = JSON.parse(raw) as Partial<FactoryExecutionLease>;
+  } catch {
+    throw new Error('HATCHET_FACTORY_EXECUTION_LEASE is malformed');
+  }
   if (typeof value.lease_id !== 'string' || typeof value.owner !== 'string' || typeof value.epoch !== 'number' || typeof value.fence_token !== 'string') {
     throw new Error('HATCHET_FACTORY_EXECUTION_LEASE is malformed');
   }

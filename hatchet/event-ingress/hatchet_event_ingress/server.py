@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .normalizer import IngressValidationError, normalize_github_pull_request, normalize_linear_issue
+from .normalizer import IngressValidationError, normalize_github_check_suite, normalize_github_pull_request, normalize_github_pull_request_review, normalize_linear_issue
 from .publisher import PublishError, publish_hatchet_event
 from .store import IngressConflict, IngressNotFound, claim_pending_publication, connect, count_reconciliation_observations, get_event, latest_observation, list_events, list_lifecycle_observations, list_reconciliation_observations, mark_publication_failed, mark_published, publication_status, record_event
 
@@ -82,8 +82,10 @@ class IngressHandler(BaseHTTPRequestHandler):
             return False
 
         tolerance_ms = int(os.environ.get("HATCHET_EVENT_INGRESS_LINEAR_TIMESTAMP_TOLERANCE_MS", "60000"))
-        header_timestamp = self.headers.get("Linear-Timestamp")
-        timestamp = header_timestamp or body.get("webhookTimestamp")
+        # The HMAC covers the body, not transport headers. Freshness must be
+        # bound to the signed payload so a captured body cannot be replayed
+        # with a caller-selected current Linear-Timestamp header.
+        timestamp = body.get("webhookTimestamp")
         if timestamp is None:
             self._write_json(401, {"error": "missing timestamp"})
             return False
@@ -185,13 +187,27 @@ class IngressHandler(BaseHTTPRequestHandler):
             parts = [unquote(part) for part in path.split("/") if part]
             body = self._read_json(raw)
 
-            if parts in (["events", "github", "pull_request"], ["events", "github", "pull-request"]):
+            github_normalizer = {
+                ("events", "github", "pull_request"): normalize_github_pull_request,
+                ("events", "github", "pull-request"): normalize_github_pull_request,
+                ("events", "github", "check_suite"): normalize_github_check_suite,
+                ("events", "github", "check-suite"): normalize_github_check_suite,
+                ("events", "github", "pull_request_review"): normalize_github_pull_request_review,
+                ("events", "github", "pull-request-review"): normalize_github_pull_request_review,
+            }.get(tuple(parts))
+            if github_normalizer:
                 if not self._require_github_signature(raw):
                     return
+                signature_verified = bool(
+                    os.environ.get("HATCHET_EVENT_INGRESS_GITHUB_WEBHOOK_SECRET")
+                )
                 delivery_id = self.headers.get("X-GitHub-Delivery") or body.get("delivery_id")
                 delivery = str(delivery_id).strip() if delivery_id else None
-                normalized = normalize_github_pull_request(body, delivery_id=delivery)
-                event, created = record_event(self.conn, normalized=normalized, raw_payload=body)
+                normalized = github_normalizer(body, delivery_id=delivery)
+                event, created = record_event(
+                    self.conn, normalized=normalized, raw_payload=body,
+                    signature_verified=signature_verified,
+                )
                 if not event["hatchet_published"]:
                     event = _publish_event(self.conn, event)
                 self._write_json(201 if created else 200, {"created": created, "event": event})
@@ -200,10 +216,16 @@ class IngressHandler(BaseHTTPRequestHandler):
             if parts == ["events", "linear", "issue"]:
                 if not self._require_linear_signature(raw, body):
                     return
+                signature_verified = bool(
+                    os.environ.get("HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET")
+                )
                 delivery_id = self.headers.get("Linear-Delivery") or body.get("delivery_id")
                 delivery = str(delivery_id).strip() if delivery_id else None
                 normalized = normalize_linear_issue(body, delivery_id=delivery)
-                event, created = record_event(self.conn, normalized=normalized, raw_payload=body)
+                event, created = record_event(
+                    self.conn, normalized=normalized, raw_payload=body,
+                    signature_verified=signature_verified,
+                )
                 if not event["hatchet_published"]:
                     event = _publish_event(self.conn, event)
                 self._write_json(201 if created else 200, {"created": created, "event": event})

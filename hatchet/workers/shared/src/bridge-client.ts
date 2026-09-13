@@ -172,6 +172,13 @@ export class BridgeClient {
     const result = await this.requestJson<{ authorized: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/authorize`, { method: 'POST', body: JSON.stringify(lease) });
     return result.authorized === true;
   }
+  async recordFactoryExecutionRoute(jobId: string, details: JsonObject): Promise<boolean> {
+    const result = await this.requestJson<{ recorded: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/route`, {
+      method: 'POST',
+      body: JSON.stringify({ details }),
+    });
+    return result.recorded === true;
+  }
   async recordFactoryExecutionAnalytics(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, eventType: 'execution_backend_invoked' | 'execution_backend_completed', details: JsonObject): Promise<boolean> {
     const result = await this.requestJson<{ recorded: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/analytics`, {
       method: 'POST',

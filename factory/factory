@@ -215,6 +215,8 @@ format_analytics() {
   require_jq_for_view
   jq -r '
     def pct: if . == null then "-" else "\((. * 1000 | round) / 10)%" end;
+    def cov: if . == null then "-" else "\(.observed)/\(.eligible)  \(.rate | pct)" end;
+    def value: if . == null then "unavailable" else tostring end;
     def words: gsub("_"; " ");
     def duration:
       if . == null then "-"
@@ -231,13 +233,33 @@ format_analytics() {
     "  Execution claimed                \(.coverage.execution_claimed_attempts)",
     "  Effect authorized                \(.coverage.effect_authorized_attempts)",
     "  Backend attributed               \(.coverage.backend_attribution.observed)/\(.coverage.backend_attribution.eligible)  \(.coverage.backend_attribution.rate | pct)",
+    "  Route assigned                   \(.coverage.execution_route_assignment | cov)",
     "  Configured auth labels known     \(.coverage.configured_auth_label.observed)/\(.coverage.configured_auth_label.eligible)  \(.coverage.configured_auth_label.rate | pct)",
     "  Attempt failures attributed      \(.coverage.attempt_failure_attribution.observed)/\(.coverage.attempt_failure_attribution.eligible)  \(.coverage.attempt_failure_attribution.rate | pct)",
     "",
     "Intake",
     (if .intake.available then
       "  Linear events \(.intake.linear_events)  eligible work items \(.intake.eligible_work_items)  rejected \(.intake.rejected_events)",
-      "  Published \(.intake.published_events)  unpublished \(.intake.unpublished_events)"
+      "  Published \(.intake.published_events)  unpublished \(.intake.unpublished_events)",
+      "  Raw repeated Ready observations \(.intake.repeated_eligible_events) (all eligible events)",
+      "  Eligible receipt authenticity   \(.intake.eligible_event_authenticity | cov)",
+      (if .intake.correlation.available then
+        "  Authenticated repeated Ready rate \(.intake.authenticated_repeated_eligible_events)/\(.intake.authenticated_eligible_events)  \(.intake.repeated_eligible_event_rate | pct)",
+        "  Eligible → real attempt         \(.intake.correlation.eligible_to_real_attempt | cov)",
+        (if .intake.correlation.work_item_conversion then
+          "  Ready work items: attempt \(.intake.correlation.work_item_conversion.all.real_attempt | cov), PR \(.intake.correlation.work_item_conversion.all.draft_pr_available | cov), verified \(.intake.correlation.work_item_conversion.all.verified_ready | cov), merged \(.intake.correlation.work_item_conversion.all.merged | cov)",
+          "  Ready merge outcomes settled  \(.intake.correlation.work_item_conversion.all.merge_outcome_evidence | cov); right-censored \(.intake.correlation.work_item_conversion.all.right_censored_work_items)"
+         else empty end),
+        "  Active-attempt reuse rate      \(.intake.correlation.active_attempt_reuse_events)/\(.intake.correlation.eligible_to_real_attempt.eligible)  \(.intake.correlation.active_attempt_reuse_rate | pct)"
+       else "  Authenticated Ready correlation unavailable." end),
+      (if .intake.receipts.available then
+        "  Webhook receipts \(.intake.receipts.receipts)  signature verified \(.intake.receipts.signature_verified_receipts | value)  unverified \(.intake.receipts.unverified_receipts | value)",
+        "  Receipt coverage                \(.intake.receipts.event_receipt_coverage | cov)",
+        (if .intake.receipts.full_window_rate_available then
+          "  Full-window redelivery rate     \(.intake.receipts.redelivery_rate | pct)"
+         else "  Observed-receipt redelivery     \(.intake.receipts.observed_receipt_redelivery_rate | pct) (conditional; full-window rate unavailable)" end)
+       else "  Webhook receipt audit unavailable." end),
+      "  Current publication backlog     \(.intake.publication.current_backlog | value)"
      else "  Intake ledger unavailable." end),
     "",
     "Delivery funnel (unique work items)",
@@ -249,14 +271,25 @@ format_analytics() {
     (if .outcomes.right_censored then
       "  Note: \(.outcomes.active_attempts) cohort attempt(s) are still active; outcome rates are right-censored."
      else "  All cohort attempts are terminal." end),
-    (if .outcomes.github_observation_coverage == null then
+    (if .github.authenticated_outcomes_available == false or .outcomes.github_observation_coverage == null then
       "  GitHub outcomes unavailable."
      else
-      "  GitHub PR outcomes observed \(.outcomes.github_observation_coverage.observed)/\(.outcomes.github_observation_coverage.eligible)  merged \(.outcomes.merged_prs)  closed unmerged \(.outcomes.closed_unmerged_prs)"
+      "  GitHub PR outcomes observed \(.outcomes.github_observation_coverage.observed)/\(.outcomes.github_observation_coverage.eligible)  open \(.outcomes.open_prs | value)  merged \(.outcomes.merged_prs | value)  closed unmerged \(.outcomes.closed_unmerged_prs | value)  unobserved \(.outcomes.unobserved_prs | value)",
+      "  Provider-timed merges            \(.github.merge_timestamp_coverage | cov) (required for temporal attribution)",
+      "  Closed-unmerged / terminal PRs  \(.github.closed_unmerged_rates.terminal_prs.numerator)/\(.github.closed_unmerged_rates.terminal_prs.denominator)  \(.github.closed_unmerged_rates.terminal_prs.rate | pct); all-eligible lower bound \(.github.closed_unmerged_rates.all_eligible_prs.rate | pct), censored \(.github.closed_unmerged_rates.all_eligible_prs.right_censored)",
+      "  Authenticated GitHub observations \(.github.authenticity.authenticated_observations | value)  unverified matching \(.github.authenticity.unverified_matching_observations | value)",
+      (if .github.first_pass_checks.available then
+        "  First-pass CI                    \(.github.first_pass_checks.success_rate | pct)"
+       else "  First-pass CI                    unavailable (required-check aggregate is not observed)" end),
+      (if .github.reviews.available then
+        "  Reviews with changes requested  \(.github.reviews.changes_requested_prs)/\(.github.reviews.coverage.observed)  \(.github.reviews.changes_requested_rate | pct)"
+       else "  Review observations             unavailable" end),
+      "  Mature 24h terminal coverage    \(.outcomes.maturity.at_24h.terminal_observation | cov)",
+      "  Mature 7d terminal coverage     \(.outcomes.maturity.at_7d.terminal_observation | cov)"
      end),
     "",
     "Latency                                      n        p50        p95",
-    (.latency_ms | to_entries[] | "  \(.key | words)  \(.value.samples)  \(.value.p50 | duration)  \(.value.p95 | duration)"),
+    (.latency_ms | to_entries[] | "  \(.key | words)  \(.value.samples)/\(.value.eligible // .value.samples)  \(.value.p50 | duration)  \(.value.p95 | duration)"),
     "",
     "Failure evidence (attempt grain)",
     "  Currently failed \(.failures.currently_failed_attempts)  with failure evidence \(.failures.attempts_with_failure_evidence)  recovered \(.failures.recovered_failure_attempts)",
@@ -271,6 +304,11 @@ format_analytics() {
     "",
     "Recovery and safety",
     (.recovery.by_attempt_kind | to_entries[] | "  \(.key | words) attempts  \(.value.attempts)  verified \(.value.verified)"),
+    "  Failed-attempt recovery within \(.recovery.recovery_maturity_days)d \(.recovery.failed_attempts_verified_within_horizon)/\(.recovery.age_qualified_failed_attempts)  \(.recovery.failed_attempt_recovery_rate | pct)",
+    "  Recovery horizon maturity         \(.recovery.failed_attempt_recovery_outcome_coverage | cov); right-censored \(.recovery.right_censored_failed_attempts) (active-now \(.recovery.active_recovery_lineages), immature \(.recovery.immature_failed_attempts), unaged \(.recovery.unaged_unrecovered_failed_attempts))",
+    "  Observed eventual recoveries      \(.recovery.failed_attempts_eventually_verified) (late beyond horizon \(.recovery.late_observed_attempt_recoveries))",
+    "  Failure → retry p50             \(.recovery.failure_to_retry_reserved_ms.p50 | duration)",
+    "  Failure → verified p50          \(.recovery.failure_to_verified_ready_ms.p50 | duration)",
     "  Repair budgets exhausted          \(.recovery.repair_budgets_exhausted)",
     "  Bridge submit deduplicated events  \(.safety.bridge_submit_deduplicated_events)",
     "  Unknown effect outcomes           \(.safety.unknown_effect_outcomes)",
@@ -286,6 +324,19 @@ format_analytics() {
     (if (.backends | length) == 0 then "  No attributed backend executions."
      else (.backends[] | "  \(.execution_backend)/\(.execution_transport) configured_auth=\(.configured_auth_mode)  attempts=\(.attempts) invocations=\(.invocations) completed=\(.completed_invocations) failed=\(.failed_invocations) completed_p50=\(.completed_invocation_latency_ms.p50 | duration) failed_p50=\(.failed_invocation_latency_ms.p50 | duration)") end),
     "",
+    "Intent-to-treat routes",
+    (if (.routes.groups | length) == 0 then "  No route assignments in this cohort."
+     else (.routes.groups[] | "  \(.experiment_id)/\(.variant) \(.intended_backend)/\(.intended_transport) provider=\(.configured_provider) model=\(.configured_model) repo=\(.repository) kind=\(.attempt_kind) attempts=\(.attempts) invoked=\(.backend_invoked) verified=\(.verified_ready)") end),
+    (if .routes.lineage then
+      "  Lineage route pairs \(.routes.lineage.route_pair_coverage | cov)  identity crossovers \(.routes.lineage.identity_crossovers)  variant crossovers \(.routes.lineage.variant_crossovers)"
+     else empty end),
+    "",
+    "Current active backlog",
+    (if .activity.current_active_backlog then
+      "  Attempts \(.activity.current_active_backlog.attempts)  work items \(.activity.current_active_backlog.work_items)  age p50 \(.activity.current_active_backlog.age_ms.p50 | duration)  p95 \(.activity.current_active_backlog.age_ms.p95 | duration)  max \(.activity.current_active_backlog.age_ms.max | duration)",
+      ((.activity.current_active_backlog.by_status // {}) | to_entries[] | "  \(.key | words)  \(.value)")
+     else "  Unavailable in this report version." end),
+    "",
     "Lifecycle delivery",
     (if .lifecycle.available then
       "  Cohort records \(.lifecycle.cohort_records)  current dead letters \(.lifecycle.current_dead_letters)",
@@ -293,6 +344,27 @@ format_analytics() {
       (if (.lifecycle.dead_letter_delivery_errors | length) == 0 then empty
        else (.lifecycle.dead_letter_delivery_errors | to_entries[] | "  delivery error \(.key)  \(.value)") end)
      else "  Lifecycle ledger unavailable." end),
+    "",
+    "Delivery backlogs",
+    "  Ingress publication             \(.delivery.ingress_publication.current_backlog // "unavailable")",
+    "  Attempt event outbox            \(.delivery.factory_attempt_outbox.current_backlog // "unavailable")",
+    "  Inspection outbox               \(.delivery.factory_inspection_outbox.current_backlog // "unavailable")",
+    "  Lifecycle outbox                \(.delivery.lifecycle_outbox.current_backlog // "unavailable")",
+    "",
+    "Reconciliation",
+    (if .reconciliation.available then
+      "  Current \(.reconciliation.current)  actionable \(.reconciliation.actionable)  historical \(.reconciliation.historical)",
+      (.reconciliation.by_kind | to_entries[] | "  \(.key | words)  \(.value)")
+     else "  Reconciliation evidence unavailable." end),
+    "",
+    "Source freshness",
+    ((.sources // {}) | to_entries[] | "  \(.key)  \(if .value.available then "rows=\(.value.row_count // (.value.row_counts | add // 0)) lag=\(.value.lag_ms | duration) schema=\(.value.schema_contract)" else "unavailable" end)"),
+    (if .sources.ingress.receipt_timestamp_health.available then
+      "  ingress receipts  invalid_time=\(.sources.ingress.invalid_receipt_timestamp_rows) future_time=\(.sources.ingress.future_receipt_timestamp_rows)"
+     else empty end),
+    (if .sources.bridge.available then
+      "  bridge timestamp values  invalid=\(.sources.bridge.invalid_timestamp_rows) future=\(.sources.bridge.future_timestamp_rows)"
+     else empty end),
     "",
     "Unavailable evidence",
     (.unavailable_metrics[] | "  - \(.)")
