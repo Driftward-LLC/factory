@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -16,6 +18,137 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FactoryCliStaticTests(unittest.TestCase):
+    def test_analytics_uses_root_operator_and_bounded_window(self) -> None:
+        source = (ROOT / "factory/factory").read_text(encoding="utf-8")
+
+        self.assertIn("factory analytics [--days N] [--json]", source)
+        self.assertIn('operator_request GET "/v1/analytics?days=$days"', source)
+        self.assertIn("format_analytics()", source)
+        self.assertIn("analytics --days must be between 1 and 365", source)
+
+    def test_observed_receipt_refresh_uses_the_root_operator(self) -> None:
+        source = (ROOT / "factory/factory").read_text(encoding="utf-8")
+        operator = (ROOT / "hatchet/bridge/hatchet_hermes_bridge/operator.py").read_text(encoding="utf-8")
+
+        self.assertIn("factory attempts refresh-receipt ATTEMPT-ID --reason TEXT --yes", source)
+        self.assertIn('operator_request POST "/v1/attempts/$id/receipt-recovery/refresh"', source)
+        self.assertIn('path.endswith("/receipt-recovery/refresh")', operator)
+
+    def test_analytics_formatter_preserves_funnel_order_and_discloses_active_cohort(self) -> None:
+        if not hasattr(socket, "AF_UNIX") or shutil.which("jq") is None:
+            self.skipTest("Unix sockets and jq are required for the analytics formatter")
+
+        factory = ROOT / "factory/factory"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            env_file = tmp_path / "factory-operator.env"
+            socket_path = tmp_path / "operator.sock"
+            fixture = tmp_path / "analytics.json"
+            env_file.write_text("HATCHET_FACTORY_OPERATOR_TOKEN=test-token\n", encoding="utf-8")
+            fixture.write_text(json.dumps({
+                "schema": "factory-analytics-v1",
+                "generated_at": "2026-09-13T00:00:00Z",
+                "window": {"days": 30},
+                "coverage": {
+                    "cohort_work_items": 2,
+                    "cohort_attempts": 2,
+                    "execution_claimed_attempts": 2,
+                    "effect_authorized_attempts": 1,
+                    "backend_attribution": {"observed": 0, "eligible": 1, "rate": 0},
+                    "configured_auth_label": {"observed": 0, "eligible": 0, "rate": None},
+                    "attempt_failure_attribution": {"observed": 0, "eligible": 1, "rate": 0},
+                },
+                "intake": {
+                    "available": True,
+                    "linear_events": 2,
+                    "eligible_work_items": 1,
+                    "rejected_events": 1,
+                    "published_events": 2,
+                    "unpublished_events": 0,
+                },
+                "funnel": {"stages": {
+                    "attempted": {"count": 2, "rate_from_attempted": 1},
+                    "executor_started": {"count": 2, "rate_from_attempted": 1},
+                    "effect_committed": {"count": 1, "rate_from_attempted": 0.5},
+                    "draft_pr_available": {"count": 1, "rate_from_attempted": 0.5},
+                    "verified_ready": {"count": 0, "rate_from_attempted": 0},
+                }},
+                "outcomes": {
+                    "by_status": {"failed": 1, "running": 1},
+                    "active_attempts": 1,
+                    "right_censored": True,
+                },
+                "latency_ms": {},
+                "failures": {
+                    "currently_failed_attempts": 1,
+                    "attempts_with_failure_evidence": 1,
+                    "recovered_failure_attempts": 0,
+                    "by_classification": [],
+                    "backend_invocations": {"failed": 0, "by_classification": []},
+                    "dispatch_boundaries": {"failed": 0, "by_classification": []},
+                    "effect_commit_boundaries": {"failed": 0, "by_classification": []},
+                },
+                "recovery": {"by_attempt_kind": {}, "repair_budgets_exhausted": 0},
+                "safety": {
+                    "bridge_submit_deduplicated_events": 0,
+                    "unknown_effect_outcomes": 0,
+                    "observed_receipt_commit_recovery_incidents": 0,
+                    "unresolved_observed_receipts": 0,
+                    "observed_receipt_recovery_exhausted": 0,
+                    "rejected_observed_receipts": 0,
+                    "duplicate_effects_detected": None,
+                },
+                "human": {"work_items_ready_for_review": 0, "exception_intervention_attempts": 0},
+                "backends": [],
+                "lifecycle": {
+                    "available": True,
+                    "cohort_records": 1,
+                    "current_dead_letters": 0,
+                    "by_state": {"delivered": 1},
+                    "dead_letter_delivery_errors": {},
+                },
+                "unavailable_metrics": [],
+            }, sort_keys=True), encoding="utf-8")
+            self._write_executable(
+                fake_bin / "id",
+                "#!/usr/bin/env sh\nif [ \"$1\" = \"-u\" ]; then echo 0; else /usr/bin/id \"$@\"; fi\n",
+            )
+            self._write_executable(
+                fake_bin / "curl",
+                "#!/usr/bin/env sh\ncat \"$FACTORY_TEST_ANALYTICS\"\n",
+            )
+
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.bind(str(socket_path))
+                env = os.environ.copy()
+                env.update({
+                    "FACTORY_OPERATOR_ENV": str(env_file),
+                    "FACTORY_OPERATOR_SOCKET": str(socket_path),
+                    "FACTORY_TEST_ANALYTICS": str(fixture),
+                    "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+                })
+                result = subprocess.run(
+                    [str(factory), "analytics"],
+                    check=True,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+            finally:
+                sock.close()
+
+            output = result.stdout
+            stages = ["attempted", "executor started", "effect committed", "draft pr available", "verified ready"]
+            positions = [output.index(f"  {stage}  ") for stage in stages]
+            self.assertEqual(positions, sorted(positions))
+            self.assertIn("Attempt status (attempt grain)", output)
+            self.assertIn("running  1", output)
+            self.assertIn("outcome rates are right-censored", output)
+
     def test_status_reports_legacy_bridge_reconciler_as_retired(self) -> None:
         source = (ROOT / "factory/factory").read_text(encoding="utf-8")
 

@@ -6,13 +6,16 @@ import path from 'node:path';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import {
   buildPrompt,
+  factoryExecutionAnalyticsIdentity,
   findAddedTempFileReference,
   hermesReceiptEventExpression,
   hermesReceiptEventScope,
   hermesReceiptWaitDuration,
+  jobMatchesHermesDraftPrReceipt,
   NonRetryableBridgeExecutionError,
   resumeHermesDraftPrResult,
   sanitizeText,
+  selectedReceiptEnvironment,
   validateRealCreateDraftPrJob,
   verificationCompletionPlan,
   verifyDraftPrEvidence,
@@ -23,6 +26,63 @@ import {
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+
+test('execution analytics identity reports configured backend boundary without inferring auth', () => {
+  const previous = {
+    target: process.env.DRIFTWARD_HERMES_GRPC_TARGET,
+    auth: process.env.DRIFTWARD_HERMES_AUTH_MODE,
+    version: process.env.DRIFTWARD_HERMES_VERSION,
+  };
+  try {
+    process.env.DRIFTWARD_HERMES_GRPC_TARGET = 'unix:///run/driftward-hermes-factory/hermes.sock';
+    process.env.DRIFTWARD_HERMES_AUTH_MODE = 'chatgpt_codex_oauth';
+    process.env.DRIFTWARD_HERMES_VERSION = '1.2.3';
+    assert.deepEqual(factoryExecutionAnalyticsIdentity('dispatch-1'), {
+      analytics_schema_version: 1,
+      invocation_id: 'dispatch-1',
+      execution_backend: 'hermes',
+      execution_transport: 'grpc_uds',
+      backend_version: '1.2.3',
+      configured_auth_mode: 'chatgpt_codex_oauth',
+    });
+    const receiptEnvironment = Object.fromEntries(selectedReceiptEnvironment(greenJob(), {
+      lease_id: 'lease-1', owner: 'worker-1', epoch: 1, fence_token: 'fence-1'
+    }, 'dispatch-1'));
+    assert.equal(receiptEnvironment.DRIFTWARD_HERMES_AUTH_MODE, 'chatgpt_codex_oauth');
+    assert.equal(receiptEnvironment.DRIFTWARD_HERMES_VERSION, '1.2.3');
+    process.env.DRIFTWARD_HERMES_AUTH_MODE = 'untrusted-value';
+    assert.equal(factoryExecutionAnalyticsIdentity('dispatch-2').configured_auth_mode, 'unknown');
+    delete process.env.DRIFTWARD_HERMES_GRPC_TARGET;
+    assert.equal(factoryExecutionAnalyticsIdentity('dispatch-3').execution_transport, 'local_command');
+  } finally {
+    if (previous.target === undefined) delete process.env.DRIFTWARD_HERMES_GRPC_TARGET; else process.env.DRIFTWARD_HERMES_GRPC_TARGET = previous.target;
+    if (previous.auth === undefined) delete process.env.DRIFTWARD_HERMES_AUTH_MODE; else process.env.DRIFTWARD_HERMES_AUTH_MODE = previous.auth;
+    if (previous.version === undefined) delete process.env.DRIFTWARD_HERMES_VERSION; else process.env.DRIFTWARD_HERMES_VERSION = previous.version;
+  }
+});
+
+test('receipt runner wakes the durable workflow before verification transition', () => {
+  const source = readFileSync(path.resolve(process.cwd(), 'src/hermes/create-draft-pr-receipt-runner.ts'), 'utf8');
+  const commit = source.indexOf('committed = await bridge.commitFactoryExecution');
+  const wake = source.indexOf('await hatchet.events.push(HATCHET_EVENTS.HERMES_JOB_EFFECT_COMMITTED');
+  const verificationTransition = source.indexOf('await bridge.transitionJob(committed.job.job_id');
+  assert.ok(commit >= 0 && wake > commit && verificationTransition > wake);
+});
+
+test('receipt runner requires a unique durable invocation fence before Hermes', () => {
+  const source = readFileSync(path.resolve(process.cwd(), 'src/hermes/create-draft-pr-receipt-runner.ts'), 'utf8');
+  const fence = source.indexOf('invocationRecorded = await bridge.recordFactoryExecutionAnalytics');
+  const rejection = source.indexOf('if (!invocationRecorded)');
+  const invoke = source.indexOf('result = await runHermesCreateDraftPr(job)');
+  assert.ok(fence >= 0 && rejection > fence && invoke > rejection);
+});
+
+test('commit read-after-write accepts only the exact durable Hermes receipt', () => {
+  assert.equal(jobMatchesHermesDraftPrReceipt(greenJob(), greenResult()), true);
+  assert.equal(jobMatchesHermesDraftPrReceipt({ ...greenJob(), state: 'running' }, greenResult()), false);
+  assert.equal(jobMatchesHermesDraftPrReceipt({ ...greenJob(), commit_sha: 'other' }, greenResult()), false);
+  assert.equal(jobMatchesHermesDraftPrReceipt({ ...greenJob(), pr_url: 'https://github.com/Driftward-LLC/capykit/pull/62' }, greenResult()), false);
+});
 
 test('findAddedTempFileReference detects temp-file placeholder content', () => {
   assert.equal(findAddedTempFileReference('+@/tmp/tmp.raV5AhBLUF'), '+@/tmp/tmp.raV5AhBLUF');

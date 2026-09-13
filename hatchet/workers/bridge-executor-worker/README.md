@@ -71,6 +71,7 @@ Optional environment:
 
 ```bash
 DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
+DRIFTWARD_HERMES_AUTH_MODE=unknown
 DRIFTWARD_HERMES_COMMAND=driftward-hermes
 DRIFTWARD_HERMES_ALLOWED_REPOS=Driftward-LLC/driftward-host
 DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN=factory-hermes[bot]
@@ -86,6 +87,12 @@ DRIFTWARD_HERMES_MAX_BUFFER_BYTES=2097152
 DRIFTWARD_HERMES_PR_VERIFICATION_TIMEOUT_MS=180000
 DRIFTWARD_HERMES_PR_VERIFICATION_POLL_MS=15000
 ```
+
+`DRIFTWARD_HERMES_AUTH_MODE` is a non-secret analytics label. Set it to
+`chatgpt_codex_oauth` or `api_key` only when the deployed route is known;
+otherwise leave the default `unknown`. It does not inspect or expose an OAuth
+token and cannot identify whether Hermes, OAuth, or the provider caused an
+execution failure.
 
 When `DRIFTWARD_HERMES_GRPC_TARGET` is set, the bridge executor and detached
 receipt runner call the typed Hermes Factory gRPC gateway instead of invoking

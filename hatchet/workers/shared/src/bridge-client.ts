@@ -31,6 +31,13 @@ export type BridgeClientOptions = {
 };
 
 export type VerificationLeaseResponse = { acquired?: boolean; claimed?: boolean; lease?: Record<string, unknown> };
+export type FactoryFailureClassification = {
+  failure_domain: string;
+  failure_stage: string;
+  retryable: boolean | null;
+  failure_disposition: 'retry' | 'terminal' | 'recovery_required';
+  operator_intervention_required: boolean | null;
+};
 
 export class BridgeClient {
   private baseUrl: string;
@@ -90,8 +97,22 @@ export class BridgeClient {
     return this.completeVerification(ref, { state: 'ready_for_human_review', details: { reason_code: 'draft_pr_verified', verification_attempt_id: attemptId, verification_receipt: receipt } });
   }
 
-  async completeVerificationFailure(ref: string, attemptId: string, reasonCode: string, error: string): Promise<BridgeTransitionResponse> {
-    return this.completeVerification(ref, { state: 'failed', details: { reason_code: reasonCode, verification_attempt_id: attemptId, error } });
+  async completeVerificationFailure(ref: string, attemptId: string, reasonCode: string, error: string, classification: FactoryFailureClassification = {
+    failure_domain: 'verification',
+    failure_stage: 'verification_checks',
+    retryable: null,
+    failure_disposition: 'terminal',
+    operator_intervention_required: null,
+  }): Promise<BridgeTransitionResponse> {
+    return this.completeVerification(ref, {
+      state: 'failed',
+      details: {
+        reason_code: reasonCode,
+        verification_attempt_id: attemptId,
+        error,
+        ...classification,
+      }
+    });
   }
 
   async recordJobCorrelation(ref: string, request: BridgeCorrelationRequest): Promise<BridgeCorrelationResponse> {
@@ -151,8 +172,22 @@ export class BridgeClient {
     const result = await this.requestJson<{ authorized: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/authorize`, { method: 'POST', body: JSON.stringify(lease) });
     return result.authorized === true;
   }
-  async settleFactoryExecution(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, effectObserved: boolean): Promise<void> {
-    await this.requestJson(`/jobs/${encodeURIComponent(jobId)}/factory-execution/settle`, { method: 'POST', body: JSON.stringify({ ...lease, effect_observed: effectObserved }) });
+  async recordFactoryExecutionAnalytics(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, eventType: 'execution_backend_invoked' | 'execution_backend_completed', details: JsonObject): Promise<boolean> {
+    const result = await this.requestJson<{ recorded: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/analytics`, {
+      method: 'POST',
+      body: JSON.stringify({
+        lease_id: lease.lease_id,
+        owner: lease.owner,
+        epoch: lease.epoch,
+        fence_token: lease.fence_token,
+        event_type: eventType,
+        details,
+      })
+    });
+    return result.recorded === true;
+  }
+  async settleFactoryExecution(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, effectObserved: boolean, failureDetails?: JsonObject, failureEventType: 'execution_backend_failed' | 'execution_dispatch_failed' | 'execution_effect_commit_failed' = 'execution_backend_failed'): Promise<void> {
+    await this.requestJson(`/jobs/${encodeURIComponent(jobId)}/factory-execution/settle`, { method: 'POST', body: JSON.stringify({ ...lease, effect_observed: effectObserved, ...(failureDetails ? { failure_details: failureDetails, failure_event_type: failureEventType } : {}) }) });
   }
   async commitFactoryExecution(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, details: JsonObject): Promise<BridgeTransitionResponse> {
     return this.requestJson<BridgeTransitionResponse>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/commit`, { method: 'POST', body: JSON.stringify({ ...lease, details }) });

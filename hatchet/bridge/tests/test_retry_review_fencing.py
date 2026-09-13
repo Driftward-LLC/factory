@@ -62,13 +62,17 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertIsNone(claim_factory_outbox_delivery(conn, row["outbox_key"]))
         fail_factory_outbox_delivery(conn, row["outbox_key"], claimed["delivery_lease_id"])
-        claimed = claim_factory_outbox_delivery(conn, row["outbox_key"])
-        self.assertIsNotNone(claimed)
+        second_claim = claim_factory_outbox_delivery(conn, row["outbox_key"])
+        self.assertIsNotNone(second_claim)
         # A crash before acknowledgement leaves the same immutable event for a
         # lease-expiry replay, never a second attempt/job/event row.
         conn.execute("UPDATE factory_attempt_outbox SET delivery_lease_expires_at='2000-01-01T00:00:00.000000Z' WHERE outbox_key=?", (row["outbox_key"],)); conn.commit()
-        self.assertEqual(claim_factory_outbox_delivery(conn, row["outbox_key"])["payload"], row["payload"])
-        acknowledge_factory_outbox(conn, row["outbox_key"]); acknowledge_factory_outbox(conn, row["outbox_key"])
+        replay = claim_factory_outbox_delivery(conn, row["outbox_key"])
+        self.assertEqual(replay["payload"], row["payload"])
+        acknowledge_factory_outbox(conn, row["outbox_key"], second_claim["delivery_lease_id"])
+        self.assertEqual(len(list_factory_outbox(conn)), 1)
+        acknowledge_factory_outbox(conn, row["outbox_key"], replay["delivery_lease_id"])
+        acknowledge_factory_outbox(conn, row["outbox_key"], replay["delivery_lease_id"])
         self.assertEqual(list_factory_outbox(conn), [])
         conn.close()
 
@@ -338,7 +342,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertEqual(claim_factory_execution(conn, job["job_id"], owner="executor-b")["reason"], "factory_execution_recovery_required")
         self.assertFalse(execution_may_effect(conn, job["job_id"], a))
         with self.assertRaises(BridgeConflict):
-            commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1"})
+            commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1", "branch":job["branch"]})
         self.assertEqual(get_job(conn, job["job_id"])["state"], "running")
         self.assertEqual(get_factory_attempt(conn, attempt["attempt_id"])["status"], "effect_outcome_unknown")
         conn.close()
@@ -352,7 +356,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertEqual(cancel_factory_attempt(conn, attempt["attempt_id"], reason="too late", actor="uid:0")["status"], "cancellation_requested")
         conn.execute("UPDATE factory_execution_leases SET expires_at='2000-01-01T00:00:00.000000Z' WHERE lease_id=?", (a["lease_id"],)); conn.commit()
         self.assertEqual(claim_factory_execution(conn, job["job_id"], owner="executor-b")["reason"], "factory_execution_recovery_required")
-        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1"})
+        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1", "branch":job["branch"]})
         self.assertEqual(committed["state"], "effect_committed")
         self.assertEqual(get_factory_attempt(conn, attempt["attempt_id"])["status"], "canceled_after_effect")
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_execution_leases WHERE effect_authorized_at IS NOT NULL").fetchone()[0], 1)
@@ -368,7 +372,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         lease = conn.execute("SELECT * FROM factory_execution_leases WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()
         self.assertIsNone(lease["released_at"])
         self.assertEqual(claim_factory_execution(conn, job["job_id"], owner="executor-b")["reason"], "factory_execution_in_progress")
-        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/10", "commit_sha":"abcdef1"})
+        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/10", "commit_sha":"abcdef1", "branch":job["branch"]})
         self.assertEqual(committed["state"], "effect_committed")
         self.assertFalse(claim_factory_execution(conn, job["job_id"], owner="executor-b")["claimed"])
         conn.close()
@@ -391,7 +395,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         transition_job(conn, job["job_id"], state="running", details={})
         claim = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
         self.assertTrue(authorize_factory_effect(conn, job["job_id"], claim))
-        commit_factory_execution(conn, job["job_id"], claim, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/11", "commit_sha":"abcdef1"})
+        commit_factory_execution(conn, job["job_id"], claim, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/11", "commit_sha":"abcdef1", "branch":job["branch"]})
         for state in ("failed", "completed", "canceled"):
             with self.assertRaises(BridgeValidationError):
                 transition_job(conn, job["job_id"], state=state, details={})

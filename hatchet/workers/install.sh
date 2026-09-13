@@ -162,6 +162,7 @@ done
 
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED "${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED:-1}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
+upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_AUTH_MODE "${DRIFTWARD_HERMES_AUTH_MODE:-unknown}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_COMMAND "${DRIFTWARD_HERMES_COMMAND:-driftward-hermes}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_ALLOWED_REPOS "${DRIFTWARD_HERMES_ALLOWED_REPOS:-Driftward-LLC/driftward-host,Driftward-LLC/capykit}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN "${DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN:-factory-hermes[bot]}"

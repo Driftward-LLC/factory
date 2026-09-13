@@ -15,6 +15,78 @@ from test_support import connect_migrate as connect
 
 
 class BridgeServerTests(unittest.TestCase):
+    def test_factory_execution_analytics_endpoint_is_fenced_and_idempotent(self):
+        with tempfile.NamedTemporaryFile() as database:
+            conn = connect(database.name); self.addCleanup(conn.close)
+            from hatchet_hermes_bridge.store import reserve_factory_retry, claim_factory_execution, authorize_factory_effect
+            attempt, job, _ = reserve_factory_retry(
+                conn, work_item_key="ENG-40", mode="real", request_id="analytics-http",
+                reason="test", actor="uid:0", payload={"repo": "Driftward-LLC/capykit"},
+            )
+            transition_job(conn, job["job_id"], state="running")
+            lease = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
+            self.assertTrue(authorize_factory_effect(conn, job["job_id"], lease))
+            details = {
+                "analytics_schema_version": 1,
+                "invocation_id": "dispatch-http",
+                "execution_backend": "hermes",
+                "execution_transport": "grpc_uds",
+                "backend_version": None,
+                "configured_auth_mode": "unknown",
+            }
+            body = {
+                **{key: lease[key] for key in ("lease_id", "owner", "epoch", "fence_token")},
+                "event_type": "execution_backend_invoked",
+                "details": details,
+            }
+            path = f"/jobs/{job['job_id']}/factory-execution/analytics"
+            created = _PostHandler(conn, body, path); created.do_POST()
+            self.assertEqual(created.response, (201, {"recorded": True}))
+            replay = _PostHandler(conn, body, path); replay.do_POST()
+            self.assertEqual(replay.response, (200, {"recorded": False}))
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM factory_attempt_events WHERE attempt_id=? AND event_type='execution_backend_invoked'",
+                (attempt["attempt_id"],),
+            ).fetchone()[0], 1)
+
+            completed = {
+                **body,
+                "event_type": "execution_backend_completed",
+                "details": {**details, "backend_outcome": "created", "elapsed_ms": 100},
+            }
+            completed_handler = _PostHandler(conn, completed, path); completed_handler.do_POST()
+            self.assertEqual(completed_handler.response, (201, {"recorded": True}))
+            commit_failure = {
+                **{key: lease[key] for key in ("lease_id", "owner", "epoch", "fence_token")},
+                "effect_observed": False,
+                "failure_event_type": "execution_effect_commit_failed",
+                "failure_details": {
+                    **details,
+                    "failure_domain": "factory",
+                    "failure_stage": "effect_commit",
+                    "reason_code": "factory_effect_commit_failed",
+                    "retryable": None,
+                    "failure_disposition": "recovery_required",
+                    "operator_intervention_required": True,
+                    "effect_outcome": "observed",
+                    "elapsed_ms": 110,
+                    "observed_pr_url": "https://github.com/Driftward-LLC/capykit/pull/40",
+                    "observed_commit_sha": None,
+                    "observed_branch": job["branch"],
+                    "observed_hermes_session_id": None,
+                    "backend_outcome": "created",
+                    "verification_context": None,
+                },
+            }
+            settled = _PostHandler(
+                conn, commit_failure, f"/jobs/{job['job_id']}/factory-execution/settle"
+            ); settled.do_POST()
+            self.assertEqual(settled.response, (200, {"ok": True}))
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM factory_attempt_events WHERE attempt_id=? AND event_type='execution_effect_commit_failed'",
+                (attempt["attempt_id"],),
+            ).fetchone()[0], 1)
+
     def test_factory_intake_reserve_endpoint_creates_attempt_and_job_lineage(self):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
@@ -74,7 +146,7 @@ class BridgeServerTests(unittest.TestCase):
             transition_job(conn, job["job_id"], state="running", details={})
             claim = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
             self.assertTrue(authorize_factory_effect(conn, job["job_id"], claim))
-            commit_factory_execution(conn, job["job_id"], claim, {"commit_sha":"abcdef1", "pr_url":"https://github.com/Driftward-LLC/capykit/pull/99"})
+            commit_factory_execution(conn, job["job_id"], claim, {"commit_sha":"abcdef1", "pr_url":"https://github.com/Driftward-LLC/capykit/pull/99", "branch":job["branch"]})
             server = HTTPServer(("127.0.0.1", 0), BridgeHandler); server.conn = conn
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(timeout=2)))

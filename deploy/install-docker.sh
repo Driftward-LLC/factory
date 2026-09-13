@@ -330,6 +330,7 @@ ensure_env_secret "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN
 upsert_env "$bridge_executor_env_file" HATCHET_HERMES_INSPECTION_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN)"
 upsert_env "$reconciliation_env_file" HATCHET_HERMES_RECOVERY_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN)"
 ensure_env_default "$bridge_executor_env_file" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
+ensure_env_default "$bridge_executor_env_file" DRIFTWARD_HERMES_AUTH_MODE "${DRIFTWARD_HERMES_AUTH_MODE:-unknown}"
 ensure_env_file "$factory_operator_env_file"
 operator_dry_run="true"
 if [[ -r "$hatchet_workers_env_file" ]]; then

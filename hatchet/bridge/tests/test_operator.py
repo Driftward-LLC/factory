@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hatchet_hermes_bridge.operator import OperatorError, archive_lifecycle_dead_letter, list_lifecycle_dead_letters, preview_lifecycle_dead_letter_archive, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _bounded_limit, _mode, _operator_lifecycle_path, _operator_paths, _services_healthy
+from hatchet_hermes_bridge.operator import OperatorError, OperatorHandler, archive_lifecycle_dead_letter, list_lifecycle_dead_letters, preview_lifecycle_dead_letter_archive, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _analytics_days, _bounded_limit, _mode, _operator_lifecycle_path, _operator_paths, _services_healthy
 from test_support import connect_migrate as connect
 from hatchet_hermes_bridge.store import BridgeConflict, authorize_factory_effect, claim_factory_execution, commit_factory_execution, get_factory_attempt, list_events, list_factory_attempt_events, settle_factory_execution, submit_job, transition_job, utc_now
 from factory_lifecycle_writer.outbox import Outbox
@@ -46,6 +46,24 @@ class FactoryOperatorTests(unittest.TestCase):
 
     def absence_evidence(self, branch):
         return {"kind": "github_branch_pr_absence_v1", "repository": "Driftward-LLC/capykit", "head_branch": branch, "branch_exists": False, "pull_requests": [], "observed_at": utc_now()}
+
+    def test_analytics_window_is_strictly_bounded(self):
+        self.assertEqual(_analytics_days({}), 30)
+        self.assertEqual(_analytics_days({"days": ["365"]}), 365)
+        for query in ({"days": ["0"]}, {"days": ["366"]}, {"days": ["nope"]}, {"days": ["1", "2"]}, {"other": ["1"]}):
+            with self.assertRaises(OperatorError):
+                _analytics_days(query)
+
+    def test_analytics_route_uses_read_only_operator_sources(self):
+        old = os.environ.get("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB")
+        os.environ["HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB"] = self.lifecycle_db
+        self.addCleanup(lambda: os.environ.pop("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB", None) if old is None else os.environ.__setitem__("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB", old))
+        handler = _OperatorGetHandler(self.bridge_db, self.ingress_db, "/v1/analytics?days=7")
+        handler.do_GET()
+        self.assertEqual(handler.response[0], 200)
+        self.assertEqual(handler.response[1]["schema"], "factory-analytics-v1")
+        self.assertEqual(handler.response[1]["window"]["days"], 7)
+        self.assertFalse(handler.response[1]["coverage"]["ingress_available"])
 
     def unknown_effect_attempt(self):
         preview = preview_retry(**self.kwargs())
@@ -228,7 +246,7 @@ class FactoryOperatorTests(unittest.TestCase):
         self.assertIn("absence_superseded_unknown_attempt", [event["event_type"] for event in list_factory_attempt_events(conn, first["attempt"]["attempt_id"])])
         self.assertEqual([event["event_type"] for event in list_factory_attempt_events(conn, reserved["attempt"]["attempt_id"])][:2], ["absence_retry_reserved", "retry_requested"])
         with self.assertRaisesRegex(BridgeConflict, "superseded"):
-            commit_factory_execution(conn, first["job"]["job_id"], claim, {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/99", "commit_sha": "abcdef1"})
+            commit_factory_execution(conn, first["job"]["job_id"], claim, {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/99", "commit_sha": "abcdef1", "branch": first["job"]["branch"]})
         conn.close()
         replay = reserve_force_absence_retry(
             **self.kwargs(),
@@ -359,3 +377,17 @@ class FactoryOperatorTests(unittest.TestCase):
         for query in ({"limit": ["0"]}, {"limit": ["251"]}, {"limit": [""]}, {"limit": ["1", "2"]}, {"after": ["x"]}):
             with self.subTest(query=query), self.assertRaises(OperatorError):
                 _bounded_limit(query, default=100, label="events")
+
+
+class _OperatorGetHandler:
+    do_GET = OperatorHandler.do_GET
+
+    def __init__(self, bridge_db, ingress_db, path):
+        self.path = path
+        self.bridge_db = bridge_db
+        self.ingress_db = ingress_db
+        self.response = None
+
+    def _auth(self): return True
+    def _paths(self): return self.bridge_db, self.ingress_db, ROUTES, POLICY
+    def _reply(self, status, value): self.response = (status, value)

@@ -8,6 +8,8 @@ import { NonRetryableBridgeExecutionError } from './errors';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
+  hermesGrpcTarget,
+  isHermesGrpcUnixTarget,
   inspectGitHubHeadViaGrpc,
   inspectDraftPrStateViaGrpc,
   inspectDraftPullRequestViaGrpc,
@@ -29,6 +31,14 @@ export type HermesDraftPrResult = {
   validation: JsonValue | null;
 };
 
+export function jobMatchesHermesDraftPrReceipt(job: BridgeJob, result: HermesDraftPrResult): boolean {
+  return ['effect_committed', 'verification_pending', 'ready_for_human_review', 'failed'].includes(job.state)
+    && job.pr_url === result.prUrl
+    && job.branch === result.branch
+    && job.commit_sha === result.commitSha
+    && job.hermes_session_id === result.hermesSessionId;
+}
+
 export type FactoryExecutionLease = {
   lease_id: string;
   owner: string;
@@ -41,6 +51,34 @@ export type HermesReceiptDispatch = {
   pid?: number;
   runner: string;
 };
+
+export type FactoryExecutionAnalyticsIdentity = {
+  analytics_schema_version: 1;
+  invocation_id: string;
+  execution_backend: 'hermes';
+  execution_transport: 'grpc_uds' | 'grpc_tcp' | 'local_command';
+  backend_version: string | null;
+  configured_auth_mode: 'chatgpt_codex_oauth' | 'api_key' | 'unknown';
+};
+
+export function factoryExecutionAnalyticsIdentity(invocationId: string): FactoryExecutionAnalyticsIdentity {
+  const configuredAuth = (process.env.DRIFTWARD_HERMES_AUTH_MODE || '').trim();
+  const authMode = configuredAuth === 'chatgpt_codex_oauth' || configuredAuth === 'api_key'
+    ? configuredAuth
+    : 'unknown';
+  const transport = hermesGrpcGatewayEnabled()
+    ? (isHermesGrpcUnixTarget(hermesGrpcTarget()) ? 'grpc_uds' : 'grpc_tcp')
+    : 'local_command';
+  const configuredVersion = (process.env.DRIFTWARD_HERMES_VERSION || '').trim();
+  return {
+    analytics_schema_version: 1,
+    invocation_id: invocationId,
+    execution_backend: 'hermes',
+    execution_transport: transport,
+    backend_version: configuredVersion ? configuredVersion.slice(0, 120) : null,
+    configured_auth_mode: authMode,
+  };
+}
 
 type FactoryRepairContext = {
   sourceJobId: string;
@@ -270,7 +308,7 @@ function receiptEnvironmentArgs(job: BridgeJob, lease: FactoryExecutionLease, di
     .map(([key, value]) => `--setenv=${key}=${value}`);
 }
 
-function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecutionLease, dispatchId: string): Array<[string, string]> {
+export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecutionLease, dispatchId: string): Array<[string, string]> {
   const keys = [
     'PATH',
     'NODE_ENV',
@@ -292,6 +330,8 @@ function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecutionLease
     'DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH',
     'DRIFTWARD_HERMES_GRPC_ALLOW_TCP',
     'DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP',
+    'DRIFTWARD_HERMES_AUTH_MODE',
+    'DRIFTWARD_HERMES_VERSION',
     'DRIFTWARD_HERMES_COMMAND',
     'DRIFTWARD_HERMES_ALLOWED_REPOS',
     'DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN',

@@ -43,6 +43,7 @@ Use this command first when managing the current factory path:
 ```bash
 factory status
 factory console
+factory analytics --days 30
 factory doctor hatchet --profile prod
 factory mode
 factory logs linear -f
@@ -56,6 +57,8 @@ Current scope:
 ```bash
 factory status
 factory console
+factory analytics
+factory analytics --days 30 --json
 factory doctor hatchet --profile prod
 factory logs linear -f
 factory logs lifecycle
@@ -76,6 +79,7 @@ factory attempts list ENG-62 --json
 factory attempts show ATTEMPT-ID
 factory attempts events ATTEMPT-ID
 factory attempts cancel ATTEMPT-ID --reason "operator canceled before execution" --yes
+factory attempts refresh-receipt ATTEMPT-ID --reason "retry exact PR receipt inspection" --yes
 ```
 
 `factory logs lifecycle` follows the root-owned Shipwright lifecycle writer.
@@ -100,6 +104,17 @@ operator mutations or credentials. Production requests must arrive through Tails
 Serve so the console receives an authenticated `Tailscale-User-Login` header.
 The console's FastAPI schema is available to authenticated operators at
 `/api/openapi.json`.
+
+`factory analytics` is the root-only, read-only performance and quality report.
+It projects real, non-legacy attempt cohorts from the bridge ledger and joins
+optional ingress and lifecycle evidence without creating a new analytics
+store. Use `--days N` for a 1-to-365-day attempt-creation window and `--json`
+for the versioned `factory-analytics-v1` result. Missing evidence remains
+explicitly unknown or unavailable; in particular, the configured
+`chatgpt_codex_oauth` route does not by itself prove whether Hermes, OAuth, or
+the provider caused a failure. See
+[`docs/factory-analytics.md`](../docs/factory-analytics.md) for metric grains,
+coverage, and privacy constraints.
 
 `factory doctor hatchet` is a read-only desired-state drift check. It collects
 live Hatchet inventory with `--profile`, or compares a saved sanitized inventory
