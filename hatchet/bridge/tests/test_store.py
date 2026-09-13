@@ -20,8 +20,12 @@ from hatchet_hermes_bridge.store import (
     acquire_verification_lease,
     claim_verification_lease,
     claim_factory_execution,
+    authorize_factory_effect,
+    commit_factory_execution,
     get_job,
     record_verification_observation,
+    record_factory_execution_route,
+    record_factory_execution_analytics,
     reserve_factory_attempt,
     reserve_factory_intake,
     list_active_factory_attempts,
@@ -29,10 +33,12 @@ from hatchet_hermes_bridge.store import (
     list_factory_attempts,
     list_factory_attempt_events,
     reserve_factory_retry,
+    sanitize_detail,
     cancel_factory_attempt,
     get_factory_attempt,
     get_factory_lifecycle,
     _canonical_verifier_policy,
+    _execution_analytics_details,
 )
 from test_support import connect_migrate as connect
 
@@ -90,6 +96,20 @@ class BridgeStoreTests(unittest.TestCase):
         self.conn.close()
         self.tmp.close()
 
+    def test_secret_sanitizer_redacts_jwt_and_long_opaque_oauth_shapes(self):
+        jwt = "eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE"
+        opaque = ("Ab7_" * 50) + ".xY9"
+        sanitized = sanitize_detail(
+            f"failure {jwt} and {opaque} and v1_sk-proj-FAKESECRET"
+        )
+        self.assertNotIn("eyJ", sanitized)
+        self.assertNotIn("Ab7_", sanitized)
+        self.assertNotIn("sk-proj", sanitized)
+        self.assertEqual(
+            sanitized,
+            "failure [redacted] and [redacted] and v1_[redacted]",
+        )
+
     def test_submit_is_idempotent_for_same_intent(self):
         request = {
             "idempotency_key": "hatchet:run-1:create-pr",
@@ -107,6 +127,52 @@ class BridgeStoreTests(unittest.TestCase):
 
         events = list_events(self.conn, first["job_id"])
         self.assertEqual([event["event_type"] for event in events], ["accepted", "submit_deduplicated"])
+
+    def test_execution_failure_boundary_fields_are_optional_bounded_dimensions(self):
+        required = {
+            "analytics_schema_version": 1,
+            "invocation_id": "invocation-1",
+            "execution_backend": "hermes",
+            "execution_transport": "grpc_uds",
+            "backend_version": None,
+            "configured_auth_mode": "unknown",
+            "failure_domain": "gateway_transport",
+            "failure_stage": "gateway_connect",
+            "reason_code": "hermes_grpc_gateway_unavailable",
+            "retryable": True,
+            "failure_disposition": "recovery_required",
+            "operator_intervention_required": True,
+            "effect_outcome": "unknown",
+            "elapsed_ms": 25,
+        }
+        self.assertEqual(
+            _execution_analytics_details("execution_backend_failed", required),
+            required,
+        )
+        bounded = {
+            **required,
+            "transport_status": "grpc_unavailable",
+            "process_exit_code": 17,
+            "process_signal": "SIGTERM",
+            "timed_out": False,
+            "buffer_exceeded": False,
+        }
+        self.assertEqual(
+            _execution_analytics_details("execution_backend_failed", bounded),
+            bounded,
+        )
+        for field, value in (
+            ("failure_domain", "made_up"),
+            ("failure_stage", "made_up"),
+            ("transport_status", "UPPERCASE"),
+            ("transport_status", "sk-proj-fake_transport_value"),
+            ("process_exit_code", True),
+            ("process_signal", "x" * 41),
+            ("process_signal", "sk-proj-FAKE_SIGNAL_VALUE"),
+            ("timed_out", "false"),
+        ):
+            with self.subTest(field=field), self.assertRaises(BridgeValidationError):
+                _execution_analytics_details("execution_backend_failed", {**bounded, field: value})
 
     def test_docker_runtime_rejects_non_image_verifier_policy_path(self):
         old_runtime = os.environ.get("HATCHET_FACTORY_RUNTIME")
@@ -772,6 +838,164 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertEqual(second_attempt["attempt_id"], first_attempt["attempt_id"])
         self.assertEqual(second_job["job_id"], first_job["job_id"])
         self.assertEqual(second_job["payload"]["source_event_keys"], ["linear:issue:ENG-10:update:first", "linear:issue:ENG-10:update:second"])
+
+        _replayed_attempt, _replayed_job, replayed_created = reserve_factory_intake(
+            self.conn, work_item_key="ENG-10", mode="real", request_id="linear:issue:ENG-10:update:second",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-10:update:second"},
+        )
+        self.assertFalse(replayed_created)
+        reuse_events = [
+            event for event in list_factory_attempt_events(self.conn, first_attempt["attempt_id"])
+            if event["event_type"] == "intake_active_job_reused"
+        ]
+        self.assertEqual(len(reuse_events), 1)
+        self.assertEqual(reuse_events[0]["details"], {})
+
+    def test_intake_exact_replay_records_one_payload_free_deduplication(self):
+        request = {
+            "work_item_key": "ENG-11", "mode": "real",
+            "request_id": "linear:issue:ENG-11:update:first",
+            "reason": "Linear Ready intake reserved a factory attempt", "actor": "intake-worker",
+            "payload": {**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-11:update:first"},
+        }
+        attempt, _job, created = reserve_factory_intake(self.conn, **request)
+        self.assertTrue(created)
+        self.assertFalse(reserve_factory_intake(self.conn, **request)[2])
+        self.assertFalse(reserve_factory_intake(self.conn, **request)[2])
+        events = [
+            event for event in list_factory_attempt_events(self.conn, attempt["attempt_id"])
+            if event["event_type"] == "intake_request_deduplicated"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["details"], {})
+
+    def test_execution_route_is_recorded_once_before_any_execution_lease(self):
+        attempt, job, created = reserve_factory_intake(
+            self.conn, work_item_key="ENG-40", mode="real", request_id="linear:issue:ENG-40:update:first",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={
+                **verifier_payload("Driftward-LLC/capykit"),
+                "source_event_key": "linear:issue:ENG-40:update:first",
+                "routing": {"registry_version": 2},
+            },
+        )
+        self.assertTrue(created)
+        details = {
+            "analytics_schema_version": 1,
+            "assignment_id": f"route.{attempt['attempt_id']}",
+            "experiment_id": "factory-default-v1",
+            "variant": "hermes",
+            "assignment_method": "static",
+            "intended_backend": "hermes",
+            "intended_transport": "grpc_uds",
+            "configured_provider": "openai_codex",
+            "configured_model": "gpt-5.5",
+            "configured_auth_mode": "chatgpt_codex_oauth",
+            "backend_version": "0.17.0",
+            "factory_release_sha": "a" * 40,
+            "factory_release_version": "2026.09.13",
+            "routing_registry_version": 2,
+            "verifier_policy_digest": job["payload"]["verification_policy"]["digest"],
+            "fallback_allowed": False,
+        }
+        self.assertTrue(record_factory_execution_route(self.conn, job["job_id"], details))
+        self.assertFalse(record_factory_execution_route(self.conn, job["job_id"], details))
+        with self.assertRaises(BridgeValidationError):
+            record_factory_execution_route(
+                self.conn, job["job_id"], {**details, "fallback_allowed": True}
+            )
+        with self.assertRaises(BridgeConflict):
+            record_factory_execution_route(self.conn, job["job_id"], {**details, "variant": "codex"})
+        with self.assertRaises(BridgeValidationError):
+            record_factory_execution_route(self.conn, job["job_id"], {**details, "raw_prompt": "forbidden"})
+        with self.assertRaises(BridgeValidationError):
+            record_factory_execution_route(self.conn, job["job_id"], {**details, "backend_version": "github_pat_secret"})
+        for field, value in (
+            ("configured_provider", "sk-proj-fake_provider_value"),
+            ("configured_model", "gsk_fake_model_value"),
+            ("backend_version", "v1+sk-ant-fake-version-value"),
+            ("factory_release_version", "v1+github_pat_fake_version_value"),
+            ("backend_version", "v1_sk-proj-FAKESECRET"),
+            ("backend_version", "eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE"),
+            ("factory_release_version", "v1+eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE"),
+        ):
+            with self.subTest(field=field), self.assertRaises(BridgeValidationError):
+                record_factory_execution_route(self.conn, job["job_id"], {**details, field: value})
+        _other_attempt, other_job, _ = reserve_factory_intake(
+            self.conn, work_item_key="ENG-41", mode="real", request_id="linear:issue:ENG-41:update:first",
+            reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
+            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-41:update:first"},
+        )
+        with self.assertRaises(BridgeValidationError):
+            record_factory_execution_route(
+                self.conn,
+                other_job["job_id"],
+                {**details, "assignment_id": f"route.{attempt['attempt_id']}"},
+            )
+        events = [
+            event for event in list_factory_attempt_events(self.conn, attempt["attempt_id"])
+            if event["event_type"] == "execution_route_selected"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["details"], details)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM factory_execution_leases WHERE attempt_id=?",
+            (attempt["attempt_id"],),
+        ).fetchone()[0], 0)
+
+        transition_job(self.conn, job["job_id"], state="running")
+        execution = claim_factory_execution(self.conn, job["job_id"], owner="worker-route")
+        self.assertTrue(execution["claimed"])
+        self.assertTrue(authorize_factory_effect(self.conn, job["job_id"], execution["lease"]))
+        receipt = {
+            "commit_sha": "abcdef1",
+            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/40",
+            "branch": job["branch"],
+        }
+        for forbidden in (
+            {"summary": "raw model output"},
+            {"hermes_session_id": "sk-proj-fake_session_value"},
+            {"validation": {"model_output": "raw"}},
+        ):
+            with self.subTest(forbidden=next(iter(forbidden))), self.assertRaises(BridgeValidationError):
+                commit_factory_execution(self.conn, job["job_id"], execution["lease"], {**receipt, **forbidden})
+        identity = {
+            "analytics_schema_version": 1,
+            "invocation_id": "route-invocation-1",
+            "execution_backend": "hermes",
+            "execution_transport": "grpc_uds",
+            "backend_version": "0.17.0",
+            "configured_auth_mode": "chatgpt_codex_oauth",
+        }
+        self.assertTrue(record_factory_execution_analytics(
+            self.conn, job["job_id"], execution["lease"],
+            event_type="execution_backend_invoked", details=identity,
+        ))
+        with self.assertRaises(BridgeValidationError):
+            _execution_analytics_details(
+                "execution_backend_invoked",
+                {**identity, "backend_version": "sk-proj-fake_version_value"},
+            )
+        with self.assertRaises(BridgeValidationError):
+            _execution_analytics_details(
+                "execution_backend_invoked",
+                {
+                    **identity,
+                    "backend_version": "eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE",
+                },
+            )
+        with self.assertRaises(BridgeConflict):
+            record_factory_execution_analytics(
+                self.conn, job["job_id"], execution["lease"],
+                event_type="execution_backend_completed",
+                details={
+                    **identity,
+                    "execution_transport": "local_command",
+                    "backend_outcome": "created",
+                    "elapsed_ms": 1,
+                },
+            )
 
     def test_active_attempts_include_sanitized_job_and_lease_summary(self):
         attempt, job, _ = reserve_factory_intake(

@@ -56,6 +56,9 @@ seeds `DRIFTWARD_HERMES_GRPC_TARGET` in
 
 ```text
 DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
+DRIFTWARD_HERMES_AUTH_MODE=unknown
+DRIFTWARD_HERMES_PROVIDER=unknown
+DRIFTWARD_HERMES_MODEL=unknown
 ```
 
 The gateway may bind TCP later by setting `DRIFTWARD_HERMES_GRPC_TARGET` or
@@ -65,6 +68,19 @@ Hermes access by copying Hermes credentials or session state into Factory.
 The gateway is bundled during install and requires a host Node.js 18+ binary;
 override the default `/usr/bin/node` with `DRIFTWARD_FACTORY_NODE_BIN` if the
 host keeps Node elsewhere.
+
+Set the non-secret `DRIFTWARD_HERMES_AUTH_MODE` deployment label to
+`chatgpt_codex_oauth` or `api_key` only when that route is explicitly
+configured. It defaults to `unknown`; the label supports analytics and never
+copies provider credentials into Factory.
+
+Set `DRIFTWARD_HERMES_PROVIDER`, `DRIFTWARD_HERMES_MODEL`, and optional
+`DRIFTWARD_HERMES_VERSION` from reviewed deployment configuration when known.
+All are non-secret labels; Factory never discovers them by reading Hermes
+credentials or session state. The current worker always records the truthful
+route `factory-default-v1` / `hermes` / `static`. It deliberately ignores
+experiment-label environment variables: a future comparison must first add a
+real, reviewed router with stable assignment and lineage stickiness.
 
 ## Required Env Files
 
@@ -228,6 +244,8 @@ first-class signals. Findings attached to terminal jobs are reported
 separately as nonfatal reconciliation debt. The ingress health
 endpoint is unhealthy while persisted events await Hatchet publication; the
 shared outbox dispatcher retries those rows with a lease every 30 seconds.
+The same cycle advances bounded recovery for observed effect receipts whose
+read-only PR inspection worker never returned; it does not reinvoke Hermes.
 Lifecycle status reports permanent dead letters by bounded reason code. The
 operator mounts only the lifecycle named volume needed for root-only,
 snapshot-fenced dead-letter archival; the FastAPI console remains read-only.

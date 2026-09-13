@@ -37,6 +37,85 @@ RESOLVER_ATTESTATION_CONTRACT = {
 RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PR_URL_RE = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$")
 LINEAR_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[1-9][0-9]*$")
+ANALYTICS_DIMENSION_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,79}$")
+SECRET_SHAPE_RE = re.compile(
+    r"(?:^|[^A-Za-z0-9])(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-|hf_|gsk_|lin_api_|glpat-|"
+    r"npm_|pypi-|akia[a-z0-9]|asia[a-z0-9]|aiza[a-z0-9]|bearer(?:[._+-]|$))|"
+    r"eyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}",
+    re.I,
+)
+JWT_SHAPE_RE = re.compile(
+    r"eyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}",
+    re.I,
+)
+OPAQUE_SECRET_SHAPE_RE = re.compile(r"[A-Za-z0-9_.-]{128,}")
+EXECUTION_TRANSPORT_STATUSES = frozenset({
+    "client_setup_failed", "grpc_aborted", "grpc_already_exists", "grpc_cancelled",
+    "grpc_data_loss", "grpc_deadline_exceeded", "grpc_failed_precondition",
+    "grpc_internal", "grpc_invalid_argument", "grpc_not_found", "grpc_ok",
+    "grpc_out_of_range", "grpc_permission_denied", "grpc_resource_exhausted",
+    "grpc_unauthenticated", "grpc_unavailable", "grpc_unimplemented", "grpc_unknown",
+})
+EXECUTION_PROCESS_SIGNALS = frozenset({
+    "SIGABRT", "SIGALRM", "SIGBUS", "SIGCHLD", "SIGCONT", "SIGFPE", "SIGHUP",
+    "SIGILL", "SIGINT", "SIGIO", "SIGIOT", "SIGKILL", "SIGPIPE", "SIGPOLL",
+    "SIGPROF", "SIGPWR", "SIGQUIT", "SIGSEGV", "SIGSTKFLT", "SIGSTOP", "SIGSYS",
+    "SIGTERM", "SIGTRAP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGUSR1",
+    "SIGUSR2", "SIGVTALRM", "SIGWINCH", "SIGXCPU", "SIGXFSZ",
+})
+EFFECT_COMMIT_INSPECTION_MAX_ATTEMPTS = 3
+EXECUTION_ANALYTICS_COMMON_FIELDS = (
+    "analytics_schema_version",
+    "invocation_id",
+    "execution_backend",
+    "execution_transport",
+    "backend_version",
+    "configured_auth_mode",
+)
+EXECUTION_FAILURE_EVENT_TYPES = frozenset({
+    "execution_backend_failed",
+    "execution_dispatch_failed",
+    "execution_effect_commit_failed",
+})
+EXECUTION_ROUTE_FIELDS = frozenset({
+    "analytics_schema_version",
+    "assignment_id",
+    "experiment_id",
+    "variant",
+    "assignment_method",
+    "intended_backend",
+    "intended_transport",
+    "configured_provider",
+    "configured_model",
+    "configured_auth_mode",
+    "backend_version",
+    "factory_release_sha",
+    "factory_release_version",
+    "routing_registry_version",
+    "verifier_policy_digest",
+    "fallback_allowed",
+})
+EXECUTION_FAILURE_DOMAINS = frozenset({
+    "unknown", "factory", "executor", "executor_backend", "gateway_transport", "gateway",
+    "hermes_process", "hermes_protocol", "auth", "provider", "tool", "github",
+    "verification",
+})
+EXECUTION_FAILURE_STAGES = frozenset({
+    "unknown", "preflight", "artifact_fence", "effect_authorization", "receipt_dispatch",
+    "backend_invocation_fence", "backend_execution", "gateway_connect",
+    "gateway_handler", "hermes_spawn", "hermes_exit", "hermes_timeout",
+    "result_parse", "auth_resolve", "auth_refresh", "model_request",
+    "model_stream", "tool_execution", "effect_commit", "verification_checks",
+    "verification_recovery",
+})
+EXECUTION_FAILURE_OPTIONAL_FIELDS = frozenset({
+    "transport_status", "process_exit_code", "process_signal", "timed_out",
+    "buffer_exceeded",
+})
+EXECUTION_COMMIT_FIELDS = frozenset({
+    "commit_sha", "pr_url", "branch", "reason_code", "hermes_session_id",
+    *EXECUTION_ANALYTICS_COMMON_FIELDS, "backend_outcome", "backend_elapsed_ms",
+})
 
 ALLOWED_ACTIONS = {"create_draft_pr", "repair_draft_pr", "inspect_draft_pr_state"}
 DRAFT_PR_EFFECT_ACTIONS = {"create_draft_pr", "repair_draft_pr"}
@@ -119,11 +198,25 @@ def canonical_json(value: Any) -> str:
 
 def sanitize_detail(value: Any, limit: int = 320) -> Any:
     if isinstance(value, str):
-        import re
-        return re.sub(r"(?:ghp_|github_pat_|xox[baprs]-|Bearer\s+)[A-Za-z0-9_.-]+", "[redacted]", value, flags=re.I).replace("\n", " ").replace("\r", " ")[:limit]
+        value = JWT_SHAPE_RE.sub("[redacted]", value)
+        value = OPAQUE_SECRET_SHAPE_RE.sub("[redacted]", value)
+        value = re.sub(
+            r"(^|[^A-Za-z0-9])(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-|hf_|gsk_|lin_api_|glpat-|"
+            r"npm_|pypi-|akia|asia|aiza|bearer(?:[._+-]|$))[A-Za-z0-9_.+/-]*",
+            r"\1[redacted]",
+            value,
+            flags=re.I | re.MULTILINE,
+        )
+        return re.sub(r"\bBearer\s+\S+", "[redacted]", value, flags=re.I).replace("\n", " ").replace("\r", " ")[:limit]
     if isinstance(value, list): return [sanitize_detail(item, limit) for item in value]
     if isinstance(value, dict): return {str(key): sanitize_detail(item, limit) for key, item in value.items()}
     return value
+
+
+def _secret_shaped(value: str) -> bool:
+    return bool(
+        SECRET_SHAPE_RE.search(value) or OPAQUE_SECRET_SHAPE_RE.search(value)
+    )
 
 
 CORRELATION_PAYLOAD_KEYS = {"source_event_key", "source_delivery_id", "source_event_keys", "source_delivery_ids"}
@@ -1171,6 +1264,36 @@ def _append_factory_attempt_event(conn: sqlite3.Connection, attempt_id: str, eve
     )
 
 
+def _append_factory_attempt_event_once(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    event_type: str,
+    occurrence_key: str,
+) -> bool:
+    """Append a payload-free event once for one trusted decision key."""
+    event_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"driftward.factory.attempt-event:{attempt_id}:{event_type}:{occurrence_key}",
+    ))
+    existing = conn.execute(
+        "SELECT attempt_id,event_type,details_json FROM factory_attempt_events WHERE event_id=?",
+        (event_id,),
+    ).fetchone()
+    if existing:
+        if (
+            existing["attempt_id"] != attempt_id
+            or existing["event_type"] != event_type
+            or existing["details_json"] != "{}"
+        ):
+            raise BridgeConflict("factory attempt decision event is immutable")
+        return False
+    conn.execute(
+        "INSERT INTO factory_attempt_events (event_id,attempt_id,event_type,details_json,created_at) VALUES (?,?,?,?,?)",
+        (event_id, attempt_id, event_type, "{}", utc_now()),
+    )
+    return True
+
+
 def _append_event(
     conn: sqlite3.Connection,
     *,
@@ -1640,12 +1763,14 @@ def _inspection_request_is_expired(row: sqlite3.Row) -> bool:
     return age > INSPECTION_CAPABILITY_TTL_SECONDS
 
 
-def _expire_incomplete_inspection_request(conn: sqlite3.Connection, request: sqlite3.Row, *, reason_code: str = "inspection_capability_expired") -> None:
+def _expire_incomplete_inspection_request(conn: sqlite3.Connection, request: sqlite3.Row, *, reason_code: str = "inspection_capability_expired") -> bool:
     now = utc_now()
-    conn.execute(
-        "UPDATE factory_inspection_requests SET state='expired', reason=?, updated_at=? WHERE request_key=? AND state!='completed' AND result_json IS NULL",
+    updated = conn.execute(
+        "UPDATE factory_inspection_requests SET state='expired', reason=?, updated_at=? WHERE request_key=? AND state='pending' AND result_json IS NULL",
         (reason_code, now, request["request_key"]),
-    )
+    ).rowcount
+    if not updated:
+        return False
     conn.execute(
         """
         UPDATE factory_inspection_outbox
@@ -1663,6 +1788,7 @@ def _expire_incomplete_inspection_request(conn: sqlite3.Connection, request: sql
                 (reason_code, "inspection capability expired before completion", now, request["job_id"]),
             )
             _append_event(conn, job_id=request["job_id"], event_type="inspection_expired", state="failed", details={"reason_code": reason_code})
+    return True
 
 
 def _inspection_request_base_key(work_item_key: str, prior_attempt_id: str | None, repository: str, number: int) -> str:
@@ -1721,7 +1847,14 @@ def _next_inspection_request_key(
         sequence += 1
 
 
-def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str, prior_attempt_id: str | None = None) -> None:
+def _queue_pr_inspection(
+    conn: sqlite3.Connection,
+    work_item_key: str,
+    url: str,
+    prior_attempt_id: str | None = None,
+    *,
+    force_refresh: bool = False,
+) -> bool:
     """Durably enqueue the one fixed, read-only inspection action.
 
     This is called from write/migration paths only.  Operator preview merely
@@ -1749,14 +1882,16 @@ def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str,
         args,
     ).fetchall()
     for existing in existing_requests:
+        if force_refresh and existing["state"] == "completed":
+            continue
         if _inspection_result_is_fresh(existing):
-            return
+            return False
         if existing["state"] == "completed" and existing["result_json"]:
             continue
         if _inspection_request_is_expired(existing):
             _expire_incomplete_inspection_request(conn, existing)
             continue
-        return
+        return False
     request_key, job = _next_inspection_request_key(conn, base_key, repository=repository, number=number, url=url)
     if job:
         capability = job["payload"]["inspection_capability"]
@@ -1768,7 +1903,7 @@ def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str,
             conn.execute("UPDATE factory_inspection_outbox SET state='pending', delivery_lease_id=NULL, delivery_lease_expires_at=NULL, acknowledged_at=NULL, updated_at=? WHERE outbox_key=? AND acknowledged_at IS NOT NULL", (now, outbox_key))
         else:
             conn.execute("INSERT INTO factory_inspection_outbox (outbox_key,request_key,job_id,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", (outbox_key, request_key, job["job_id"], canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", now, now))
-        return
+        return True
     capability = str(uuid.uuid4())
     job, created = submit_job(conn, {
         "idempotency_key": request_key,
@@ -1780,6 +1915,7 @@ def _queue_pr_inspection(conn: sqlite3.Connection, work_item_key: str, url: str,
     now = utc_now()
     conn.execute("INSERT INTO factory_inspection_requests (request_key,repository,number,url,job_id,work_item_key,prior_attempt_id,capability,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (request_key, repository, number, url, job["job_id"], work_item_key, prior_attempt_id, capability, "pending", now, now))
     conn.execute("INSERT INTO factory_inspection_outbox (outbox_key,request_key,job_id,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", (f"{request_key}:accepted", request_key, job["job_id"], canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", now, now))
+    return True
 
 
 def _backfill_factory_inspections(conn: sqlite3.Connection) -> None:
@@ -1808,7 +1944,11 @@ def _backfill_factory_inspections(conn: sqlite3.Connection) -> None:
 def get_pr_inspection(conn: sqlite3.Connection, repository: str, url: str, *, prior_attempt_id: str | None = None) -> dict[str, Any] | None:
     repository, number, url = _parse_pr_reference(repository, url)
     clause, args = (" AND prior_attempt_id=?", (repository, number, url, prior_attempt_id)) if prior_attempt_id else ("", (repository, number, url))
-    row = conn.execute(f"SELECT * FROM factory_inspection_requests WHERE repository=? AND number=? AND url=?{clause} ORDER BY observed_at DESC,created_at DESC LIMIT 1", args).fetchone()
+    row = conn.execute(
+        f"SELECT * FROM factory_inspection_requests WHERE repository=? AND number=? AND url=?{clause} "
+        "ORDER BY created_at DESC,request_key DESC LIMIT 1",
+        args,
+    ).fetchone()
     if not row:
         return None
     try:
@@ -1825,7 +1965,281 @@ def get_pr_inspection(conn: sqlite3.Connection, repository: str, url: str, *, pr
         age = (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds()
         if age < 0:
             raise BridgeValidationError("stored inspection timestamp is in the future")
-    return {"request_key": row["request_key"], "job_id": row["job_id"], "state": row["state"], "reason": row["reason"], "result": result, "result_digest": row["result_digest"], "observed_at": row["observed_at"], "prior_attempt_id": row["prior_attempt_id"]}
+    return {
+        "request_key": row["request_key"],
+        "job_id": row["job_id"],
+        "state": row["state"],
+        "reason": row["reason"],
+        "result": result,
+        "result_digest": row["result_digest"],
+        "observed_at": row["observed_at"],
+        "prior_attempt_id": row["prior_attempt_id"],
+        "fresh": _inspection_result_is_fresh(row),
+    }
+
+
+def _recover_effect_commit_from_inspection(
+    conn: sqlite3.Connection,
+    prior_attempt_id: str,
+    result: dict[str, Any],
+) -> bool:
+    attempt_row = conn.execute(
+        "SELECT * FROM factory_attempts WHERE attempt_id=?",
+        (prior_attempt_id,),
+    ).fetchone()
+    if not attempt_row or attempt_row["status"] not in {"effect_outcome_unknown", "cancellation_requested"} or not attempt_row["job_id"]:
+        return False
+    event = conn.execute(
+        "SELECT details_json FROM factory_attempt_events "
+        "WHERE attempt_id=? AND event_type='execution_effect_commit_failed' "
+        "ORDER BY created_at DESC,event_id DESC LIMIT 1",
+        (prior_attempt_id,),
+    ).fetchone()
+    if not event:
+        return False
+    try:
+        details = _execution_analytics_details(
+            "execution_effect_commit_failed", json.loads(event["details_json"])
+        )
+    except (TypeError, ValueError, json.JSONDecodeError, BridgeValidationError):
+        return False
+    job = get_job(conn, attempt_row["job_id"])
+    if (
+        job["state"] != "running"
+        or result.get("reason") != "ok"
+        or result.get("repository") != job["payload"].get("repo")
+        or result.get("url") != details["observed_pr_url"]
+        or result.get("head_branch") != details["observed_branch"]
+        or not isinstance(result.get("head_sha"), str)
+        or (
+            details.get("observed_commit_sha") is not None
+            and result["head_sha"] != details["observed_commit_sha"]
+        )
+    ):
+        return False
+    lease = conn.execute(
+        "SELECT * FROM factory_execution_leases "
+        "WHERE attempt_id=? AND released_at IS NULL",
+        (prior_attempt_id,),
+    ).fetchone()
+    if not lease or lease["effect_authorized_at"] is None or lease["effect_observed_at"] is None:
+        return False
+    return _commit_observed_execution_receipt(
+        conn,
+        job["job_id"],
+        lease,
+        {**details, "observed_commit_sha": result["head_sha"]},
+    )
+
+
+def _effect_commit_receipt_needs_recovery(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM factory_attempts a WHERE a.attempt_id=? "
+        "AND a.status IN ('effect_outcome_unknown','cancellation_requested') "
+        "AND EXISTS (SELECT 1 FROM factory_attempt_events e WHERE e.attempt_id=a.attempt_id "
+        "AND e.event_type='execution_effect_commit_failed')",
+        (attempt_id,),
+    ).fetchone() is not None
+
+
+def _refresh_effect_commit_inspection(
+    conn: sqlite3.Connection,
+    prior_attempt_id: str,
+    url: str,
+) -> bool:
+    attempt = get_factory_attempt(conn, prior_attempt_id)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM factory_inspection_requests "
+        "WHERE prior_attempt_id=? AND url=?",
+        (prior_attempt_id, url),
+    ).fetchone()[0]
+    if count >= EFFECT_COMMIT_INSPECTION_MAX_ATTEMPTS:
+        if not conn.execute(
+            "SELECT 1 FROM factory_attempt_events WHERE attempt_id=? "
+            "AND event_type='execution_effect_commit_recovery_exhausted'",
+            (prior_attempt_id,),
+        ).fetchone():
+            _append_factory_attempt_event(
+                conn,
+                prior_attempt_id,
+                "execution_effect_commit_recovery_exhausted",
+                {
+                    "reason_code": "factory_effect_commit_inspection_exhausted",
+                    "operator_intervention_required": True,
+                    "inspection_attempts": count,
+                },
+            )
+        return False
+    return _queue_pr_inspection(
+        conn,
+        attempt["work_item_key"],
+        url,
+        prior_attempt_id,
+        force_refresh=True,
+    )
+
+
+def sweep_factory_effect_receipt_inspections(
+    conn: sqlite3.Connection,
+    limit: int = 50,
+) -> dict[str, int]:
+    """Expire silent receipt inspections and advance their bounded recovery."""
+    if type(limit) is not int or limit < 1 or limit > 250:
+        raise BridgeValidationError("receipt inspection sweep limit must be between 1 and 250")
+    summary = {"expired": 0, "refreshed": 0, "exhausted": 0}
+    with conn:
+        # Recovery normally has only one pending request per receipt. Selecting
+        # the newest pending row per lineage also keeps damaged duplicate rows
+        # from exhausting a receipt while a newer request is still live.
+        requests = conn.execute(
+            """
+            SELECT r.*
+            FROM factory_inspection_requests r
+            JOIN factory_attempts a ON a.attempt_id=r.prior_attempt_id
+            WHERE r.prior_attempt_id IS NOT NULL
+              AND r.state='pending'
+              AND r.result_json IS NULL
+              AND a.status IN ('effect_outcome_unknown','cancellation_requested')
+              AND EXISTS (
+                  SELECT 1 FROM factory_attempt_events e
+                  WHERE e.attempt_id=r.prior_attempt_id
+                    AND e.event_type='execution_effect_commit_failed'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM factory_inspection_requests newer
+                  WHERE newer.prior_attempt_id=r.prior_attempt_id
+                    AND newer.url=r.url
+                    AND newer.state='pending'
+                    AND newer.result_json IS NULL
+                    AND (
+                        newer.created_at > r.created_at
+                        OR (newer.created_at = r.created_at AND newer.request_key > r.request_key)
+                    )
+              )
+            ORDER BY r.created_at,r.request_key
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        for request in requests:
+            attempt_id = request["prior_attempt_id"]
+            if (
+                not _inspection_request_is_expired(request)
+                or not _effect_commit_receipt_needs_recovery(conn, attempt_id)
+                or not _expire_incomplete_inspection_request(conn, request)
+            ):
+                continue
+            summary["expired"] += 1
+            if _refresh_effect_commit_inspection(conn, attempt_id, request["url"]):
+                summary["refreshed"] += 1
+            elif conn.execute(
+                "SELECT 1 FROM factory_attempt_events WHERE attempt_id=? "
+                "AND event_type='execution_effect_commit_recovery_exhausted'",
+                (attempt_id,),
+            ).fetchone():
+                summary["exhausted"] += 1
+    return summary
+
+
+def refresh_factory_effect_receipt_inspection(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    *,
+    reason: str,
+    actor: str,
+) -> dict[str, Any]:
+    """Let a root operator resume bounded inspection without reauthorizing execution."""
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 320:
+        raise BridgeValidationError("receipt recovery refresh reason is invalid")
+    if not isinstance(actor, str) or not actor or len(actor) > 200:
+        raise BridgeValidationError("receipt recovery refresh actor is invalid")
+    with conn:
+        attempt = get_factory_attempt(conn, attempt_id)
+        if attempt["status"] not in {"effect_outcome_unknown", "cancellation_requested"}:
+            raise BridgeValidationError("attempt has no unresolved observed receipt")
+        event = conn.execute(
+            "SELECT details_json FROM factory_attempt_events "
+            "WHERE attempt_id=? AND event_type='execution_effect_commit_failed' "
+            "ORDER BY created_at DESC,event_id DESC LIMIT 1",
+            (attempt_id,),
+        ).fetchone()
+        if not event:
+            raise BridgeValidationError("attempt has no observed receipt evidence")
+        details = _execution_analytics_details(
+            "execution_effect_commit_failed", json.loads(event["details_json"])
+        )
+        if details.get("observed_commit_sha"):
+            raise BridgeValidationError("observed receipt already contains a commit SHA")
+        job = get_job(conn, attempt["job_id"])
+        repository = job["payload"].get("repo")
+        if not isinstance(repository, str):
+            raise BridgeValidationError("observed receipt repository is unavailable")
+        lease = conn.execute(
+            "SELECT * FROM factory_execution_leases "
+            "WHERE attempt_id=? AND released_at IS NULL",
+            (attempt_id,),
+        ).fetchone()
+        if (
+            job["state"] != "running"
+            or not lease
+            or lease["effect_authorized_at"] is None
+            or lease["effect_observed_at"] is None
+        ):
+            raise BridgeValidationError("observed receipt recovery fence is unavailable")
+        existing = get_pr_inspection(
+            conn,
+            repository,
+            details["observed_pr_url"],
+            prior_attempt_id=attempt_id,
+        )
+        if (
+            existing
+            and existing.get("fresh") is True
+            and isinstance(existing.get("result"), dict)
+            and _recover_effect_commit_from_inspection(conn, attempt_id, existing["result"])
+        ):
+            return {
+                "created": False,
+                "recovered": True,
+                "attempt": get_factory_attempt(conn, attempt_id),
+                "inspection": {"request_key": existing["request_key"], "state": existing["state"]},
+            }
+        created = _queue_pr_inspection(
+            conn,
+            attempt["work_item_key"],
+            details["observed_pr_url"],
+            attempt_id,
+            force_refresh=True,
+        )
+        inspection = get_pr_inspection(
+            conn,
+            repository,
+            details["observed_pr_url"],
+            prior_attempt_id=attempt_id,
+        )
+        if created:
+            _append_factory_attempt_event(
+                conn,
+                attempt_id,
+                "execution_effect_commit_recovery_refreshed",
+                {
+                    "reason": sanitize_detail(reason.strip(), 320),
+                    "actor": sanitize_detail(actor, 200),
+                    "inspection_request_key": inspection["request_key"] if inspection else None,
+                },
+            )
+        return {
+            "created": created,
+            "recovered": False,
+            "attempt": get_factory_attempt(conn, attempt_id),
+            "inspection": {
+                "request_key": inspection["request_key"],
+                "state": inspection["state"],
+            } if inspection else None,
+        }
 
 
 def complete_pr_inspection(conn: sqlite3.Connection, job_id: str, result: dict[str, Any], *, request_key: str | None = None, capability: str | None = None) -> dict[str, Any]:
@@ -1857,6 +2271,8 @@ def complete_pr_inspection(conn: sqlite3.Connection, job_id: str, result: dict[s
         if capability_age < 0 or capability_age > INSPECTION_CAPABILITY_TTL_SECONDS:
             _expire_incomplete_inspection_request(conn, request)
             capability_expired = True
+            if prior_attempt_id and _effect_commit_receipt_needs_recovery(conn, prior_attempt_id):
+                _refresh_effect_commit_inspection(conn, prior_attempt_id, url)
         else:
             job = get_job(conn, job_id)
             if job["requested_action"] != "inspect_draft_pr_state" or job["payload"].get("inspection_request_key") != request_key or job["payload"].get("inspection_capability") != capability or job["state"] not in {"accepted", "running", "completed"}:
@@ -1866,6 +2282,9 @@ def complete_pr_inspection(conn: sqlite3.Connection, job_id: str, result: dict[s
                 conn.execute("UPDATE bridge_jobs SET state='completed',reason_code=?,updated_at=? WHERE job_id=?", (sanitize_detail(stored_result["reason"], 120), observed, job_id))
                 _append_event(conn, job_id=job_id, event_type="inspection_completed", state="completed", details={"reason": stored_result["reason"]})
             conn.execute("UPDATE factory_inspection_requests SET state='completed',result_json=?,result_digest=?,observed_at=?,reason=?,updated_at=? WHERE request_key=?", (canonical_json(stored_result), digest, observed, sanitize_detail(stored_result["reason"], 120), observed, request["request_key"]))
+            if prior_attempt_id and not _recover_effect_commit_from_inspection(conn, prior_attempt_id, stored_result):
+                if _effect_commit_receipt_needs_recovery(conn, prior_attempt_id):
+                    _refresh_effect_commit_inspection(conn, prior_attempt_id, url)
     if capability_expired:
         raise BridgeValidationError("inspection capability is expired")
     return get_pr_inspection(conn, repository, url, prior_attempt_id=prior_attempt_id) or {}
@@ -2299,6 +2718,10 @@ def reserve_factory_intake(
     """Atomically reserve fresh Linear intake through the factory attempt path."""
     if not isinstance(payload, dict):
         raise BridgeValidationError("factory intake payload must be an object")
+    if not all(isinstance(value, str) and value and len(value) <= 200 for value in (work_item_key, request_id, actor)) or mode not in {"real", "dry-run"}:
+        raise BridgeValidationError("factory intake request is invalid")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 320:
+        raise BridgeValidationError("factory intake reason is invalid")
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
@@ -2314,6 +2737,12 @@ def reserve_factory_intake(
                 raise BridgeConflict("existing factory intake is incomplete")
             if not _factory_intake_job_matches(job, work_item_key=work_item_key, mode=mode, payload=payload):
                 raise BridgeConflict("factory intake request_id conflicts with existing intent")
+            _append_factory_attempt_event_once(
+                conn,
+                attempt["attempt_id"],
+                "intake_request_deduplicated",
+                request_id,
+            )
             return attempt, job, False
 
         active = conn.execute(
@@ -2327,6 +2756,12 @@ def reserve_factory_intake(
                 raise BridgeConflict("active factory intake is incomplete")
             if not _factory_intake_job_matches(job, work_item_key=work_item_key, mode=attempt["mode"], payload=payload):
                 raise BridgeConflict("active factory intake conflicts with resolved route")
+            _append_factory_attempt_event_once(
+                conn,
+                attempt["attempt_id"],
+                "intake_active_job_reused",
+                request_id,
+            )
             correlation = {key: payload[key] for key in ("source_event_key", "source_delivery_id") if isinstance(payload.get(key), str)}
             if correlation:
                 merged_payload, new_event_keys = _merge_correlation_payload(job["payload"], correlation)
@@ -2483,6 +2918,524 @@ def execution_may_effect(conn: sqlite3.Connection, job_id: str, claim: dict[str,
     return _current_execution_lease(conn, job_id, claim) is not None
 
 
+def _execution_route_details(details: Any) -> dict[str, Any]:
+    if not isinstance(details, dict) or set(details) != EXECUTION_ROUTE_FIELDS:
+        raise BridgeValidationError("factory execution route is invalid")
+    if details.get("analytics_schema_version") != 1:
+        raise BridgeValidationError("factory execution route schema is invalid")
+    for field in (
+        "assignment_id", "experiment_id", "variant", "intended_backend",
+        "intended_transport", "configured_provider", "configured_model",
+    ):
+        if (
+            not isinstance(details.get(field), str)
+            or not ANALYTICS_DIMENSION_RE.fullmatch(details[field])
+            or _secret_shaped(details[field])
+        ):
+            raise BridgeValidationError(f"factory execution route {field} is invalid")
+    if details.get("assignment_method") not in {"static", "deterministic_hash", "operator_override"}:
+        raise BridgeValidationError("factory execution route assignment_method is invalid")
+    if details.get("intended_transport") not in {"grpc_uds", "grpc_tcp", "local_command"}:
+        raise BridgeValidationError("factory execution route intended_transport is invalid")
+    if details.get("configured_auth_mode") not in {"chatgpt_codex_oauth", "api_key", "unknown"}:
+        raise BridgeValidationError("factory execution route configured_auth_mode is invalid")
+    for field in ("backend_version", "factory_release_version"):
+        value = details.get(field)
+        if value is not None and (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,119}", value)
+            or _secret_shaped(value)
+        ):
+            raise BridgeValidationError(f"factory execution route {field} is invalid")
+    release_sha = details.get("factory_release_sha")
+    if release_sha is not None and (not isinstance(release_sha, str) or not RELEASE_SHA_RE.fullmatch(release_sha)):
+        raise BridgeValidationError("factory execution route factory_release_sha is invalid")
+    registry_version = details.get("routing_registry_version")
+    if registry_version is not None and (
+        not isinstance(registry_version, int)
+        or isinstance(registry_version, bool)
+        or not 1 <= registry_version <= 1_000_000
+    ):
+        raise BridgeValidationError("factory execution route routing_registry_version is invalid")
+    policy_digest = details.get("verifier_policy_digest")
+    if policy_digest is not None and (
+        not isinstance(policy_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", policy_digest)
+    ):
+        raise BridgeValidationError("factory execution route verifier_policy_digest is invalid")
+    if details.get("fallback_allowed") is not False:
+        raise BridgeValidationError("factory execution route fallback is not supported")
+    sanitized = sanitize_detail(details)
+    if sanitized != details:
+        raise BridgeValidationError("factory execution route contains disallowed material")
+    return dict(details)
+
+
+def record_factory_execution_route(
+    conn: sqlite3.Connection,
+    job_id: str,
+    details: dict[str, Any],
+) -> bool:
+    """Record the immutable intent-to-treat route before executor preflight."""
+    validated = _execution_route_details(details)
+    serialized = canonical_json(validated)
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        attempt = get_factory_attempt_for_job(conn, job_id)
+        if not attempt:
+            raise BridgeConflict("factory execution route requires an attempt")
+        job = get_job(conn, job_id)
+        if attempt["mode"] != "real" or job["requested_action"] not in DRAFT_PR_EFFECT_ACTIONS:
+            raise BridgeValidationError("factory execution route requires a real draft PR attempt")
+        if validated["assignment_id"] != f"route.{attempt['attempt_id']}":
+            raise BridgeValidationError("factory execution route assignment does not match the attempt")
+        rows = conn.execute(
+            "SELECT details_json FROM factory_attempt_events "
+            "WHERE attempt_id=? AND event_type='execution_route_selected'",
+            (attempt["attempt_id"],),
+        ).fetchall()
+        for row in rows:
+            if canonical_json(json.loads(row["details_json"])) == serialized:
+                return False
+            raise BridgeConflict("factory execution route is immutable")
+        if attempt["status"] != "accepted" or job["state"] != "accepted":
+            raise BridgeConflict("factory execution route must precede execution")
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "execution_route_selected", validated)
+        return True
+
+
+def _validate_execution_failure_boundary_fields(details: Mapping[str, Any]) -> None:
+    transport_status = details.get("transport_status")
+    if "transport_status" in details and transport_status is not None and (
+        not isinstance(transport_status, str)
+        or transport_status not in EXECUTION_TRANSPORT_STATUSES
+    ):
+        raise BridgeValidationError("factory failure classification transport_status is invalid")
+    exit_code = details.get("process_exit_code")
+    if "process_exit_code" in details and exit_code is not None and (
+        not isinstance(exit_code, int)
+        or isinstance(exit_code, bool)
+        or not -(2**31) <= exit_code < 2**31
+    ):
+        raise BridgeValidationError("factory failure classification process_exit_code is invalid")
+    process_signal = details.get("process_signal")
+    if "process_signal" in details and process_signal is not None and (
+        not isinstance(process_signal, str)
+        or process_signal not in EXECUTION_PROCESS_SIGNALS
+    ):
+        raise BridgeValidationError("factory failure classification process_signal is invalid")
+    for field in ("timed_out", "buffer_exceeded"):
+        if field in details and details.get(field) is not None and not isinstance(details.get(field), bool):
+            raise BridgeValidationError(f"factory failure classification {field} is invalid")
+
+
+def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any]:
+    common = set(EXECUTION_ANALYTICS_COMMON_FIELDS)
+    failure_fields = {
+        "failure_domain", "failure_stage", "reason_code", "retryable",
+        "failure_disposition", "operator_intervention_required",
+        "effect_outcome", "elapsed_ms",
+    }
+    receipt_fields = {
+        "observed_pr_url", "observed_commit_sha", "observed_branch",
+        "observed_hermes_session_id", "backend_outcome", "verification_context",
+    }
+    additions = {
+        "execution_backend_invoked": set(),
+        "execution_backend_completed": {"backend_outcome", "elapsed_ms"},
+        "execution_backend_failed": failure_fields,
+        "execution_dispatch_failed": failure_fields,
+        "execution_effect_commit_failed": failure_fields | receipt_fields,
+    }
+    if event_type not in additions or not isinstance(details, dict):
+        raise BridgeValidationError("factory execution analytics event is invalid")
+    required = common | additions[event_type]
+    allowed = required | (EXECUTION_FAILURE_OPTIONAL_FIELDS if event_type in EXECUTION_FAILURE_EVENT_TYPES else set())
+    if not required <= set(details) or not set(details) <= allowed:
+        raise BridgeValidationError("factory execution analytics event is invalid")
+    if details.get("analytics_schema_version") != 1:
+        raise BridgeValidationError("factory execution analytics schema is invalid")
+    invocation_id = details.get("invocation_id")
+    if not isinstance(invocation_id, str) or not invocation_id or len(invocation_id) > 200:
+        raise BridgeValidationError("factory execution analytics invocation_id is invalid")
+    for field in ("execution_backend", "execution_transport"):
+        if (
+            not isinstance(details.get(field), str)
+            or not ANALYTICS_DIMENSION_RE.fullmatch(details[field])
+            or _secret_shaped(details[field])
+        ):
+            raise BridgeValidationError(f"factory execution analytics {field} is invalid")
+    backend_version = details.get("backend_version")
+    if backend_version is not None and (
+        not isinstance(backend_version, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,119}", backend_version)
+        or _secret_shaped(backend_version)
+    ):
+        raise BridgeValidationError("factory execution analytics backend_version is invalid")
+    if details.get("configured_auth_mode") not in {"chatgpt_codex_oauth", "api_key", "unknown"}:
+        raise BridgeValidationError("factory execution analytics configured_auth_mode is invalid")
+    if event_type == "execution_backend_completed" and details.get("backend_outcome") not in {"created", "reused", "unknown"}:
+        raise BridgeValidationError("factory execution analytics backend_outcome is invalid")
+    if event_type in {"execution_backend_failed", "execution_dispatch_failed", "execution_effect_commit_failed"}:
+        if details.get("failure_domain") not in EXECUTION_FAILURE_DOMAINS:
+            raise BridgeValidationError("factory execution analytics failure_domain is invalid")
+        if details.get("failure_stage") not in EXECUTION_FAILURE_STAGES:
+            raise BridgeValidationError("factory execution analytics failure_stage is invalid")
+        if (
+            not isinstance(details.get("reason_code"), str)
+            or not ANALYTICS_DIMENSION_RE.fullmatch(details["reason_code"])
+            or _secret_shaped(details["reason_code"])
+        ):
+            raise BridgeValidationError("factory execution analytics reason_code is invalid")
+        for field in ("retryable", "operator_intervention_required"):
+            if details.get(field) is not None and not isinstance(details.get(field), bool):
+                raise BridgeValidationError(f"factory execution analytics {field} is invalid")
+        if details.get("failure_disposition") not in {"retry", "terminal", "recovery_required"}:
+            raise BridgeValidationError("factory execution analytics failure_disposition is invalid")
+        if details.get("effect_outcome") not in {"none", "observed", "unknown"}:
+            raise BridgeValidationError("factory execution analytics effect_outcome is invalid")
+        _validate_execution_failure_boundary_fields(details)
+    if event_type == "execution_effect_commit_failed":
+        if details.get("failure_domain") != "factory" or details.get("failure_stage") != "effect_commit" or details.get("effect_outcome") != "observed":
+            raise BridgeValidationError("factory execution effect commit classification is invalid")
+        if not isinstance(details.get("observed_pr_url"), str) or not PR_URL_RE.fullmatch(details["observed_pr_url"]):
+            raise BridgeValidationError("factory execution observed_pr_url is invalid")
+        observed_sha = details.get("observed_commit_sha")
+        if observed_sha is not None and (
+            not isinstance(observed_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{7,64}", observed_sha)
+        ):
+            # The concrete PR URL and branch are still useful recovery
+            # evidence when an untrusted backend supplies a malformed SHA.
+            # Drop the raw value instead of rejecting the whole settlement;
+            # the receipt remains effect-observed and exact PR inspection can
+            # recover the canonical head without persisting attacker-controlled
+            # text or authorizing another backend invocation.
+            details = {**details, "observed_commit_sha": None}
+        observed_branch = details.get("observed_branch")
+        if not isinstance(observed_branch, str) or not observed_branch or len(observed_branch) > 255:
+            raise BridgeValidationError("factory execution observed_branch is invalid")
+        if details.get("backend_outcome") not in {"created", "reused"}:
+            raise BridgeValidationError("factory execution observed backend_outcome is invalid")
+        session_id = details.get("observed_hermes_session_id")
+        if session_id is not None:
+            raise BridgeValidationError("factory execution observed Hermes session is invalid")
+        context = details.get("verification_context")
+        if context is not None:
+            # Verification metadata is secondary to the concrete effect
+            # receipt. Discard malformed context so it cannot roll back the
+            # observed marker or cause another backend invocation.
+            try:
+                details = {**details, "verification_context": _validate_verification_context(context)}
+            except BridgeValidationError:
+                details = {**details, "verification_context": None}
+    if event_type != "execution_backend_invoked":
+        elapsed = details.get("elapsed_ms")
+        if not isinstance(elapsed, int) or isinstance(elapsed, bool) or not 0 <= elapsed <= 604_800_000:
+            raise BridgeValidationError("factory execution analytics elapsed_ms is invalid")
+    return sanitize_detail(details)
+
+
+def _validate_failure_classification(details: dict[str, Any]) -> None:
+    fields = {
+        "failure_domain", "failure_stage", "reason_code", "retryable",
+        "failure_disposition", "operator_intervention_required",
+    }
+    if not ((fields - {"reason_code"}) | EXECUTION_FAILURE_OPTIONAL_FIELDS) & set(details):
+        return
+    if not fields <= set(details):
+        raise BridgeValidationError("factory failure classification is incomplete")
+    if details.get("failure_domain") not in EXECUTION_FAILURE_DOMAINS:
+        raise BridgeValidationError("factory failure classification failure_domain is invalid")
+    if details.get("failure_stage") not in EXECUTION_FAILURE_STAGES:
+        raise BridgeValidationError("factory failure classification failure_stage is invalid")
+    if (
+        not isinstance(details.get("reason_code"), str)
+        or not ANALYTICS_DIMENSION_RE.fullmatch(details["reason_code"])
+        or _secret_shaped(details["reason_code"])
+    ):
+        raise BridgeValidationError("factory failure classification reason_code is invalid")
+    for field in ("retryable", "operator_intervention_required"):
+        if details.get(field) is not None and not isinstance(details.get(field), bool):
+            raise BridgeValidationError(f"factory failure classification {field} is invalid")
+    if details.get("failure_disposition") not in {"retry", "terminal", "recovery_required"}:
+        raise BridgeValidationError("factory failure classification disposition is invalid")
+    _validate_execution_failure_boundary_fields(details)
+
+
+def _append_factory_execution_analytics_event(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    event_type: str,
+    details: dict[str, Any],
+) -> bool:
+    """Append once per invocation and phase without requiring a schema change."""
+    serialized = canonical_json(details)
+    invocation_registered = False
+    duplicate = False
+    for row in conn.execute(
+        "SELECT event_type,details_json FROM factory_attempt_events WHERE attempt_id=? AND event_type IN ('execution_backend_invoked','execution_backend_completed','execution_backend_failed','execution_dispatch_failed','execution_effect_commit_failed')",
+        (attempt_id,),
+    ):
+        existing = json.loads(row["details_json"])
+        if existing.get("invocation_id") != details["invocation_id"]:
+            if event_type == "execution_backend_invoked" and row["event_type"] == "execution_backend_invoked":
+                raise BridgeConflict("factory execution backend invocation is already registered")
+            continue
+        if any(existing.get(field) != details.get(field) for field in EXECUTION_ANALYTICS_COMMON_FIELDS):
+            raise BridgeConflict("factory execution analytics identity is immutable")
+        if row["event_type"] == "execution_backend_invoked":
+            invocation_registered = True
+        if row["event_type"] == event_type and canonical_json(existing) == serialized:
+            duplicate = True
+            continue
+        if row["event_type"] == event_type:
+            raise BridgeConflict("factory execution analytics event is immutable")
+        backend_terminal = {"execution_backend_completed", "execution_backend_failed"}
+        if event_type in backend_terminal and row["event_type"] in backend_terminal:
+            raise BridgeConflict("factory execution analytics outcome is immutable")
+        if event_type == "execution_backend_invoked" and row["event_type"] in backend_terminal:
+            raise BridgeConflict("factory execution analytics invocation is already terminal")
+    if event_type in {
+        "execution_backend_completed",
+        "execution_backend_failed",
+        "execution_effect_commit_failed",
+    } and not invocation_registered:
+        raise BridgeConflict("factory execution backend invocation is not registered")
+    if duplicate:
+        return False
+    _append_factory_attempt_event(conn, attempt_id, event_type, details)
+    return True
+
+
+def _validate_execution_route_identity(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    details: Mapping[str, Any],
+) -> None:
+    row = conn.execute(
+        "SELECT details_json FROM factory_attempt_events "
+        "WHERE attempt_id=? AND event_type='execution_route_selected' "
+        "ORDER BY created_at,event_id LIMIT 1",
+        (attempt_id,),
+    ).fetchone()
+    if not row:
+        # Historical or already-running attempts may predate route telemetry.
+        # Coverage remains explicit in analytics; do not invent an assignment.
+        return
+    route = json.loads(row["details_json"])
+    expected = {
+        "execution_backend": route.get("intended_backend"),
+        "execution_transport": route.get("intended_transport"),
+        "configured_auth_mode": route.get("configured_auth_mode"),
+        "backend_version": route.get("backend_version"),
+    }
+    if any(details.get(field) != value for field, value in expected.items()):
+        raise BridgeConflict("factory execution identity does not match its selected route")
+    if route.get("fallback_allowed") is not False:
+        raise BridgeConflict("factory execution route fallback is not supported")
+
+
+def record_factory_execution_analytics(
+    conn: sqlite3.Connection,
+    job_id: str,
+    claim: dict[str, Any],
+    *,
+    event_type: str,
+    details: dict[str, Any],
+) -> bool:
+    validated = _execution_analytics_details(event_type, details)
+    with conn:
+        row = _current_execution_lease(
+            conn,
+            job_id,
+            claim,
+            allow_cancel=True,
+            require_live=event_type == "execution_backend_invoked",
+            require_authorized=True,
+        )
+        if not row:
+            raise BridgeConflict("factory execution analytics fence is stale or unauthorized")
+        _validate_execution_route_identity(conn, row["attempt_id"], validated)
+        return _append_factory_execution_analytics_event(conn, row["attempt_id"], event_type, validated)
+
+
+def _validate_execution_receipt_binding(
+    job: dict[str, Any],
+    attempt: dict[str, Any],
+    *,
+    pr_url: Any,
+    branch: Any,
+    commit_sha: Any,
+    allow_missing_commit_sha: bool = False,
+) -> None:
+    repository = job.get("payload", {}).get("repo")
+    try:
+        observed_repository, _, _ = _parse_pr_reference(repository, pr_url)
+    except (TypeError, BridgeValidationError) as exc:
+        raise BridgeValidationError("execution receipt does not match the execution job") from exc
+    if (
+        job.get("state") != "running"
+        or attempt.get("job_id") != job.get("job_id")
+        or observed_repository != repository
+        or branch != job.get("branch")
+    ):
+        raise BridgeValidationError("execution receipt does not match the execution job")
+    if commit_sha is None and allow_missing_commit_sha:
+        return
+    if not isinstance(commit_sha, str) or not re.fullmatch(r"[0-9a-f]{7,64}", commit_sha):
+        raise BridgeValidationError("execution receipt does not match the execution job")
+
+
+def _validate_execution_commit_analytics_identity(
+    conn: sqlite3.Connection,
+    attempt_id: str,
+    details: dict[str, Any],
+) -> None:
+    supplied = set(EXECUTION_ANALYTICS_COMMON_FIELDS) & set(details)
+    if not supplied:
+        return
+    if supplied != set(EXECUTION_ANALYTICS_COMMON_FIELDS):
+        raise BridgeValidationError("factory execution commit analytics identity is incomplete")
+    identity = _execution_analytics_details(
+        "execution_backend_invoked",
+        {field: details.get(field) for field in EXECUTION_ANALYTICS_COMMON_FIELDS},
+    )
+    invocation = conn.execute(
+        "SELECT details_json FROM factory_attempt_events WHERE attempt_id=? "
+        "AND event_type='execution_backend_invoked' ORDER BY created_at,event_id LIMIT 1",
+        (attempt_id,),
+    ).fetchone()
+    if invocation:
+        recorded = json.loads(invocation["details_json"])
+        if any(recorded.get(field) != identity.get(field) for field in EXECUTION_ANALYTICS_COMMON_FIELDS):
+            raise BridgeConflict("factory execution commit analytics identity does not match invocation")
+    if "backend_outcome" in details and details.get("backend_outcome") not in {"created", "reused", "unknown"}:
+        raise BridgeValidationError("factory execution commit backend_outcome is invalid")
+    elapsed = details.get("backend_elapsed_ms")
+    if "backend_elapsed_ms" in details and (
+        not isinstance(elapsed, int)
+        or isinstance(elapsed, bool)
+        or not 0 <= elapsed <= 604_800_000
+    ):
+        raise BridgeValidationError("factory execution commit backend_elapsed_ms is invalid")
+
+
+def _enqueue_factory_attempt_resume(
+    conn: sqlite3.Connection,
+    attempt: dict[str, Any],
+    job: dict[str, Any],
+) -> None:
+    """Reuse the safe accepted-event path to resume after receipt recovery."""
+    outbox_key = f"factory:accepted:{attempt['attempt_id']}"
+    payload = canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]})
+    row = conn.execute(
+        "SELECT * FROM factory_attempt_outbox WHERE outbox_key=?",
+        (outbox_key,),
+    ).fetchone()
+    if row and (
+        row["attempt_id"] != attempt["attempt_id"]
+        or row["job_id"] != job["job_id"]
+        or row["event_type"] != "hermes_job_accepted"
+        or row["payload_json"] != payload
+    ):
+        raise BridgeConflict("factory recovery wake conflicts with the accepted-event outbox")
+    now = utc_now()
+    if row:
+        # Clear even an in-flight lease. Its stale acknowledgement is fenced by
+        # delivery_lease_id, while this replay remains durably pending.
+        conn.execute(
+            "UPDATE factory_attempt_outbox SET state='pending',delivery_lease_id=NULL,"
+            "delivery_lease_expires_at=NULL,acknowledged_at=NULL,updated_at=? WHERE outbox_key=?",
+            (now, outbox_key),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO factory_attempt_outbox "
+            "(outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", payload, "pending", now, now),
+        )
+    if not conn.execute(
+        "SELECT 1 FROM factory_attempt_events WHERE attempt_id=? "
+        "AND event_type='execution_effect_commit_recovery_wake_enqueued'",
+        (attempt["attempt_id"],),
+    ).fetchone():
+        _append_factory_attempt_event(
+            conn,
+            attempt["attempt_id"],
+            "execution_effect_commit_recovery_wake_enqueued",
+            {"outbox_key": outbox_key},
+        )
+
+
+def _commit_observed_execution_receipt(
+    conn: sqlite3.Connection,
+    job_id: str,
+    lease: sqlite3.Row,
+    details: dict[str, Any],
+) -> bool:
+    commit_sha = details.get("observed_commit_sha")
+    job = get_job(conn, job_id)
+    attempt = get_factory_attempt(conn, lease["attempt_id"])
+    _validate_execution_receipt_binding(
+        job,
+        attempt,
+        pr_url=details.get("observed_pr_url"),
+        branch=details.get("observed_branch"),
+        commit_sha=commit_sha,
+        allow_missing_commit_sha=True,
+    )
+    if commit_sha is None:
+        return False
+    commit_details = {
+        "commit_sha": commit_sha,
+        "pr_url": details["observed_pr_url"],
+        "branch": details["observed_branch"],
+        "hermes_session_id": details["observed_hermes_session_id"],
+        "reason_code": "factory_effect_commit_recovered",
+        "analytics_schema_version": details["analytics_schema_version"],
+        "invocation_id": details["invocation_id"],
+        "execution_backend": details["execution_backend"],
+        "execution_transport": details["execution_transport"],
+        "backend_version": details["backend_version"],
+        "configured_auth_mode": details["configured_auth_mode"],
+        "backend_outcome": details["backend_outcome"],
+        "backend_elapsed_ms": details["elapsed_ms"],
+    }
+    job = transition_job(
+        conn,
+        job_id,
+        state="effect_committed",
+        details=commit_details,
+        _factory_execution_commit=True,
+    )
+    context = details.get("verification_context")
+    if isinstance(context, dict):
+        job = transition_job(
+            conn,
+            job["job_id"],
+            state="verification_pending",
+            details={
+                "reason_code": "draft_pr_verification_pending",
+                "verification_context": context,
+            },
+        )
+    now = utc_now()
+    conn.execute(
+        "UPDATE factory_execution_leases SET released_at=?,effect_observed_at=COALESCE(effect_observed_at,?) WHERE attempt_id=? AND epoch=? AND fence_token=?",
+        (now, now, lease["attempt_id"], lease["epoch"], lease["fence_token"]),
+    )
+    _append_factory_attempt_event(
+        conn,
+        lease["attempt_id"],
+        "execution_effect_commit_recovered",
+        {"invocation_id": details["invocation_id"], "job_id": job["job_id"]},
+    )
+    _enqueue_factory_attempt_resume(conn, attempt, job)
+    return True
+
+
 def authorize_factory_effect(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any]) -> bool:
     """Irrevocably assign the one external-effect authority for a generation."""
     with conn:
@@ -2503,7 +3456,20 @@ def authorize_factory_effect(conn: sqlite3.Connection, job_id: str, claim: dict[
         return True
 
 
-def settle_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any], *, effect_observed: bool) -> None:
+def settle_factory_execution(
+    conn: sqlite3.Connection,
+    job_id: str,
+    claim: dict[str, Any],
+    *,
+    effect_observed: bool,
+    failure_details: dict[str, Any] | None = None,
+    failure_event_type: str = "execution_backend_failed",
+) -> None:
+    if failure_event_type not in EXECUTION_FAILURE_EVENT_TYPES:
+        raise BridgeValidationError("factory execution settlement failure event type is invalid")
+    validated_failure = _execution_analytics_details(failure_event_type, failure_details) if failure_details is not None else None
+    if effect_observed and validated_failure is not None:
+        raise BridgeValidationError("factory execution settlement cannot combine success and failure evidence")
     with conn:
         row = _current_execution_lease(conn, job_id, claim, allow_cancel=True, require_live=False)
         if not row:
@@ -2512,14 +3478,78 @@ def settle_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[
         if row["effect_authorized_at"]:
             # Authorization is absorbing. Observation is not a transfer or a
             # release: the only owner/fence remains able to commit the receipt.
-            conn.execute("UPDATE factory_execution_leases SET effect_observed_at=COALESCE(effect_observed_at,?) WHERE attempt_id=? AND epoch=? AND fence_token=?", (now if effect_observed else None, row["attempt_id"], row["epoch"], row["fence_token"]))
+            failure_observed = bool(validated_failure and validated_failure.get("effect_outcome") == "observed")
+            conn.execute("UPDATE factory_execution_leases SET effect_observed_at=COALESCE(effect_observed_at,?) WHERE attempt_id=? AND epoch=? AND fence_token=?", (now if effect_observed or failure_observed else None, row["attempt_id"], row["epoch"], row["fence_token"]))
             if effect_observed:
                 _append_factory_attempt_event(conn, row["attempt_id"], "effect_authorized_observed", {})
                 return
-            conn.execute("UPDATE factory_attempts SET status='effect_outcome_unknown',updated_at=? WHERE attempt_id=?", (now, row["attempt_id"]))
-            _append_factory_attempt_event(conn, row["attempt_id"], "effect_authorized_outcome_unknown", {})
+            if validated_failure is not None:
+                if failure_event_type == "execution_effect_commit_failed":
+                    validated_failure = {
+                        **validated_failure,
+                        "verification_context": _bounded_verification_context_for_job(
+                            get_job(conn, job_id),
+                            validated_failure.get("verification_context"),
+                        ),
+                    }
+                _append_factory_execution_analytics_event(conn, row["attempt_id"], failure_event_type, validated_failure)
+                receipt_identity_valid = True
+                if failure_event_type == "execution_effect_commit_failed":
+                    try:
+                        if _commit_observed_execution_receipt(conn, job_id, row, validated_failure):
+                            return
+                    except BridgeValidationError:
+                        receipt_identity_valid = False
+                        _append_factory_attempt_event(
+                            conn,
+                            row["attempt_id"],
+                            "execution_effect_commit_receipt_rejected",
+                            {
+                                "reason_code": "factory_effect_commit_receipt_identity_invalid",
+                                "operator_intervention_required": True,
+                            },
+                        )
+            else:
+                receipt_identity_valid = False
+            conn.execute(
+                "UPDATE factory_attempts SET status='effect_outcome_unknown',updated_at=? "
+                "WHERE attempt_id=? AND status!='cancellation_requested'",
+                (now, row["attempt_id"]),
+            )
+            _append_factory_attempt_event(conn, row["attempt_id"], "effect_authorized_outcome_unknown", validated_failure or {})
+            if failure_event_type == "execution_effect_commit_failed" and validated_failure is not None and receipt_identity_valid:
+                attempt = get_factory_attempt(conn, row["attempt_id"])
+                _queue_pr_inspection(
+                    conn,
+                    attempt["work_item_key"],
+                    validated_failure["observed_pr_url"],
+                    attempt["attempt_id"],
+                )
+                inspection = get_pr_inspection(
+                    conn,
+                    get_job(conn, job_id)["payload"]["repo"],
+                    validated_failure["observed_pr_url"],
+                    prior_attempt_id=attempt["attempt_id"],
+                )
+                if (
+                    inspection
+                    and inspection.get("fresh") is True
+                    and isinstance(inspection.get("result"), dict)
+                ):
+                    if not _recover_effect_commit_from_inspection(conn, attempt["attempt_id"], inspection["result"]):
+                        _refresh_effect_commit_inspection(
+                            conn,
+                            attempt["attempt_id"],
+                            validated_failure["observed_pr_url"],
+                        )
             return
         conn.execute("UPDATE factory_execution_leases SET released_at=?, effect_observed_at=? WHERE attempt_id=? AND epoch=? AND fence_token=?", (now, now if effect_observed else None, row["attempt_id"], row["epoch"], row["fence_token"]))
+        if validated_failure is not None:
+            if failure_event_type != "execution_dispatch_failed":
+                raise BridgeValidationError("pre-authorization settlement accepts dispatch failure evidence only")
+            _append_factory_execution_analytics_event(
+                conn, row["attempt_id"], failure_event_type, validated_failure
+            )
         if row["cancel_requested_at"] and not effect_observed:
             conn.execute("UPDATE factory_attempts SET status='canceled', updated_at=? WHERE attempt_id=?", (now, row["attempt_id"]))
             _append_factory_attempt_event(conn, row["attempt_id"], "attempt_canceled_before_effect", {})
@@ -2527,8 +3557,16 @@ def settle_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[
 
 def commit_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
     """Fence the only post-provider effect commit for a retry generation."""
-    if not isinstance(details, dict):
+    if (
+        not isinstance(details, dict)
+        or not {"commit_sha", "pr_url", "branch"} <= set(details)
+        or not set(details) <= EXECUTION_COMMIT_FIELDS
+    ):
         raise BridgeValidationError("factory execution commit details are invalid")
+    if details.get("hermes_session_id") is not None:
+        raise BridgeValidationError("factory execution commit cannot retain Hermes session material")
+    if "reason_code" in details and details.get("reason_code") not in {"hermes_created", "hermes_reused"}:
+        raise BridgeValidationError("factory execution commit reason is invalid")
     with conn:
         row = _current_execution_lease(conn, job_id, claim, allow_cancel=True, require_live=False, require_authorized=True)
         if not row:
@@ -2536,6 +3574,19 @@ def commit_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[
         attempt = get_factory_attempt(conn, row["attempt_id"])
         if attempt["status"] == "superseded":
             raise BridgeConflict("factory execution attempt was superseded")
+        job = get_job(conn, job_id)
+        _validate_execution_receipt_binding(
+            job,
+            attempt,
+            pr_url=details.get("pr_url"),
+            branch=details.get("branch"),
+            commit_sha=details.get("commit_sha"),
+        )
+        _validate_execution_commit_analytics_identity(
+            conn,
+            attempt["attempt_id"],
+            details,
+        )
         job = transition_job(
             conn,
             job_id,
@@ -2630,9 +3681,12 @@ def claim_factory_outbox_delivery(conn: sqlite3.Connection, outbox_key: str) -> 
     return next(item for item in list_factory_outbox(conn, 250) if item["outbox_key"] == outbox_key)
 
 
-def acknowledge_factory_outbox(conn: sqlite3.Connection, outbox_key: str) -> None:
+def acknowledge_factory_outbox(conn: sqlite3.Connection, outbox_key: str, lease_id: str) -> None:
+    if not isinstance(lease_id, str) or not lease_id:
+        raise BridgeValidationError("factory outbox acknowledgement requires its delivery lease")
     with conn:
-        conn.execute("UPDATE factory_attempt_outbox SET state='acknowledged', acknowledged_at=?, delivery_lease_id=NULL, delivery_lease_expires_at=NULL, updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL", (utc_now(), utc_now(), outbox_key))
+        now = utc_now()
+        conn.execute("UPDATE factory_attempt_outbox SET state='acknowledged', acknowledged_at=?, delivery_lease_id=NULL, delivery_lease_expires_at=NULL, updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL AND delivery_lease_id=?", (now, now, outbox_key, lease_id))
 
 
 def fail_factory_outbox_delivery(conn: sqlite3.Connection, outbox_key: str, lease_id: str) -> None:
@@ -2655,10 +3709,12 @@ def claim_factory_inspection_outbox(conn: sqlite3.Connection, outbox_key: str) -
     return next((item for item in list_factory_inspection_outbox(conn, 250) if item["outbox_key"] == outbox_key), None)
 
 
-def acknowledge_factory_inspection_outbox(conn: sqlite3.Connection, outbox_key: str) -> None:
+def acknowledge_factory_inspection_outbox(conn: sqlite3.Connection, outbox_key: str, lease_id: str) -> None:
+    if not isinstance(lease_id, str) or not lease_id:
+        raise BridgeValidationError("factory inspection outbox acknowledgement requires its delivery lease")
     with conn:
         now = utc_now()
-        conn.execute("UPDATE factory_inspection_outbox SET state='acknowledged',acknowledged_at=?,delivery_lease_id=NULL,delivery_lease_expires_at=NULL,updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL", (now, now, outbox_key))
+        conn.execute("UPDATE factory_inspection_outbox SET state='acknowledged',acknowledged_at=?,delivery_lease_id=NULL,delivery_lease_expires_at=NULL,updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL AND delivery_lease_id=?", (now, now, outbox_key, lease_id))
 
 
 def fail_factory_inspection_outbox_delivery(conn: sqlite3.Connection, outbox_key: str, lease_id: str) -> None:
@@ -2666,7 +3722,7 @@ def fail_factory_inspection_outbox_delivery(conn: sqlite3.Connection, outbox_key
         conn.execute("UPDATE factory_inspection_outbox SET state='retrying',delivery_lease_id=NULL,delivery_lease_expires_at=NULL,updated_at=? WHERE outbox_key=? AND acknowledged_at IS NULL AND delivery_lease_id=?", (utc_now(), outbox_key, lease_id))
 
 
-def _sync_factory_attempt_state(conn: sqlite3.Connection, job: dict[str, Any], state: str) -> None:
+def _sync_factory_attempt_state(conn: sqlite3.Connection, job: dict[str, Any], state: str, details: dict[str, Any]) -> None:
     row = conn.execute("SELECT * FROM factory_attempts WHERE job_id=?", (job["job_id"],)).fetchone()
     if not row or row["status"] in {"canceled", "canceled_after_effect", "superseded"}:
         return
@@ -2681,7 +3737,17 @@ def _sync_factory_attempt_state(conn: sqlite3.Connection, job: dict[str, Any], s
     conn.execute("UPDATE factory_attempts SET status=?, prior_pr_url=COALESCE(?, prior_pr_url), updated_at=? WHERE attempt_id=?", (status, job.get("pr_url"), utc_now(), row["attempt_id"]))
     event = {"running": "attempt_started", "effect_committed": "attempt_effect_committed", "verification_pending": "attempt_verification_pending", "completed": "attempt_completed", "failed": "attempt_failed", "verified_ready": "attempt_verified_ready"}.get(status)
     if event:
-        _append_factory_attempt_event(conn, row["attempt_id"], event, {"job_id": job["job_id"], "generation": row["generation"]})
+        event_details = {"job_id": job["job_id"], "generation": row["generation"]}
+        if event == "attempt_failed":
+            event_details.update({
+                key: details.get(key)
+                for key in (
+                    "failure_domain", "failure_stage", "reason_code", "retryable",
+                    "failure_disposition", "operator_intervention_required",
+                )
+                if key in details
+            })
+        _append_factory_attempt_event(conn, row["attempt_id"], event, event_details)
     if job.get("pr_url") and row["mode"] == "real":
         try:
             _queue_pr_inspection(conn, row["work_item_key"], job["pr_url"], row["attempt_id"])
@@ -2947,12 +4013,29 @@ def _validate_verification_context(value: Any) -> dict[str, Any]:
         raise BridgeValidationError("verification_context.local_commands must be a non-empty bounded list")
     normalized_commands = []
     for command in commands:
-        if not isinstance(command, dict) or set(command) != {"command", "exit_code"} or not isinstance(command["command"], str) or not command["command"].strip() or len(command["command"]) > 300 or not isinstance(command["exit_code"], int):
+        if not isinstance(command, dict) or set(command) != {"command", "exit_code"} or not isinstance(command["command"], str) or not command["command"].strip() or len(command["command"]) > 300 or not isinstance(command["exit_code"], int) or isinstance(command["exit_code"], bool) or not -(2**31) <= command["exit_code"] < 2**31:
             raise BridgeValidationError("verification_context.local_commands is malformed")
         normalized_commands.append({"command": command["command"].strip(), "exit_code": command["exit_code"]})
-    if not isinstance(secret, dict) or set(secret) != {"command", "exit_code"} or not isinstance(secret.get("command"), str) or not secret["command"].strip() or len(secret["command"]) > 300 or not isinstance(secret.get("exit_code"), int):
+    if not isinstance(secret, dict) or set(secret) != {"command", "exit_code"} or not isinstance(secret.get("command"), str) or not secret["command"].strip() or len(secret["command"]) > 300 or not isinstance(secret.get("exit_code"), int) or isinstance(secret.get("exit_code"), bool) or not -(2**31) <= secret["exit_code"] < 2**31:
         raise BridgeValidationError("verification_context.secret_check is malformed")
     return {"local_commands": normalized_commands, "secret_check": {"command": secret["command"].strip(), "exit_code": secret["exit_code"]}}
+
+
+def _bounded_verification_context_for_job(job: dict[str, Any], value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        context = _validate_verification_context(value)
+        policy = _validate_payload_policy(job)
+    except BridgeValidationError:
+        return None
+    expected = policy["required_local_commands"]
+    observed = context["local_commands"]
+    if len(observed) != len(expected) or [item["command"] for item in observed] != expected:
+        return None
+    if context["secret_check"]["command"] != policy["secret_check_command"]:
+        return None
+    return context
 
 
 def _canonical_verifier_policy(repo: str) -> dict[str, Any]:
@@ -3081,6 +4164,8 @@ def transition_job(
     details = sanitize_detail(details or {})
     if not isinstance(details, dict):
         raise BridgeValidationError("details must be a JSON object")
+    if state == "failed":
+        _validate_failure_classification(details)
 
     with conn:
         row = conn.execute(
@@ -3141,6 +4226,10 @@ def transition_job(
             if job.get("verification_context") is not None:
                 raise BridgeValidationError("verification_context is immutable once established")
             supplied_context = _validate_verification_context(supplied_context)
+            if factory_attempt and factory_attempt["mode"] == "real" and factory_attempt["actor"] != "legacy-import":
+                supplied_context = _bounded_verification_context_for_job(job, supplied_context)
+                if supplied_context is None:
+                    raise BridgeValidationError("verification_context does not match the checked-in verifier policy")
         verification_completion = current_state == "verification_pending" and state in {"ready_for_human_review", "failed"}
         if verification_completion and factory_attempt and factory_attempt["mode"] == "real" and factory_attempt["actor"] != "legacy-import" and not _factory_verifier_completion:
             raise BridgeValidationError("factory verification completion requires the verifier endpoint")
@@ -3212,7 +4301,7 @@ def transition_job(
         )
         if state in {"ready_for_human_review", "failed"}:
             _close_verification_lease(conn, job["job_id"], "verified" if state == "ready_for_human_review" else "failed")
-        _sync_factory_attempt_state(conn, job, state)
+        _sync_factory_attempt_state(conn, job, state, details)
         _append_event(
             conn,
             job_id=job["job_id"],

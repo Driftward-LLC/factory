@@ -33,6 +33,7 @@ Factory Docker volumes during the standalone deployment cutover.
 ```bash
 factory status
 factory console
+factory analytics --days 30
 factory doctor hatchet --profile prod
 python3 tools/hatchet-contracts.py check
 python3 -m unittest discover -s tools -p 'test_*.py'
@@ -71,6 +72,14 @@ git pull --ff-only
 
 See [docs/factory-release-runbook.md](docs/factory-release-runbook.md) for the
 full release, deploy, verification, and rollback procedure.
+
+See [docs/factory-analytics.md](docs/factory-analytics.md) for the analytics
+cohort, event definitions, coverage rules, privacy boundary, and known evidence
+gaps.
+
+See
+[docs/execution-backend-evaluation.md](docs/execution-backend-evaluation.md)
+for the Hermes-versus-direct-Codex measurement and canary design.
 
 The Docker runtime lives under `/docker/driftward/factory` and is supervised by
 `driftward-factory.service`. The older direct host/systemd installers remain in

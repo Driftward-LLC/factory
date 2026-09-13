@@ -32,7 +32,10 @@ receipt runner. The Hatchet workflow then remains open in the durable
 `driftward.hermes.job.effect_committed` or `driftward.hermes.job.failed` event,
 or until the configured receipt wait expires. This keeps variable Hermes
 runtime out of the worker task timeout while preserving Hatchet visibility for
-the end-to-end workflow.
+the end-to-end workflow. Host `systemd-run` dispatch passes the allowlisted
+runner environment through a protected one-shot `EnvironmentFile`, never
+through command-line `--setenv` values; direct/Docker dispatch uses the same
+explicit allowlist instead of inheriting the full worker environment.
 
 The real worker emits:
 
@@ -71,6 +74,10 @@ Optional environment:
 
 ```bash
 DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
+DRIFTWARD_HERMES_AUTH_MODE=unknown
+DRIFTWARD_HERMES_PROVIDER=unknown
+DRIFTWARD_HERMES_MODEL=unknown
+DRIFTWARD_HERMES_VERSION=
 DRIFTWARD_HERMES_COMMAND=driftward-hermes
 DRIFTWARD_HERMES_ALLOWED_REPOS=Driftward-LLC/driftward-host
 DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN=factory-hermes[bot]
@@ -86,6 +93,26 @@ DRIFTWARD_HERMES_MAX_BUFFER_BYTES=2097152
 DRIFTWARD_HERMES_PR_VERIFICATION_TIMEOUT_MS=180000
 DRIFTWARD_HERMES_PR_VERIFICATION_POLL_MS=15000
 ```
+
+`DRIFTWARD_HERMES_AUTH_MODE` is a non-secret analytics label. Set it to
+`chatgpt_codex_oauth` or `api_key` only when the deployed route is known;
+otherwise leave the default `unknown`. It does not inspect or expose an OAuth
+token and cannot identify whether Hermes, OAuth, or the provider caused an
+execution failure.
+
+The provider, model, and backend version values are also non-secret route
+labels. They are recorded before preflight so dispatch and policy failures
+remain in the selected cohort. Unknown values stay explicit; the worker never
+reads Hermes authentication or runtime state to fill them in. Labels must use
+bounded lowercase identifiers (`a-z`, digits, `.`, `_`, or `-`). The current
+installers remove secret-shaped values (including common `sk-` and provider-key
+prefixes) from these fields; version labels are omitted and provider/model
+labels become `unknown`. Existing unsafe env-file values are neutralized on
+install.
+
+The current executor truthfully emits the fixed route `factory-default-v1` /
+`hermes` / `static`; setting arbitrary experiment labels cannot manufacture an
+A/B cohort. A future router must perform and enforce the actual assignment.
 
 When `DRIFTWARD_HERMES_GRPC_TARGET` is set, the bridge executor and detached
 receipt runner call the typed Hermes Factory gRPC gateway instead of invoking

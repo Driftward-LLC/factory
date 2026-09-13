@@ -39,6 +39,8 @@ from .store import (
     execution_may_effect,
     settle_factory_execution,
     recover_factory_execution,
+    record_factory_execution_analytics,
+    record_factory_execution_route,
     list_factory_outbox,
     claim_factory_outbox_delivery,
     acknowledge_factory_outbox,
@@ -259,8 +261,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "settle":
                 claim = {key: body.get(key) for key in ("lease_id", "owner", "epoch", "fence_token")}
-                settle_factory_execution(self.conn, parts[1], claim, effect_observed=body.get("effect_observed") is True)
+                settle_factory_execution(
+                    self.conn,
+                    parts[1],
+                    claim,
+                    effect_observed=body.get("effect_observed") is True,
+                    failure_details=body.get("failure_details"),
+                    failure_event_type=body.get("failure_event_type", "execution_backend_failed"),
+                )
                 self._write_json(200, {"ok": True})
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "route":
+                if set(body) != {"details"}:
+                    raise BridgeValidationError("factory execution route body is invalid")
+                recorded = record_factory_execution_route(self.conn, parts[1], body.get("details"))
+                self._write_json(201 if recorded else 200, {"recorded": recorded})
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "analytics":
+                if set(body) != {"lease_id", "owner", "epoch", "fence_token", "event_type", "details"}:
+                    raise BridgeValidationError("factory execution analytics body is invalid")
+                claim = {key: body.get(key) for key in ("lease_id", "owner", "epoch", "fence_token")}
+                event_type = body.get("event_type")
+                if event_type not in {"execution_backend_invoked", "execution_backend_completed"}:
+                    raise BridgeValidationError("factory execution analytics endpoint accepts invocation and completion only")
+                recorded = record_factory_execution_analytics(
+                    self.conn,
+                    parts[1],
+                    claim,
+                    event_type=event_type,
+                    details=body.get("details"),
+                )
+                self._write_json(201 if recorded else 200, {"recorded": recorded})
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "commit":
                 claim = {key: body.get(key) for key in ("lease_id", "owner", "epoch", "fence_token")}
@@ -281,7 +312,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._write_json(200, {"outbox": item})
                 return
             if len(parts) == 4 and parts[0] == "factory" and parts[1] == "outbox" and parts[3] == "ack":
-                acknowledge_factory_outbox(self.conn, parts[2]); self._write_json(200, {"ok": True}); return
+                acknowledge_factory_outbox(self.conn, parts[2], body.get("delivery_lease_id")); self._write_json(200, {"ok": True}); return
 
             if len(parts) == 5 and parts[0] == "jobs" and parts[2] == "verification" and parts[3] == "lease" and parts[4] == "claim":
                 if not self._require_verifier_auth():

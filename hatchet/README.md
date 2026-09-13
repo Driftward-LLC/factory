@@ -92,6 +92,8 @@ Supported events:
   payloads.
 - `driftward.github.pr.synchronized`, produced from GitHub
   `pull_request.synchronize` payloads.
+- `driftward.github.pr.reopened`, produced from GitHub
+  `pull_request.reopened` payloads as an open, unmerged observation.
 - `driftward.github.pr.closed_unmerged`, produced from GitHub
   `pull_request.closed` payloads where `merged=false`.
 - `driftward.github.pr.closed_merged`, produced from GitHub
@@ -114,6 +116,7 @@ the lifecycle writer, retry operator, and recovery components:
 
 ```bash
 factory status
+factory analytics --days 30
 factory doctor hatchet --profile prod
 factory mode
 factory mode dry-run
@@ -122,6 +125,12 @@ factory logs linear -f
 factory logs all
 factory attempts list ENG-62
 ```
+
+`factory analytics` reads the append-only bridge, ingress, and lifecycle
+ledgers through the root-only operator and reports explicit coverage instead
+of guessing missing backend or provider attribution. Metric definitions and
+known limitations are documented in
+[`docs/factory-analytics.md`](../docs/factory-analytics.md).
 
 Reach for direct `systemctl`, `curl`, Docker, or Tailscale commands only when
 installing, debugging a specific component named by `factory status`, or doing

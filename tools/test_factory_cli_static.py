@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -16,6 +18,210 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FactoryCliStaticTests(unittest.TestCase):
+    def test_analytics_uses_root_operator_and_bounded_window(self) -> None:
+        source = (ROOT / "factory/factory").read_text(encoding="utf-8")
+
+        self.assertIn("factory analytics [--days N] [--json]", source)
+        self.assertIn('operator_request GET "/v1/analytics?days=$days"', source)
+        self.assertIn("format_analytics()", source)
+        self.assertIn("analytics --days must be between 1 and 365", source)
+
+    def test_observed_receipt_refresh_uses_the_root_operator(self) -> None:
+        source = (ROOT / "factory/factory").read_text(encoding="utf-8")
+        operator = (ROOT / "hatchet/bridge/hatchet_hermes_bridge/operator.py").read_text(encoding="utf-8")
+
+        self.assertIn("factory attempts refresh-receipt ATTEMPT-ID --reason TEXT --yes", source)
+        self.assertIn('operator_request POST "/v1/attempts/$id/receipt-recovery/refresh"', source)
+        self.assertIn('path.endswith("/receipt-recovery/refresh")', operator)
+
+    def test_analytics_formatter_preserves_funnel_order_and_discloses_active_cohort(self) -> None:
+        if not hasattr(socket, "AF_UNIX") or shutil.which("jq") is None:
+            self.skipTest("Unix sockets and jq are required for the analytics formatter")
+
+        factory = ROOT / "factory/factory"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            env_file = tmp_path / "factory-operator.env"
+            socket_path = tmp_path / "operator.sock"
+            fixture = tmp_path / "analytics.json"
+            env_file.write_text("HATCHET_FACTORY_OPERATOR_TOKEN=test-token\n", encoding="utf-8")
+            analytics_payload = {
+                "schema": "factory-analytics-v1",
+                "generated_at": "2026-09-13T00:00:00Z",
+                "window": {"days": 30},
+                "coverage": {
+                    "cohort_work_items": 2,
+                    "cohort_attempts": 2,
+                    "execution_claimed_attempts": 2,
+                    "effect_authorized_attempts": 1,
+                    "backend_attribution": {"observed": 0, "eligible": 1, "rate": 0},
+                    "configured_auth_label": {"observed": 0, "eligible": 0, "rate": None},
+                    "attempt_failure_attribution": {"observed": 0, "eligible": 1, "rate": 0},
+                },
+                "intake": {
+                    "available": True,
+                    "linear_events": 2,
+                    "eligible_events": 2,
+                    "authenticated_eligible_events": 2,
+                    "eligible_work_items": 1,
+                    "rejected_events": 1,
+                    "published_events": 2,
+                    "unpublished_events": 0,
+                    "repeated_eligible_events": 1,
+                    "authenticated_repeated_eligible_events": 1,
+                    "repeated_eligible_event_rate": 0.5,
+                    "eligible_event_authenticity": {
+                        "observed": 2, "eligible": 2, "rate": 1,
+                    },
+                    "correlation": {
+                        "available": True,
+                        "eligible_to_real_attempt": {
+                            "observed": 2, "eligible": 2, "rate": 1,
+                        },
+                        "active_attempt_reuse_events": 1,
+                        "active_attempt_reuse_rate": 0.5,
+                    },
+                    "receipts": {"available": False},
+                    "publication": {"current_backlog": 0},
+                },
+                "funnel": {"stages": {
+                    "attempted": {"count": 2, "rate_from_attempted": 1},
+                    "executor_started": {"count": 2, "rate_from_attempted": 1},
+                    "effect_committed": {"count": 1, "rate_from_attempted": 0.5},
+                    "draft_pr_available": {"count": 1, "rate_from_attempted": 0.5},
+                    "verified_ready": {"count": 0, "rate_from_attempted": 0},
+                }},
+                "outcomes": {
+                    "by_status": {"failed": 1, "running": 1},
+                    "active_attempts": 1,
+                    "right_censored": True,
+                    "github_observation_coverage": None,
+                    "open_prs": None,
+                    "merged_prs": None,
+                    "closed_unmerged_prs": None,
+                    "unobserved_prs": None,
+                },
+                "github": {
+                    "authenticated_outcomes_available": False,
+                    "closed_unmerged_rates": None,
+                },
+                "latency_ms": {},
+                "failures": {
+                    "currently_failed_attempts": 1,
+                    "attempts_with_failure_evidence": 1,
+                    "recovered_failure_attempts": 0,
+                    "by_classification": [],
+                    "backend_invocations": {"failed": 0, "by_classification": []},
+                    "dispatch_boundaries": {"failed": 0, "by_classification": []},
+                    "effect_commit_boundaries": {"failed": 0, "by_classification": []},
+                },
+                "recovery": {
+                    "by_attempt_kind": {},
+                    "repair_budgets_exhausted": 0,
+                    "failed_attempts_eventually_verified": 0,
+                    "failed_attempts_verified_within_horizon": 0,
+                    "recovery_maturity_days": 7,
+                    "age_qualified_failed_attempts": 0,
+                    "settled_failed_attempts": 0,
+                    "failed_attempt_recovery_rate": None,
+                    "failed_attempt_recovery_outcome_coverage": {
+                        "observed": 0, "eligible": 1, "rate": 0,
+                    },
+                    "right_censored_failed_attempts": 1,
+                    "active_recovery_lineages": 1,
+                    "immature_failed_attempts": 0,
+                    "immature_unrecovered_failed_attempts": 0,
+                    "unaged_unrecovered_failed_attempts": 0,
+                    "late_observed_attempt_recoveries": 0,
+                },
+                "safety": {
+                    "bridge_submit_deduplicated_events": 0,
+                    "unknown_effect_outcomes": 0,
+                    "observed_receipt_commit_recovery_incidents": 0,
+                    "unresolved_observed_receipts": 0,
+                    "observed_receipt_recovery_exhausted": 0,
+                    "rejected_observed_receipts": 0,
+                    "duplicate_effects_detected": None,
+                },
+                "human": {"work_items_ready_for_review": 0, "exception_intervention_attempts": 0},
+                "backends": [],
+                "lifecycle": {
+                    "available": True,
+                    "cohort_records": 1,
+                    "current_dead_letters": 0,
+                    "by_state": {"delivered": 1},
+                    "dead_letter_delivery_errors": {},
+                },
+                "unavailable_metrics": [],
+            }
+            fixture.write_text(
+                json.dumps(analytics_payload, sort_keys=True), encoding="utf-8"
+            )
+            self._write_executable(
+                fake_bin / "id",
+                "#!/usr/bin/env sh\nif [ \"$1\" = \"-u\" ]; then echo 0; else /usr/bin/id \"$@\"; fi\n",
+            )
+            self._write_executable(
+                fake_bin / "curl",
+                "#!/usr/bin/env sh\ncat \"$FACTORY_TEST_ANALYTICS\"\n",
+            )
+
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.bind(str(socket_path))
+                env = os.environ.copy()
+                env.update({
+                    "FACTORY_OPERATOR_ENV": str(env_file),
+                    "FACTORY_OPERATOR_SOCKET": str(socket_path),
+                    "FACTORY_TEST_ANALYTICS": str(fixture),
+                    "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+                })
+                result = subprocess.run(
+                    [str(factory), "analytics"],
+                    check=True,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+                analytics_payload["intake"]["correlation"] = {"available": False}
+                fixture.write_text(
+                    json.dumps(analytics_payload, sort_keys=True), encoding="utf-8"
+                )
+                unavailable_result = subprocess.run(
+                    [str(factory), "analytics"],
+                    check=True,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+            finally:
+                sock.close()
+
+            output = result.stdout
+            stages = ["attempted", "executor started", "effect committed", "draft pr available", "verified ready"]
+            positions = [output.index(f"  {stage}  ") for stage in stages]
+            self.assertEqual(positions, sorted(positions))
+            self.assertIn("Attempt status (attempt grain)", output)
+            self.assertIn("running  1", output)
+            self.assertIn("outcome rates are right-censored", output)
+            self.assertIn("Raw repeated Ready observations 1", output)
+            self.assertIn("Authenticated repeated Ready rate 1/2  50%", output)
+            self.assertIn("Active-attempt reuse rate      1/2  50%", output)
+            self.assertIn("GitHub outcomes unavailable.", output)
+            self.assertNotIn("merged 0", output)
+            self.assertIn(
+                "Authenticated Ready correlation unavailable.",
+                unavailable_result.stdout,
+            )
+            self.assertNotIn("Active-attempt reuse rate", unavailable_result.stdout)
+            self.assertNotIn(
+                "Authenticated repeated Ready rate", unavailable_result.stdout
+            )
+
     def test_status_reports_legacy_bridge_reconciler_as_retired(self) -> None:
         source = (ROOT / "factory/factory").read_text(encoding="utf-8")
 
@@ -292,6 +498,105 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("ReadWritePaths=/run/driftward-hermes-factory /run/docker.sock /var/run/docker.sock", unit)
         self.assertNotIn("OPENAI_API_KEY", unit)
         self.assertNotIn("ANTHROPIC_API_KEY", unit)
+
+    def test_installers_neutralize_secret_shaped_execution_labels(self) -> None:
+        for relative in ("deploy/install-docker.sh", "hatchet/workers/install.sh"):
+            with self.subTest(installer=relative):
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn("analytics_label_secret_shaped()", source)
+                self.assertIn("normalize_analytics_label()", source)
+                self.assertIn("sk-", source)
+                self.assertIn("github_pat_", source)
+                self.assertIn("upsert_env \"$file\" \"$key\" unknown", source)
+                self.assertIn("remove_env \"$file\" \"$key\"", source)
+                for key in (
+                    "DRIFTWARD_HERMES_AUTH_MODE",
+                    "DRIFTWARD_HERMES_PROVIDER",
+                    "DRIFTWARD_HERMES_MODEL",
+                    "DRIFTWARD_HERMES_VERSION",
+                ):
+                    self.assertIn(f'normalize_analytics_label "$bridge_executor_env', source)
+                    self.assertIn(key, source)
+
+                # Exercise the real shell helpers with a harmless install
+                # shim. A valid first definition followed by a secret-shaped
+                # duplicate must collapse to one canonical value; otherwise
+                # systemd/Compose would use the unsafe last definition.
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "executor.env"
+                    target.write_text(
+                        "DRIFTWARD_HERMES_MODEL=gpt-5.5\n"
+                        "DRIFTWARD_HERMES_MODEL=sk-proj-FAKE_DUPLICATE\n"
+                        "DRIFTWARD_HERMES_VERSION=1.2.3\n"
+                        "DRIFTWARD_HERMES_VERSION=eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE\n"
+                        "KEEP=this\n",
+                        encoding="utf-8",
+                    )
+                    subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            r'''
+set -euo pipefail
+install() {
+  local args=("$@")
+  local count="${#args[@]}"
+  cp -- "${args[$((count - 2))]}" "${args[$((count - 1))]}"
+}
+eval "$(awk '/^upsert_env\(\)/ { capture=1 } /^ensure_env_secret\(\)/ { capture=0 } capture { print }' "$INSTALLER")"
+normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_MODEL dimension ""
+normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
+''',
+                        ],
+                        check=True,
+                        env={
+                            **os.environ,
+                            "INSTALLER": str(ROOT / relative),
+                            "TARGET": str(target),
+                        },
+                        text=True,
+                        capture_output=True,
+                    )
+                    lines = target.read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(
+                        [line for line in lines if line.startswith("DRIFTWARD_HERMES_MODEL=")],
+                        ["DRIFTWARD_HERMES_MODEL=gpt-5.5"],
+                    )
+                    self.assertIn("KEEP=this", lines)
+                    self.assertFalse(any("sk-proj-" in line for line in lines))
+                    self.assertEqual(
+                        [line for line in lines if line.startswith("DRIFTWARD_HERMES_VERSION=")],
+                        ["DRIFTWARD_HERMES_VERSION=1.2.3"],
+                    )
+                    self.assertFalse(any("eyJ" in line for line in lines))
+        docker = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
+        self.assertIn('remove_env "$bridge_executor_env_file" FACTORY_RELEASE_VERSION', docker)
+
+    def test_docker_installer_rejects_secret_shaped_image_labels_before_use(self) -> None:
+        source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
+        validation_prefix = source.split('factory_release_commit="', 1)[0]
+        for secret in (
+            "sk-proj-FAKE_IMAGE_LABEL",
+            "eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE",
+            ("Ab7_" * 50) + ".xY9",
+        ):
+            for arguments in (
+                ("--image-tag", secret),
+                ("--image", f"registry.example/driftward/factory:{secret}"),
+            ):
+                with self.subTest(arguments=arguments):
+                    result = subprocess.run(
+                        ["bash", "-s", "--", *arguments],
+                        input=validation_prefix,
+                        env={**os.environ, "FACTORY_IMAGE_TAG": "local", "FACTORY_IMAGE": ""},
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(result.returncode, 64)
+                    output = result.stdout + result.stderr
+                    self.assertIn("credential-like material", output)
+                    self.assertNotIn(secret, output)
 
     def test_release_image_tags_require_matching_clean_checkout(self) -> None:
         source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")

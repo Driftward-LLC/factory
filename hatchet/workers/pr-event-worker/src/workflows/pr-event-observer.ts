@@ -30,7 +30,15 @@ export type PrEventInput = {
   bridgeJobId?: string;
   dryRun?: boolean;
   checkConclusion?: string;
+  checkStatus?: string;
+  checkSuiteId?: string;
+  checkRunCount?: number;
+  pullRequestNumbers?: number[];
   reviewState?: string;
+  reviewId?: string;
+  reviewCommitSha?: string;
+  reviewSubmittedAt?: string;
+  actorKind?: string;
 };
 
 export type PrEventOutput = {
@@ -61,6 +69,16 @@ export type PrEventOutput = {
     bridgeLookupError?: string;
     dryRun: boolean;
     requiresFreshVerification: boolean;
+    checkConclusion?: string;
+    checkStatus?: string;
+    checkSuiteId?: string;
+    checkRunCount?: number;
+    pullRequestNumbers: number[];
+    reviewState?: string;
+    reviewId?: string;
+    reviewCommitSha?: string;
+    reviewSubmittedAt?: string;
+    actorKind?: string;
     summary: string;
   };
 };
@@ -70,6 +88,7 @@ export const prEventObserver = hatchet.workflow<PrEventInput, PrEventOutput>({
   onEvents: [
     HATCHET_EVENTS.GITHUB_PR_CREATED,
     HATCHET_EVENTS.GITHUB_PR_SYNCHRONIZED,
+    HATCHET_EVENTS.GITHUB_PR_REOPENED,
     HATCHET_EVENTS.GITHUB_PR_CLOSED_UNMERGED,
     HATCHET_EVENTS.GITHUB_PR_CLOSED_MERGED,
     HATCHET_EVENTS.GITHUB_CHECKS_COMPLETED,
@@ -82,7 +101,9 @@ prEventObserver.task({
   executionTimeout: '30s',
   fn: async (input, ctx) => {
     const eventKey = ctx.triggeringEventKey() || 'unknown';
-    const requiresFreshVerification = eventKey === HATCHET_EVENTS.GITHUB_PR_SYNCHRONIZED;
+    const requiresFreshVerification =
+      eventKey === HATCHET_EVENTS.GITHUB_PR_SYNCHRONIZED ||
+      eventKey === HATCHET_EVENTS.GITHUB_PR_REOPENED;
     const repo = input.repo || '';
     const prNumber = Number(input.prNumber || 0);
     const prUrl = input.prUrl || '';
@@ -103,6 +124,9 @@ prEventObserver.task({
     const reasonCode = input.reasonCode || defaultReasonCodeForHatchetEvent(eventKey);
     const isDraft = Boolean(input.isDraft);
     const dryRun = Boolean(input.dryRun);
+    const pullRequestNumbers = Array.isArray(input.pullRequestNumbers)
+      ? input.pullRequestNumbers.filter((number): number is number => Number.isInteger(number) && number > 0)
+      : [];
     const bridgeLookup = dryRun
       ? { status: BRIDGE_LOOKUP_STATUSES.SKIPPED }
       : await lookupBridgeJob({
@@ -149,6 +173,16 @@ prEventObserver.task({
       bridgeLookupError: 'error' in bridgeLookup ? bridgeLookup.error : undefined,
       dryRun,
       requiresFreshVerification,
+      checkConclusion: input.checkConclusion,
+      checkStatus: input.checkStatus,
+      checkSuiteId: input.checkSuiteId,
+      checkRunCount: input.checkRunCount,
+      pullRequestNumbers,
+      reviewState: input.reviewState,
+      reviewId: input.reviewId,
+      reviewCommitSha: input.reviewCommitSha,
+      reviewSubmittedAt: input.reviewSubmittedAt,
+      actorKind: input.actorKind,
       summary: `Observed ${eventKey} for ${repo || 'unknown repo'}#${prNumber || 0}; no Hermes dispatch`
     };
   }

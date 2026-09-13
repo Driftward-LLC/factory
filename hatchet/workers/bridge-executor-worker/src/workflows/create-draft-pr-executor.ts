@@ -3,12 +3,15 @@ import {
   BridgeClient,
   HATCHET_EVENTS,
   type BridgeJob,
-  type JsonObject,
-  type JsonValue
+  type JsonObject
 } from '@driftward/hatchet-worker-shared';
 import {
   NonRetryableBridgeExecutionError,
+  boundedHermesDraftPrReceipt,
   dispatchHermesCreateDraftPrReceipt,
+  factoryExecutionAnalyticsIdentity,
+  factoryExecutionRouteSelection,
+  shouldRecordFactoryExecutionRoute,
   realCreateDraftPrEnabled,
   verificationCompletionPlan,
   hermesReceiptEventExpression,
@@ -25,6 +28,8 @@ import { hatchet } from '../hatchet-client';
 import { emitBestEffort } from './event-delivery';
 import { validateFactoryArtifactFence } from './factory-artifact-fence';
 import { recoverClaimedVerification } from './verification-recovery';
+import { transitionToVerificationPending } from './verification-pending';
+import type { ExecutionFailureDomain, ExecutionFailureStage } from '../hermes/errors';
 
 if (!globalThis.crypto) {
   globalThis.crypto = webcrypto as Crypto;
@@ -158,16 +163,29 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
     if (!retryAttempt) {
       const failed = await failBeforeExternalEffect(bridge, job, {
         reasonCode: 'factory_attempt_required',
-        error: 'real create_draft_pr requires a valid factory attempt lineage'
+        error: 'real create_draft_pr requires a valid factory attempt lineage',
+        failureDomain: 'factory',
+        failureStage: 'preflight',
+        operatorInterventionRequired: true,
       });
       await emitFailed(failed, false);
       return { executed: false, blockedReason: 'factory_attempt_required', job: failed, dryRun: false };
     }
 
+    if (shouldRecordFactoryExecutionRoute(job, retryAttempt)) {
+      await bridge.recordFactoryExecutionRoute(
+        job.job_id,
+        factoryExecutionRouteSelection(job, retryAttempt),
+      );
+    }
+
     if (!realCreateDraftPrEnabled()) {
       const failed = await failBeforeExternalEffect(bridge, job, {
         reasonCode: 'real_create_draft_pr_disabled',
-        error: 'Set DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=1 to enable real PR creation'
+        error: 'Set DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=1 to enable real PR creation',
+        failureDomain: 'factory',
+        failureStage: 'preflight',
+        operatorInterventionRequired: true,
       });
       await emitFailed(failed, false);
       return {
@@ -186,7 +204,16 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
       if (error instanceof NonRetryableBridgeExecutionError) {
         const failed = await failBeforeExternalEffect(bridge, job, {
           reasonCode: error.reasonCode,
-          error: error.message
+          error: error.message,
+          failureDomain: error.failureDomain,
+          failureStage: error.failureStage === 'unknown' ? 'preflight' : error.failureStage,
+          retryable: error.retryable,
+          transportStatus: error.transportStatus,
+          processExitCode: error.processExitCode,
+          processSignal: error.processSignal,
+          timedOut: error.timedOut,
+          bufferExceeded: error.bufferExceeded,
+          operatorInterventionRequired: true,
         });
         await emitFailed(failed, false);
         return {
@@ -206,7 +233,10 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
     if (!fenceValidation.ok) {
       const failed = await failBeforeExternalEffect(bridge, running, {
         reasonCode: fenceValidation.reasonCode,
-        error: fenceValidation.error
+        error: fenceValidation.error,
+        failureDomain: 'github',
+        failureStage: 'artifact_fence',
+        operatorInterventionRequired: true,
       });
       await emitFailed(failed, false);
       return { executed: false, blockedReason: fenceValidation.reasonCode, job: failed, dryRun: false, reused: true };
@@ -220,12 +250,18 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
       return { executed: false, blockedReason: execution.reason || 'factory_execution_in_progress', job: running, dryRun: false, reused: true };
     }
     const executionLease = execution.lease;
+    let effectAuthorized = false;
+    const executionStartedAt = Date.now();
 
     try {
       // This is the irreversible, single-use provider authority. Cancellation
       // or expiry before it prevents the call; after it, only this exact fence
       // may invoke Hermes and later record the provider receipt.
-      if (executionLease && (!await bridge.renewFactoryExecution(running.job_id, executionLease) || !await bridge.authorizeFactoryEffect(running.job_id, executionLease))) {
+      if (executionLease) {
+        const renewed = await bridge.renewFactoryExecution(running.job_id, executionLease);
+        effectAuthorized = renewed && await bridge.authorizeFactoryEffect(running.job_id, executionLease);
+      }
+      if (executionLease && !effectAuthorized) {
         await bridge.settleFactoryExecution(running.job_id, executionLease, false);
         return { executed: false, blockedReason: 'factory_attempt_canceled', job: running, dryRun: false, reused: true };
       }
@@ -236,10 +272,30 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
       ctx.logger.info('Dispatched Hermes receipt runner', { jobId: running.job_id, dispatchId: dispatch.dispatchId, pid: dispatch.pid });
       return { executed: false, blockedReason: 'waiting_for_hermes_receipt', job: running, dryRun: false, reused: false };
     } catch (error) {
-      // Once Hermes has been invoked, an error cannot prove that no provider
-      // effect happened. If async dispatch itself failed after authorization,
-      // move the attempt to explicit recovery-required state.
-      if (executionLease) await bridge.settleFactoryExecution(running.job_id, executionLease, false);
+      // An authorization response or async dispatch error can be ambiguous.
+      // Let the bridge release a pre-authorization lease or retain an
+      // authorized generation as recovery-required, with the same telemetry.
+      if (executionLease) {
+        const classified = error instanceof NonRetryableBridgeExecutionError ? error : null;
+        const reasonCode = classified?.reasonCode || 'factory_execution_recovery_required';
+        const invocationId = `${running.job_id}:${executionLease.lease_id}:${executionLease.epoch}`;
+        await bridge.settleFactoryExecution(running.job_id, executionLease, false, {
+          ...factoryExecutionAnalyticsIdentity(invocationId),
+          failure_domain: effectAuthorized ? (classified?.failureDomain || 'executor') : 'executor',
+          failure_stage: effectAuthorized ? (classified?.failureStage || 'receipt_dispatch') : 'effect_authorization',
+          reason_code: reasonCode,
+          retryable: classified?.retryable ?? null,
+          failure_disposition: 'recovery_required',
+          operator_intervention_required: true,
+          effect_outcome: effectAuthorized ? 'unknown' : 'none',
+          elapsed_ms: Math.max(0, Math.min(604_800_000, Date.now() - executionStartedAt)),
+          transport_status: classified?.transportStatus || null,
+          process_exit_code: classified?.processExitCode ?? null,
+          process_signal: classified?.processSignal || null,
+          timed_out: classified?.timedOut ?? null,
+          buffer_exceeded: classified?.bufferExceeded ?? null,
+        }, 'execution_dispatch_failed');
+      }
       if (error instanceof NonRetryableBridgeExecutionError) return { executed: false, blockedReason: error.reasonCode, job: running, dryRun: false, reused: true };
       throw error;
     }
@@ -301,16 +357,16 @@ function resumeHermesDraftPrResultOrReceipt(job: BridgeJob, waitResult: unknown)
     const branch = typeof receipt.branch === 'string' ? receipt.branch : job.branch;
     const prNumber = typeof receipt.prNumber === 'number' ? receipt.prNumber : Number(prUrl?.match(/\/pull\/(\d+)$/)?.[1] || 0);
     if (!prUrl || !branch || !prNumber) throw error;
-    return {
-      status: receipt.status === 'created' ? 'created' : 'reused',
+    const bounded = boundedHermesDraftPrReceipt(job, {
+      status: receipt.status,
       prUrl,
       prNumber,
       commitSha: typeof receipt.commitSha === 'string' ? receipt.commitSha : job.commit_sha,
       branch,
-      hermesSessionId: typeof receipt.hermesSessionId === 'string' ? receipt.hermesSessionId : job.hermes_session_id,
-      summary: typeof receipt.summary === 'string' ? receipt.summary : 'resumed verification from Hermes receipt event',
-      validation: isJsonValue(receipt.validation) ? receipt.validation : null
-    };
+      validation: receipt.validation,
+    });
+    if (!bounded) throw error;
+    return bounded;
   }
 }
 
@@ -330,10 +386,6 @@ function findHermesReceiptPayload(value: unknown, job: BridgeJob): Record<string
     if (found) return found;
   }
   return null;
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  return value === null || ['string', 'number', 'boolean'].includes(typeof value) || Array.isArray(value) || (typeof value === 'object' && value !== null);
 }
 
 function isDraftPrEffectAction(action: string): action is 'create_draft_pr' | 'repair_draft_pr' {
@@ -411,20 +463,11 @@ async function completeDryRunJob(bridge: BridgeClient, job: BridgeJob): Promise<
 }
 
 async function ensureVerificationPending(bridge: BridgeClient, job: BridgeJob, initialContext?: unknown): Promise<BridgeJob> {
-  if (job.state === 'verification_pending') {
-    return job;
-  }
   if (!job.pr_url) {
     throw new Error(`effect_committed bridge job ${job.job_id} is missing pr_url`);
   }
-  const pending = await bridge.transitionJob(job.job_id, {
-    state: 'verification_pending',
-    details: {
-      reason_code: 'draft_pr_verification_pending',
-      ...(initialContext && typeof initialContext === 'object' && !Array.isArray(initialContext) ? { verification_context: initialContext as JsonObject } : {}),
-    }
-  });
-  await emitBestEffort(() => emitVerificationPending(pending.job));
+  const pending = await transitionToVerificationPending(bridge, job, initialContext);
+  if (pending.transitioned) await emitBestEffort(() => emitVerificationPending(pending.job));
   return pending.job;
 }
 
@@ -452,6 +495,15 @@ async function failBeforeExternalEffect(
   input: {
     reasonCode: string;
     error: string;
+    failureDomain: ExecutionFailureDomain;
+    failureStage: ExecutionFailureStage;
+    retryable?: boolean | null;
+    transportStatus?: string | null;
+    processExitCode?: number | null;
+    processSignal?: string | null;
+    timedOut?: boolean | null;
+    bufferExceeded?: boolean | null;
+    operatorInterventionRequired: boolean;
   }
 ): Promise<BridgeJob> {
   if (job.state !== 'accepted' && job.state !== 'running' && job.state !== 'effect_committed') {
@@ -461,7 +513,17 @@ async function failBeforeExternalEffect(
     state: 'failed',
     details: {
       reason_code: input.reasonCode,
-      error: input.error
+      error: input.error,
+      failure_domain: input.failureDomain,
+      failure_stage: input.failureStage,
+      retryable: input.retryable === undefined ? false : input.retryable,
+      failure_disposition: 'terminal',
+      operator_intervention_required: input.operatorInterventionRequired,
+      ...(input.transportStatus !== undefined ? { transport_status: input.transportStatus } : {}),
+      ...(input.processExitCode !== undefined ? { process_exit_code: input.processExitCode } : {}),
+      ...(input.processSignal !== undefined ? { process_signal: input.processSignal } : {}),
+      ...(input.timedOut !== undefined ? { timed_out: input.timedOut } : {}),
+      ...(input.bufferExceeded !== undefined ? { buffer_exceeded: input.bufferExceeded } : {}),
     }
   });
   return failed.job;

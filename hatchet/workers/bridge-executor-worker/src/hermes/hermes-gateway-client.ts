@@ -3,7 +3,19 @@ import path from 'node:path';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob, JsonValue } from '@driftward/hatchet-worker-shared';
-import { NonRetryableBridgeExecutionError } from './errors';
+import {
+  boundedHermesDraftPrReceipt,
+  gatewayReasonCode,
+  processSignal,
+  redactSecretShapes,
+  transportStatus,
+  type BoundedHermesDraftPrReceipt,
+} from './bounded-evidence';
+import {
+  NonRetryableBridgeExecutionError,
+  type ExecutionFailureDomain,
+  type ExecutionFailureStage,
+} from './errors';
 
 export const DEFAULT_HERMES_GRPC_TARGET = 'unix:///run/driftward-hermes-factory/hermes.sock';
 
@@ -14,16 +26,7 @@ export type HermesIdentityCheck = {
   accessibleRepo: string;
 };
 
-export type GatewayDraftPrResult = {
-  status: 'created' | 'reused';
-  prUrl: string;
-  prNumber: number;
-  commitSha: string | null;
-  branch: string;
-  hermesSessionId: string | null;
-  summary: string;
-  validation: JsonValue | null;
-};
+export type GatewayDraftPrResult = BoundedHermesDraftPrReceipt;
 
 export type GatewayDraftPrObservation = {
   headRefName?: string;
@@ -223,36 +226,24 @@ export async function runHermesCreateDraftPrViaGrpc(job: BridgeJob, timeoutMs: n
 
   const status = response.status;
   if (status !== 'created' && status !== 'reused') {
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_response_malformed',
-      'Hermes gRPC draft PR response status must be created or reused'
-    );
+    throw malformedGatewayResponse('Hermes gRPC draft PR response status must be created or reused');
   }
   const prUrl = requiredResponseString(response.prUrl, 'pr_url');
   const branch = requiredResponseString(response.branch, 'branch');
-  const prNumber = response.prNumber || prNumberFromUrl(prUrl);
-  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(prUrl) || !prNumber) {
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_response_malformed',
-      'Hermes gRPC draft PR response must include a valid GitHub PR URL and number'
-    );
-  }
-  if (branch !== job.branch) {
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_response_malformed',
-      `Hermes gRPC draft PR response branch ${branch} did not match bridge branch ${job.branch}`
-    );
-  }
-  return {
+  const result = boundedHermesDraftPrReceipt(job, {
     status,
     prUrl,
-    prNumber,
-    commitSha: emptyToNull(response.commitSha),
+    prNumber: Number.isSafeInteger(response.prNumber) && Number(response.prNumber) > 0
+      ? response.prNumber
+      : undefined,
+    commitSha: response.commitSha,
     branch,
-    hermesSessionId: emptyToNull(response.hermesSessionId),
-    summary: response.summary || status,
     validation: parseJsonValue(response.validationJson || '', 'validation_json')
-  };
+  });
+  if (!result) {
+    throw malformedGatewayResponse('Hermes gRPC draft PR response did not match the bounded Factory receipt schema');
+  }
+  return result;
 }
 
 export async function inspectDraftPullRequestViaGrpc(repo: string, prNumber: number, timeoutMs: number): Promise<GatewayDraftPrObservation> {
@@ -342,22 +333,33 @@ export async function inspectGitHubHeadViaGrpc(repository: string, headBranch: s
 }
 
 function callGateway<T>(method: keyof GatewayClient, request: Record<string, unknown>, timeoutMs: number, fallbackReasonCode: string): Promise<T> {
-  const client = getClient();
-  const metadata = new grpc.Metadata();
-  const token = (process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim();
-  if (token) metadata.set('authorization', `Bearer ${token}`);
-  const options: grpc.CallOptions = {};
-  if (timeoutMs > 0) options.deadline = new Date(Date.now() + timeoutMs);
+  let client: GatewayClient;
+  let metadata: grpc.Metadata;
+  let options: grpc.CallOptions;
+  try {
+    client = getClient();
+    metadata = new grpc.Metadata();
+    const token = (process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim();
+    if (token) metadata.set('authorization', `Bearer ${token}`);
+    options = {};
+    if (timeoutMs > 0) options.deadline = new Date(Date.now() + timeoutMs);
+  } catch (error) {
+    return Promise.reject(gatewayClientSetupError(error));
+  }
 
   return new Promise<T>((resolve, reject) => {
     const fn = client[method] as unknown as (request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<T>) => grpc.ClientUnaryCall;
-    fn.call(client, request, metadata, options, (error, response) => {
-      if (error) {
-        reject(toBridgeError(error, fallbackReasonCode));
-        return;
-      }
-      resolve(response);
-    });
+    try {
+      fn.call(client, request, metadata, options, (error, response) => {
+        if (error) {
+          reject(toBridgeError(error, fallbackReasonCode));
+          return;
+        }
+        resolve(response);
+      });
+    } catch (error) {
+      reject(gatewayClientSetupError(error));
+    }
   });
 }
 
@@ -443,7 +445,7 @@ function optionalFile(rawPath: string | undefined): Buffer | null {
 }
 
 function toBridgeError(error: grpc.ServiceError, fallbackReasonCode: string): NonRetryableBridgeExecutionError {
-  const metadataReason = firstMetadataValue(error.metadata, 'reason-code');
+  const metadataReason = gatewayReasonCode(firstMetadataValue(error.metadata, 'reason-code'));
   let reasonCode = metadataReason || fallbackReasonCode;
   if (!metadataReason) {
     if (error.code === grpc.status.UNAVAILABLE) reasonCode = 'hermes_grpc_gateway_unavailable';
@@ -451,7 +453,23 @@ function toBridgeError(error: grpc.ServiceError, fallbackReasonCode: string): No
     if (error.code === grpc.status.UNAUTHENTICATED) reasonCode = 'hermes_grpc_gateway_unauthenticated';
     if (error.code === grpc.status.PERMISSION_DENIED) reasonCode = 'hermes_grpc_gateway_forbidden';
   }
-  return new NonRetryableBridgeExecutionError(reasonCode, sanitizeText(error.details || error.message || 'Hermes gRPC gateway request failed'));
+  const transportFailure = error.code === grpc.status.UNAVAILABLE || error.code === grpc.status.DEADLINE_EXCEEDED;
+  return new NonRetryableBridgeExecutionError(
+    reasonCode,
+    sanitizeText(error.details || error.message || 'Hermes gRPC gateway request failed'),
+    {
+      failureDomain: executionFailureDomain(firstMetadataValue(error.metadata, 'failure-domain'))
+        || (transportFailure ? 'gateway_transport' : 'gateway'),
+      failureStage: executionFailureStage(firstMetadataValue(error.metadata, 'failure-stage'))
+        || (transportFailure ? 'gateway_connect' : 'gateway_handler'),
+      retryable: metadataBoolean(error.metadata, 'retryable') ?? (transportFailure ? true : false),
+      transportStatus: transportStatus(firstMetadataValue(error.metadata, 'transport-status')) || grpcStatusName(error.code),
+      processExitCode: metadataInteger(error.metadata, 'process-exit-code'),
+      processSignal: processSignal(firstMetadataValue(error.metadata, 'process-signal')),
+      timedOut: metadataBoolean(error.metadata, 'timed-out'),
+      bufferExceeded: metadataBoolean(error.metadata, 'buffer-exceeded'),
+    },
+  );
 }
 
 function firstMetadataValue(metadata: grpc.Metadata | undefined, key: string): string | null {
@@ -460,17 +478,67 @@ function firstMetadataValue(metadata: grpc.Metadata | undefined, key: string): s
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function metadataBoolean(metadata: grpc.Metadata | undefined, key: string): boolean | null {
+  const value = firstMetadataValue(metadata, key);
+  return value === 'true' ? true : value === 'false' ? false : null;
+}
+
+function metadataInteger(metadata: grpc.Metadata | undefined, key: string): number | null {
+  const value = firstMetadataValue(metadata, key);
+  if (!value || !/^-?\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= -(2 ** 31) && parsed < 2 ** 31 ? parsed : null;
+}
+
+function executionFailureDomain(value: string | null): ExecutionFailureDomain | undefined {
+  const allowed: ExecutionFailureDomain[] = [
+    'unknown', 'factory', 'executor', 'executor_backend', 'gateway_transport', 'gateway',
+    'hermes_process', 'hermes_protocol', 'auth', 'provider', 'tool', 'github', 'verification',
+  ];
+  return allowed.find((candidate) => candidate === value);
+}
+
+function executionFailureStage(value: string | null): ExecutionFailureStage | undefined {
+  const allowed: ExecutionFailureStage[] = [
+    'unknown', 'preflight', 'artifact_fence', 'effect_authorization', 'receipt_dispatch',
+    'backend_invocation_fence', 'backend_execution', 'gateway_connect', 'gateway_handler',
+    'hermes_spawn', 'hermes_exit', 'hermes_timeout', 'result_parse', 'auth_resolve',
+    'auth_refresh', 'model_request', 'model_stream', 'tool_execution', 'effect_commit',
+    'verification_checks', 'verification_recovery',
+  ];
+  return allowed.find((candidate) => candidate === value);
+}
+
+function grpcStatusName(code: grpc.status): string {
+  const names: Partial<Record<grpc.status, string>> = {
+    [grpc.status.CANCELLED]: 'grpc_cancelled',
+    [grpc.status.UNKNOWN]: 'grpc_unknown',
+    [grpc.status.INVALID_ARGUMENT]: 'grpc_invalid_argument',
+    [grpc.status.DEADLINE_EXCEEDED]: 'grpc_deadline_exceeded',
+    [grpc.status.NOT_FOUND]: 'grpc_not_found',
+    [grpc.status.ALREADY_EXISTS]: 'grpc_already_exists',
+    [grpc.status.PERMISSION_DENIED]: 'grpc_permission_denied',
+    [grpc.status.RESOURCE_EXHAUSTED]: 'grpc_resource_exhausted',
+    [grpc.status.FAILED_PRECONDITION]: 'grpc_failed_precondition',
+    [grpc.status.ABORTED]: 'grpc_aborted',
+    [grpc.status.OUT_OF_RANGE]: 'grpc_out_of_range',
+    [grpc.status.UNIMPLEMENTED]: 'grpc_unimplemented',
+    [grpc.status.INTERNAL]: 'grpc_internal',
+    [grpc.status.UNAVAILABLE]: 'grpc_unavailable',
+    [grpc.status.DATA_LOSS]: 'grpc_data_loss',
+    [grpc.status.UNAUTHENTICATED]: 'grpc_unauthenticated',
+  };
+  return names[code] || 'grpc_ok';
+}
+
 function parseJsonValue(raw: string, field: string): JsonValue | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!isJsonValue(parsed)) throw new Error(`${field} is not a JSON value`);
     return parsed;
-  } catch (error) {
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_response_malformed',
-      `Hermes gRPC ${field} was not valid JSON: ${sanitizeText(error instanceof Error ? error.message : String(error))}`
-    );
+  } catch {
+    throw malformedGatewayResponse(`Hermes gRPC ${field} was not valid JSON`);
   }
 }
 
@@ -481,12 +549,36 @@ function isJsonValue(value: unknown): value is JsonValue {
 function requiredResponseString(value: string | undefined, field: string): string {
   const trimmed = value?.trim();
   if (!trimmed) {
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_response_malformed',
-      `Hermes gRPC response field ${field} is required`
-    );
+    throw malformedGatewayResponse(`Hermes gRPC response field ${field} is required`);
   }
   return trimmed;
+}
+
+function malformedGatewayResponse(message: string): NonRetryableBridgeExecutionError {
+  return new NonRetryableBridgeExecutionError(
+    'hermes_grpc_response_malformed',
+    message,
+    {
+      failureDomain: 'hermes_protocol',
+      failureStage: 'result_parse',
+      retryable: false,
+      transportStatus: 'grpc_ok',
+    },
+  );
+}
+
+function gatewayClientSetupError(error: unknown): NonRetryableBridgeExecutionError {
+  const known = error instanceof NonRetryableBridgeExecutionError ? error : null;
+  return new NonRetryableBridgeExecutionError(
+    known?.reasonCode || 'hermes_grpc_client_setup_failed',
+    known ? sanitizeText(known.message) : 'Hermes gRPC client setup failed before request dispatch',
+    {
+      failureDomain: 'gateway_transport',
+      failureStage: 'gateway_connect',
+      retryable: false,
+      transportStatus: 'client_setup_failed',
+    },
+  );
 }
 
 function emptyToNull(value: string | undefined): string | null {
@@ -499,11 +591,6 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-function prNumberFromUrl(prUrl: string): number {
-  const match = prUrl.match(/\/pull\/(\d+)$/);
-  return match ? Number.parseInt(match[1], 10) : 0;
-}
-
 function sanitizeText(value: string, limit: number = 320): string {
-  return value.replace(/(?:ghp_|github_pat_|xox[baprs]-|Bearer\s+)[A-Za-z0-9_\-.]+/gi, '[redacted]').replace(/[\r\n\t]+/g, ' ').trim().slice(0, limit);
+  return redactSecretShapes(value).replace(/[\r\n\t]+/g, ' ').trim().slice(0, limit);
 }

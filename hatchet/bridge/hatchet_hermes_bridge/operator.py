@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import socketserver
@@ -21,7 +22,8 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import urlopen
 
-from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_factory_lifecycle, get_job, get_supersedable_bridge_job, list_active_factory_attempts, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, sanitize_detail
+from .analytics import factory_analytics
+from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_factory_lifecycle, get_job, get_supersedable_bridge_job, list_active_factory_attempts, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, refresh_factory_effect_receipt_inspection, sanitize_detail
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -34,6 +36,7 @@ DOCKER_INGRESS_DB = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
 DOCKER_LIFECYCLE_DB = "/var/lib/driftward-factory-lifecycle-writer/outbox.db"
 DOCKER_ROUTING_REGISTRY = "/app/hatchet/workers/routing-registry.json"
 DOCKER_VERIFIER_POLICY = "/app/hatchet/workers/verifier-policy.json"
+LOGGER = logging.getLogger(__name__)
 
 
 class OperatorError(BridgeError):
@@ -69,6 +72,21 @@ def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str) -> 
     if limit < 1 or limit > 250:
         raise OperatorError(f"{label} must be between 1 and 250")
     return limit
+
+
+def _analytics_days(query: dict[str, list[str]]) -> int:
+    if set(query) - {"days"}:
+        raise OperatorError("analytics has unsupported query parameters")
+    values = query.get("days", ["30"])
+    if len(values) != 1:
+        raise OperatorError("analytics days must be an integer")
+    try:
+        days = int(values[0])
+    except (TypeError, ValueError) as exc:
+        raise OperatorError("analytics days must be an integer") from exc
+    if days < 1 or days > 365:
+        raise OperatorError("analytics days must be between 1 and 365")
+    return days
 
 
 def _required_env_path(name: str) -> str:
@@ -625,14 +643,36 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 try: self._reply(200, {"attempt": cancel_factory_attempt(conn, attempt_id, reason=_bounded_text(body["reason"], name="reason"), actor=self._actor())})
                 finally: conn.close()
                 return
+            if path.startswith("/v1/attempts/") and path.endswith("/receipt-recovery/refresh") and set(body) == {"reason"}:
+                attempt_id = unquote(path.split("/")[3]); conn = connect_runtime(bridge_db)
+                try:
+                    result = refresh_factory_effect_receipt_inspection(
+                        conn,
+                        attempt_id,
+                        reason=_bounded_text(body["reason"], name="reason"),
+                        actor=self._actor(),
+                    )
+                    self._reply(201 if result["created"] else 200, result)
+                finally: conn.close()
+                return
             raise OperatorError("operator action is not allowed")
         except (OperatorError, BridgeValidationError) as exc: self._reply(400, {"error": str(exc)})
         except BridgeConflict as exc: self._reply(409, {"error": str(exc)})
-        except Exception: self._reply(500, {"error": "internal server error"})
+        except Exception:
+            LOGGER.exception("factory operator POST request failed")
+            self._reply(500, {"error": "internal server error"})
     def do_GET(self) -> None:
         if not self._auth(): return
         try:
             parsed = urlparse(self.path); path = parsed.path; query = parse_qs(parsed.query, keep_blank_values=True)
+            if path == "/v1/analytics":
+                bridge_db, ingress_db, _, _ = self._paths()
+                self._reply(200, factory_analytics(
+                    bridge_db,
+                    ingress_db,
+                    _operator_lifecycle_path(),
+                    days=_analytics_days(query),
+                )); return
             if path == "/v1/lifecycle/dead-letters":
                 limit = _bounded_limit(query, default=100, label="lifecycle dead letter limit")
                 self._reply(200, {"dead_letters": list_lifecycle_dead_letters(_operator_lifecycle_path(), limit)}); return
@@ -650,6 +690,9 @@ class OperatorHandler(BaseHTTPRequestHandler):
             finally: conn.close()
         except BridgeNotFound: self._reply(404, {"error": "not found"})
         except (OperatorError, BridgeValidationError) as exc: self._reply(400, {"error": str(exc)})
+        except Exception:
+            LOGGER.exception("factory operator GET request failed")
+            self._reply(500, {"error": "internal server error"})
 
 
 def serve_operator(socket_path: str) -> None:

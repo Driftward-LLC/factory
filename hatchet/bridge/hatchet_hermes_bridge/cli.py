@@ -28,6 +28,7 @@ from .store import (
     claim_factory_inspection_outbox,
     acknowledge_factory_inspection_outbox,
     fail_factory_inspection_outbox_delivery,
+    sweep_factory_effect_receipt_inspections,
 )
 
 
@@ -168,8 +169,10 @@ def main(argv: list[str] | None = None) -> int:
                 release_root = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_ROOT")
                 if not release_root:
                     raise BridgeError("immutable bridge release root is required for outbox dispatch")
-                deliveries = [(row, claim_factory_outbox_delivery, acknowledge_factory_outbox, fail_factory_outbox_delivery) for row in list_factory_outbox(conn, max(1, min(args.limit, 250)))]
-                deliveries += [(row, claim_factory_inspection_outbox, acknowledge_factory_inspection_outbox, fail_factory_inspection_outbox_delivery) for row in list_factory_inspection_outbox(conn, max(1, min(args.limit, 250)))]
+                batch_limit = max(1, min(args.limit, 250))
+                receipt_sweep = sweep_factory_effect_receipt_inspections(conn, batch_limit)
+                deliveries = [(row, claim_factory_outbox_delivery, acknowledge_factory_outbox, fail_factory_outbox_delivery) for row in list_factory_outbox(conn, batch_limit)]
+                deliveries += [(row, claim_factory_inspection_outbox, acknowledge_factory_inspection_outbox, fail_factory_inspection_outbox_delivery) for row in list_factory_inspection_outbox(conn, batch_limit)]
                 for row, claim, acknowledge, fail in deliveries:
                     claimed = claim(conn, row["outbox_key"])
                     if not claimed or (claimed.get("event_type") and claimed["event_type"] != "hermes_job_accepted"):
@@ -182,11 +185,11 @@ def main(argv: list[str] | None = None) -> int:
                     except (OSError, subprocess.TimeoutExpired):
                         result = None
                     if result is not None and result.returncode == 0:
-                        acknowledge(conn, claimed["outbox_key"]); delivered += 1
+                        acknowledge(conn, claimed["outbox_key"], claimed["delivery_lease_id"]); delivered += 1
                     else:
                         fail(conn, claimed["outbox_key"], claimed["delivery_lease_id"]); failed += 1
                         print(f"factory outbox delivery failed: {claimed['outbox_key']}", file=sys.stderr)
-                print_json({"delivered": delivered, "failed": failed})
+                print_json({"delivered": delivered, "failed": failed, "receipt_inspection_sweep": receipt_sweep})
                 if failed:
                     return 1
             else:

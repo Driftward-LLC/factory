@@ -2,6 +2,7 @@ import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import { gatewayReasonCode, processSignal, transportStatus } from './bounded-evidence';
 import {
   assertHermesIdentityViaCommand,
   inspectGitHubHeadViaCommand,
@@ -397,14 +398,54 @@ function requiredFile(rawPath: string | undefined, envName: string): Buffer {
 function toServiceError(error: unknown): grpc.ServiceError {
   if (isServiceError(error)) return error;
   if (error instanceof NonRetryableBridgeExecutionError) {
-    return serviceError(grpc.status.FAILED_PRECONDITION, error.reasonCode, error.message);
+    return serviceError(grpc.status.FAILED_PRECONDITION, error.reasonCode, error.message, {
+      failureDomain: error.failureDomain,
+      failureStage: error.failureStage,
+      retryable: error.retryable,
+      transportStatus: error.transportStatus,
+      processExitCode: error.processExitCode,
+      processSignal: error.processSignal,
+      timedOut: error.timedOut,
+      bufferExceeded: error.bufferExceeded,
+    });
   }
-  return serviceError(grpc.status.UNKNOWN, 'hermes_grpc_gateway_failed', error instanceof Error ? error.message : String(error));
+  return serviceError(
+    grpc.status.UNKNOWN,
+    'hermes_grpc_gateway_failed',
+    'Hermes gateway failed without structured bounded evidence',
+    { failureDomain: 'gateway', failureStage: 'gateway_handler', retryable: null },
+  );
 }
 
-function serviceError(code: grpc.status, reasonCode: string, message: string): grpc.ServiceError {
+function serviceError(
+  code: grpc.status,
+  reasonCode: string,
+  message: string,
+  evidence: {
+    failureDomain?: string;
+    failureStage?: string;
+    retryable?: boolean | null;
+    transportStatus?: string | null;
+    processExitCode?: number | null;
+    processSignal?: string | null;
+    timedOut?: boolean | null;
+    bufferExceeded?: boolean | null;
+  } = {},
+): grpc.ServiceError {
   const metadata = new grpc.Metadata();
-  metadata.set('reason-code', reasonCode);
+  metadata.set('reason-code', gatewayReasonCode(reasonCode) || 'hermes_grpc_gateway_failed');
+  if (evidence.failureDomain) metadata.set('failure-domain', evidence.failureDomain);
+  if (evidence.failureStage) metadata.set('failure-stage', evidence.failureStage);
+  if (evidence.retryable !== undefined && evidence.retryable !== null) metadata.set('retryable', String(evidence.retryable));
+  const boundedTransportStatus = transportStatus(evidence.transportStatus);
+  if (boundedTransportStatus) metadata.set('transport-status', boundedTransportStatus);
+  if (Number.isInteger(evidence.processExitCode) && Number(evidence.processExitCode) >= -(2 ** 31) && Number(evidence.processExitCode) < 2 ** 31) {
+    metadata.set('process-exit-code', String(evidence.processExitCode));
+  }
+  const boundedProcessSignal = processSignal(evidence.processSignal);
+  if (boundedProcessSignal) metadata.set('process-signal', boundedProcessSignal);
+  if (evidence.timedOut !== undefined && evidence.timedOut !== null) metadata.set('timed-out', String(evidence.timedOut));
+  if (evidence.bufferExceeded !== undefined && evidence.bufferExceeded !== null) metadata.set('buffer-exceeded', String(evidence.bufferExceeded));
   return Object.assign(new Error(sanitizeText(message)), { code, metadata }) as grpc.ServiceError;
 }
 

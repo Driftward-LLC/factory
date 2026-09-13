@@ -6,6 +6,7 @@ from typing import Any
 
 from .contracts import EVENT_IDS, EVENTS, PROVIDER_ACTION_MAPPINGS, REASON_CODES
 from .routing_policy import LinearProjectExecutionPolicyError, resolve_linear_project_execution_policy
+from .store import payload_hash
 
 
 ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
@@ -29,19 +30,20 @@ def normalize_github_pull_request(
     pull_request = _object(payload, "pull_request")
     repo = _required_string(repository, "full_name")
     pr_number = _required_int(pull_request, "number")
-    merged = bool(pull_request.get("merged"))
+    merged = False if action == "reopened" else bool(pull_request.get("merged"))
 
     event_id = _github_pull_request_event_id(action, merged)
     if not event_id:
-        raise IngressValidationError("only opened, synchronize, or closed GitHub pull request events are accepted")
+        raise IngressValidationError(
+            "only opened, synchronize, reopened, or closed GitHub pull request events are accepted"
+        )
     event = EVENTS[event_id]
 
     closed_at = _optional_timestamp(pull_request, "closed_at")
     updated_at = _optional_timestamp(pull_request, "updated_at")
     created_at = _optional_timestamp(pull_request, "created_at")
-    event_time = delivery_id or updated_at or closed_at or created_at
-    if not event_time:
-        raise IngressValidationError("delivery_id, updated_at, closed_at, or created_at is required")
+    if not (updated_at or closed_at or created_at):
+        raise IngressValidationError("updated_at, closed_at, or created_at is required")
 
     title = _optional_string(pull_request, "title") or ""
     body = _optional_string(pull_request, "body") or ""
@@ -53,7 +55,9 @@ def normalize_github_pull_request(
     linear_issues = sorted(set(ISSUE_KEY_RE.findall("\n".join([title, body, head_ref]))))
     pr_url = _optional_string(pull_request, "html_url") or ""
     is_draft = bool(pull_request.get("draft"))
-    state = _optional_string(pull_request, "state") or ("closed" if action == "closed" else "open")
+    state = "open" if action == "reopened" else (
+        _optional_string(pull_request, "state") or ("closed" if action == "closed" else "open")
+    )
 
     event_name = _contract_string(event, "wire_name")
     event_suffix = _contract_string(event, "event_key_suffix")
@@ -64,12 +68,17 @@ def normalize_github_pull_request(
         summary = f"Observed opened PR {repo}#{pr_number}; no Hermes dispatch."
     elif event_id == EVENT_IDS["GITHUB_PR_SYNCHRONIZED"]:
         summary = f"Observed synchronized PR {repo}#{pr_number}; fresh verification may be needed."
+    elif event_id == EVENT_IDS["GITHUB_PR_REOPENED"]:
+        summary = f"Observed reopened PR {repo}#{pr_number}; fresh verification may be needed."
     elif event_id == EVENT_IDS["GITHUB_PR_CLOSED_MERGED"]:
         summary = f"Observed merged PR {repo}#{pr_number}; no Hermes dispatch."
     else:
         summary = f"Observed closed-unmerged PR {repo}#{pr_number}; no Hermes dispatch."
 
-    event_key = f"github:pull_request:{repo}:{pr_number}:{event_suffix}:{event_time}"
+    event_key = (
+        f"github:pull_request:{repo}:{pr_number}:{event_suffix}:"
+        f"sha256:{payload_hash(payload)}"
+    )
 
     return {
         "eventName": event_name,
@@ -96,6 +105,133 @@ def normalize_github_pull_request(
         "decision": decision,
         "reasonCode": reason_code,
         "summary": summary,
+    }
+
+
+def normalize_github_check_suite(
+    payload: dict[str, Any],
+    *,
+    delivery_id: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise IngressValidationError("payload must be a JSON object")
+
+    action = _required_string(payload, "action").lower()
+    event_id = PROVIDER_ACTION_MAPPINGS.get(f"github.check_suite.{action}")
+    if not event_id:
+        raise IngressValidationError("only completed GitHub check suite events are accepted")
+
+    repository = _object(payload, "repository")
+    check_suite = _object(payload, "check_suite")
+    repo = _required_string(repository, "full_name")
+    suite_id = str(_required_int(check_suite, "id"))
+    head_sha = _required_string(check_suite, "head_sha")
+    status = _required_string(check_suite, "status").lower()
+    conclusion = _required_string(check_suite, "conclusion").lower()
+    created_at = _optional_timestamp(check_suite, "created_at")
+    updated_at = _optional_timestamp(check_suite, "updated_at")
+    if not (updated_at or created_at):
+        raise IngressValidationError("updated_at or created_at is required")
+
+    pr_numbers = _github_pull_request_numbers(check_suite.get("pull_requests"))
+    pr_number = pr_numbers[0] if len(pr_numbers) == 1 else None
+    subject = f"{repo}#{pr_number}" if pr_number is not None else f"{repo}@{head_sha}"
+    event = EVENTS[event_id]
+
+    return {
+        "eventName": _contract_string(event, "wire_name"),
+        "eventKey": (
+            f"github:check_suite:{repo}:{suite_id}:completed:"
+            f"sha256:{payload_hash(payload)}"
+        ),
+        "source": "github",
+        "providerEvent": "check_suite",
+        "action": action,
+        "subject": subject,
+        "repo": repo,
+        "prNumber": pr_number,
+        "prUrl": f"https://github.com/{repo}/pull/{pr_number}" if pr_number is not None else None,
+        "pullRequestNumbers": pr_numbers,
+        "headSha": head_sha,
+        "checkSuiteId": suite_id,
+        "checkStatus": status,
+        "checkConclusion": conclusion,
+        "checkRunCount": _optional_int(check_suite, "latest_check_runs_count"),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "deliveryId": delivery_id,
+        "dispatchEligible": False,
+        "decision": _contract_string(event, "default_decision_id"),
+        "reasonCode": _contract_string(event, "default_reason_code_id"),
+        "summary": f"Observed completed check suite for {subject}: {conclusion}; no Hermes dispatch.",
+    }
+
+
+def normalize_github_pull_request_review(
+    payload: dict[str, Any],
+    *,
+    delivery_id: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise IngressValidationError("payload must be a JSON object")
+
+    action = _required_string(payload, "action").lower()
+    event_id = PROVIDER_ACTION_MAPPINGS.get(f"github.pull_request_review.{action}")
+    if not event_id:
+        raise IngressValidationError("only submitted GitHub pull request review events are accepted")
+
+    repository = _object(payload, "repository")
+    pull_request = _object(payload, "pull_request")
+    review = _object(payload, "review")
+    repo = _required_string(repository, "full_name")
+    pr_number = _required_int(pull_request, "number")
+    review_id = str(_required_int(review, "id"))
+    review_state = _required_string(review, "state").lower()
+    submitted_at = _optional_timestamp(review, "submitted_at")
+    updated_at = submitted_at or _optional_timestamp(pull_request, "updated_at")
+    if not updated_at:
+        raise IngressValidationError("submitted_at or pull_request.updated_at is required")
+
+    title = _optional_string(pull_request, "title") or ""
+    body = _optional_string(pull_request, "body") or ""
+    head = _object(pull_request, "head", required=False)
+    base = _object(pull_request, "base", required=False)
+    head_ref = _optional_string(head, "ref") or ""
+    linear_issues = sorted(set(ISSUE_KEY_RE.findall("\n".join([title, body, head_ref]))))
+    event = EVENTS[event_id]
+
+    return {
+        "eventName": _contract_string(event, "wire_name"),
+        "eventKey": (
+            f"github:pull_request_review:{repo}:{pr_number}:{review_id}:submitted:"
+            f"sha256:{payload_hash(payload)}"
+        ),
+        "source": "github",
+        "providerEvent": "pull_request_review",
+        "action": action,
+        "subject": f"{repo}#{pr_number}",
+        "repo": repo,
+        "prNumber": pr_number,
+        "prUrl": _optional_string(pull_request, "html_url") or "",
+        "title": title,
+        "state": _optional_string(pull_request, "state") or "open",
+        "merged": bool(pull_request.get("merged")),
+        "isDraft": bool(pull_request.get("draft")),
+        "headRefName": head_ref or None,
+        "headSha": _optional_string(head, "sha"),
+        "baseRefName": _optional_string(base, "ref"),
+        "linearIssues": linear_issues,
+        "reviewId": review_id,
+        "reviewState": review_state,
+        "reviewCommitSha": _optional_string(review, "commit_id"),
+        "reviewSubmittedAt": submitted_at,
+        "actorKind": _github_actor_kind(payload.get("sender")),
+        "updatedAt": updated_at,
+        "deliveryId": delivery_id,
+        "dispatchEligible": False,
+        "decision": _contract_string(event, "default_decision_id"),
+        "reasonCode": _contract_string(event, "default_reason_code_id"),
+        "summary": f"Observed {review_state} review for {repo}#{pr_number}; no Hermes dispatch.",
     }
 
 
@@ -126,9 +262,8 @@ def normalize_linear_issue(
     created_at = _optional_timestamp(payload, "createdAt") or _optional_timestamp(data, "createdAt")
     updated_at = _optional_timestamp(data, "updatedAt")
     webhook_id = _optional_string(payload, "webhookId")
-    event_time = delivery_id or webhook_id or created_at or updated_at
-    if not event_time:
-        raise IngressValidationError("Linear delivery, webhookId, createdAt, or updatedAt is required")
+    if not (created_at or updated_at):
+        raise IngressValidationError("Linear createdAt or updatedAt is required")
 
     team_name = _name_from(data.get("team"))
     team_key = _optional_string(_object(data, "team", required=False), "key")
@@ -169,7 +304,9 @@ def normalize_linear_issue(
         else str(failed[0]["reasonCode"])
     )
     decision = _contract_string(event, "default_decision_id")
-    event_key = f"linear:issue:{identifier}:{action}:{event_time}"
+    event_key = (
+        f"linear:issue:{identifier}:{action}:sha256:{payload_hash(payload)}"
+    )
 
     return {
         "eventName": event_name,
@@ -276,6 +413,28 @@ def _github_pull_request_event_id(action: str, merged: bool) -> str | None:
     if action == "closed":
         provider_key = f"{provider_key}.{'merged' if merged else 'unmerged'}"
     return PROVIDER_ACTION_MAPPINGS.get(provider_key)
+
+
+def _github_pull_request_numbers(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        raise IngressValidationError("check_suite.pull_requests must be an array")
+    numbers = []
+    for pull_request in value:
+        if not isinstance(pull_request, dict):
+            raise IngressValidationError("check_suite.pull_requests entries must be objects")
+        numbers.append(_required_int(pull_request, "number"))
+    return sorted(set(numbers))
+
+
+def _github_actor_kind(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "unknown"
+    actor_type = _optional_string(value, "type")
+    if actor_type and actor_type.lower() == "bot":
+        return "bot"
+    if actor_type and actor_type.lower() == "user":
+        return "human"
+    return "unknown"
 
 
 def _contract_string(contract: dict[str, Any], key: str) -> str:
@@ -415,4 +574,13 @@ def _required_int(value: dict[str, Any], key: str) -> int:
     found = value.get(key)
     if isinstance(found, bool) or not isinstance(found, int):
         raise IngressValidationError(f"{key} is required")
+    return found
+
+
+def _optional_int(value: dict[str, Any], key: str) -> int | None:
+    found = value.get(key)
+    if found is None:
+        return None
+    if isinstance(found, bool) or not isinstance(found, int):
+        raise IngressValidationError(f"{key} must be an integer")
     return found
