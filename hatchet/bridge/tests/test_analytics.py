@@ -6,6 +6,7 @@ import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from hatchet_hermes_bridge.analytics import (
     _github_observation_order,
@@ -98,6 +99,11 @@ def route_identity(
 
 class FactoryAnalyticsTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Store-created records must stay inside the fixed September report window.
+        clock_patch = patch("hatchet_hermes_bridge.store.datetime", wraps=datetime)
+        store_clock = clock_patch.start()
+        self.addCleanup(clock_patch.stop)
+        store_clock.now.return_value = datetime(2026, 9, 11, tzinfo=timezone.utc)
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         root = Path(self.work.name)
