@@ -41,6 +41,10 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/factory-console-checks" --no-save --ignore-scripts playwright@1.55.0
           node "$RUNNER_TEMP/factory-console-checks/node_modules/playwright/cli.js" install --with-deps chromium --only-shell
+      - name: Build React console
+        run: |
+          npm ci --prefix factory/console
+          npm run build --prefix factory/console
       - name: Check console behavior with disposable fixtures
         run: NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_console_browser.cjs
       - name: Upload fixture screenshots
@@ -71,6 +75,10 @@ jobs:
         run: python3 -m pip install --requirement hatchet/bridge/requirements.txt
       - name: Install worker dependencies
         run: npm ci --prefix hatchet/workers
+      - name: Build React console
+        run: |
+          npm ci --prefix factory/console
+          npm run build --prefix factory/console
       - name: Generate and check contracts
         run: |
           python3 tools/hatchet-contracts.py generate

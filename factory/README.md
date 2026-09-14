@@ -120,6 +120,23 @@ explicit, and a failed refresh retains the last successful snapshot with a
 stale indicator. Automatic refresh runs every 30 seconds while the tab is
 visible.
 
+The frontend uses React components and hooks in `factory/console/src`, bundled
+with esbuild. FastAPI serves the generated `app.js` alongside the existing HTML
+and CSS; all assets stay local under the current content security policy.
+Docker builds the bundle and excludes frontend build dependencies from the
+runtime image. The generated bundle is not committed.
+
+Build before running the console from a source checkout or its API/browser tests:
+
+```bash
+npm ci --prefix factory/console
+npm run build --prefix factory/console
+```
+
+For local edits, `npm run dev --prefix factory/console` watches and rebuilds the
+bundle. Refresh the existing local console to see changes. This command does
+not start another server or connect to production.
+
 Run the console API tests with the bridge's pinned Python dependencies:
 
 ```bash

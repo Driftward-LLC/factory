@@ -7,78 +7,8 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to work</a>
-  <aside class="sidebar">
-    <a class="brand" href="/" aria-label="Driftward Factory home"><span class="brand-mark" aria-hidden="true">F</span><span><strong>Factory</strong><small>Driftward Engineering</small></span></a>
-    <p class="nav-label">Workspace</p>
-    <nav aria-label="Main navigation">
-      <a href="?view=overview" data-nav="overview">Overview <span aria-hidden="true">↗</span></a>
-      <a href="?view=work" data-nav="work">Work <span id="nav-work-count">—</span></a>
-    </nav>
-    <div class="sidebar-note"><strong>Operator console</strong><p>Inspect work and its evidence. Execution controls remain in the Factory CLI.</p><a id="hatchet-link" target="_blank" rel="noopener noreferrer" hidden>Open Hatchet ↗</a></div>
-  </aside>
-  <div class="shell">
-    <header class="topbar">
-      <span>Engineering / <strong id="breadcrumb">Overview</strong></span>
-      <div class="top-actions"><span id="connection-state" role="status" aria-live="polite">Connecting</span><button id="refresh-button" type="button">Refresh</button></div>
-    </header>
-    <main id="main" tabindex="-1">
-      <div class="page-heading">
-        <div><p class="eyebrow">Software delivery</p><h1 id="page-title">Factory overview</h1><p id="page-description" class="muted">Work in motion. Evidence you can inspect.</p></div>
-        <form id="issue-form" class="issue-search"><label for="issue-input">Go to issue</label><div class="input-action"><input id="issue-input" name="issue" autocomplete="off" spellcheck="false" placeholder="ENG-119" pattern="[Ee][Nn][Gg]-[1-9][0-9]*" required><button type="submit">Open</button></div></form>
-      </div>
-      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
-      <p id="updated-at" class="freshness">Waiting for the first snapshot…</p>
-      <section data-view="overview" aria-label="Factory summary" class="metrics">
-        <div class="metric"><span>Intake mode</span><strong id="metric-mode">—</strong><small>Configured runtime mode</small></div>
-        <div class="metric"><span>Active attempts</span><strong id="metric-active">—</strong><small>All modes · current snapshot</small></div>
-        <div class="metric"><span>Verified attempts</span><strong id="metric-ready">—</strong><small>All modes · all-time ledger state</small></div>
-        <div class="metric"><span>Recorded attempts</span><strong id="metric-total">—</strong><small>All modes · all-time ledger</small></div>
-      </section>
-      <section data-view="overview" class="attention-section" aria-labelledby="attention-title">
-        <div class="section-heading"><h2 id="attention-title">Operational attention</h2><span class="muted">Current findings, separate from history</span></div>
-        <div class="signals">
-          <article class="signal"><span class="eyebrow">Live work &amp; system</span><strong id="signal-actionable">—</strong><h3>Actionable findings</h3><p id="signal-actionable-detail">Waiting for evidence</p></article>
-          <article class="signal"><span class="eyebrow">Status delivery</span><strong id="signal-dead-letters">—</strong><h3>Lifecycle dead letters</h3><p id="signal-dead-letter-detail">Waiting for evidence</p></article>
-          <article class="signal historical"><span class="eyebrow">Historical debt</span><strong id="signal-terminal">—</strong><h3>Finished-job findings</h3><p>Kept for investigation; these are not active-work alerts.</p></article>
-        </div>
-      </section>
-      <section data-view="overview" class="panel" aria-labelledby="active-title">
-        <div class="section-heading"><div><h2 id="active-title">Active work</h2><p class="muted">Every active attempt, including work waiting on verification.</p></div><a href="?view=work&amp;status=active" data-work-link>View work →</a></div>
-        <div class="table-wrap"><table><caption class="sr-only">Active Factory attempts</caption><thead><tr><th>Issue / repository</th><th>Stage</th><th>Mode</th><th>Elapsed</th><th>Pull request</th><th>Updated</th></tr></thead><tbody id="active-attempts"><tr><td colspan="6" class="empty">Loading active work…</td></tr></tbody></table></div>
-      </section>
-      <section data-view="overview" class="panel" aria-labelledby="recent-title">
-        <div class="section-heading"><div><h2 id="recent-title">Recent activity</h2><p class="muted">Latest 8 returned attempts. Verification is a recorded outcome, not a live PR status.</p></div></div>
-        <ol id="recent-attempts" class="recent-list"><li class="empty">Loading recent attempts…</li></ol>
-      </section>
-      <section data-view="work" class="panel" aria-labelledby="work-title" hidden>
-        <div class="section-heading"><div><h2 id="work-title">Active &amp; recent attempts</h2><p class="muted">All active attempts plus the most recent 30. Filters apply to this returned set, not the full Linear backlog.</p></div></div>
-        <form id="filters" class="filters" role="search" aria-label="Filter returned attempts">
-          <label class="search-filter" for="work-query">Search<input id="work-query" type="search" placeholder="Issue, repository, branch" autocomplete="off"></label>
-          <label for="status-filter">Stage<select id="status-filter"><option value="all">All stages</option><option value="active">Active</option><option value="attention">Active: needs inspection</option><option value="verified">Verified (recorded)</option><option value="failed">Failed (recorded)</option><option value="finished">Finished</option></select></label>
-          <label for="mode-filter">Mode<select id="mode-filter"><option value="all">All modes</option><option value="real">Real</option><option value="dry-run">Dry run</option></select></label>
-          <label for="repo-filter">Repository<select id="repo-filter"><option value="">All repositories</option></select></label>
-          <button id="clear-filters" type="button">Clear</button>
-        </form>
-        <p id="work-count" class="muted" role="status" aria-live="polite">Waiting for data</p>
-        <div class="table-wrap"><table><caption class="sr-only">Filtered active and recent attempts</caption><thead><tr><th>Issue / repository</th><th>Stage</th><th>Mode</th><th>Elapsed</th><th>Pull request</th><th>Updated</th></tr></thead><tbody id="work-attempts"><tr><td colspan="6" class="empty">Loading work…</td></tr></tbody></table></div>
-      </section>
-      <section id="issue-detail" class="issue-detail" aria-labelledby="issue-title" hidden>
-        <div class="section-heading"><div><p class="eyebrow">Issue inspection</p><h2 id="issue-title" tabindex="-1">Issue</h2></div><div class="issue-links"><a id="linear-link" target="_blank" rel="noopener noreferrer" hidden>Linear ↗</a><a id="github-link" target="_blank" rel="noopener noreferrer" hidden>Pull request ↗</a><button id="close-issue" type="button">Close</button></div></div>
-        <p id="issue-freshness" class="muted"></p>
-        <div id="issue-notice" class="notice" role="status" aria-live="polite" hidden></div>
-        <div id="issue-content" hidden>
-          <div id="issue-summary" class="issue-summary"></div>
-          <div class="next-step"><span class="eyebrow">Next step</span><p id="next-step"></p></div>
-          <p id="artifact-note" class="muted">PR links and commit references are recorded evidence. Current merge or review status is not available from this view.</p>
-          <div class="detail-grid">
-            <section><h3>Attempt history</h3><div class="table-wrap"><table><caption class="sr-only">Issue attempt history</caption><thead><tr><th>Generation</th><th>Stage</th><th>Mode</th><th>Pull request</th><th>Updated</th></tr></thead><tbody id="issue-attempts"></tbody></table></div><details><summary>Technical details</summary><dl id="technical-details"></dl></details></section>
-            <section><h3>Latest returned evidence</h3><p class="muted">Up to 80 returned events, newest first. Source and API limits apply; this is not a complete audit history.</p><ol id="issue-timeline" class="timeline"></ol></section>
-          </div>
-        </div>
-      </section>
-    </main>
-  </div>
+  <div id="root"></div>
+  <noscript>The Factory operator console requires JavaScript.</noscript>
   <script src="/app.js" defer></script>
 </body>
 </html>

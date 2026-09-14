@@ -156,6 +156,16 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#issue-freshness').textContent.startsWith('Stale issue'));
     assert.equal(await page.locator('#issue-content').isVisible(), true);
     failIssue = '';
+    // Retrying must keep the old issue evidence visibly stale until success.
+    delayedIssue = 'ENG-102';
+    delayedStarted = new Promise((done) => { onDelayed = done; });
+    await page.locator('#refresh-button').click();
+    await delayedStarted;
+    assert.match(await page.locator('#issue-freshness').textContent(), /^Stale issue/);
+    assert.equal(await page.locator('#issue-content').isVisible(), true);
+    releaseDelayed();
+    delayedIssue = '';
+    await page.waitForFunction(() => document.querySelector('#issue-freshness').textContent.startsWith('Evidence retrieved'));
     failOverview = true;
     await page.locator('#refresh-button').click();
     await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Stale snapshot');

@@ -38,6 +38,8 @@ factory doctor hatchet --profile prod
 python3 tools/hatchet-contracts.py check
 python3 -m unittest discover -s tools -p 'test_*.py'
 npm run build --prefix hatchet/workers
+npm ci --prefix factory/console
+npm run build --prefix factory/console
 ```
 
 Validate the Docker deployment artifacts:

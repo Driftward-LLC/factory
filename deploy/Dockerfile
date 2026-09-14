@@ -6,6 +6,10 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY . .
 
+RUN npm ci --prefix factory/console \
+  && npm run build --prefix factory/console \
+  && rm -rf factory/console/node_modules
+
 RUN npm ci --prefix hatchet/workers \
   && npm run build --prefix hatchet/workers \
   && mkdir -p /app/worker-triggers \

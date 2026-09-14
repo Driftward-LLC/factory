@@ -86,7 +86,7 @@ reference review does not authorize installing or replacing the runtime.
 | Execution | Hatchet workflows, bridge ledger, fenced Hermes execution, deterministic branches | Bounded progress and backend failure evidence; supported-version contract qualification |
 | Verification | PR identity/base/path checks, GitHub check observations, policy-bound reported validation and commit receipts | Independent test evidence and review, current-head approval invalidation |
 | Repair | Bounded automatic repair of existing draft PRs and operator-controlled fresh retries | Extend the current lineage to independent-review feedback; avoid another repair engine |
-| Console | HTML/CSS/JavaScript, FastAPI, authenticated overview and issue lifecycle | Attention queue, usable work navigation, evidence detail, projects and delivery metrics |
+| Console | React frontend, FastAPI, authenticated overview and issue lifecycle | Attention queue, usable work navigation, evidence detail, projects and delivery metrics |
 | Analytics | Read-only cohort report over existing ledgers, explicit missing-data semantics | Browser-safe projection and complete prospective GitHub/backend evidence |
 | Controls | Root-only retry, cancellation, receipt refresh and dead-letter archive | Operator guidance first; narrowly authorized browser actions later |
 
@@ -157,9 +157,10 @@ Use explicit state mappings rather than interpreting substrings of status names.
 
 ### A. Console navigation and work inspection
 
-Touch `factory/console/index.html`, `styles.css`, and `app.js`. Keep the current
-static asset delivery and FastAPI service; no new frontend framework, database,
-container, browser credential, or hosting platform is needed for this slice.
+Implement React components and hooks in `factory/console/src`, retaining
+`index.html` and `styles.css`. Build the local `app.js` bundle with esbuild in
+Docker and CI. Keep the current static asset delivery and FastAPI service.
+React is the requested frontend foundation for this and subsequent slices.
 
 - Add Overview and Work navigation with shareable URL query state.
 - Reuse `/api/overview` for active work, the most recent 30 attempts, mode,

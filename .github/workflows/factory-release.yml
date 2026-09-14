@@ -86,6 +86,11 @@ jobs:
       - name: Install worker dependencies
         run: npm ci --prefix hatchet/workers
 
+      - name: Build React console
+        run: |
+          npm ci --prefix factory/console
+          npm run build --prefix factory/console
+
       - name: Generate and check contracts
         run: |
           python3 tools/hatchet-contracts.py generate

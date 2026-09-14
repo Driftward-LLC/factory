@@ -97,7 +97,8 @@ class FactoryConsoleTests(unittest.TestCase):
         status, headers, raw = self.get("/app.js")
         self.assertEqual(status, 200)
         self.assertEqual(headers.get_content_type(), "text/javascript")
-        self.assertIn(b"loadOverview", raw)
+        self.assertIn(b"/api/overview", raw)
+        self.assertIn(b"/api/lifecycle/", raw)
 
         status, _, raw = self.get("/api/openapi.json")
         self.assertEqual(status, 200)
