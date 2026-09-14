@@ -1,0 +1,16 @@
+{
+  "name": "@driftward/factory-console",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.jsx --bundle --minify --jsx=automatic --target=es2022 --outfile=app.js --legal-comments=inline",
+    "dev": "npm run build -- --watch"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

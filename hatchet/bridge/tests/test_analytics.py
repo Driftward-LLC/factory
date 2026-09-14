@@ -5,7 +5,9 @@ import tempfile
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
+from itertools import count
 from pathlib import Path
+from unittest.mock import patch
 
 from hatchet_hermes_bridge.analytics import (
     _github_observation_order,
@@ -98,6 +100,15 @@ def route_identity(
 
 class FactoryAnalyticsTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Store-created records must stay inside the fixed September report window.
+        clock_patch = patch("hatchet_hermes_bridge.store.datetime", wraps=datetime)
+        store_clock = clock_patch.start()
+        self.addCleanup(clock_patch.stop)
+        # Preserve write order instead of breaking timestamp ties with random IDs.
+        store_clock.now.side_effect = (
+            datetime(2026, 9, 11, tzinfo=timezone.utc) + timedelta(microseconds=tick)
+            for tick in count()
+        )
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         root = Path(self.work.name)

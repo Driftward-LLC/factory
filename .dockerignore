@@ -13,3 +13,4 @@ keys
 .env
 .env.*
 *.log
+factory/console/app.js

@@ -38,6 +38,8 @@ factory doctor hatchet --profile prod
 python3 tools/hatchet-contracts.py check
 python3 -m unittest discover -s tools -p 'test_*.py'
 npm run build --prefix hatchet/workers
+npm ci --prefix factory/console
+npm run build --prefix factory/console
 ```
 
 Validate the Docker deployment artifacts:
@@ -80,6 +82,11 @@ gaps.
 See
 [docs/execution-backend-evaluation.md](docs/execution-backend-evaluation.md)
 for the Hermes-versus-direct-Codex measurement and canary design.
+
+See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboard-plan.md)
+for the proposed capability roadmap and first operator-dashboard implementation slice.
+
+See [DESIGN.md](DESIGN.md) for the operator interface's design direction and checks.
 
 The Docker runtime lives under `/docker/driftward/factory` and is supervised by
 `driftward-factory.service`. The older direct host/systemd installers remain in

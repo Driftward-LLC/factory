@@ -11,3 +11,4 @@ __pycache__/
 *.log
 tmp/
 coverage/
+/factory/console/app.js
