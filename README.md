@@ -86,6 +86,8 @@ for the Hermes-versus-direct-Codex measurement and canary design.
 See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboard-plan.md)
 for the proposed capability roadmap and first operator-dashboard implementation slice.
 
+See [DESIGN.md](DESIGN.md) for the operator interface's design direction and checks.
+
 The Docker runtime lives under `/docker/driftward/factory` and is supervised by
 `driftward-factory.service`. The older direct host/systemd installers remain in
 tree for migration and recovery work, but Docker is the standalone Factory app

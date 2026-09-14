@@ -17,6 +17,7 @@ export const terminalStates = new Set([
   'canceled_after_effect',
   'superseded',
 ]);
+export const verificationStates = new Set(['effect_committed', 'verification_pending']);
 export const stages = {
   reserved: ['Queued', 'info'],
   accepted: ['Accepted', 'info'],
@@ -90,7 +91,9 @@ export function readRoute() {
     view: query.get('view') === 'work' ? 'work' : 'overview',
     issue: (query.get('issue') || '').toUpperCase(),
     q: (query.get('q') || '').slice(0, 200),
-    status: ['all', 'active', 'attention', 'verified', 'failed', 'finished'].includes(status)
+    status: ['all', 'active', 'attention', 'verifying', 'verified', 'failed', 'finished'].includes(
+      status,
+    )
       ? status
       : 'all',
     mode: ['all', 'real', 'dry-run'].includes(mode) ? mode : 'all',
@@ -148,4 +151,13 @@ export function needsInspection(record) {
       status === 'cancellation_requested' ||
       record.execution_lease?.status === 'expired')
   );
+}
+
+export function nextAction(record) {
+  if (record.attempt?.mode === 'dry-run') return 'Inspect simulated result';
+  if (needsInspection(record)) return 'Inspect unresolved execution';
+  if (verificationStates.has(record.attempt?.status)) return 'Inspect verification evidence';
+  if (record.attempt?.status === 'failed') return 'Review failure evidence';
+  if (record.attempt?.status === 'verified_ready') return 'Confirm current PR checks';
+  return 'Inspect latest evidence';
 }

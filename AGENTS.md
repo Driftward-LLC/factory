@@ -9,6 +9,9 @@ Read `README.md` first for the current repo overview, layout, deployment
 model, and common commands. Use this file for agent-specific boundaries, safety
 rules, and validation expectations.
 
+For console UI work, read `DESIGN.md` for Factory's operator priorities, visual
+conventions, responsive behavior, and design validation expectations.
+
 ## Boundaries
 
 - `factory/`: operator CLI and front-door documentation.

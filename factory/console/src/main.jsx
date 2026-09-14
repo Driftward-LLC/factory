@@ -16,6 +16,8 @@ import {
   prUrl,
   elapsed,
   needsInspection,
+  verificationStates,
+  nextAction,
 } from './model.js';
 
 function useRoute() {
@@ -155,73 +157,134 @@ function Artifact({ record }) {
 }
 function AttemptTable({ id, records = [], detail = false, empty, ...navigation }) {
   return (
-    <div className="table-wrap">
-      <table>
-        <caption className="sr-only">
-          {detail ? 'Issue attempt history' : 'Factory attempts'}
-        </caption>
-        <thead>
-          <tr>
-            <th>{detail ? 'Generation' : 'Issue / repository'}</th>
-            <th>Stage</th>
-            <th>Mode</th>
-            {!detail && <th>Elapsed</th>}
-            <th>Pull request</th>
-            <th>Updated</th>
-          </tr>
-        </thead>
-        <tbody id={id}>
-          {!records.length ? (
+    <>
+      <div
+        className="table-wrap attempt-table"
+        role="region"
+        aria-label={detail ? 'Scrollable attempt history' : 'Scrollable attempts'}
+        tabIndex={0}
+      >
+        <table>
+          <caption className="sr-only">
+            {detail ? 'Issue attempt history' : 'Factory attempts'}
+          </caption>
+          <thead>
             <tr>
-              <td colSpan={detail ? 5 : 6} className="empty">
-                {empty}
-              </td>
+              <th>{detail ? 'Generation' : 'Issue / repository'}</th>
+              <th>Stage</th>
+              <th>Mode</th>
+              {!detail && <th>Elapsed</th>}
+              <th>Pull request</th>
+              <th>Updated</th>
             </tr>
-          ) : (
-            records.map((record) => {
-              const attempt = record.attempt || {};
-              return (
-                <tr key={attempt.attempt_id}>
-                  <td>
-                    {detail ? (
-                      (attempt.generation ?? 'Unknown')
-                    ) : (
-                      <>
-                        <IssueLink issue={attempt.work_item_key} {...navigation} />
-                        <small>{repository(record) || 'Repository unavailable'}</small>
-                      </>
-                    )}
-                  </td>
-                  <td>
-                    <Pill status={attempt.status} />
-                    {!detail && <small>Generation {attempt.generation ?? 'unknown'}</small>}
-                  </td>
-                  <td>
-                    {attempt.mode === 'dry-run'
-                      ? 'Dry run'
-                      : attempt.mode === 'real'
-                        ? 'Real'
-                        : 'Unknown'}
-                  </td>
-                  {!detail && (
-                    <td title="From attempt creation to now if active, otherwise to its last recorded update. Not model runtime.">
-                      {elapsed(record)}
-                      <small>
-                        {activeStates.has(attempt.status) ? 'attempt age' : 'recorded span'}
-                      </small>
+          </thead>
+          <tbody id={id}>
+            {!records.length ? (
+              <tr>
+                <td colSpan={detail ? 5 : 6} className="empty">
+                  {empty}
+                </td>
+              </tr>
+            ) : (
+              records.map((record) => {
+                const attempt = record.attempt || {};
+                return (
+                  <tr key={attempt.attempt_id}>
+                    <td>
+                      {detail ? (
+                        (attempt.generation ?? 'Unknown')
+                      ) : (
+                        <>
+                          <IssueLink issue={attempt.work_item_key} {...navigation} />
+                          <small>{repository(record) || 'Repository unavailable'}</small>
+                        </>
+                      )}
                     </td>
+                    <td>
+                      <Pill status={attempt.status} />
+                      {!detail && <small>Generation {attempt.generation ?? 'unknown'}</small>}
+                    </td>
+                    <td>
+                      {attempt.mode === 'dry-run'
+                        ? 'Dry run'
+                        : attempt.mode === 'real'
+                          ? 'Real'
+                          : 'Unknown'}
+                    </td>
+                    {!detail && (
+                      <td title="From attempt creation to now if active, otherwise to its last recorded update. Not model runtime.">
+                        {elapsed(record)}
+                        <small>
+                          {activeStates.has(attempt.status) ? 'attempt age' : 'recorded span'}
+                        </small>
+                      </td>
+                    )}
+                    <td>
+                      <Artifact record={record} />
+                    </td>
+                    <td>{time(attempt.updated_at)}</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+      <ul
+        id={id + '-mobile'}
+        className="attempt-list"
+        aria-label={detail ? 'Issue attempt history' : 'Factory attempts'}
+      >
+        {!records.length ? (
+          <li className="empty">{empty}</li>
+        ) : (
+          records.map((record) => {
+            const attempt = record.attempt || {};
+            return (
+              <li key={attempt.attempt_id}>
+                <div className="attempt-heading">
+                  {detail ? (
+                    <strong>Generation {attempt.generation ?? 'Unknown'}</strong>
+                  ) : (
+                    <IssueLink issue={attempt.work_item_key} {...navigation} />
                   )}
-                  <td>
-                    <Artifact record={record} />
-                  </td>
-                  <td>{time(attempt.updated_at)}</td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
-    </div>
+                  <Pill status={attempt.status} />
+                </div>
+                <p className="attempt-action">{nextAction(record)}</p>
+                {!detail && issuePattern.test(attempt.work_item_key) && (
+                  <RouteLink
+                    {...navigation}
+                    changes={{ issue: attempt.work_item_key }}
+                    className="inspect-link"
+                  >
+                    Inspect issue
+                  </RouteLink>
+                )}
+                <details>
+                  <summary>Attempt details</summary>
+                  <dl>
+                    <dt>Repository</dt>
+                    <dd>{repository(record) || 'Unavailable'}</dd>
+                    <dt>Generation / mode</dt>
+                    <dd>
+                      {attempt.generation ?? 'Unknown'} / {label(attempt.mode)}
+                    </dd>
+                    <dt>Pull request</dt>
+                    <dd>
+                      <Artifact record={record} />
+                    </dd>
+                    <dt>{activeStates.has(attempt.status) ? 'Attempt age' : 'Recorded span'}</dt>
+                    <dd>{elapsed(record)}</dd>
+                    <dt>Updated</dt>
+                    <dd>{time(attempt.updated_at)}</dd>
+                  </dl>
+                </details>
+              </li>
+            );
+          })
+        )}
+      </ul>
+    </>
   );
 }
 function allRecords(overview) {
@@ -270,70 +333,127 @@ function Overview({ overview, error, ...navigation }) {
   const reconciliation = overview?.reconciliation;
   const lifecycle = overview?.lifecycle_outbox;
   const recent = overview?.recent_attempts.slice(0, 8) || [];
+  const records = overview ? allRecords(overview) : [];
+  const queues = [
+    [
+      'attention',
+      'Inspect unresolved execution',
+      'Active attempts with an unknown outcome, cancellation request, or expired lease.',
+      records.filter(needsInspection).length,
+    ],
+    [
+      'verifying',
+      'Review pending verification',
+      'Active attempts with a recorded artifact awaiting verification.',
+      records.filter((record) => verificationStates.has(record.attempt?.status)).length,
+    ],
+    [
+      'failed',
+      'Review recent failures',
+      'Failed attempts in the returned set; a newer attempt may already be active.',
+      records.filter((record) => record.attempt?.status === 'failed').length,
+    ],
+  ];
   return (
     <>
-      <section aria-label="Factory summary" className="metrics">
-        <Metric
-          name="Intake mode"
-          id="metric-mode"
-          value={
-            !overview
-              ? '—'
-              : overview.mode === 'real'
-                ? 'Real'
-                : overview.mode === 'dry-run'
-                  ? 'Dry run'
-                  : 'Unknown'
-          }
-        >
-          Configured runtime mode
-        </Metric>
-        <Metric
-          name="Active attempts"
-          id="metric-active"
-          value={overview ? count(overview.active_attempts.length) : '—'}
-        >
-          All modes · current snapshot
-        </Metric>
-        <Metric
-          name="Verified attempts"
-          id="metric-ready"
-          value={
-            !overview
-              ? '—'
-              : counts && typeof counts === 'object'
-                ? count(counts.verified_ready ?? 0)
-                : 'Unavailable'
-          }
-        >
-          All modes · all-time ledger state
-        </Metric>
-        <Metric
-          name="Recorded attempts"
-          id="metric-total"
-          value={
-            !overview
-              ? '—'
-              : counts && Object.values(counts).every((n) => Number.isInteger(n) && n >= 0)
-                ? count(Object.values(counts).reduce((sum, n) => sum + n, 0))
-                : 'Unavailable'
-          }
-        >
-          All modes · all-time ledger
-        </Metric>
+      <section className="review-section" aria-labelledby="review-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="review-title">Review queues</h2>
+            <p className="muted">All modes. Counts cover active attempts and the most recent 30.</p>
+          </div>
+        </div>
+        <ul className="review-queues">
+          {queues.map(([status, title, description, total]) => (
+            <li key={status}>
+              <RouteLink
+                {...navigation}
+                changes={{ view: 'work', status, q: '', repo: '', mode: 'all', issue: '' }}
+                data-queue={status}
+              >
+                <strong className="queue-count" id={'queue-' + status}>
+                  {overview ? count(total) : 'Unavailable'}
+                </strong>
+                <span>
+                  <strong>{title}</strong>
+                  <small>{description}</small>
+                </span>
+                <span className="queue-open">View attempts</span>
+              </RouteLink>
+            </li>
+          ))}
+        </ul>
       </section>
+      <details className="ledger-summary">
+        <summary>Runtime and ledger totals</summary>
+        <section aria-label="Factory summary" className="metrics">
+          <Metric
+            name="Intake mode"
+            id="metric-mode"
+            value={
+              !overview
+                ? '—'
+                : overview.mode === 'real'
+                  ? 'Real'
+                  : overview.mode === 'dry-run'
+                    ? 'Dry run'
+                    : 'Unknown'
+            }
+          >
+            Configured runtime mode
+          </Metric>
+          <Metric
+            name="Active attempts"
+            id="metric-active"
+            value={overview ? count(overview.active_attempts.length) : '—'}
+          >
+            All modes · current snapshot
+          </Metric>
+          <Metric
+            name="Verified attempts"
+            id="metric-ready"
+            value={
+              !overview
+                ? '—'
+                : counts && typeof counts === 'object'
+                  ? count(counts.verified_ready ?? 0)
+                  : 'Unavailable'
+            }
+          >
+            All modes · all-time ledger state
+          </Metric>
+          <Metric
+            name="Recorded attempts"
+            id="metric-total"
+            value={
+              !overview
+                ? '—'
+                : counts && Object.values(counts).every((n) => Number.isInteger(n) && n >= 0)
+                  ? count(Object.values(counts).reduce((sum, n) => sum + n, 0))
+                  : 'Unavailable'
+            }
+          >
+            All modes · all-time ledger
+          </Metric>
+        </section>
+        <p className="historical-note">
+          Finished-job findings:{' '}
+          <strong id="signal-terminal">
+            {overview ? count(reconciliation?.scope?.terminal_work) : 'Unavailable'}
+          </strong>
+          . Historical findings do not indicate active work.
+        </p>
+      </details>
       <section className="attention-section" aria-labelledby="attention-title">
         <div className="section-heading">
-          <h2 id="attention-title">Operational attention</h2>
-          <span className="muted">Current findings, separate from history</span>
+          <h2 id="attention-title">System attention</h2>
         </div>
         <div className="signals">
           <article className="signal" data-attention={reconciliation?.actionable > 0}>
-            <span className="eyebrow">Live work &amp; system</span>
             <strong id="signal-actionable">
               {overview ? count(reconciliation?.actionable) : '—'}
             </strong>
-            <h3>Actionable findings</h3>
+            <h3>Reconciliation findings</h3>
             <p id="signal-actionable-detail">
               {reconciliation?.actionable_severity
                 ? `${count(reconciliation.actionable_severity.critical ?? 0)} critical · ${count(reconciliation.actionable_severity.warning ?? 0)} warning. Inspect Factory status and the affected issue history.`
@@ -344,7 +464,6 @@ function Overview({ overview, error, ...navigation }) {
             className="signal"
             data-attention={Boolean(lifecycle?.available && lifecycle.dead_letters > 0)}
           >
-            <span className="eyebrow">Status delivery</span>
             <strong id="signal-dead-letters">
               {!overview
                 ? '—'
@@ -352,7 +471,7 @@ function Overview({ overview, error, ...navigation }) {
                   ? count(lifecycle.dead_letters)
                   : 'Unavailable'}
             </strong>
-            <h3>Lifecycle dead letters</h3>
+            <h3>Status delivery failures</h3>
             <p id="signal-dead-letter-detail">
               {!lifecycle?.available
                 ? 'Lifecycle source unavailable; this is not a zero count.'
@@ -360,14 +479,6 @@ function Overview({ overview, error, ...navigation }) {
                   ? 'Inspect with factory lifecycle dead-letters list. Archive remains root-only.'
                   : 'No permanent delivery failures in this snapshot.'}
             </p>
-          </article>
-          <article className="signal historical">
-            <span className="eyebrow">Historical debt</span>
-            <strong id="signal-terminal">
-              {overview ? count(reconciliation?.scope?.terminal_work) : '—'}
-            </strong>
-            <h3>Finished-job findings</h3>
-            <p>Kept for investigation; these are not active-work alerts.</p>
           </article>
         </div>
       </section>
@@ -382,12 +493,24 @@ function Overview({ overview, error, ...navigation }) {
             changes={{ view: 'work', status: 'active', q: '', repo: '', mode: 'all', issue: '' }}
             data-work-link
           >
-            View work →
+            View all active attempts
           </RouteLink>
         </div>
         <AttemptTable
           id="active-attempts"
-          records={overview?.active_attempts}
+          records={
+            overview
+              ? [...overview.active_attempts].sort((a, b) => {
+                  const priority = (record) =>
+                    needsInspection(record)
+                      ? 0
+                      : verificationStates.has(record.attempt?.status)
+                        ? 1
+                        : 2;
+                  return priority(a) - priority(b);
+                })
+              : []
+          }
           empty={
             overview
               ? 'No active attempts in this snapshot.'
@@ -436,6 +559,9 @@ function Overview({ overview, error, ...navigation }) {
   );
 }
 function Work({ records, available, error, route, navigate }) {
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const filterCount =
+    Number(route.status !== 'all') + Number(route.mode !== 'all') + Number(Boolean(route.repo));
   const repos = new Set(records.map(repository).filter(Boolean));
   if (route.repo) repos.add(route.repo);
   const filtered = records.filter((record) => {
@@ -444,6 +570,7 @@ function Work({ records, available, error, route, navigate }) {
       all: true,
       active: activeStates.has(attempt.status),
       attention: needsInspection(record),
+      verifying: verificationStates.has(attempt.status),
       verified: attempt.status === 'verified_ready',
       failed: attempt.status === 'failed',
       finished: terminalStates.has(attempt.status),
@@ -487,48 +614,60 @@ function Work({ records, available, error, route, navigate }) {
             onChange={(event) => navigate({ q: event.target.value.slice(0, 200) }, true)}
           />
         </label>
-        <label htmlFor="status-filter">
-          Stage
-          <select
-            id="status-filter"
-            value={route.status}
-            onChange={(event) => navigate({ status: event.target.value })}
-          >
-            <option value="all">All stages</option>
-            <option value="active">Active</option>
-            <option value="attention">Active: needs inspection</option>
-            <option value="verified">Verified (recorded)</option>
-            <option value="failed">Failed (recorded)</option>
-            <option value="finished">Finished</option>
-          </select>
-        </label>
-        <label htmlFor="mode-filter">
-          Mode
-          <select
-            id="mode-filter"
-            value={route.mode}
-            onChange={(event) => navigate({ mode: event.target.value })}
-          >
-            <option value="all">All modes</option>
-            <option value="real">Real</option>
-            <option value="dry-run">Dry run</option>
-          </select>
-        </label>
-        <label htmlFor="repo-filter">
-          Repository
-          <select
-            id="repo-filter"
-            value={route.repo}
-            onChange={(event) => navigate({ repo: event.target.value })}
-          >
-            <option value="">All repositories</option>
-            {[...repos].sort().map((repo) => (
-              <option key={repo} value={repo}>
-                {repo}
-              </option>
-            ))}
-          </select>
-        </label>
+        <button
+          className="filter-toggle"
+          type="button"
+          aria-controls="secondary-filters"
+          aria-expanded={filtersExpanded}
+          onClick={() => setFiltersExpanded((expanded) => !expanded)}
+        >
+          Filters{filterCount ? ` (${filterCount} active)` : ''}
+        </button>
+        <div id="secondary-filters" className="filter-secondary" data-expanded={filtersExpanded}>
+          <label htmlFor="status-filter">
+            Stage
+            <select
+              id="status-filter"
+              value={route.status}
+              onChange={(event) => navigate({ status: event.target.value })}
+            >
+              <option value="all">All stages</option>
+              <option value="active">Active</option>
+              <option value="attention">Active: needs inspection</option>
+              <option value="verifying">Pending verification</option>
+              <option value="verified">Verified (recorded)</option>
+              <option value="failed">Failed (recorded)</option>
+              <option value="finished">Finished</option>
+            </select>
+          </label>
+          <label htmlFor="mode-filter">
+            Mode
+            <select
+              id="mode-filter"
+              value={route.mode}
+              onChange={(event) => navigate({ mode: event.target.value })}
+            >
+              <option value="all">All modes</option>
+              <option value="real">Real</option>
+              <option value="dry-run">Dry run</option>
+            </select>
+          </label>
+          <label htmlFor="repo-filter">
+            Repository
+            <select
+              id="repo-filter"
+              value={route.repo}
+              onChange={(event) => navigate({ repo: event.target.value })}
+            >
+              <option value="">All repositories</option>
+              {[...repos].sort().map((repo) => (
+                <option key={repo} value={repo}>
+                  {repo}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button
           id="clear-filters"
           type="button"
@@ -611,7 +750,6 @@ function IssueDetail({ issue, snapshot, onClose }) {
     >
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Issue inspection</p>
           <h2 id="issue-title" ref={heading} tabIndex={-1}>
             {issue || 'Issue'}
           </h2>
@@ -798,9 +936,7 @@ function App() {
               {view === 'work' ? 'Work' : 'Overview'}
               {view === 'work' ? (
                 <span id="nav-work-count">{overview ? records.length : '—'}</span>
-              ) : (
-                <span aria-hidden="true">↗</span>
-              )}
+              ) : null}
             </RouteLink>
           ))}
         </nav>
@@ -845,12 +981,15 @@ function App() {
         <main id="main" tabIndex={-1}>
           <div className="page-heading">
             <div>
-              <p className="eyebrow">Software delivery</p>
-              <h1 id="page-title">{work ? 'Factory work' : 'Factory overview'}</h1>
+              <h1 id="page-title">
+                {route.issue ? 'Issue inspection' : work ? 'Work' : 'Review work'}
+              </h1>
               <p id="page-description" className="muted">
-                {work
-                  ? 'Find an attempt. Inspect its artifact and evidence.'
-                  : 'Work in motion. Evidence you can inspect.'}
+                {route.issue
+                  ? 'Review the recorded result and choose the next step.'
+                  : work
+                    ? 'Search active and recent attempts.'
+                    : 'Inspect unresolved execution, verification, and recent failures.'}
               </p>
             </div>
             <form
@@ -893,10 +1032,10 @@ function App() {
               ? `${stale ? 'Last successful snapshot: ' : 'Snapshot: '}${time(overview.generated_at)} · age ${duration(age)}. Refreshes every 30s while visible.`
               : 'No snapshot available yet.'}
           </p>
-          <div data-view="overview" hidden={work}>
+          <div data-view="overview" hidden={work || Boolean(route.issue)}>
             <Overview overview={overview} error={overviewError} {...navigation} />
           </div>
-          <div data-view="work" hidden={!work}>
+          <div data-view="work" hidden={!work || Boolean(route.issue)}>
             <Work
               records={records}
               available={Boolean(overview)}

@@ -24,18 +24,19 @@ const failed = record('ENG-101', 1, 'failed');
 const verified = record('ENG-102', 1, 'verified_ready');
 const simulated = record('ENG-103', 1, 'verified_ready', 'dry-run', 'Driftward-LLC/driftward-host');
 const unknown = record('ENG-104', 1, 'effect_outcome_unknown');
+const verifying = record('ENG-107', 1, 'verification_pending');
 const unrecognized = record('ENG-105', 1, 'constructor');
 unrecognized.job.pr_url = 'javascript:alert(1)';
 const malicious = record('ENG-106', 1, 'failed');
 malicious.job.payload.repo = '<img src=x onerror=alert(1)>';
 malicious.job.pr_url = 'https://github.com/attacker/repo/pull/1';
-const records = [running, failed, verified, simulated, unknown, unrecognized, malicious];
+const records = [running, failed, verified, simulated, unknown, unrecognized, malicious, verifying];
 function overview() {
   return {
     generated_at: new Date().toISOString(), mode: 'real',
-    active_attempts: [running, unknown],
+    active_attempts: [running, unknown, verifying],
     recent_attempts: records,
-    status_counts: { running: 1, failed: 2, verified_ready: 2, effect_outcome_unknown: 1, constructor: 1 },
+    status_counts: { running: 1, failed: 2, verified_ready: 2, effect_outcome_unknown: 1, constructor: 1, verification_pending: 1 },
     reconciliation: { actionable: 2, actionable_severity: { critical: 0, warning: 2 }, scope: { terminal_work: 9 } },
     lifecycle_outbox: { available: false, dead_letters: 0 },
     links: { hatchet: 'https://attacker.example/' },
@@ -99,7 +100,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(base);
-    await page.waitForFunction(() => document.querySelector('#metric-total').textContent === '7');
+    await page.waitForFunction(() => document.querySelector('#metric-total').textContent === '8');
     await page.keyboard.press('Tab');
     assert.equal(await page.locator('.skip-link').evaluate((el) => el === document.activeElement), true);
     await page.keyboard.press('Enter');
@@ -107,24 +108,64 @@ async function main() {
     assert.equal(await page.locator('#signal-dead-letters').textContent(), 'Unavailable');
     assert.equal(await page.locator('#signal-terminal').textContent(), '9');
     assert.equal(await page.locator('#hatchet-link').isVisible(), false);
-    assert.equal(await page.locator('#active-attempts tr').count(), 2);
+    assert.equal(await page.locator('#active-attempts tr').count(), 3);
+    assert.match(await page.locator('#active-attempts tr').first().textContent(), /ENG-104/);
+    assert.equal(await page.locator('.ledger-summary').getAttribute('open'), null);
+    await page.locator('.ledger-summary summary').click();
+    assert.equal(await page.locator('#metric-total').isVisible(), true);
+    await page.locator('.ledger-summary summary').click();
+    for (const [queue, total, issue] of [['attention', '1', 'ENG-104'], ['verifying', '1', 'ENG-107'], ['failed', '2', 'ENG-101']]) {
+      assert.equal(await page.locator('#queue-' + queue).textContent(), total);
+      await page.locator('[data-queue="' + queue + '"]').click();
+      assert.equal(await page.locator('#status-filter').inputValue(), queue);
+      assert.match(await page.locator('#work-attempts').textContent(), new RegExp(issue));
+      if (queue === 'verifying') {
+        await page.reload();
+        await page.waitForFunction(() => document.querySelector('#work-count').textContent.startsWith('1 of 8'));
+        assert.equal(await page.locator('#status-filter').inputValue(), 'verifying');
+      }
+      await page.locator('[data-nav="overview"]').click();
+    }
     assert.equal(await page.locator('#recent-attempts img').count(), 0);
     await page.setViewportSize({ width: 1280, height: 960 });
     await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     await page.setViewportSize({ width: 1440, height: 1080 });
+    await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
     await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-overview.png'), fullPage: true });
+    const lowContrast = await page.evaluate(() => {
+      const rgb = (value) => value.match(/[\d.]+/g).map(Number);
+      const luminance = (color) => color.slice(0, 3).map((n) => { const v = n / 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }).reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+      return [...document.querySelectorAll('.muted, .pill, .review-queues small, nav a, .signal p')].filter((el) => el.getClientRects().length).flatMap((el) => {
+        let background = [255, 255, 255];
+        for (let node = el; node; node = node.parentElement) {
+          const color = rgb(getComputedStyle(node).backgroundColor);
+          if (color.length === 3 || color[3] === 1) { background = color; break; }
+        }
+        const foreground = luminance(rgb(getComputedStyle(el).color));
+        const back = luminance(background);
+        const ratio = (Math.max(foreground, back) + .05) / (Math.min(foreground, back) + .05);
+        return ratio < 4.5 ? [{ text: el.textContent, ratio }] : [];
+      });
+    });
+    assert.deepEqual(lowContrast, []);
+    for (const width of [320, 700, 850, 1024, 1280]) {
+      await page.setViewportSize({ width, height: 960 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Overview overflow at ' + width);
+    }
+    await page.setViewportSize({ width: 1440, height: 1080 });
 
     await page.locator('[data-nav="work"]').click();
+    await page.locator('#clear-filters').click();
     await page.waitForURL('**/?view=work');
-    assert.match(await page.locator('#work-count').textContent(), /^7 of 7/);
-    assert.equal(await page.locator('#work-attempts tr').count(), 7);
+    assert.match(await page.locator('#work-count').textContent(), /^8 of 8/);
+    assert.equal(await page.locator('#work-attempts tr').count(), 8);
     assert.equal(await page.locator('#work-attempts a[href^="javascript:"]').count(), 0);
     assert.equal(await page.locator('#work-attempts a[href*="attacker"]').count(), 0);
     assert.equal(await page.locator('#work-attempts img').count(), 0);
     await page.locator('#status-filter').selectOption('active');
-    assert.equal(await page.locator('#work-attempts tr').count(), 2);
+    assert.equal(await page.locator('#work-attempts tr').count(), 3);
     await page.locator('#status-filter').selectOption('attention');
     assert.match(await page.locator('#work-attempts').textContent(), /ENG-104/);
     assert.equal(await page.locator('#work-attempts tr').count(), 1);
@@ -136,11 +177,12 @@ async function main() {
     assert.match(await page.locator('#work-attempts').textContent(), /ENG-102/);
     const filteredUrl = page.url();
     await page.reload();
-    await page.waitForFunction(() => document.querySelector('#work-count').textContent.startsWith('1 of 7'));
+    await page.waitForFunction(() => document.querySelector('#work-count').textContent.startsWith('1 of 8'));
     assert.equal(page.url(), filteredUrl);
     assert.equal(await page.locator('#work-query').inputValue(), 'capykit');
     await page.locator('#work-attempts [data-issue="ENG-102"]').click();
     await page.waitForFunction(() => !document.querySelector('#issue-content').hidden);
+    assert.equal(await page.locator('[data-view="work"]').isVisible(), false);
     assert.match(await page.locator('#next-step').textContent(), /confirm its current head/);
     assert.match(await page.locator('#artifact-note').textContent(), /Current merge or review status is not available/);
     assert.equal(await page.locator('#github-link').getAttribute('href'), verified.job.pr_url);
@@ -190,9 +232,30 @@ async function main() {
 
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal(await page.locator('#issue-attempts-mobile').isVisible(), true);
+    await page.locator('#issue-attempts-mobile summary').first().click();
+    assert.equal(await page.locator('#issue-attempts-mobile details a').first().isVisible(), true);
+    await page.locator('#issue-attempts-mobile summary').first().click();
+    await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
     await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile.png'), fullPage: true });
     await page.locator('#close-issue').click();
     assert.equal(await page.locator('#issue-input').evaluate((el) => el === document.activeElement), true);
+    assert.equal(await page.locator('#work-attempts-mobile').isVisible(), true);
+    assert.match(await page.locator('#work-attempts-mobile').textContent(), /Confirm current PR checks/);
+    assert.equal(await page.locator('#status-filter').inputValue(), 'verified');
+    assert.equal(await page.locator('#status-filter').isVisible(), false);
+    assert.match(await page.locator('.filter-toggle').textContent(), /2 active/);
+    await page.locator('.filter-toggle').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#status-filter').isVisible(), true);
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#status-filter').isVisible(), false);
+    await page.locator('#work-attempts-mobile .inspect-link').click();
+    await page.waitForFunction(() => document.querySelector('#issue-title').textContent === 'ENG-102' && !document.querySelector('#issue-content').hidden);
+    await page.locator('#close-issue').click();
+    assert.ok(await page.locator('#work-attempts-mobile .inspect-link').evaluate((el) => el.getBoundingClientRect().height >= 44));
+    await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
+    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile-work.png'), fullPage: true });
     await page.locator('#work-query').fill('nothing-matches');
     assert.match(await page.locator('#work-attempts').textContent(), /No attempts match/);
 
@@ -218,10 +281,11 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Unavailable');
     assert.match(await page.locator('#notice').textContent(), /data is unavailable/);
     assert.equal(await page.locator('#metric-active').textContent(), '—');
+    assert.equal(await page.locator('#queue-attention').textContent(), 'Unavailable');
     assert.deepEqual(errors, []);
     assert.ok(methods.every((method) => method === 'GET'));
-    console.log('PASS: navigation, deep links, filters, deduplication, safe links/text, unknown states, stale/empty/error states, issue races, visibility refresh, mobile layout and read-only requests.');
-    console.log('Fixture screenshots: ' + join(tmpdir(), 'factory-dashboard-{overview,work,mobile}.png'));
+    console.log('PASS: review queues, navigation, deep links, filters, deduplication, safe links/text, unknown states, stale/empty/error states, issue races, visibility refresh, responsive details, keyboard controls, text contrast and read-only requests.');
+    console.log('Fixture screenshots: ' + join(tmpdir(), 'factory-dashboard-{overview,work,mobile,mobile-work}.png'));
   } finally { await browser.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => {
