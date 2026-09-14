@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
+from itertools import count
 from pathlib import Path
 from unittest.mock import patch
 
@@ -103,7 +104,11 @@ class FactoryAnalyticsTests(unittest.TestCase):
         clock_patch = patch("hatchet_hermes_bridge.store.datetime", wraps=datetime)
         store_clock = clock_patch.start()
         self.addCleanup(clock_patch.stop)
-        store_clock.now.return_value = datetime(2026, 9, 11, tzinfo=timezone.utc)
+        # Preserve write order instead of breaking timestamp ties with random IDs.
+        store_clock.now.side_effect = (
+            datetime(2026, 9, 11, tzinfo=timezone.utc) + timedelta(microseconds=tick)
+            for tick in count()
+        )
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         root = Path(self.work.name)
