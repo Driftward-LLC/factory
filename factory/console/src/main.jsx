@@ -1,6 +1,24 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  DashboardIcon,
+  RowsIcon,
+  ExclamationTriangleIcon,
+  Half2Icon,
+  CrossCircledIcon,
+  CheckCircledIcon,
+  CircleIcon,
+  ArrowTopRightIcon,
+  ArrowRightIcon,
+  ChevronRightIcon,
+  ReloadIcon,
+  MagnifyingGlassIcon,
+  MixerHorizontalIcon,
+  CubeIcon,
+  LockClosedIcon,
+  ActivityLogIcon,
+} from '@radix-ui/react-icons';
+import {
   activeStates,
   terminalStates,
   stages,
@@ -113,7 +131,20 @@ function Notice({ id, children }) {
 }
 function Pill({ status }) {
   const [text, tone] = Object.hasOwn(stages, status) ? stages[status] : [label(status), ''];
-  return <span className={'pill ' + tone}>{text}</span>;
+  const StatusIcon =
+    tone === 'success'
+      ? CheckCircledIcon
+      : tone === 'danger'
+        ? CrossCircledIcon
+        : tone === 'warning'
+          ? Half2Icon
+          : CircleIcon;
+  return (
+    <span className={'pill ' + tone}>
+      <StatusIcon aria-hidden="true" />
+      {text}
+    </span>
+  );
 }
 function ExternalLink({ children, ...props }) {
   return (
@@ -150,7 +181,9 @@ function IssueLink({ issue, ...navigation }) {
 function Artifact({ record }) {
   const url = prUrl(record);
   return url ? (
-    <ExternalLink href={url}>PR #{url.split('/').filter(Boolean).pop()} ↗</ExternalLink>
+    <ExternalLink className="artifact-link" href={url}>
+      PR #{url.split('/').filter(Boolean).pop()} <ArrowTopRightIcon aria-hidden="true" />
+    </ExternalLink>
   ) : (
     <span className="muted">Not available</span>
   );
@@ -337,20 +370,20 @@ function Overview({ overview, error, ...navigation }) {
   const queues = [
     [
       'attention',
-      'Inspect unresolved execution',
-      'Active attempts with an unknown outcome, cancellation request, or expired lease.',
+      'Needs inspection',
+      'Unknown outcomes, cancellation requests, or expired leases.',
       records.filter(needsInspection).length,
     ],
     [
       'verifying',
-      'Review pending verification',
-      'Active attempts with a recorded artifact awaiting verification.',
+      'Pending verification',
+      'Recorded artifacts awaiting verification.',
       records.filter((record) => verificationStates.has(record.attempt?.status)).length,
     ],
     [
       'failed',
-      'Review recent failures',
-      'Failed attempts in the returned set; a newer attempt may already be active.',
+      'Recent failures',
+      'Recorded failures. A newer attempt may be active.',
       records.filter((record) => record.attempt?.status === 'failed').length,
     ],
   ];
@@ -359,8 +392,8 @@ function Overview({ overview, error, ...navigation }) {
       <section className="review-section" aria-labelledby="review-title">
         <div className="section-heading">
           <div>
-            <h2 id="review-title">Review queues</h2>
-            <p className="muted">All modes. Counts cover active attempts and the most recent 30.</p>
+            <h2 id="review-title">Needs review</h2>
+            <p className="muted">All modes · active + most recent 30 attempts</p>
           </div>
         </div>
         <ul className="review-queues">
@@ -371,129 +404,43 @@ function Overview({ overview, error, ...navigation }) {
                 changes={{ view: 'work', status, q: '', repo: '', mode: 'all', issue: '' }}
                 data-queue={status}
               >
+                <span className="queue-label">
+                  {status === 'attention' ? (
+                    <ExclamationTriangleIcon aria-hidden="true" />
+                  ) : status === 'verifying' ? (
+                    <Half2Icon aria-hidden="true" />
+                  ) : (
+                    <CrossCircledIcon aria-hidden="true" />
+                  )}
+                  <strong>{title}</strong>
+                  <ArrowRightIcon className="queue-arrow" aria-hidden="true" />
+                </span>
                 <strong className="queue-count" id={'queue-' + status}>
                   {overview ? count(total) : 'Unavailable'}
                 </strong>
-                <span>
-                  <strong>{title}</strong>
-                  <small>{description}</small>
-                </span>
-                <span className="queue-open">View attempts</span>
+                <small>{description}</small>
               </RouteLink>
             </li>
           ))}
         </ul>
       </section>
-      <details className="ledger-summary">
-        <summary>Runtime and ledger totals</summary>
-        <section aria-label="Factory summary" className="metrics">
-          <Metric
-            name="Intake mode"
-            id="metric-mode"
-            value={
-              !overview
-                ? '—'
-                : overview.mode === 'real'
-                  ? 'Real'
-                  : overview.mode === 'dry-run'
-                    ? 'Dry run'
-                    : 'Unknown'
-            }
-          >
-            Configured runtime mode
-          </Metric>
-          <Metric
-            name="Active attempts"
-            id="metric-active"
-            value={overview ? count(overview.active_attempts.length) : '—'}
-          >
-            All modes · current snapshot
-          </Metric>
-          <Metric
-            name="Verified attempts"
-            id="metric-ready"
-            value={
-              !overview
-                ? '—'
-                : counts && typeof counts === 'object'
-                  ? count(counts.verified_ready ?? 0)
-                  : 'Unavailable'
-            }
-          >
-            All modes · all-time ledger state
-          </Metric>
-          <Metric
-            name="Recorded attempts"
-            id="metric-total"
-            value={
-              !overview
-                ? '—'
-                : counts && Object.values(counts).every((n) => Number.isInteger(n) && n >= 0)
-                  ? count(Object.values(counts).reduce((sum, n) => sum + n, 0))
-                  : 'Unavailable'
-            }
-          >
-            All modes · all-time ledger
-          </Metric>
-        </section>
-        <p className="historical-note">
-          Finished-job findings:{' '}
-          <strong id="signal-terminal">
-            {overview ? count(reconciliation?.scope?.terminal_work) : 'Unavailable'}
-          </strong>
-          . Historical findings do not indicate active work.
-        </p>
-      </details>
-      <section className="attention-section" aria-labelledby="attention-title">
-        <div className="section-heading">
-          <h2 id="attention-title">System attention</h2>
-        </div>
-        <div className="signals">
-          <article className="signal" data-attention={reconciliation?.actionable > 0}>
-            <strong id="signal-actionable">
-              {overview ? count(reconciliation?.actionable) : '—'}
-            </strong>
-            <h3>Reconciliation findings</h3>
-            <p id="signal-actionable-detail">
-              {reconciliation?.actionable_severity
-                ? `${count(reconciliation.actionable_severity.critical ?? 0)} critical · ${count(reconciliation.actionable_severity.warning ?? 0)} warning. Inspect Factory status and the affected issue history.`
-                : 'Severity evidence unavailable.'}
-            </p>
-          </article>
-          <article
-            className="signal"
-            data-attention={Boolean(lifecycle?.available && lifecycle.dead_letters > 0)}
-          >
-            <strong id="signal-dead-letters">
-              {!overview
-                ? '—'
-                : lifecycle?.available
-                  ? count(lifecycle.dead_letters)
-                  : 'Unavailable'}
-            </strong>
-            <h3>Status delivery failures</h3>
-            <p id="signal-dead-letter-detail">
-              {!lifecycle?.available
-                ? 'Lifecycle source unavailable; this is not a zero count.'
-                : lifecycle.dead_letters > 0
-                  ? 'Inspect with factory lifecycle dead-letters list. Archive remains root-only.'
-                  : 'No permanent delivery failures in this snapshot.'}
-            </p>
-          </article>
-        </div>
-      </section>
       <section className="panel" aria-labelledby="active-title">
         <div className="section-heading">
           <div>
-            <h2 id="active-title">Active work</h2>
-            <p className="muted">Every active attempt, including work waiting on verification.</p>
+            <h2 id="active-title">
+              Active work{' '}
+              <span className="heading-count">
+                {overview ? count(overview.active_attempts.length) : '—'}
+              </span>
+            </h2>
+            <p className="muted">Execution and verification, ordered by attention needed.</p>
           </div>
           <RouteLink
             {...navigation}
             changes={{ view: 'work', status: 'active', q: '', repo: '', mode: 'all', issue: '' }}
             data-work-link
           >
-            View all active attempts
+            View all <ArrowRightIcon aria-hidden="true" />
           </RouteLink>
         </div>
         <AttemptTable
@@ -521,40 +468,146 @@ function Overview({ overview, error, ...navigation }) {
           {...navigation}
         />
       </section>
-      <section className="panel" aria-labelledby="recent-title">
-        <div className="section-heading">
-          <div>
-            <h2 id="recent-title">Recent activity</h2>
-            <p className="muted">
-              Latest 8 returned attempts. Verification is a recorded outcome, not a live PR status.
-            </p>
+      <div className="overview-secondary">
+        <section className="panel" aria-labelledby="recent-title">
+          <div className="section-heading">
+            <div>
+              <h2 id="recent-title">Recent activity</h2>
+              <p className="muted">
+                Latest 8 attempts · outcomes are recorded, not live PR status.
+              </p>
+            </div>
           </div>
-        </div>
-        <ol id="recent-attempts" className="recent-list">
-          {recent.length ? (
-            recent.map((record) => (
-              <li className="recent-item" key={record.attempt.attempt_id}>
-                <div>
-                  <IssueLink issue={record.attempt.work_item_key} {...navigation} />
-                  <small>
-                    Generation {record.attempt.generation ?? 'unknown'} ·{' '}
-                    {label(record.attempt.mode)} · {time(record.attempt.updated_at)}
-                  </small>
-                </div>
-                <Pill status={record.attempt.status} />
+          <ol id="recent-attempts" className="recent-list">
+            {recent.length ? (
+              recent.map((record) => (
+                <li className="recent-item" key={record.attempt.attempt_id}>
+                  <div>
+                    <IssueLink issue={record.attempt.work_item_key} {...navigation} />
+                    <small>
+                      Generation {record.attempt.generation ?? 'unknown'} ·{' '}
+                      {label(record.attempt.mode)} · {time(record.attempt.updated_at)}
+                    </small>
+                  </div>
+                  <Pill status={record.attempt.status} />
+                </li>
+              ))
+            ) : (
+              <li className="empty">
+                {overview
+                  ? 'No recent attempts recorded.'
+                  : error
+                    ? 'Recent activity unavailable.'
+                    : 'Loading recent attempts…'}
               </li>
-            ))
-          ) : (
-            <li className="empty">
-              {overview
-                ? 'No recent attempts recorded.'
-                : error
-                  ? 'Recent activity unavailable.'
-                  : 'Loading recent attempts…'}
-            </li>
-          )}
-        </ol>
-      </section>
+            )}
+          </ol>
+        </section>
+        <aside className="system-summary" aria-label="System and ledger">
+          <section className="attention-section" aria-labelledby="attention-title">
+            <div className="section-heading">
+              <h2 id="attention-title">
+                <ActivityLogIcon aria-hidden="true" /> System status
+              </h2>
+            </div>
+            <div className="signals">
+              <article className="signal" data-attention={reconciliation?.actionable > 0}>
+                <strong id="signal-actionable">
+                  {overview ? count(reconciliation?.actionable) : '—'}
+                </strong>
+                <h3>Reconciliation findings</h3>
+                <p id="signal-actionable-detail">
+                  {reconciliation?.actionable_severity
+                    ? `${count(reconciliation.actionable_severity.critical ?? 0)} critical · ${count(reconciliation.actionable_severity.warning ?? 0)} warning. Inspect Factory status and issue history.`
+                    : 'Severity evidence unavailable.'}
+                </p>
+              </article>
+              <article
+                className="signal"
+                data-attention={Boolean(lifecycle?.available && lifecycle.dead_letters > 0)}
+              >
+                <strong id="signal-dead-letters">
+                  {!overview
+                    ? '—'
+                    : lifecycle?.available
+                      ? count(lifecycle.dead_letters)
+                      : 'Unavailable'}
+                </strong>
+                <h3>Status delivery failures</h3>
+                <p id="signal-dead-letter-detail">
+                  {!lifecycle?.available
+                    ? 'Source unavailable. Delivery status is unknown.'
+                    : lifecycle.dead_letters > 0
+                      ? 'Inspect with factory lifecycle dead-letters list. Archive remains root-only.'
+                      : 'No permanent delivery failures in this snapshot.'}
+                </p>
+              </article>
+            </div>
+          </section>
+          <details className="ledger-summary">
+            <summary>
+              Runtime &amp; ledger <ChevronRightIcon aria-hidden="true" />
+            </summary>
+            <section aria-label="Factory summary" className="metrics">
+              <Metric
+                name="Intake mode"
+                id="metric-mode"
+                value={
+                  !overview
+                    ? '—'
+                    : overview.mode === 'real'
+                      ? 'Real'
+                      : overview.mode === 'dry-run'
+                        ? 'Dry run'
+                        : 'Unknown'
+                }
+              >
+                Configured runtime mode
+              </Metric>
+              <Metric
+                name="Active attempts"
+                id="metric-active"
+                value={overview ? count(overview.active_attempts.length) : '—'}
+              >
+                All modes · current snapshot
+              </Metric>
+              <Metric
+                name="Verified attempts"
+                id="metric-ready"
+                value={
+                  !overview
+                    ? '—'
+                    : counts && typeof counts === 'object'
+                      ? count(counts.verified_ready ?? 0)
+                      : 'Unavailable'
+                }
+              >
+                All modes · all-time ledger state
+              </Metric>
+              <Metric
+                name="Recorded attempts"
+                id="metric-total"
+                value={
+                  !overview
+                    ? '—'
+                    : counts && Object.values(counts).every((n) => Number.isInteger(n) && n >= 0)
+                      ? count(Object.values(counts).reduce((sum, n) => sum + n, 0))
+                      : 'Unavailable'
+                }
+              >
+                All modes · all-time ledger
+              </Metric>
+            </section>
+            <p className="historical-note">
+              Finished-job findings:{' '}
+              <strong id="signal-terminal">
+                {overview ? count(reconciliation?.scope?.terminal_work) : 'Unavailable'}
+              </strong>
+              . Historical findings do not indicate active work.
+            </p>
+          </details>
+        </aside>
+      </div>
     </>
   );
 }
@@ -596,6 +649,26 @@ function Work({ records, available, error, route, navigate }) {
           </p>
         </div>
       </div>
+      <nav className="work-scopes" aria-label="Work queues">
+        {[
+          ['all', 'All attempts'],
+          ['active', 'Active'],
+          ['attention', 'Needs inspection'],
+          ['verifying', 'Verifying'],
+          ['failed', 'Failed'],
+        ].map(([status, title]) => (
+          <RouteLink
+            key={status}
+            route={route}
+            navigate={navigate}
+            changes={{ status }}
+            aria-current={route.status === status ? 'page' : undefined}
+            data-work-scope={status}
+          >
+            {title}
+          </RouteLink>
+        ))}
+      </nav>
       <form
         id="filters"
         className="filters"
@@ -621,7 +694,8 @@ function Work({ records, available, error, route, navigate }) {
           aria-expanded={filtersExpanded}
           onClick={() => setFiltersExpanded((expanded) => !expanded)}
         >
-          Filters{filterCount ? ` (${filterCount} active)` : ''}
+          <MixerHorizontalIcon aria-hidden="true" /> Filters
+          {filterCount ? ` (${filterCount} active)` : ''}
         </button>
         <div id="secondary-filters" className="filter-secondary" data-expanded={filtersExpanded}>
           <label htmlFor="status-filter">
@@ -762,10 +836,10 @@ function IssueDetail({ issue, snapshot, onClose }) {
               valid ? 'https://linear.app/driftward/issue/' + encodeURIComponent(issue) : undefined
             }
           >
-            Linear ↗
+            Linear <ArrowTopRightIcon aria-hidden="true" />
           </ExternalLink>
           <ExternalLink id="github-link" hidden={!url} href={url || undefined}>
-            Pull request ↗
+            Pull request <ArrowTopRightIcon aria-hidden="true" />
           </ExternalLink>
           <button id="close-issue" type="button" onClick={onClose}>
             Close
@@ -933,27 +1007,111 @@ function App() {
               data-nav={view}
               aria-current={route.view === view ? 'page' : undefined}
             >
-              {view === 'work' ? 'Work' : 'Overview'}
+              {view === 'work' ? (
+                <RowsIcon aria-hidden="true" />
+              ) : (
+                <DashboardIcon aria-hidden="true" />
+              )}
+              <span className="nav-text">{view === 'work' ? 'Work' : 'Overview'}</span>
               {view === 'work' ? (
                 <span id="nav-work-count">{overview ? records.length : '—'}</span>
               ) : null}
             </RouteLink>
           ))}
         </nav>
+        <div className="sidebar-queues">
+          <p className="nav-label">Review queues</p>
+          <nav aria-label="Review queues">
+            {[
+              [
+                'attention',
+                'Needs inspection',
+                ExclamationTriangleIcon,
+                records.filter(needsInspection).length,
+              ],
+              [
+                'verifying',
+                'Verification',
+                Half2Icon,
+                records.filter((r) => verificationStates.has(r.attempt?.status)).length,
+              ],
+              [
+                'failed',
+                'Recent failures',
+                CrossCircledIcon,
+                records.filter((r) => r.attempt?.status === 'failed').length,
+              ],
+            ].map(([status, title, QueueIcon, total]) => (
+              <RouteLink
+                key={status}
+                {...navigation}
+                changes={{ view: 'work', status, q: '', repo: '', mode: 'all', issue: '' }}
+                data-sidebar-queue={status}
+                aria-current={work && route.status === status ? 'page' : undefined}
+              >
+                <QueueIcon aria-hidden="true" />
+                <span className="nav-text">{title}</span>
+                <span className="nav-count">{overview ? count(total) : '—'}</span>
+              </RouteLink>
+            ))}
+          </nav>
+          <p className="nav-scope">Active + recent 30 · all modes</p>
+        </div>
         <div className="sidebar-note">
-          <strong>Operator console</strong>
-          <p>Inspect work and its evidence. Execution controls remain in the Factory CLI.</p>
           <ExternalLink id="hatchet-link" hidden={!hatchet} href={hatchet}>
-            Open Hatchet ↗
+            <CubeIcon aria-hidden="true" /> Hatchet <ArrowTopRightIcon aria-hidden="true" />
           </ExternalLink>
+          <div className="operator-label">
+            <LockClosedIcon aria-hidden="true" />
+            <strong>Read-only workspace</strong>
+          </div>
+          <p>Execution controls live in the Factory CLI.</p>
         </div>
       </aside>
       <div className="shell">
         <header className="topbar">
-          <span>
-            Engineering / <strong id="breadcrumb">{work ? 'Work' : 'Overview'}</strong>
+          <span className="breadcrumb">
+            <span>Workspace</span>
+            <ChevronRightIcon aria-hidden="true" />
+            <strong id="breadcrumb">{work ? 'Work' : 'Overview'}</strong>
+            {route.issue && (
+              <>
+                <ChevronRightIcon aria-hidden="true" />
+                <span>{route.issue}</span>
+              </>
+            )}
           </span>
           <div className="top-actions">
+            <form
+              id="issue-form"
+              className="issue-search"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const issue = issueDraft.trim().toUpperCase();
+                navigate({ issue });
+                if (issue === route.issue) refreshIssue();
+              }}
+            >
+              <label className="sr-only" htmlFor="issue-input">
+                Go to issue
+              </label>
+              <div className="input-action">
+                <MagnifyingGlassIcon aria-hidden="true" />
+                <input
+                  id="issue-input"
+                  ref={issueInput}
+                  name="issue"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="Go to issue…"
+                  pattern="[Ee][Nn][Gg]-[1-9][0-9]*"
+                  required
+                  value={issueDraft}
+                  onChange={(event) => setIssueDraft(event.target.value)}
+                />
+                <button type="submit">Open</button>
+              </div>
+            </form>
             <span
               id="connection-state"
               role="status"
@@ -974,7 +1132,8 @@ function App() {
               disabled={Boolean(overviewSnapshot.loading || issueSnapshot.loading)}
               onClick={refresh}
             >
-              Refresh
+              <ReloadIcon aria-hidden="true" />
+              <span>Refresh</span>
             </button>
           </div>
         </header>
@@ -982,43 +1141,16 @@ function App() {
           <div className="page-heading">
             <div>
               <h1 id="page-title">
-                {route.issue ? 'Issue inspection' : work ? 'Work' : 'Review work'}
+                {route.issue ? 'Issue inspection' : work ? 'Work' : 'Overview'}
               </h1>
               <p id="page-description" className="muted">
                 {route.issue
                   ? 'Review the recorded result and choose the next step.'
                   : work
                     ? 'Search active and recent attempts.'
-                    : 'Inspect unresolved execution, verification, and recent failures.'}
+                    : 'Execution, verification, and delivery.'}
               </p>
             </div>
-            <form
-              id="issue-form"
-              className="issue-search"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const issue = issueDraft.trim().toUpperCase();
-                navigate({ issue });
-                if (issue === route.issue) refreshIssue();
-              }}
-            >
-              <label htmlFor="issue-input">Go to issue</label>
-              <div className="input-action">
-                <input
-                  id="issue-input"
-                  ref={issueInput}
-                  name="issue"
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="ENG-119"
-                  pattern="[Ee][Nn][Gg]-[1-9][0-9]*"
-                  required
-                  value={issueDraft}
-                  onChange={(event) => setIssueDraft(event.target.value)}
-                />
-                <button type="submit">Open</button>
-              </div>
-            </form>
           </div>
           <Notice id="notice">
             {overviewError

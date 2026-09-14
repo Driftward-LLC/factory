@@ -126,6 +126,10 @@ async function main() {
       }
       await page.locator('[data-nav="overview"]').click();
     }
+    await page.locator('[data-sidebar-queue="verifying"]').click();
+    assert.equal(await page.locator('#status-filter').inputValue(), 'verifying');
+    assert.match(await page.locator('#work-attempts').textContent(), /ENG-107/);
+    await page.locator('[data-nav="overview"]').click();
     assert.equal(await page.locator('#recent-attempts img').count(), 0);
     await page.setViewportSize({ width: 1280, height: 960 });
     await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
@@ -164,7 +168,11 @@ async function main() {
     assert.equal(await page.locator('#work-attempts a[href^="javascript:"]').count(), 0);
     assert.equal(await page.locator('#work-attempts a[href*="attacker"]').count(), 0);
     assert.equal(await page.locator('#work-attempts img').count(), 0);
-    await page.locator('#status-filter').selectOption('active');
+    await page.locator('[data-work-scope="active"]').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#status-filter').inputValue(), 'active');
+    assert.equal(await page.locator('[data-work-scope="active"]').getAttribute('aria-current'), 'page');
+    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-work-list.png'), fullPage: true });
     assert.equal(await page.locator('#work-attempts tr').count(), 3);
     await page.locator('#status-filter').selectOption('attention');
     assert.match(await page.locator('#work-attempts').textContent(), /ENG-104/);
@@ -172,6 +180,10 @@ async function main() {
     await page.locator('#clear-filters').click();
     await page.locator('#work-query').fill('capykit');
     await page.locator('#mode-filter').selectOption('real');
+    await page.locator('[data-work-scope="failed"]').click();
+    assert.equal(await page.locator('#work-query').inputValue(), 'capykit');
+    assert.equal(await page.locator('#mode-filter').inputValue(), 'real');
+    assert.equal(await page.locator('#work-attempts tr').count(), 1);
     await page.locator('#status-filter').selectOption('verified');
     assert.equal(await page.locator('#work-attempts tr').count(), 1);
     assert.match(await page.locator('#work-attempts').textContent(), /ENG-102/);
@@ -230,6 +242,8 @@ async function main() {
     assert.match(await page.locator('#next-step').textContent(), /dry-run attempt/);
     assert.equal(await page.locator('#issue-timeline script').count(), 0);
 
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Snapshot current');
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.equal(await page.locator('#issue-attempts-mobile').isVisible(), true);
@@ -256,6 +270,11 @@ async function main() {
     assert.ok(await page.locator('#work-attempts-mobile .inspect-link').evaluate((el) => el.getBoundingClientRect().height >= 44));
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
     await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile-work.png'), fullPage: true });
+    for (const width of [320, 560, 700, 850, 1024, 1280]) {
+      await page.setViewportSize({ width, height: 960 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Work overflow at ' + width);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#work-query').fill('nothing-matches');
     assert.match(await page.locator('#work-attempts').textContent(), /No attempts match/);
 
@@ -268,6 +287,10 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Snapshot current');
     assert.ok(overviewCalls > before);
 
+    await page.locator('[data-nav="overview"]').click();
+    await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
+    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile-overview.png'), fullPage: true });
+    await page.locator('[data-nav="work"]').click();
     emptyOverview = true;
     await page.locator('#refresh-button').click();
     await page.waitForFunction(() => document.querySelector('#work-count').textContent.startsWith('0 of 0'));
@@ -284,7 +307,7 @@ async function main() {
     assert.equal(await page.locator('#queue-attention').textContent(), 'Unavailable');
     assert.deepEqual(errors, []);
     assert.ok(methods.every((method) => method === 'GET'));
-    console.log('PASS: review queues, navigation, deep links, filters, deduplication, safe links/text, unknown states, stale/empty/error states, issue races, visibility refresh, responsive details, keyboard controls, text contrast and read-only requests.');
+    console.log('PASS: review queues, navigation, sidebar queues, keyboard scope links, deep links, filters, deduplication, safe links/text, unknown states, stale/empty/error states, issue races, visibility refresh, responsive details, keyboard controls, text contrast and read-only requests.');
     console.log('Fixture screenshots: ' + join(tmpdir(), 'factory-dashboard-{overview,work,mobile,mobile-work}.png'));
   } finally { await browser.close(); }
 }

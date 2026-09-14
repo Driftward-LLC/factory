@@ -105,15 +105,19 @@ Serve so the console receives an authenticated `Tailscale-User-Login` header.
 The console's FastAPI schema is available to authenticated operators at
 `/api/openapi.json`.
 
-The Overview page leads with unresolved-execution, pending-verification, and
-recent-failure review queues. Queue links open matching Work filters; failed
+The dark operator workspace follows Linear's public app references, with compact
+icon navigation, status indicators, and a toolbar for issue lookup. The Overview
+page leads with unresolved-execution, pending-verification, and recent-failure
+review queues, then active work. Recent activity and system status share the
+lower desktop view. Queue links and sidebar shortcuts open matching Work filters; failed
 attempts can have newer active generations. Runtime and ledger totals are
 expandable, and system findings remain separate from work queues. See
 [`DESIGN.md`](../DESIGN.md) for the interface direction. Work
 filters by issue/repository/branch text, stage, repository, and execution mode.
 It combines all active attempts with the most recent 30 and deduplicates by
 attempt ID; it is not a complete Linear backlog or historical search.
-Filters and issue selection are shareable in the URL, including the existing
+Quick Work scope links preserve the other filters. Filters and issue selection
+are shareable in the URL, including the existing
 `?issue=ENG-N` links, and support browser back/forward navigation.
 Selecting an issue opens its inspection view directly; closing it restores the
 page and filters. Narrow screens show compact attempt entries with expandable
