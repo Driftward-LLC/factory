@@ -29,6 +29,27 @@ permissions:
   contents: read
 
 jobs:
+  console-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install isolated browser test dependencies
+        run: |
+          npm install --prefix "$RUNNER_TEMP/factory-console-checks" --no-save --ignore-scripts playwright@1.55.0
+          node "$RUNNER_TEMP/factory-console-checks/node_modules/playwright/cli.js" install --with-deps chromium --only-shell
+      - name: Check console behavior with disposable fixtures
+        run: NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_console_browser.cjs
+      - name: Upload fixture screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-console-fixtures
+          path: /tmp/factory-dashboard-*.png
+          if-no-files-found: ignore
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15

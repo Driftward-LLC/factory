@@ -99,11 +99,45 @@ separately as historical debt and do not fail live health.
 `factory console` prints the private URL for the read-only Factory Operations
 Console. The console shows active and recent attempts, actionable versus
 terminal reconciliation findings, lifecycle dead-letter counts, and the
-complete sanitized lifecycle for an Engineering issue. It does not expose
+returned sanitized lifecycle for an Engineering issue. It does not expose
 operator mutations or credentials. Production requests must arrive through Tailscale
 Serve so the console receives an authenticated `Tailscale-User-Login` header.
 The console's FastAPI schema is available to authenticated operators at
 `/api/openapi.json`.
+
+The Overview page separates actionable findings from historical debt. Work
+filters by issue/repository/branch text, stage, repository, and execution mode.
+It combines all active attempts with the most recent 30 and deduplicates by
+attempt ID; it is not a complete Linear backlog or historical search.
+Filters and issue selection are shareable in the URL, including the existing
+`?issue=ENG-N` links, and support browser back/forward navigation.
+
+Verification labels describe recorded evidence, not a PR's current head,
+merge state, or outstanding review. Attempt age and recorded span are not
+model-runtime measurements. The issue timeline shows at most 80 returned
+events; source/API limits also apply. Unknown and unavailable data remain
+explicit, and a failed refresh retains the last successful snapshot with a
+stale indicator. Automatic refresh runs every 30 seconds while the tab is
+visible.
+
+Run the console API tests with the bridge's pinned Python dependencies:
+
+```bash
+PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests -p test_console.py
+```
+
+The browser regression check uses disposable API fixtures, never live jobs.
+Playwright is a test-only dependency; install it outside the repository:
+
+```bash
+npm install --prefix /tmp/factory-console-checks --no-save --ignore-scripts playwright@1.55.0
+node /tmp/factory-console-checks/node_modules/playwright/cli.js install chromium --only-shell
+NODE_PATH=/tmp/factory-console-checks/node_modules node tools/test_factory_console_browser.cjs
+```
+
+An existing compatible Chromium executable can be selected with
+`FACTORY_CONSOLE_CHROMIUM`. The check writes fixture screenshots to the
+system temporary directory and closes its browser and local server afterward.
 
 `factory analytics` is the root-only, read-only performance and quality report.
 It projects real, non-legacy attempt cohorts from the bridge ledger and joins
