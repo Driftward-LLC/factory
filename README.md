@@ -40,6 +40,7 @@ python3 -m unittest discover -s tools -p 'test_*.py'
 npm run build --prefix hatchet/workers
 npm ci --prefix factory/console
 npm run build --prefix factory/console
+npm run storybook --prefix factory/console
 ```
 
 Validate the Docker deployment artifacts:
@@ -87,6 +88,9 @@ See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboar
 for the proposed capability roadmap and first operator-dashboard implementation slice.
 
 See [DESIGN.md](DESIGN.md) for the operator interface's design direction and checks.
+
+See [docs/design-system.md](docs/design-system.md) for the shared `@driftward/ui`
+React library, Storybook catalog, component and asset documentation, and agent MCP access.
 
 The Docker runtime lives under `/docker/driftward/factory` and is supervised by
 `driftward-factory.service`. The older direct host/systemd installers remain in

@@ -1,0 +1,46 @@
+import { Meta } from '@storybook/addon-docs/blocks';
+
+<Meta title="Foundations/Start here" />
+
+# Driftward UI
+
+The shared React components, theme, and icons used by Factory. Every component
+example renders the implementation imported by the real console. All values in
+this catalog are fictional; stories do not call Factory or Hermes APIs.
+
+## Use the library
+
+```jsx
+import { Button, StatusBadge } from '@driftward/ui';
+import { ReloadIcon } from '@driftward/ui/icons';
+import '@driftward/ui/styles.css';
+
+<Button onClick={refresh}><ReloadIcon aria-hidden="true" />Refresh</Button>
+<StatusBadge tone="warning">Pending verification</StatusBadge>
+```
+
+The stylesheet defines the dark theme and global base element styles; import it
+once. Native inputs, selects, and semantic HTML use that baseline. Factory page
+layouts and work-stage mappings remain in the console.
+
+## For agents
+
+Use the Storybook MCP endpoint at `http://127.0.0.1:6006/mcp` while the development
+server is running. Discover tool names with `tools/list`, list documentation,
+then inspect the relevant component's properties and stories before editing UI.
+When MCP is unavailable, read `ui/index.tsx`, `ui/styles.css`, and the stories
+directly. Never invent props or infer evidence from a status color.
+
+The static catalog includes component manifests, but does not run an MCP server.
+See `docs/design-system.md` in the repository for access, validation, and package
+distribution. MCP support is pinned to a preview API and verified by our checks.
+
+## Contribute
+
+Change components in `ui/`, add representative stories, and run the console and
+catalog checks. Reuse the same package across apps; update its version when its
+public API changes. Avoid separate copies of the same component.
+
+Keep visible action labels, keyboard focus, 44px touch targets, readable metadata,
+explicit unavailable states, and reduced-motion support. Factory's `DESIGN.md`
+defines the operator workflow and evidence semantics.
