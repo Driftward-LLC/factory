@@ -4,21 +4,24 @@ Factory is a workbench for the person supervising software delivery. Its visual
 identity comes from readable execution records, explicit evidence, and a clear
 path from a finding to the affected attempt. React is the frontend foundation.
 
-This direction implements the operator priorities approved in this conversation.
-It adapts the purpose, content, and usability checks in
-[anti-slop](https://github.com/miqdadbadjuber/anti-slop) to Factory. It does not
-install that project's plugin or inherit its setup wizard, approval process,
-punctuation bans, or arbitrary limits on visual techniques.
+The current visual reference is Linear's public [My issues screen](https://linear.app/docs/my-issues)
+and [application redesign](https://linear.app/now/how-we-redesigned-the-linear-ui).
+The user approved these references after Mobbin's app library required sign-in.
+Use the actual product screens, rather than Linear's marketing page, as the
+reference for navigation, list density, status icons, and surface hierarchy.
+Factory retains its own identity, read-only controls, and evidence semantics.
 
 ## Operator tasks and information order
 
 1. Find unresolved execution and work awaiting verification.
 2. Inspect a recent failure, while seeing that a newer attempt may exist.
-3. Check system findings and status delivery failures.
-4. Follow active work to its issue, artifact, and recorded evidence.
+3. Follow active work to its issue, artifact, and recorded evidence.
+4. Check system findings and status delivery failures.
 5. Consult historical totals when needed.
 
-Overview starts with links to review queues. Queue counts use the same returned
+Overview starts with a compact, three-part review summary, followed immediately
+by active work. Recent activity and system status share the lower desktop view.
+The sidebar provides direct links to the same review filters. Queue counts use the same returned
 records and filters as Work. Unresolved execution means an active unknown
 outcome, cancellation request, or expired lease; it does not mean the complete
 Linear blocked backlog. Pending verification covers `effect_committed` and
@@ -37,41 +40,46 @@ focus, refresh behavior, and the existing read-only authorization boundary.
 
 ## Visual language
 
-Use the existing Factory name and F mark. Avoid invented team avatars or new
-brand artwork. The palette is a warm paper background, solid white reading
-surfaces, dark green-charcoal navigation, and a restrained gold selection color.
-Gold identifies the brand and selected navigation; status colors carry their
-own operational meanings.
+Use the existing Factory name and F mark. The workspace uses dark neutral
+surfaces: `#101113` navigation, `#151618` canvas, `#191a1d` grouped content,
+`#2b2c32` separators, `#ececef` primary text, and `#a1a3ad` supporting text.
+Selection is a quiet neutral fill. Lavender is reserved for the existing brand
+mark, focus rings, links, and the next-step guidance. No remote assets or fonts
+are required to use the console.
 
-Use system sans-serif for instructions and reading, and monospace for issue
-identifiers and technical references. This keeps the interface locally served,
-legible with platform fonts, and free of remote font requests. Use tabular
-numerals for comparable counts. Body text is approximately 14–16px; supporting
-metadata may be 12–13px with adequate contrast. Headings establish hierarchy
-without occupying a marketing-sized hero.
+Use platform sans-serif for interface text and monospace for issue identifiers
+and technical references. The hierarchy is compact: 24px page title, 14px
+section titles, 13–14px data and control labels, and 11–12px secondary metadata.
+Keep explicit labels and adequate contrast; metadata must remain readable at
+200% text size. Counts use tabular numerals.
 
-Use a 4px spacing rhythm: 8–12px within a control group, 14–18px in records,
-24–28px between work sections. Inputs and reading containers have small,
-consistent radii. Prefer separators for ledger rows and real groups of data.
-Avoid adding a card around every label, decorative left stripes, and repeating
-uppercase captions. Keep a visible, distinct keyboard focus ring.
+Use 8–12px control spacing, 12–16px row padding, and 24–32px between sections.
+Keep tables and activity lists on the base surface with fine separators.
+The review summary is one group with internal dividers, not independent raised
+cards. Containers use 6–8px radii; no shadows or decorative artwork are needed.
 
-Status colors supplement text:
+Icons come from `@radix-ui/react-icons`, pinned and bundled locally. Their
+15px design grid fits compact controls better than large illustrative icons.
+Use icon plus text for navigation and status. Decorative icons are hidden from
+assistive technology. Do not substitute emoji or remove labels to fit icons.
 
-- Green: verification recorded; it does not establish current PR acceptance.
-- Amber: execution, pending verification, or a cancellation-related state.
-- Red: failure or unresolved outcome requiring inspection.
-- Blue: links and informational stages.
-- Neutral: completed/canceled history, unknown labels, and ordinary metadata.
+Status icons and color supplement text:
 
-Use arrows on external links to indicate leaving the console. Navigation within
-the console uses its text label and selected state. Introduce motion only for a
-specific interaction need and honor reduced-motion preferences.
+- Green check: verification recorded, not current PR acceptance.
+- Amber partial circle: execution or pending work.
+- Red crossed circle: failure or unresolved outcome.
+- Blue or neutral circle: informational or unknown stage.
+
+Use external-link icons for destinations outside the console. Quick Work
+filters and sidebar queue shortcuts must use existing URL-backed filter state.
+Lookup belongs in the top toolbar; preserve its accessible label and keyboard
+submission. Introduce motion only for an interaction need and honor reduced
+motion preferences.
 
 ## Copy and evidence
 
-Write the task or result directly: “Review pending verification”, “Inspect
-issue”, “Status delivery failures”. Remove slogans that do not help the
+Write the task or result directly: “Needs inspection”, “Pending verification”,
+“Status delivery failures”. Remove slogans that do not help the
 operator decide what to do. Keep qualifiers that materially change meaning:
 recorded verification, all modes, source limits, dry runs, and stale snapshots.
 
@@ -87,7 +95,9 @@ generic shell proxy, invented metric, or destination that has not been built.
 
 ## Responsive behavior
 
-Design for the content as width changes. The sidebar becomes top navigation
+Design for the content as width changes. Review summary columns become compact
+rows on phones. Quick Work filters scroll within their navigation region;
+secondary filters remain available through the existing filter toggle. The sidebar becomes top navigation
 when it restricts reading width. Filters become two columns, then one. Phone
 layouts keep search visible and collapse secondary filters behind a toggle
 that reports the active-filter count. At narrow
@@ -98,6 +108,8 @@ under “Attempt details”. Issue history uses the same treatment.
 Desktop and intermediate-width tables may scroll inside an explicitly labeled,
 keyboard-focusable region. The page itself must not overflow horizontally.
 Primary controls and mobile action links have at least 44px touch height.
+Keep the mobile filter toggle and Clear action on one row to preserve space
+for work records.
 Do not reduce text below a useful reading size to fit desktop columns on a phone.
 
 ## Verification before handoff
