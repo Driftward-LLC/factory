@@ -297,13 +297,10 @@ services:
       FACTORY_LIFECYCLE_DB: /var/lib/driftward-factory-lifecycle-writer/outbox.db
       FACTORY_LIFECYCLE_BRIDGE_URL: http://bridge:19877
       FACTORY_LIFECYCLE_INGRESS_URL: http://event-ingress:19878
-      FACTORY_LIFECYCLE_ENV_FILE: /etc/driftward/factory-lifecycle-writer.env
+      FACTORY_LIFECYCLE_ENV_FILE: /var/run/factory-linear-token/writer.env
     volumes:
       - factory-lifecycle-data:/var/lib/driftward-factory-lifecycle-writer
-      - type: bind
-        source: /etc/driftward/factory-lifecycle-writer.env
-        target: /etc/driftward/factory-lifecycle-writer.env
-        read_only: true
+      - factory-linear-published-token:/var/run/factory-linear-token:ro
     ports:
       - "127.0.0.1:19880:19880"
     healthcheck:
@@ -323,17 +320,15 @@ services:
         required: false
     environment:
       FACTORY_TOKEN_STATE_DIR: /var/lib/driftward-factory-linear-token
-      FACTORY_LIFECYCLE_ENV_FILE: /etc/driftward/factory-lifecycle-writer.env
+      FACTORY_LIFECYCLE_ENV_FILE: /var/run/factory-linear-token/writer.env
       FACTORY_LIFECYCLE_RESTART_SERVICE: "0"
     volumes:
       - factory-linear-token-data:/var/lib/driftward-factory-linear-token
-      - type: bind
-        source: /etc/driftward/factory-lifecycle-writer.env
-        target: /etc/driftward/factory-lifecycle-writer.env
+      - factory-linear-published-token:/var/run/factory-linear-token
     cpus: "0.05"
     mem_limit: 96m
     healthcheck:
-      test: ["CMD-SHELL", "test -s /var/lib/driftward-factory-linear-token/factory_actor.json && find /var/lib/driftward-factory-linear-token/factory_actor.json -mmin -120 | grep -q ."]
+      test: ["CMD-SHELL", "test -s /var/run/factory-linear-token/writer.env && test -s /var/lib/driftward-factory-linear-token/factory_actor.json && find /var/lib/driftward-factory-linear-token/factory_actor.json -mmin -120 | grep -q ."]
       interval: 60s
       timeout: 5s
       retries: 3
@@ -415,6 +410,9 @@ volumes:
     name: driftward-factory-lifecycle-data
   factory-linear-token-data:
     name: driftward-factory-linear-token-data
+
+  factory-linear-published-token:
+    name: driftward-factory-linear-published-token
 
 networks:
   factory:

@@ -86,8 +86,8 @@ if [[ "${{1:-}}" == "inspect" ]]; then
     cid-hatchet-lite) printf 'volume\\tdriftward-factory-hatchet-config-data\\t/config\\n' ;;
     cid-bridge) printf '%s\\t%s\\t/var/lib/driftward-hatchet-bridge\\n' "${{FAKE_BRIDGE_MOUNT_TYPE:-volume}}" "${{FAKE_BRIDGE_VOLUME_NAME:-driftward-factory-bridge-data}}" ;;
     cid-event-ingress) printf 'volume\\tdriftward-factory-ingress-data\\t/var/lib/driftward-hatchet-event-ingress\\n' ;;
-    cid-factory-lifecycle-writer) printf 'volume\\tdriftward-factory-lifecycle-data\\t/var/lib/driftward-factory-lifecycle-writer\\n' ;;
-    cid-factory-linear-token-refresh) printf 'volume\\tdriftward-factory-linear-token-data\\t/var/lib/driftward-factory-linear-token\\n' ;;
+    cid-factory-lifecycle-writer) printf 'volume\\tdriftward-factory-lifecycle-data\\t/var/lib/driftward-factory-lifecycle-writer\\nvolume\\tdriftward-factory-linear-published-token\\t/var/run/factory-linear-token\\n' ;;
+    cid-factory-linear-token-refresh) printf 'volume\\tdriftward-factory-linear-token-data\\t/var/lib/driftward-factory-linear-token\\nvolume\\tdriftward-factory-linear-published-token\\t/var/run/factory-linear-token\\n' ;;
     cid-factory-operator)
       printf 'volume\\tdriftward-factory-bridge-data\\t/var/lib/driftward-hatchet-bridge\\n'
       printf 'volume\\tdriftward-factory-ingress-data\\t/var/lib/driftward-hatchet-event-ingress\\n'
