@@ -109,6 +109,8 @@ require_named_volume_mount bridge /var/lib/driftward-hatchet-bridge "$bridge_vol
 require_named_volume_mount event-ingress /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
 require_named_volume_mount factory-lifecycle-writer /var/lib/driftward-factory-lifecycle-writer "$lifecycle_volume"
 require_named_volume_mount factory-linear-token-refresh /var/lib/driftward-factory-linear-token "$linear_token_volume"
+require_named_volume_mount factory-linear-token-refresh /var/run/factory-linear-token driftward-factory-linear-published-token
+require_named_volume_mount factory-lifecycle-writer /var/run/factory-linear-token driftward-factory-linear-published-token
 require_named_volume_mount factory-operator /var/lib/driftward-hatchet-bridge "$bridge_volume"
 require_named_volume_mount factory-operator /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
 require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-bridge "$bridge_volume"

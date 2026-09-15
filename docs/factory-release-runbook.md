@@ -151,3 +151,17 @@ After deployment, return the source checkout to `main`:
 git switch main
 git pull --ff-only
 ```
+
+## Linear token publication
+
+The token refresher publishes `writer.env` atomically in the dedicated
+`driftward-factory-linear-published-token` volume. Only the refresher mounts this
+volume writable; the lifecycle writer mounts it read-only and reloads the token
+through `FACTORY_LIFECYCLE_ENV_FILE`. Client credentials remain in the refresher,
+and its app-token cache stays in the separate token-state volume.
+
+Do not bind-mount the individual publication file: atomic replacement of a
+file that is itself a mount point fails with `EBUSY`. The shared directory also
+lets the running writer see the replacement inode. On first start, the refresher
+populates this volume from its own token provider; no ledger migration is needed.
+The refresher health check requires both publication and fresh actor verification.
