@@ -50,6 +50,7 @@ jobs:
       - name: Build and check shared component catalog
         run: |
           npm run check:ui --prefix factory/console
+          node tools/test_factory_ui_package.cjs
           npm run build-storybook --prefix factory/console
           NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_storybook.cjs
       - name: Upload shared component catalog

@@ -58,6 +58,9 @@ const consoleRoot = resolve(__dirname, '../factory/console');
     const builtManifest = await readFile(join(consoleRoot, 'storybook-static/manifests/components.json'), 'utf8');
     assert(builtManifest.includes('components-statusbadge'));
     assert(builtManifest.includes('@driftward/ui'));
+    for (const component of Object.values(JSON.parse(builtManifest).components)) {
+      assert(!component.error, `Invalid static component manifest: ${component.id}`);
+    }
 
     browser = await chromium.launch({ headless: true, executablePath: process.env.FACTORY_CONSOLE_CHROMIUM || undefined });
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });

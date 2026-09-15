@@ -88,6 +88,7 @@ No package has been published to an external registry.
 ```bash
 npm run build --prefix factory/console
 npm run check:ui --prefix factory/console
+node tools/test_factory_ui_package.cjs
 npm run build-storybook --prefix factory/console
 # Use the isolated Playwright installation documented in factory/README.md:
 NODE_PATH=/path/to/browser-checks/node_modules node tools/test_factory_console_browser.cjs
@@ -99,6 +100,10 @@ port. It exercises MCP discovery and property documentation, the generated
 manifest, every story, keyboard focus, status semantics, and mobile asset
 layout. Screenshots contain fictional examples only. Set
 `FACTORY_CONSOLE_CHROMIUM` to use a separately installed Chromium executable.
+
+The package check packs the actual published files and installs them into a
+temporary React application. It verifies TypeScript imports (including CSS),
+server rendering, and bundled icons/styles without accessing production data.
 
 CI builds the catalog, runs these checks, and uploads the static site as the
 `driftward-ui-storybook` artifact. The static site in

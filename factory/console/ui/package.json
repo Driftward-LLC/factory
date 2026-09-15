@@ -6,13 +6,17 @@
   "private": true,
   "exports": {
     ".": "./index.tsx",
-    "./styles.css": "./styles.css",
+    "./styles.css": {
+      "types": "./styles.d.ts",
+      "default": "./styles.css"
+    },
     "./icons": "./icons.ts"
   },
   "files": [
     "index.tsx",
     "icons.ts",
     "styles.css",
+    "styles.d.ts",
     "README.md"
   ],
   "peerDependencies": {
