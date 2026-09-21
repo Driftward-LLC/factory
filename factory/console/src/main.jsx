@@ -6,8 +6,6 @@ import {
   ExclamationTriangleIcon,
   Half2Icon,
   CrossCircledIcon,
-  CheckCircledIcon,
-  CircleIcon,
   ArrowTopRightIcon,
   ArrowRightIcon,
   ChevronRightIcon,
@@ -17,7 +15,8 @@ import {
   CubeIcon,
   LockClosedIcon,
   ActivityLogIcon,
-} from '@radix-ui/react-icons';
+} from '@driftward/ui/icons';
+import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark } from '@driftward/ui';
 import {
   activeStates,
   terminalStates,
@@ -122,36 +121,9 @@ function useSnapshot(path) {
   return { ...(snapshot.path === path ? snapshot : {}), refresh };
 }
 
-function Notice({ id, children }) {
-  return (
-    <div id={id} className="notice" role="status" aria-live="polite" hidden={!children}>
-      {children}
-    </div>
-  );
-}
 function Pill({ status }) {
   const [text, tone] = Object.hasOwn(stages, status) ? stages[status] : [label(status), ''];
-  const StatusIcon =
-    tone === 'success'
-      ? CheckCircledIcon
-      : tone === 'danger'
-        ? CrossCircledIcon
-        : tone === 'warning'
-          ? Half2Icon
-          : CircleIcon;
-  return (
-    <span className={'pill ' + tone}>
-      <StatusIcon aria-hidden="true" />
-      {text}
-    </span>
-  );
-}
-function ExternalLink({ children, ...props }) {
-  return (
-    <a target="_blank" rel="noopener noreferrer" {...props}>
-      {children}
-    </a>
-  );
+  return <StatusBadge tone={tone}>{text}</StatusBadge>;
 }
 function RouteLink({ route, navigate, changes, children, ...props }) {
   return (
@@ -351,15 +323,6 @@ function hatchetUrl(value) {
     /* Missing or untrusted destinations stay unavailable. */
   }
   return undefined;
-}
-function Metric({ name, id, value, children }) {
-  return (
-    <div className="metric">
-      <span>{name}</span>
-      <strong id={id}>{value}</strong>
-      <small>{children}</small>
-    </div>
-  );
 }
 function Overview({ overview, error, ...navigation }) {
   const counts = overview?.status_counts;
@@ -687,7 +650,7 @@ function Work({ records, available, error, route, navigate }) {
             onChange={(event) => navigate({ q: event.target.value.slice(0, 200) }, true)}
           />
         </label>
-        <button
+        <Button
           className="filter-toggle"
           type="button"
           aria-controls="secondary-filters"
@@ -696,7 +659,7 @@ function Work({ records, available, error, route, navigate }) {
         >
           <MixerHorizontalIcon aria-hidden="true" /> Filters
           {filterCount ? ` (${filterCount} active)` : ''}
-        </button>
+        </Button>
         <div id="secondary-filters" className="filter-secondary" data-expanded={filtersExpanded}>
           <label htmlFor="status-filter">
             Stage
@@ -742,13 +705,13 @@ function Work({ records, available, error, route, navigate }) {
             </select>
           </label>
         </div>
-        <button
+        <Button
           id="clear-filters"
           type="button"
           onClick={() => navigate({ q: '', status: 'all', mode: 'all', repo: '' })}
         >
           Clear
-        </button>
+        </Button>
       </form>
       <p id="work-count" className="muted" role="status" aria-live="polite">
         {available
@@ -773,14 +736,6 @@ function Work({ records, available, error, route, navigate }) {
         }
       />
     </section>
-  );
-}
-function SummaryItem({ title, children }) {
-  return (
-    <div className="summary-item">
-      <span>{title}</span>
-      <strong>{children || 'Unavailable'}</strong>
-    </div>
   );
 }
 function IssueDetail({ issue, snapshot, onClose }) {
@@ -841,9 +796,9 @@ function IssueDetail({ issue, snapshot, onClose }) {
           <ExternalLink id="github-link" hidden={!url} href={url || undefined}>
             Pull request <ArrowTopRightIcon aria-hidden="true" />
           </ExternalLink>
-          <button id="close-issue" type="button" onClick={onClose}>
+          <Button id="close-issue" type="button" onClick={onClose}>
             Close
-          </button>
+          </Button>
         </div>
       </div>
       <p id="issue-freshness" className="muted">
@@ -989,9 +944,7 @@ function App() {
       </a>
       <aside className="sidebar">
         <a className="brand" href="/" aria-label="Driftward Factory home">
-          <span className="brand-mark" aria-hidden="true">
-            F
-          </span>
+          <BrandMark />
           <span>
             <strong>Factory</strong>
             <small>Driftward Engineering</small>
@@ -1109,7 +1062,7 @@ function App() {
                   value={issueDraft}
                   onChange={(event) => setIssueDraft(event.target.value)}
                 />
-                <button type="submit">Open</button>
+                <Button type="submit">Open</Button>
               </div>
             </form>
             <span
@@ -1126,7 +1079,7 @@ function App() {
                   ? 'Stale snapshot'
                   : 'Snapshot current'}
             </span>
-            <button
+            <Button
               id="refresh-button"
               type="button"
               disabled={Boolean(overviewSnapshot.loading || issueSnapshot.loading)}
@@ -1134,7 +1087,7 @@ function App() {
             >
               <ReloadIcon aria-hidden="true" />
               <span>Refresh</span>
-            </button>
+            </Button>
           </div>
         </header>
         <main id="main" tabIndex={-1}>

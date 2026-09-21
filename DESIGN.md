@@ -11,6 +11,12 @@ Use the actual product screens, rather than Linear's marketing page, as the
 reference for navigation, list density, status icons, and surface hierarchy.
 Factory retains its own identity, read-only controls, and evidence semantics.
 
+Shared components, theme tokens, and icons live in the `@driftward/ui` workspace
+at `factory/console/ui/`. Storybook renders the same implementations as the
+console. See [the design system guide](docs/design-system.md) for the catalog,
+agent access, and contribution checks. Edit Factory layout styles in
+`factory/console/src/styles.css`; the served `styles.css` is generated.
+
 ## Operator tasks and information order
 
 1. Find unresolved execution and work awaiting verification.

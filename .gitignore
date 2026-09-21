@@ -12,3 +12,6 @@ __pycache__/
 tmp/
 coverage/
 /factory/console/app.js
+
+/factory/console/styles.css
+storybook-static/

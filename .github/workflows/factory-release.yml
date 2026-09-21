@@ -97,6 +97,11 @@ jobs:
           python3 tools/hatchet-contracts.py check
           git diff --exit-code -- hatchet/event-ingress/hatchet_event_ingress/contracts.py hatchet/workers/shared/src/contracts.ts
 
+      - name: Build shared component catalog
+        run: |
+          npm run check:ui --prefix factory/console
+          npm run build-storybook --prefix factory/console
+
       - name: Run tool tests
         run: python3 -m unittest discover -s tools -p 'test_*.py'
 

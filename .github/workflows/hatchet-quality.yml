@@ -47,12 +47,26 @@ jobs:
           npm run build --prefix factory/console
       - name: Check console behavior with disposable fixtures
         run: NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_console_browser.cjs
+      - name: Build and check shared component catalog
+        run: |
+          npm run check:ui --prefix factory/console
+          node tools/test_factory_ui_package.cjs
+          npm run build-storybook --prefix factory/console
+          NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_storybook.cjs
+      - name: Upload shared component catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: driftward-ui-storybook
+          path: factory/console/storybook-static/
+          include-hidden-files: true
       - name: Upload fixture screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: factory-console-fixtures
-          path: /tmp/factory-dashboard-*.png
+          path: |
+            /tmp/factory-dashboard-*.png
+            /tmp/factory-storybook-*.png
           if-no-files-found: ignore
   validate:
     runs-on: ubuntu-latest

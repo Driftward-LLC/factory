@@ -12,6 +12,13 @@ rules, and validation expectations.
 For console UI work, read `DESIGN.md` for Factory's operator priorities, visual
 conventions, responsive behavior, and design validation expectations.
 
+For shared components and assets, read `docs/design-system.md`. Reuse the
+`@driftward/ui` workspace in `factory/console/ui/`. Inspect its Storybook docs
+and stories before adding UI: use `docs-list` and `docs-show` through the local
+Storybook MCP endpoint when connected, or read the component source and stories
+directly. Verify properties rather than inventing them. Add representative
+stories for new components/states and run both console and catalog checks.
+
 ## Boundaries
 
 - `factory/`: operator CLI and front-door documentation.
