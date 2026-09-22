@@ -70,6 +70,15 @@ function validateSnapshot(value, path) {
       !value.coverage || !value.funnel?.stages || !value.github || !value.recovery ||
       !Array.isArray(value.failures?.by_classification)
     ) throw new Error('The analytics response is incomplete or mismatched.');
+    if (value.time_series && (
+      value.time_series.timezone !== 'UTC' ||
+      !Array.isArray(value.time_series.points) ||
+      value.time_series.points.some((point) =>
+        !/^\d{4}-\d{2}-\d{2}$/.test(point.date) ||
+        !Number.isFinite(Date.parse(point.date)) ||
+        ['prs_recorded', 'verified_attempts', 'repair_attempts', 'failed_attempts'].some((key) =>
+          point[key] !== null && (!Number.isInteger(point[key]) || point[key] < 0)))
+    )) throw new Error('The daily activity response is incomplete.');
   } else if (
     value.work_item_key !== path.split('/').pop() ||
     !Array.isArray(value.attempts) ||

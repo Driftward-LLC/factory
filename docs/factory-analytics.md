@@ -55,7 +55,8 @@ headers. A bridge/report failure returns the generic `503` response
 This endpoint projects only window bounds, cohort/exclusion counts, delivery
 funnel counts and rates, GitHub observation coverage and outcomes, check-suite
 and review aggregates, repair counts, bounded failure classifications, and
-stage latency distributions. Coverage retains its `observed`, `eligible`,
+stage latency distributions, plus the daily activity series described below.
+Coverage retains its `observed`, `eligible`,
 `rate`, and `complete` fields; missing evidence stays `null` or
 `available: false`. Check-suite observations do not become first-pass CI.
 Changes-requested rates use PRs with review observations as their denominator.
@@ -87,6 +88,7 @@ The top-level JSON sections are:
 | `backends`, `backend_summary` | Observed invocation outcomes by backend/transport/repository/attempt kind |
 | `routes` | Preflight intent-to-treat cohorts and their downstream outcomes |
 | `activity` | Events observed in the window plus current active-backlog age |
+| `time_series` | Daily UTC activity with explicit boundary days and timestamp coverage |
 | `delivery` | Ingress, attempt, inspection, and lifecycle outbox health |
 | `reconciliation` | Current/historical findings by kind, severity, and scope |
 | `sources` | Schema contract, rows, timestamps, lag, and invalid/future-time evidence |
@@ -162,6 +164,49 @@ and formatted report.
 The funnel denominator is `attempted`, the number of unique cohort work items.
 Every `rate_from_attempted` uses that same denominator; it is not conversion
 from the immediately preceding stage.
+
+### Daily activity series
+
+`time_series` has `timezone: "UTC"`, `basis: "event_time"`, the same
+`started_at` and `ended_at` bounds as the selected window, `points`, and
+per-metric `coverage`. It is activity across all real, non-legacy attempts,
+including attempts created before the window. Its daily totals therefore need
+not match the attempt-creation cohort totals elsewhere in the report.
+
+Every UTC date intersecting the inclusive rolling window is present, usually
+`days + 1` points. A point has `date`, `partial`, and four counts. Boundary days
+are marked `partial` whenever the selected window covers less than that whole
+UTC day; a cutoff exactly at midnight includes that final partial day.
+Timestamps with timezone offsets are converted to UTC before bucketing.
+
+| Daily field | Grain and timestamp |
+| --- | --- |
+| `prs_recorded` | Unique exact PR URL at its first durable Factory association across the eligible history: effect commit for produced PRs or the first `repair_reserved` event for an inherited repair target. A normal commit also mirrors its URL into `prior_pr_url`; that mirror never backdates the PR to attempt creation. This is recorded association, not GitHub's PR creation time. Reusing the same PR for a repair does not count it again. |
+| `verified_attempts` | One per attempt at its first `attempt_verified_ready` marker; recorded verification, not human approval. |
+| `repair_attempts` | One per attempt at its first `repair_reserved` marker. |
+| `failed_attempts` | One per attempt at its first `attempt_failed` marker. Later recovery does not remove the recorded failure. |
+
+Repeated markers count once. Known future-created attempts and future-dated
+activity are excluded. No verification, failure, or repair date is inferred
+from the attempt's current update time. If the attempt status or linked job action attests
+one of those outcomes but its marker is missing, its timestamp is unknown.
+The daily PR series also requires an immutable effect or reservation marker;
+it never uses the mutable job-update compatibility timestamp used elsewhere
+in the aggregate report. A later job update cannot move a PR to another day.
+
+For each metric, `coverage.eligible` counts distinct recorded entities across
+eligible history, including those before the selected window and those with
+unknown dates. `observed` counts entities with a usable first date no later
+than the cutoff; `rate` is their ratio and `complete` requires every eligible
+entity to be dated. Future-only evidence is excluded from both counts.
+An invalid milestone date or an unresolvable PR association makes that
+entity's earliest date unknown, even when a later duplicate has a valid date.
+If timestamp coverage is incomplete, that metric is `null` on **every** daily
+point, because the unknown occurrence could fall on any date. Other metrics
+remain available. Zero-filled days are measured zeros only when timestamp
+coverage is complete; an empty eligible history has complete coverage with a
+`null` rate and zero counts. Coverage does not attest that external GitHub or
+human review activity was comprehensively captured.
 
 Funnel stage rules are:
 

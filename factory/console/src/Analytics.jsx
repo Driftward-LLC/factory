@@ -1,5 +1,6 @@
 import { Metric, Notice } from '@driftward/ui';
 import { count, duration, label, time } from './model.js';
+import AnalyticsTrend from './AnalyticsTrend.jsx';
 
 const percent = (value) => Number.isFinite(value)
   ? new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 }).format(value)
@@ -70,6 +71,7 @@ export default function Analytics({ report, days, onDaysChange, error }) {
           ? 'No real attempts were created in this window. Choose a longer time window to inspect earlier work.' : ''}</Notice>
         <Notice id="analytics-coverage-warning">{missingEvidence
           ? 'GitHub evidence is incomplete. Missing checks, reviews, or outcomes cannot establish PR quality. Coverage is shown below.' : ''}</Notice>
+        <AnalyticsTrend series={report.time_series} />
         <div className="analytics-columns">
           <section className="panel" aria-labelledby="analytics-delivery-title">
             <h2 id="analytics-delivery-title">Delivery funnel</h2>

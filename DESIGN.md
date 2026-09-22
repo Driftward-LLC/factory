@@ -52,6 +52,13 @@ reviews only; unobserved PRs must not become zero merge or review rates. Show
 missing evidence and stale snapshots, and preserve the selected period in the
 URL. Analytics loads only while its page is open.
 
+The daily activity chart uses UTC event dates and includes work that began
+before the selected window. Keep this separate from the creation-cohort totals.
+Label partial boundary days and each series' grain; count a PR's first recorded
+association without claiming it is GitHub's creation time. Missing dated
+evidence stays unavailable, with gaps instead of interpolated or zero values.
+Provide keyboard and touch day selection and a table of exact daily values.
+
 ## Visual language
 
 Use the existing Factory name and F mark. The workspace uses dark neutral

@@ -143,6 +143,9 @@ class FactoryConsoleTests(unittest.TestCase):
         self.assertFalse(value["github"]["reviews"]["available"])
         self.assertIsNone(value["github"]["reviews"]["changes_requested_rate"])
         self.assertFalse(value["github"]["first_pass_checks"]["available"])
+        self.assertEqual(value["time_series"]["timezone"], "UTC")
+        self.assertEqual(len(value["time_series"]["points"]), 31)
+        self.assertTrue(value["time_series"]["coverage"]["prs_recorded"]["complete"])
 
     def test_analytics_rejects_invalid_duplicate_and_unknown_parameters(self):
         for query in ("days=0", "days=366", "days=-1", "days=1.5", "days=", "days=true", "days=7&days=30", "days=7&source=private", "other="):
@@ -178,6 +181,9 @@ class FactoryConsoleTests(unittest.TestCase):
         report["backends"] = [{"configured_auth_mode": private}]
         report["coverage"]["extra"] = private
         report["funnel"]["stages"]["attempted"]["extra"] = private
+        report["time_series"]["extra"] = private
+        report["time_series"]["points"][0]["extra"] = private
+        report["time_series"]["coverage"]["prs_recorded"]["extra"] = private
         report["github"]["coverage"] = {"observed": 0, "eligible": 18, "rate": 0, "complete": False, "extra": private}
         report["github"]["reviews"] = {"available": True, "coverage": report["github"]["coverage"], "changes_requested_prs": 0, "changes_requested_rate": None, "actor": private}
         report["failures"]["by_classification"] = [
@@ -188,7 +194,7 @@ class FactoryConsoleTests(unittest.TestCase):
         with patch("hatchet_hermes_bridge.console.factory_analytics", return_value=report):
             value = json.loads(self.get("/api/analytics")[2])
         self.assertNotIn(private, json.dumps(value))
-        self.assertEqual(set(value), {"schema", "generated_at", "window", "coverage", "funnel", "github", "recovery", "failures", "latency_ms"})
+        self.assertEqual(set(value), {"schema", "generated_at", "window", "coverage", "time_series", "funnel", "github", "recovery", "failures", "latency_ms"})
         self.assertEqual(value["github"]["coverage"], {"observed": 0, "eligible": 18, "rate": 0, "complete": False})
         self.assertIsNone(value["github"]["reviews"]["changes_requested_rate"])
         self.assertEqual(value["failures"]["by_classification"], [

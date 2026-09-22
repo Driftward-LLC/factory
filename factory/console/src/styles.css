@@ -158,6 +158,32 @@ dd { margin: 3px 0 0; overflow-wrap: anywhere; font-family: ui-monospace, monosp
 .analytics-failures { list-style: none; margin: 0 0 16px; padding: 0; }
 .analytics-failures li { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: .8125rem; overflow-wrap: anywhere; }
 .analytics-failures strong { font-weight: 500; font-variant-numeric: tabular-nums; }
+.analytics-trend { padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.analytics-trend-legend { display: flex; flex-wrap: wrap; gap: 12px 24px; list-style: none; margin: 0 0 12px; padding: 0; font-size: .75rem; color: var(--muted); }
+.analytics-trend-legend li { display: flex; align-items: center; gap: 8px; }
+.analytics-trend-legend svg { width: 24px; height: 12px; }
+#analytics-trend-chart { display: block; width: 100%; height: 240px; overflow: visible; }
+.trend-line { fill: none; stroke-width: 2; }
+.trend-line.prs_recorded { stroke: var(--ink); }
+.trend-line.verified_attempts { stroke: var(--green); }
+.trend-line.repair_attempts { stroke: var(--amber); }
+.trend-line.failed_attempts { stroke: var(--red); }
+.trend-dot.prs_recorded { fill: var(--ink); }
+.trend-dot.verified_attempts { fill: var(--green); }
+.trend-dot.repair_attempts { fill: var(--amber); }
+.trend-dot.failed_attempts { fill: var(--red); }
+.trend-grid { stroke: var(--line); }
+.trend-cursor { stroke: var(--muted); stroke-dasharray: 3 4; }
+.trend-axis { fill: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.analytics-trend-detail { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; padding: 16px 0; }
+.analytics-trend-detail label { min-width: 170px; }
+.analytics-trend-detail dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 24px; flex: 1; margin: 0; }
+.analytics-trend-detail dt { margin: 0; font-size: .75rem; }
+.analytics-trend-detail dd { font-family: inherit; font-size: 1rem; font-variant-numeric: tabular-nums; }
+.analytics-trend-note { font-size: .75rem; max-width: 105ch; }
+.analytics-daily-data { border: 0; padding: 0; background: transparent; }
+.analytics-daily-data > summary { color: var(--muted); }
+#analytics-trend-table tbody th { background: transparent; border-top: 1px solid var(--line); }
 @media (max-width: 1200px) {
   .sidebar { width: 200px; }
   .shell { margin-left: 200px; }
@@ -192,6 +218,8 @@ dd { margin: 3px 0 0; overflow-wrap: anywhere; font-family: ui-monospace, monosp
   .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
+  .analytics-trend-detail { align-items: stretch; flex-direction: column; gap: 12px; }
+  .analytics-trend-detail dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .analytics-columns { grid-template-columns: 1fr; }
   .analytics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .attempt-table { display: none; }

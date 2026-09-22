@@ -163,6 +163,17 @@ def analytics(db_path: str, ingress_db_path: str | None, lifecycle_db_path: str 
         "generated_at": report["generated_at"],
         "window": _fields(report["window"], "days", "started_at", "ended_at"),
         "coverage": _fields(report["coverage"], "cohort_attempts", "cohort_work_items", "dry_run_attempts_excluded", "legacy_attempts_excluded", "bridge_available", "ingress_available"),
+        "time_series": {
+            **_fields(report["time_series"], "timezone", "basis", "started_at", "ended_at"),
+            "points": [
+                _fields(point, "date", "partial", "prs_recorded", "verified_attempts", "repair_attempts", "failed_attempts")
+                for point in report["time_series"]["points"]
+            ],
+            "coverage": {
+                metric: _fields(report["time_series"]["coverage"][metric], "observed", "eligible", "rate", "complete")
+                for metric in ("prs_recorded", "verified_attempts", "repair_attempts", "failed_attempts")
+            },
+        },
         "funnel": {"stages": {
             stage: _fields(report["funnel"]["stages"][stage], "count", "rate_from_attempted")
             for stage in ("attempted", "executor_started", "effect_committed", "draft_pr_available", "verified_ready")
