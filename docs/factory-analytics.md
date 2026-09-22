@@ -2,8 +2,8 @@
 
 Factory analytics answers operational questions from the durable evidence the
 Factory already owns. It is a read-only projection over the bridge, ingress,
-and lifecycle SQLite ledgers; it is not a second event store, a tracing system,
-or a dashboard.
+and lifecycle SQLite ledgers. The operator CLI exposes the full report; the
+console's Analytics tab exposes a smaller aggregate view of the same evidence.
 
 The report schema is `factory-analytics-v1`. Missing evidence is returned as
 `unknown`, `null`, incomplete coverage, or an entry in `unavailable_metrics`.
@@ -29,8 +29,8 @@ as a measured zero.
 The CLI calls `GET /v1/analytics?days=N` through the root-owned Factory
 operator Unix socket. The endpoint requires the operator bearer token, accepts
 only one optional `days` query parameter, and returns the
-`factory-analytics-v1` JSON object. It is not exposed by the public ingress,
-the worker-facing bridge API, or the read-only web console.
+`factory-analytics-v1` JSON object. The full report is not exposed by the public
+ingress, the worker-facing bridge API, or the read-only web console.
 
 The operator opens the existing database files read-only. The bridge ledger is
 required; an unavailable bridge ledger fails the request. Ingress and lifecycle
@@ -42,6 +42,35 @@ joined by exact `event_key`. In either case authenticated Ready
 counts/correlation and canonical GitHub outcome/check/review metrics are
 `null` or `available: false`; unknown-authenticity observations remain
 explicitly observation-only.
+
+### Console Analytics tab
+
+The authenticated console provides `GET /api/analytics?days=N`, with schema
+`factory-console-analytics-v1`. It accepts one optional integer `days` from
+`1` through `365`, defaulting to `30`; duplicate or unknown parameters return
+`400`. It uses the existing Tailscale identity boundary and no-store security
+headers. A bridge/report failure returns the generic `503` response
+`{"error":"analytics unavailable"}` without source paths or exception details.
+
+This endpoint projects only window bounds, cohort/exclusion counts, delivery
+funnel counts and rates, GitHub observation coverage and outcomes, check-suite
+and review aggregates, repair counts, bounded failure classifications, and
+stage latency distributions, plus the daily activity series described below.
+Coverage retains its `observed`, `eligible`,
+`rate`, and `complete` fields; missing evidence stays `null` or
+`available: false`. Check-suite observations do not become first-pass CI.
+Changes-requested rates use PRs with review observations as their denominator.
+Readiness still means recorded verification, not reviewer approval.
+
+The projection explicitly allows each field and stage name. Failure domains
+and stages use the bridge's fixed enums; reasons use the console's fixed
+allowlist, with other values grouped as `unknown`. It excludes source paths,
+raw events, issue/repository/PR identifiers, backend/configuration labels,
+provider/authentication settings, session material, and operator actions.
+Both console entry points receive the optional ingress ledger path from
+`HATCHET_FACTORY_OPERATOR_INGRESS_DB`; the existing lifecycle path is reused.
+All three sources are opened read-only through the existing reporter. There
+is no new database, background ingestion, migration, or operator API proxy.
 
 The top-level JSON sections are:
 
@@ -59,6 +88,7 @@ The top-level JSON sections are:
 | `backends`, `backend_summary` | Observed invocation outcomes by backend/transport/repository/attempt kind |
 | `routes` | Preflight intent-to-treat cohorts and their downstream outcomes |
 | `activity` | Events observed in the window plus current active-backlog age |
+| `time_series` | Daily UTC activity with explicit boundary days and timestamp coverage |
 | `delivery` | Ingress, attempt, inspection, and lifecycle outbox health |
 | `reconciliation` | Current/historical findings by kind, severity, and scope |
 | `sources` | Schema contract, rows, timestamps, lag, and invalid/future-time evidence |
@@ -74,8 +104,9 @@ Source ownership and query paths are:
 | Lifecycle ledger | `/var/lib/driftward-factory-lifecycle-writer/outbox.db` | `lifecycle_outbox` | Optional delivery/dead-letter projection |
 
 There is no analytics table, write path, periodic ETL job, or historical
-backfill. Query the report through `factory analytics`; use the underlying
-ledgers directly only for focused forensic debugging.
+backfill. Query the full report through `factory analytics` or its aggregate
+view through the console; use the underlying ledgers directly only for
+focused forensic debugging.
 
 ## Window, cohort, and grains
 
@@ -133,6 +164,49 @@ and formatted report.
 The funnel denominator is `attempted`, the number of unique cohort work items.
 Every `rate_from_attempted` uses that same denominator; it is not conversion
 from the immediately preceding stage.
+
+### Daily activity series
+
+`time_series` has `timezone: "UTC"`, `basis: "event_time"`, the same
+`started_at` and `ended_at` bounds as the selected window, `points`, and
+per-metric `coverage`. It is activity across all real, non-legacy attempts,
+including attempts created before the window. Its daily totals therefore need
+not match the attempt-creation cohort totals elsewhere in the report.
+
+Every UTC date intersecting the inclusive rolling window is present, usually
+`days + 1` points. A point has `date`, `partial`, and four counts. Boundary days
+are marked `partial` whenever the selected window covers less than that whole
+UTC day; a cutoff exactly at midnight includes that final partial day.
+Timestamps with timezone offsets are converted to UTC before bucketing.
+
+| Daily field | Grain and timestamp |
+| --- | --- |
+| `prs_recorded` | Unique exact PR URL at its first durable Factory association across the eligible history: effect commit for produced PRs or the first `repair_reserved` event for an inherited repair target. A normal commit also mirrors its URL into `prior_pr_url`; that mirror never backdates the PR to attempt creation. This is recorded association, not GitHub's PR creation time. Reusing the same PR for a repair does not count it again. |
+| `verified_attempts` | One per attempt at its first `attempt_verified_ready` marker; recorded verification, not human approval. |
+| `repair_attempts` | One per attempt at its first `repair_reserved` marker. |
+| `failed_attempts` | One per attempt at its first `attempt_failed` marker. Later recovery does not remove the recorded failure. |
+
+Repeated markers count once. Known future-created attempts and future-dated
+activity are excluded. No verification, failure, or repair date is inferred
+from the attempt's current update time. If the attempt status or linked job action attests
+one of those outcomes but its marker is missing, its timestamp is unknown.
+The daily PR series also requires an immutable effect or reservation marker;
+it never uses the mutable job-update compatibility timestamp used elsewhere
+in the aggregate report. A later job update cannot move a PR to another day.
+
+For each metric, `coverage.eligible` counts distinct recorded entities across
+eligible history, including those before the selected window and those with
+unknown dates. `observed` counts entities with a usable first date no later
+than the cutoff; `rate` is their ratio and `complete` requires every eligible
+entity to be dated. Future-only evidence is excluded from both counts.
+An invalid milestone date or an unresolvable PR association makes that
+entity's earliest date unknown, even when a later duplicate has a valid date.
+If timestamp coverage is incomplete, that metric is `null` on **every** daily
+point, because the unknown occurrence could fall on any date. Other metrics
+remain available. Zero-filled days are measured zeros only when timestamp
+coverage is complete; an empty eligible history has complete coverage with a
+`null` rate and zero counts. Coverage does not attest that external GitHub or
+human review activity was comprehensively captured.
 
 Funnel stage rules are:
 
@@ -740,5 +814,5 @@ validation boundaries; they are never valid release or backend labels.
 rows may retain historical `hermes_session_id` values, but new bounded
 execution receipts require that field to be null and the analytics projection
 never returns it. Continue to protect the underlying ledgers and operator
-socket as root-owned runtime data, and expose only the aggregate report to any
-future dashboard or export.
+socket as root-owned runtime data. The console exposes only the explicit
+aggregate allowlist described above; future exports must preserve that boundary.

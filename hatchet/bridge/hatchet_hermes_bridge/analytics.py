@@ -72,6 +72,7 @@ def factory_analytics(
         attempt_source_rows = [dict(row) for row in bridge.execute(
             """
             SELECT a.*, j.state AS job_state, j.pr_url, j.reason_code AS job_reason_code,
+                   j.requested_action AS job_requested_action,
                    j.payload_json AS job_payload_json, j.commit_sha AS job_commit_sha,
                    j.created_at AS job_created_at,
                    j.updated_at AS job_updated_at
@@ -111,6 +112,7 @@ def factory_analytics(
         bridge_source = _bridge_source_health(
             bridge, ended, int(schema_row["schema_version"]), str(schema_row["migrated_at"])
         )
+        time_series = _daily_activity_series(bridge, attempt_source_rows, started, ended)
     finally:
         bridge.close()
 
@@ -402,6 +404,7 @@ def factory_analytics(
         "routes": routes,
         "lifecycle": lifecycle,
         "activity": activity,
+        "time_series": time_series,
         "delivery": {
             "ingress_publication": ingress.get("publication"),
             "factory_attempt_outbox": bridge_delivery["factory_attempt_outbox"],
@@ -3321,6 +3324,108 @@ def _recovery_report(
             )
         ],
         "repair_efficiency_on_authenticated_merged_prs": repair_efficiency,
+    }
+
+
+def _daily_activity_series(
+    bridge: sqlite3.Connection,
+    attempts: list[dict[str, Any]],
+    started: datetime,
+    ended: datetime,
+) -> dict[str, Any]:
+    """Bucket durable activity independently of the attempt-creation cohort."""
+    attempts = [
+        row for row in attempts
+        if row["mode"] == "real" and row["actor"] != "legacy-import"
+        and ((created := _parse_time(row.get("created_at"))) is None or created <= ended)
+    ]
+    attempt_ids = {row["attempt_id"] for row in attempts}
+    job_ids = {row["job_id"] for row in attempts if row.get("job_id")}
+    events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    effects: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    # Read the narrow timestamp evidence without a lexical SQL cutoff: otherwise
+    # malformed timestamps disappear and UTC-offset dates can enter the wrong day.
+    for row in bridge.execute(
+        "SELECT attempt_id,event_type,created_at FROM factory_attempt_events "
+        "WHERE event_type IN ('attempt_verified_ready','attempt_failed','repair_reserved','attempt_effect_committed')"
+    ):
+        if row["attempt_id"] in attempt_ids:
+            events[row["attempt_id"]].append(dict(row))
+    for row in bridge.execute(
+        "SELECT job_id,event_type,created_at FROM bridge_events WHERE event_type='transition:effect_committed'"
+    ):
+        if row["job_id"] in job_ids:
+            effects[row["job_id"]].append(dict(row))
+    for group in (events, effects):
+        for rows in group.values():
+            rows.sort(key=lambda row: _parse_time(row["created_at"]) or datetime.max.replace(tzinfo=timezone.utc))
+
+    metrics: dict[str, list[datetime | None]] = {
+        name: [] for name in ("prs_recorded", "verified_attempts", "repair_attempts", "failed_attempts")
+    }
+    pr_candidates: dict[str, list[datetime | None]] = defaultdict(list)
+    for attempt in attempts:
+        rows = events[attempt["attempt_id"]]
+        repair_rows = [row for row in rows if row["event_type"] == "repair_reserved"]
+        is_repair = bool(repair_rows) or attempt.get("job_requested_action") == "repair_draft_pr"
+        for metric, event_type, expected in (
+            ("verified_attempts", "attempt_verified_ready", attempt["status"] == "verified_ready"),
+            ("failed_attempts", "attempt_failed", attempt["status"] == "failed"),
+            ("repair_attempts", "repair_reserved", is_repair),
+        ):
+            matching = [row for row in rows if row["event_type"] == event_type]
+            if matching or expected:
+                dates = [_parse_time(row["created_at"]) for row in matching]
+                metrics[metric].append(min(dates) if dates and all(date is not None for date in dates) else None)
+        # Normal commits mirror the produced URL into prior_pr_url. Only a repair
+        # has an inherited target at reservation; never backdate an initial PR.
+        repair_dates = [_parse_time(row["created_at"]) for row in repair_rows]
+        repair_at = min(repair_dates) if repair_dates and all(at is not None for at in repair_dates) else None
+        association_attempt = {
+            **attempt, "job_updated_at": None,
+            "prior_pr_url": attempt.get("prior_pr_url") if is_repair else None,
+            "pr_url": attempt.get("pr_url") or (attempt.get("prior_pr_url") if not is_repair else None),
+            "created_at": _timestamp(repair_at) if is_repair and repair_at else None,
+        }
+        # Mutable job updates are deliberately disabled as a compatibility fallback.
+        associations = {url: None for url in _attempt_pr_urls(attempt)}
+        associations.update(_lineage_pr_association_times([association_attempt], events, effects))
+        direct_effects = [row for row in rows if row["event_type"] == "attempt_effect_committed"]
+        direct_effects = direct_effects or effects.get(attempt.get("job_id"), [])
+        for url, at in associations.items():
+            if url == _github_pr(association_attempt.get("pr_url")) and any(_parse_time(row["created_at"]) is None for row in direct_effects):
+                at = None
+            if is_repair and url == _github_pr(attempt.get("prior_pr_url")) and repair_at is None:
+                at = None
+            pr_candidates[url].append(at)
+    metrics["prs_recorded"] = [
+        min(dates) if all(date is not None for date in dates) else None
+        for dates in pr_candidates.values()
+    ]
+    # A future marker cannot contribute to either today's count or its coverage.
+    metrics = {name: [at for at in dates if at is None or at <= ended] for name, dates in metrics.items()}
+    coverage = {
+        name: _coverage(sum(at is not None for at in dates), len(dates))
+        for name, dates in metrics.items()
+    }
+    daily = {
+        name: Counter(at.date().isoformat() for at in dates if at is not None and started <= at)
+        for name, dates in metrics.items()
+    }
+    points = []
+    day = started.replace(hour=0, minute=0, second=0, microsecond=0)
+    while day <= ended:
+        date = day.date().isoformat()
+        points.append({
+            "date": date,
+            "partial": day < started or day + timedelta(days=1) > ended,
+            **{name: counts[date] if coverage[name]["complete"] else None for name, counts in daily.items()},
+        })
+        day += timedelta(days=1)
+    return {
+        "timezone": "UTC", "basis": "event_time",
+        "started_at": _timestamp(started), "ended_at": _timestamp(ended),
+        "points": points, "coverage": coverage,
     }
 
 

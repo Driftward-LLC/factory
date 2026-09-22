@@ -99,11 +99,19 @@ separately as historical debt and do not fail live health.
 `factory console` prints the private URL for the read-only Factory Operations
 Console. The console shows active and recent attempts, actionable versus
 terminal reconciliation findings, lifecycle dead-letter counts, and the
-returned sanitized lifecycle for an Engineering issue. It does not expose
+returned sanitized lifecycle for an Engineering issue. Its Analytics tab shows
+cohort delivery, PR-quality evidence coverage, repair outcomes, failures, and
+stage timing for the selected attempt-creation window. It does not expose
 operator mutations or credentials. Production requests must arrive through Tailscale
 Serve so the console receives an authenticated `Tailscale-User-Login` header.
 The console's FastAPI schema is available to authenticated operators at
 `/api/openapi.json`.
+
+Analytics reads an explicit aggregate projection at `/api/analytics?days=N`
+using the existing ledgers, with missing evidence and coverage shown directly.
+The browser does not receive the full operator report, raw events, backend or
+authentication configuration, or source paths. Recorded verification and
+observed check suites do not establish reviewer approval or first-pass CI.
 
 The dark operator workspace follows Linear's public app references, with compact
 icon navigation, status indicators, and a toolbar for issue lookup. The Overview

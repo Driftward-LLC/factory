@@ -19,11 +19,13 @@ from hatchet_hermes_bridge.analytics import (
 from hatchet_hermes_bridge.store import (
     BridgeConflict,
     BridgeValidationError,
+    acquire_verification_lease,
     acknowledge_factory_outbox,
     authorize_factory_effect,
     cancel_factory_attempt,
     claim_factory_outbox_delivery,
     claim_factory_execution,
+    claim_verification_lease,
     commit_factory_execution,
     complete_pr_inspection,
     get_factory_attempt,
@@ -2278,6 +2280,150 @@ class FactoryAnalyticsTests(unittest.TestCase):
         self.assertTrue(report["activity"]["independent_of_attempt_creation_cohort"])
         day = next(item for item in report["activity"]["daily"] if item["date"] == "2026-09-12")
         self.assertEqual(day["verified_ready"], 1)
+
+    def _series_event(self, attempt: dict, event_type: str, at: str) -> None:
+        self.conn.execute(
+            "INSERT INTO factory_attempt_events VALUES (?,?,?,?,?)",
+            (str(uuid.uuid4()), attempt["attempt_id"], event_type, "{}", at),
+        )
+
+    def test_time_series_uses_utc_activity_first_markers_and_unique_prs(self) -> None:
+        original, job, _ = self._reserve("ENG-DAILY-1")
+        failed, _, _ = self._reserve("ENG-DAILY-2")
+        repair, repair_job, _ = self._reserve("ENG-DAILY-3")
+        older, _, _ = self._reserve("ENG-DAILY-4")
+        self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-01T00:00:00Z'")
+        self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/119", "2026-09-11T12:00:00Z", job["job_id"]))
+        self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-13T10:00:00Z',prior_pr_url=? WHERE attempt_id=?", ("https://github.com/Driftward-LLC/capykit/pull/119", repair["attempt_id"]))
+        self.conn.execute("UPDATE bridge_jobs SET requested_action='repair_draft_pr' WHERE job_id=?", (repair_job["job_id"],))
+        self._series_event(original, "attempt_effect_committed", "2026-09-11T12:00:00Z")
+        self._series_event(original, "attempt_verified_ready", "2026-09-11T21:00:00-03:00")
+        self._series_event(original, "attempt_verified_ready", "2026-09-13T00:00:00Z")
+        self._series_event(failed, "attempt_failed", "2026-09-13T05:00:00Z")
+        self._series_event(failed, "attempt_failed", "2026-09-14T00:00:00Z")
+        self._series_event(repair, "repair_reserved", "2026-09-13T10:00:00Z")
+        self._series_event(repair, "repair_reserved", "2026-09-13T11:00:00Z")
+        self._series_event(older, "attempt_verified_ready", "2026-09-10T12:00:00Z")
+        self._series_event(older, "attempt_verified_ready", "2026-09-13T12:00:00Z")
+        self.conn.commit()
+
+        report = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=3, now=datetime(2026, 9, 14, 12, tzinfo=timezone.utc))
+        series = report["time_series"]
+        self.assertEqual(report["coverage"]["cohort_attempts"], 1)
+        self.assertEqual(series["timezone"], "UTC")
+        self.assertEqual(series["basis"], "event_time")
+        self.assertEqual(series["started_at"], report["window"]["started_at"])
+        self.assertEqual(series["ended_at"], report["window"]["ended_at"])
+        self.assertEqual(series["points"], [
+            {"date": "2026-09-11", "partial": True, "prs_recorded": 1, "verified_attempts": 0, "repair_attempts": 0, "failed_attempts": 0},
+            {"date": "2026-09-12", "partial": False, "prs_recorded": 0, "verified_attempts": 1, "repair_attempts": 0, "failed_attempts": 0},
+            {"date": "2026-09-13", "partial": False, "prs_recorded": 0, "verified_attempts": 0, "repair_attempts": 1, "failed_attempts": 1},
+            {"date": "2026-09-14", "partial": True, "prs_recorded": 0, "verified_attempts": 0, "repair_attempts": 0, "failed_attempts": 0},
+        ])
+        self.assertEqual(series["coverage"]["prs_recorded"], {"observed": 1, "eligible": 1, "rate": 1.0, "complete": True})
+        self.assertEqual(series["coverage"]["verified_attempts"]["observed"], 2)
+
+    def test_time_series_excludes_dry_runs_imports_and_future_events(self) -> None:
+        for index, kind in enumerate(("dry-run", "legacy-import", "future-created", "future-events")):
+            attempt, job, _ = self._reserve(f"ENG-EXCLUDED-{index}")
+            if kind == "dry-run":
+                self.conn.execute("UPDATE factory_attempts SET mode='dry-run' WHERE attempt_id=?", (attempt["attempt_id"],))
+            elif kind == "legacy-import":
+                self.conn.execute("UPDATE factory_attempts SET actor='legacy-import' WHERE attempt_id=?", (attempt["attempt_id"],))
+            elif kind == "future-created":
+                self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-15T00:00:00Z' WHERE attempt_id=?", (attempt["attempt_id"],))
+            at = "2026-09-15T00:00:00Z" if kind == "future-events" else "2026-09-13T00:00:00Z"
+            self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", (f"https://github.com/Driftward-LLC/capykit/pull/{120 + index}", at, job["job_id"]))
+            for event_type in ("attempt_effect_committed", "attempt_verified_ready", "attempt_failed", "repair_reserved"):
+                self._series_event(attempt, event_type, at)
+            self.conn.commit()
+        self.conn.commit()
+
+        series = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=1, now=datetime(2026, 9, 14, tzinfo=timezone.utc))["time_series"]
+        self.assertEqual([point["partial"] for point in series["points"]], [False, True])
+        for point in series["points"]:
+            for metric in series["coverage"]:
+                self.assertEqual(point[metric], 0)
+                self.assertEqual(series["coverage"][metric], {"observed": 0, "eligible": 0, "rate": None, "complete": True})
+
+    def test_time_series_missing_dates_withhold_only_affected_metrics(self) -> None:
+        verified, _, _ = self._reserve("ENG-MISSING-1")
+        missing, job, _ = self._reserve("ENG-MISSING-2")
+        self._series_event(verified, "attempt_verified_ready", "2026-09-13T00:00:00Z")
+        self._series_event(missing, "attempt_verified_ready", "not-a-timestamp")
+        self._series_event(missing, "attempt_failed", "2026-09-13T00:00:00Z")
+        self._series_event(missing, "attempt_effect_committed", "invalid")
+        self.conn.execute("UPDATE bridge_jobs SET pr_url=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/122", job["job_id"]))
+        self.conn.execute("UPDATE bridge_jobs SET requested_action='repair_draft_pr' WHERE job_id=?", (job["job_id"],))
+        self.conn.commit()
+
+        series = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=3, now=datetime(2026, 9, 14, 12, tzinfo=timezone.utc))["time_series"]
+        self.assertEqual(series["coverage"]["verified_attempts"], {"observed": 1, "eligible": 2, "rate": 0.5, "complete": False})
+        self.assertEqual(series["coverage"]["prs_recorded"]["observed"], 0)
+        self.assertFalse(series["coverage"]["repair_attempts"]["complete"])
+        for point in series["points"]:
+            self.assertIsNone(point["verified_attempts"])
+            self.assertIsNone(point["prs_recorded"])
+            self.assertIsNone(point["repair_attempts"])
+        self.assertEqual(sum(point["failed_attempts"] for point in series["points"]), 1)
+
+    def test_time_series_never_dates_a_pr_from_mutable_job_updates(self) -> None:
+        _attempt, job, _ = self._reserve("ENG-UNDATED-PR")
+        reports = []
+        for updated_at in ("2026-09-12T00:00:00Z", "2026-09-13T12:00:00Z"):
+            self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/123", updated_at, job["job_id"]))
+            self.conn.commit()
+            series = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=3, now=datetime(2026, 9, 14, 12, tzinfo=timezone.utc))["time_series"]
+            reports.append(series)
+            self.assertEqual(series["coverage"]["prs_recorded"], {"observed": 0, "eligible": 1, "rate": 0.0, "complete": False})
+            self.assertTrue(all(point["prs_recorded"] is None for point in series["points"]))
+        self.assertEqual(reports[0], reports[1])
+
+    def test_time_series_real_commit_dates_mirrored_prior_url_at_effect_commit(self) -> None:
+        attempt, job, _ = self._reserve("ENG-MIRRORED-PR")
+        transition_job(self.conn, job["job_id"], state="running")
+        lease = claim_factory_execution(self.conn, job["job_id"], owner="executor-series")["lease"]
+        authorize_factory_effect(self.conn, job["job_id"], lease)
+        with patch("hatchet_hermes_bridge.store.utc_now", return_value="2026-09-13T00:00:00.000000Z"):
+            committed = commit_factory_execution(self.conn, job["job_id"], lease, {
+                "commit_sha": "abc1245", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/124",
+                "branch": job["branch"], "reason_code": "hermes_created",
+                **analytics_identity("daily-commit"), "backend_outcome": "created", "backend_elapsed_ms": 432,
+            })
+            transition_job(self.conn, job["job_id"], state="verification_pending")
+        mirrored = get_factory_attempt(self.conn, attempt["attempt_id"])
+        self.assertEqual(mirrored["prior_pr_url"], committed["pr_url"])
+        self.assertTrue(mirrored["created_at"].startswith("2026-09-11"))
+        series = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=3, now=datetime(2026, 9, 14, 12, tzinfo=timezone.utc))["time_series"]
+        self.assertEqual([(point["date"], point["prs_recorded"]) for point in series["points"]], [("2026-09-11", 0), ("2026-09-12", 0), ("2026-09-13", 1), ("2026-09-14", 0)])
+
+    def test_time_series_real_automatic_repair_missing_marker_is_unknown(self) -> None:
+        policy_env = patch.dict("os.environ", {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "workers/verifier-policy.json")})
+        policy_env.start()
+        self.addCleanup(policy_env.stop)
+        attempt, job, _ = self._reserve("ENG-REPAIR-SERIES")
+        transition_job(self.conn, job["job_id"], state="running")
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc1245", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/125"}, _factory_execution_commit=True)
+        context = {
+            "local_commands": [{"command": command, "exit_code": 0} for command in job["payload"]["required_local_commands"]],
+            "secret_check": {"command": job["payload"]["secret_check_command"], "exit_code": 0},
+        }
+        pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": context})
+        acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-series")
+        claim_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-series")
+        transition_job(self.conn, pending["job_id"], state="failed", details={"reason_code": "verification_github_check_failed", "verification_attempt_id": "verifier-series"}, _factory_verifier_completion=True)
+        repair = self.conn.execute("SELECT * FROM factory_attempts WHERE prior_attempt_id=?", (attempt["attempt_id"],)).fetchone()
+        self.assertIsNotNone(repair)
+        self.assertEqual(repair["action"], "create_draft_pr")
+        self.assertEqual(get_job(self.conn, repair["job_id"])["requested_action"], "repair_draft_pr")
+        series = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=3, now=datetime(2026, 9, 14, tzinfo=timezone.utc))["time_series"]
+        self.assertEqual(sum(point["repair_attempts"] for point in series["points"]), 1)
+        self.assertEqual(sum(point["prs_recorded"] for point in series["points"]), 1)
+        self.conn.execute("DELETE FROM factory_attempt_events WHERE attempt_id=? AND event_type='repair_reserved'", (repair["attempt_id"],))
+        self.conn.commit()
+        series = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=3, now=datetime(2026, 9, 14, tzinfo=timezone.utc))["time_series"]
+        self.assertEqual(series["coverage"]["repair_attempts"], {"observed": 0, "eligible": 1, "rate": 0.0, "complete": False})
+        self.assertTrue(all(point["repair_attempts"] is None for point in series["points"]))
 
     def test_activity_counts_each_active_intake_reuse_event(self) -> None:
         self._reserve("ENG-75")

@@ -53,6 +53,50 @@ function lifecycle(issue) {
     }],
   };
 }
+let analyticsState = 'missing';
+let failAnalytics = false;
+const analyticsCalls = [];
+let delayedAnalyticsDays;
+let releaseAnalytics;
+let onAnalyticsDelayed;
+function analytics(days) {
+  const empty = analyticsState === 'empty';
+  const partial = analyticsState === 'partial';
+  const missingIngress = analyticsState === 'no-ingress';
+  const items = empty ? 0 : ({ 7: 7, 30: 13, 90: 22 })[days];
+  const prs = empty ? 0 : 18;
+  const coverage = (observed) => missingIngress ? null : ({ observed, eligible: prs, rate: prs ? observed / prs : null, complete: observed === prs });
+  const points = Array.from({ length: days + 1 }, (_, index) => ({
+    date: new Date(Math.floor(now / 86400000) * 86400000 - (days - index) * 86400000).toISOString().slice(0, 10),
+    partial: index === 0 || index === days,
+    prs_recorded: empty ? 0 : index === days - 3 ? 3 : index === days - 1 ? 1 : 0,
+    verified_attempts: empty ? 0 : index === days - 2 ? 2 : 0,
+    repair_attempts: analyticsState === 'missing-series' ? null : empty ? 0 : index === days - 1 ? 1 : 0,
+    failed_attempts: partial && index === days - 2 ? null : empty ? 0 : index === days - 1 ? 1 : 0,
+  }));
+  const seriesCoverage = Object.fromEntries(['prs_recorded', 'verified_attempts', 'repair_attempts', 'failed_attempts'].map((key) => {
+    const observed = points.reduce((sum, point) => sum + (point[key] || 0), 0);
+    const eligible = observed + (points.some((point) => point[key] === null) ? 1 : 0);
+    return [key, { observed, eligible, rate: eligible ? observed / eligible : null, complete: observed === eligible }];
+  }));
+  return {
+    schema: 'factory-console-analytics-v1', generated_at: new Date(now).toISOString(),
+    window: { days, started_at: new Date(now - days * 86400000).toISOString(), ended_at: new Date(now).toISOString() },
+    coverage: { cohort_attempts: empty ? 0 : 20, cohort_work_items: items, dry_run_attempts_excluded: 2, legacy_attempts_excluded: 1, bridge_available: true, ingress_available: !missingIngress },
+    funnel: { stages: Object.fromEntries(Object.entries({ attempted: items, executor_started: items, effect_committed: empty ? 0 : 6, draft_pr_available: empty ? 0 : 6, verified_ready: empty ? 0 : 4 }).map(([key, value]) => [key, { count: value, rate_from_attempted: items ? value / items : null }])) },
+    github: {
+      available: !missingIngress, coverage: coverage(partial ? 6 : 0),
+      merged_prs: missingIngress ? null : partial ? 2 : 0, closed_unmerged_prs: missingIngress ? null : partial ? 1 : 0, open_prs: missingIngress ? null : partial ? 3 : 0, unobserved_prs: missingIngress ? null : partial ? 12 : prs,
+      check_suite_observations: { available: !missingIngress, coverage: coverage(partial ? 4 : 0), observations: partial ? 8 : 0, successful_observations: partial ? 6 : 0 },
+      reviews: { available: !missingIngress, coverage: coverage(partial ? 5 : 0), observations: partial ? 7 : 0, changes_requested_prs: partial ? 2 : 0, changes_requested_rate: partial ? .4 : null },
+      first_pass_checks: { available: false, success_rate: null },
+    },
+    recovery: { by_attempt_kind: { initial: { attempts: empty ? 0 : 13, verified: empty ? 0 : 1 }, repair: { attempts: empty ? 0 : 7, verified: empty ? 0 : 3 } }, repair_budgets_exhausted: empty ? 0 : 1 },
+    failures: { currently_failed_attempts: empty ? 0 : 3, by_classification: empty ? [] : [{ failure_domain: 'verification', failure_stage: 'checks', reason_code: 'verification_github_check_failed', count: 3 }] },
+    latency_ms: { effect_committed_to_verified_ready: { samples: empty ? 0 : 4, eligible: empty ? 0 : 6, p50: empty ? null : 60000, p90: empty ? null : 120000, p95: empty ? null : 180000, coverage_rate: empty ? null : 4 / 6 } },
+    time_series: { timezone: 'UTC', basis: 'event_time', started_at: new Date(now - days * 86400000).toISOString(), ended_at: new Date(now).toISOString(), points, coverage: seriesCoverage },
+  };
+}
 let failOverview = false;
 let failIssue = '';
 let emptyOverview = false;
@@ -63,9 +107,27 @@ let delayedStarted;
 let onDelayed;
 const methods = [];
 const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'] };
+async function contrastFailures(page, selector, property = 'color', minimum = 4.5) {
+  return page.evaluate(({ selector, property, minimum }) => {
+    const rgb = (value) => value.match(/[\d.]+/g).map(Number);
+    const luminance = (color) => color.slice(0, 3).map((n) => { const v = n / 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }).reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+    return [...document.querySelectorAll(selector)].filter((el) => el.getClientRects().length).flatMap((el) => {
+      let background = [255, 255, 255];
+      for (let node = el; node; node = node.parentElement) {
+        const color = rgb(getComputedStyle(node).backgroundColor);
+        if (color.length === 3 || color[3] === 1) { background = color; break; }
+      }
+      const foreground = luminance(rgb(getComputedStyle(el)[property]));
+      const back = luminance(background);
+      const ratio = (Math.max(foreground, back) + .05) / (Math.min(foreground, back) + .05);
+      return ratio < minimum ? [{ text: el.textContent || el.dataset.series, ratio }] : [];
+    });
+  }, { selector, property, minimum });
+}
 const server = createServer(async (request, response) => {
   methods.push(request.method);
-  const path = new URL(request.url, 'http://localhost').pathname;
+  const url = new URL(request.url, 'http://localhost');
+  const path = url.pathname;
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Content-Security-Policy', "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
   if (assets[path]) {
@@ -81,6 +143,16 @@ const server = createServer(async (request, response) => {
     const value = overview();
     if (emptyOverview) { value.active_attempts = []; value.recent_attempts = []; value.status_counts = {}; }
     response.end(JSON.stringify(failOverview ? { error: 'fixture failure' } : value));
+  } else if (path === '/api/analytics') {
+    const days = Number(url.searchParams.get('days'));
+    analyticsCalls.push(days);
+    const value = analytics(days);
+    if (days === delayedAnalyticsDays) {
+      onAnalyticsDelayed();
+      await new Promise((done) => { releaseAnalytics = done; });
+    }
+    response.statusCode = failAnalytics ? 503 : 200;
+    response.end(JSON.stringify(failAnalytics ? { error: 'fixture failure' } : value));
   } else if (path.startsWith('/api/lifecycle/')) {
     const issue = decodeURIComponent(path.split('/').pop());
     if (issue === delayedIssue) {
@@ -138,22 +210,7 @@ async function main() {
     await page.setViewportSize({ width: 1440, height: 1080 });
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
     await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-overview.png'), fullPage: true });
-    const lowContrast = await page.evaluate(() => {
-      const rgb = (value) => value.match(/[\d.]+/g).map(Number);
-      const luminance = (color) => color.slice(0, 3).map((n) => { const v = n / 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }).reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
-      return [...document.querySelectorAll('.muted, .pill, .review-queues small, nav a, .signal p')].filter((el) => el.getClientRects().length).flatMap((el) => {
-        let background = [255, 255, 255];
-        for (let node = el; node; node = node.parentElement) {
-          const color = rgb(getComputedStyle(node).backgroundColor);
-          if (color.length === 3 || color[3] === 1) { background = color; break; }
-        }
-        const foreground = luminance(rgb(getComputedStyle(el).color));
-        const back = luminance(background);
-        const ratio = (Math.max(foreground, back) + .05) / (Math.min(foreground, back) + .05);
-        return ratio < 4.5 ? [{ text: el.textContent, ratio }] : [];
-      });
-    });
-    assert.deepEqual(lowContrast, []);
+    assert.deepEqual(await contrastFailures(page, '.muted, .pill, .review-queues small, nav a, .signal p'), []);
     for (const width of [320, 700, 850, 1024, 1280]) {
       await page.setViewportSize({ width, height: 960 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Overview overflow at ' + width);
@@ -287,6 +344,191 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Snapshot current');
     assert.ok(overviewCalls > before);
 
+    // Analytics loads only when selected, and missing GitHub evidence never becomes 0% success.
+    assert.deepEqual(analyticsCalls, []);
+    await page.setViewportSize({ width: 1440, height: 1080 });
+    await page.locator('[data-nav="analytics"]').focus();
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '13');
+    assert.equal(new URL(page.url()).searchParams.get('view'), 'analytics');
+    assert.equal(new URL(page.url()).searchParams.get('days'), null);
+    assert.equal(await page.locator('#analytics-days').inputValue(), '30');
+    assert.equal(await page.locator('[data-nav="analytics"]').getAttribute('aria-current'), 'page');
+    assert.equal(await page.locator('[data-view="work"]').isVisible(), false);
+    assert.equal(await page.locator('#analytics-verified').textContent(), '4');
+    assert.equal(await page.locator('#analytics-coverage-warning').isVisible(), true);
+    assert.match(await page.locator('#analytics-content').textContent(), /0 of 18 PRs observed/);
+    for (const id of ['analytics-first-pass', 'analytics-review-rate', 'analytics-merged']) {
+      assert.match(await page.locator('#' + id).textContent(), /Unavailable/);
+    }
+    const trend = page.locator('#analytics-trend-chart');
+    const trendDetail = page.locator('#analytics-trend-detail');
+    assert.equal(await trend.getAttribute('role'), 'img');
+    assert.equal(await trend.locator('title').count(), 1);
+    assert.equal(await trend.locator('desc').count(), 1);
+    assert.equal(await trend.locator('path[data-series]').count(), 4);
+    assert.equal(await page.locator('#analytics-trend-table tbody tr').count(), 31);
+    await trend.focus();
+    assert.equal(await trend.evaluate((el) => document.activeElement === el), true);
+    await page.keyboard.press('Home');
+    assert.equal(await trendDetail.getAttribute('data-date'), analytics(30).time_series.points[0].date);
+    assert.match(await trendDetail.textContent(), /partial/i);
+    await page.keyboard.press('ArrowRight');
+    assert.equal(await trendDetail.getAttribute('data-date'), analytics(30).time_series.points[1].date);
+    await page.keyboard.press('End');
+    assert.equal(await trendDetail.getAttribute('data-date'), analytics(30).time_series.points[30].date);
+    await page.keyboard.press('ArrowLeft');
+    assert.equal(await trendDetail.getAttribute('data-date'), analytics(30).time_series.points[29].date);
+
+    await page.locator('#analytics-days').selectOption('7');
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '7');
+    assert.equal(new URL(page.url()).searchParams.get('days'), '7');
+    assert.equal(await page.locator('#analytics-trend-table tbody tr').count(), 8);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '7');
+    assert.equal(await page.locator('#analytics-days').inputValue(), '7');
+    await page.locator('#analytics-days').selectOption('90');
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '22');
+    assert.equal(await page.locator('#analytics-trend-table tbody tr').count(), 91);
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '7');
+    assert.equal(await page.locator('#analytics-days').inputValue(), '7');
+    await page.goForward();
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '22');
+
+    failAnalytics = true;
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Stale snapshot');
+    assert.equal(await page.locator('#analytics-work-items').textContent(), '22');
+    assert.match(await page.locator('#notice').textContent(), /last successful analytics/i);
+    assert.match(await page.locator('#updated-at').textContent(), /Last successful/);
+    failAnalytics = false;
+    delayedAnalyticsDays = 90;
+    let analyticsStarted = new Promise((done) => { onAnalyticsDelayed = done; });
+    await page.locator('#refresh-button').click();
+    await analyticsStarted;
+    assert.equal(await page.locator('#connection-state').textContent(), 'Stale snapshot');
+    assert.match(await page.locator('#notice').textContent(), /last successful analytics/i);
+    assert.equal(await page.locator('#analytics-work-items').textContent(), '22');
+    releaseAnalytics();
+    delayedAnalyticsDays = undefined;
+    await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Snapshot current');
+
+    // Selecting a new period hides the old cohort; late results cannot replace the current period.
+    delayedAnalyticsDays = 30;
+    analyticsStarted = new Promise((done) => { onAnalyticsDelayed = done; });
+    const oldAnalyticsRequestEnded = new Promise((done) => {
+      const onEnd = (request) => {
+        if (!request.url().endsWith('/api/analytics?days=30')) return;
+        page.off('requestfinished', onEnd);
+        page.off('requestfailed', onEnd);
+        done();
+      };
+      page.on('requestfinished', onEnd);
+      page.on('requestfailed', onEnd);
+    });
+    await page.locator('#analytics-days').selectOption('30');
+    await analyticsStarted;
+    assert.equal(await page.locator('#analytics-content').isVisible(), false);
+    assert.equal(await page.locator('#analytics-work-items').isVisible(), false);
+    await page.locator('#analytics-days').selectOption('7');
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '7');
+    releaseAnalytics();
+    delayedAnalyticsDays = undefined;
+    await oldAnalyticsRequestEnded;
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    assert.equal(await page.locator('#analytics-work-items').textContent(), '7');
+    assert.equal(await page.locator('#analytics-days').inputValue(), '7');
+
+    analyticsState = 'partial';
+    failOverview = true;
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('#analytics-review-rate')?.textContent.includes('40%'));
+    assert.equal(await page.locator('#connection-state').textContent(), 'Snapshot current');
+    assert.equal(await page.locator('#notice').isVisible(), false);
+    failOverview = false;
+    assert.equal(await page.locator('#analytics-coverage-warning').isVisible(), true);
+    assert.match(await page.locator('#analytics-content').textContent(), /6 of 18 PRs observed/);
+    assert.match(await page.locator('#analytics-content').textContent(), /2\s*(?:of|\/)\s*5/);
+    assert.equal(await page.locator('#analytics-merged').textContent(), '2');
+    assert.match(await page.locator('#analytics-first-pass').textContent(), /Unavailable/);
+    const trendPoints = analytics(7).time_series.points;
+    assert.equal(await trend.locator('path[data-series]').count(), 4);
+    const prCoordinates = [...(await trend.locator('path[data-series="prs_recorded"]').getAttribute('d')).matchAll(/[ML]\s*([\d.-]+)[,\s]+([\d.-]+)/g)].map((match) => [Number(match[1]), Number(match[2])]);
+    assert.equal(prCoordinates.length, 8);
+    assert.ok(prCoordinates[4][1] < prCoordinates[6][1] && prCoordinates[6][1] < prCoordinates[0][1], 'PR line must plot 3 above 1 above zero');
+    assert.equal((await trend.locator('path[data-series="failed_attempts"]').getAttribute('d')).match(/M/g).length, 2, 'Unknown day must break the failure line');
+    assert.doesNotMatch(await trend.innerHTML(), /NaN|Infinity/);
+    assert.equal(await page.locator('#analytics-trend-unavailable').isVisible(), true);
+    await page.locator('#analytics-trend-day').selectOption(trendPoints[4].date);
+    assert.equal(await trendDetail.getAttribute('data-date'), trendPoints[4].date);
+    assert.match(await trendDetail.textContent(), /PRs recorded\s*3/);
+    await page.locator('#analytics-trend-day').selectOption(trendPoints[5].date);
+    assert.match(await trendDetail.textContent(), /Failed attempts\s*Unavailable/);
+    const beforePointer = await trendDetail.getAttribute('data-date');
+    const chartBox = await trend.boundingBox();
+    await trend.hover({ position: { x: chartBox.width / 3, y: chartBox.height / 2 } });
+    assert.notEqual(await trendDetail.getAttribute('data-date'), beforePointer);
+    const pointerDate = await trendDetail.getAttribute('data-date');
+    assert.ok(trendPoints.some((point) => point.date === pointerDate));
+    const dailyDataToggle = page.locator('details:has(#analytics-trend-table) summary');
+    await dailyDataToggle.focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#analytics-trend-table').isVisible(), true);
+    assert.equal(await page.locator('#analytics-trend-table tbody tr').count(), 8);
+    assert.match(await page.locator('#analytics-trend-table').textContent(), /Unavailable/);
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#analytics-trend-table').isVisible(), false);
+    assert.deepEqual(await contrastFailures(page, '#analytics-trend .muted, #analytics-trend label, #analytics-trend-detail'), []);
+    assert.deepEqual(await contrastFailures(page, '#analytics-trend-chart text', 'fill'), []);
+    assert.deepEqual(await contrastFailures(page, '#analytics-trend-chart path[data-series]', 'stroke', 3), []);
+    await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
+    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-analytics.png'), fullPage: true });
+    for (const width of [320, 560, 700, 850, 1024, 1280, 1440]) {
+      await page.setViewportSize({ width, height: 960 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Analytics overflow at ' + width);
+      assert.doesNotMatch(await trend.innerHTML(), /NaN|Infinity/);
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Analytics overflow at 200% text size');
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.locator('#analytics-days').evaluate((el) => el.getBoundingClientRect().height >= 44));
+    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-analytics-mobile.png'), fullPage: true });
+
+    analyticsState = 'missing-series';
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => !document.querySelector('#analytics-trend-chart path[data-series="repair_attempts"]'));
+    assert.equal(await trend.locator('path[data-series]').count(), 3);
+    assert.equal(await page.locator('#analytics-trend-unavailable').isVisible(), true);
+    assert.match(await trendDetail.textContent(), /Repair attempts\s*Unavailable/);
+    assert.doesNotMatch(await trend.innerHTML(), /NaN|Infinity/);
+
+    failAnalytics = true;
+    await page.goto(base + '/?view=analytics&days=30');
+    await page.waitForFunction(() => document.querySelector('#connection-state').textContent === 'Unavailable');
+    assert.equal(await page.locator('#analytics-content').isVisible(), false);
+    assert.match(await page.locator('#notice').textContent(), /analytics.*unavailable/i);
+    failAnalytics = false;
+    analyticsState = 'no-ingress';
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('#analytics-work-items')?.textContent === '13');
+    assert.equal(await page.locator('#analytics-coverage-warning').isVisible(), true);
+    assert.match(await page.locator('#analytics-content').textContent(), /Coverage unavailable/);
+    assert.equal(await page.locator('#analytics-review-rate').textContent(), 'Unavailable');
+    assert.equal(await page.locator('#analytics-merged').textContent(), 'Unavailable');
+    analyticsState = 'empty';
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('#analytics-empty')?.getClientRects().length > 0);
+    assert.equal(await page.locator('#analytics-work-items').textContent(), '0');
+    assert.match(await page.locator('#analytics-first-pass').textContent(), /Unavailable/);
+    assert.equal(await page.locator('#analytics-review-rate').textContent(), 'Unavailable');
+    assert.equal(await page.locator('#analytics-merged').textContent(), '0');
+    assert.equal(await page.locator('#analytics-closed').textContent(), '0');
+    assert.equal(await page.locator('#analytics-trend-empty').isVisible(), true);
+    assert.equal(await page.locator('#analytics-trend-unavailable').isVisible(), false);
+    assert.ok(analyticsCalls.includes(7) && analyticsCalls.includes(30) && analyticsCalls.includes(90));
+
     await page.locator('[data-nav="overview"]').click();
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
     await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile-overview.png'), fullPage: true });
@@ -307,12 +549,13 @@ async function main() {
     assert.equal(await page.locator('#queue-attention').textContent(), 'Unavailable');
     assert.deepEqual(errors, []);
     assert.ok(methods.every((method) => method === 'GET'));
-    console.log('PASS: review queues, navigation, sidebar queues, keyboard scope links, deep links, filters, deduplication, safe links/text, unknown states, stale/empty/error states, issue races, visibility refresh, responsive details, keyboard controls, text contrast and read-only requests.');
-    console.log('Fixture screenshots: ' + join(tmpdir(), 'factory-dashboard-{overview,work,mobile,mobile-work}.png'));
+    console.log('PASS: review queues, navigation, sidebar queues, keyboard scope links, deep links, filters, deduplication, safe links/text, unknown states, analytics evidence coverage, time-series rendering and gaps, pointer/keyboard day inspection, daily data table, period history and races, stale/empty/error states, issue races, visibility refresh, responsive details, keyboard controls, text/chart contrast and read-only requests.');
+    console.log('Fixture screenshots: ' + join(tmpdir(), 'factory-dashboard-{overview,work,mobile,mobile-work,analytics,analytics-mobile}.png'));
   } finally { await browser.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => {
   releaseDelayed?.();
+  releaseAnalytics?.();
   server.closeAllConnections();
   server.close();
 });
