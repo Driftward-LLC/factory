@@ -44,6 +44,14 @@ Opening an issue shows its inspection view directly. Closing it restores the
 previous page and filters. Preserve URL sharing, browser history, keyboard
 focus, refresh behavior, and the existing read-only authorization boundary.
 
+Analytics uses its own 7-, 30-, or 90-day attempt cohort, rather than the active
+and recent list used by Overview and Work. Show delivery stages, recorded
+verification, repair outcomes, and GitHub evidence coverage. Keep work-item,
+attempt, and PR counts explicitly labeled. Review rates describe observed
+reviews only; unobserved PRs must not become zero merge or review rates. Show
+missing evidence and stale snapshots, and preserve the selected period in the
+URL. Analytics loads only while its page is open.
+
 ## Visual language
 
 Use the existing Factory name and F mark. The workspace uses dark neutral

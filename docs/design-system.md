@@ -19,6 +19,8 @@ the production Factory console or its Docker Compose runtime.
 
 The catalog includes seven shared components, their loading/missing/status
 examples, live theme swatches, the approved SVG icon set, and agent guidance.
+The Factory Analytics page also has fictional missing-evidence, partial-review,
+empty, loading, and unavailable examples composed from the shared components.
 The console's existing appearance is the initial design system. This change
 does not adopt Reflect's marketing-site theme.
 

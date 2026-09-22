@@ -17,6 +17,7 @@ import {
   ActivityLogIcon,
 } from '@driftward/ui/icons';
 import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark } from '@driftward/ui';
+import Analytics from './Analytics.jsx';
 import {
   activeStates,
   terminalStates,
@@ -61,6 +62,14 @@ function validateSnapshot(value, path) {
     ) {
       throw new Error('The overview response is incomplete.');
     }
+  } else if (path.startsWith('/api/analytics?')) {
+    if (
+      value.schema !== 'factory-console-analytics-v1' ||
+      value.window?.days !== Number(new URLSearchParams(path.split('?')[1]).get('days')) ||
+      !Number.isFinite(Date.parse(value.generated_at)) ||
+      !value.coverage || !value.funnel?.stages || !value.github || !value.recovery ||
+      !Array.isArray(value.failures?.by_classification)
+    ) throw new Error('The analytics response is incomplete or mismatched.');
   } else if (
     value.work_item_key !== path.split('/').pop() ||
     !Array.isArray(value.attempts) ||
@@ -905,12 +914,15 @@ function IssueDetail({ issue, snapshot, onClose }) {
 }
 function App() {
   const { route, navigate } = useRoute();
+  const analytics = route.view === 'analytics' && !route.issue;
   const overviewSnapshot = useSnapshot('/api/overview');
+  const analyticsSnapshot = useSnapshot(analytics ? '/api/analytics?days=' + route.days : null);
   const issueSnapshot = useSnapshot(
     issuePattern.test(route.issue) ? '/api/lifecycle/' + route.issue : null,
   );
   const { value: overview, error: overviewError, refresh: refreshOverview } = overviewSnapshot;
   const { refresh: refreshIssue } = issueSnapshot;
+  const { refresh: refreshAnalytics } = analyticsSnapshot;
   const [now, setNow] = useState(Date.now);
   const [issueDraft, setIssueDraft] = useState(route.issue);
   const issueInput = useRef(null);
@@ -919,7 +931,8 @@ function App() {
     setNow(Date.now());
     refreshOverview();
     refreshIssue();
-  }, [refreshOverview, refreshIssue]);
+    refreshAnalytics();
+  }, [refreshOverview, refreshIssue, refreshAnalytics]);
   useEffect(() => {
     const whenVisible = () => {
       if (!document.hidden) refresh();
@@ -932,8 +945,10 @@ function App() {
     };
   }, [refresh]);
   const records = overview ? allRecords(overview) : [];
-  const age = overview ? Math.max(now, Date.now()) - Date.parse(overview.generated_at) : NaN;
-  const stale = Boolean(overview && (overviewError || age > 90000 || age < -5000));
+  const currentSnapshot = analytics ? analyticsSnapshot : overviewSnapshot;
+  const { value: currentValue, error: currentError } = currentSnapshot;
+  const age = currentValue ? Math.max(now, Date.now()) - Date.parse(currentValue.generated_at) : NaN;
+  const stale = Boolean(currentValue && (currentError || age > 90000 || age < -5000));
   const hatchet = hatchetUrl(overview?.links?.hatchet);
   const navigation = { route, navigate };
   const work = route.view === 'work';
@@ -952,7 +967,7 @@ function App() {
         </a>
         <p className="nav-label">Workspace</p>
         <nav aria-label="Main navigation">
-          {['overview', 'work'].map((view) => (
+          {['overview', 'work', 'analytics'].map((view) => (
             <RouteLink
               key={view}
               {...navigation}
@@ -962,10 +977,12 @@ function App() {
             >
               {view === 'work' ? (
                 <RowsIcon aria-hidden="true" />
+              ) : view === 'analytics' ? (
+                <ActivityLogIcon aria-hidden="true" />
               ) : (
                 <DashboardIcon aria-hidden="true" />
               )}
-              <span className="nav-text">{view === 'work' ? 'Work' : 'Overview'}</span>
+              <span className="nav-text">{view === 'work' ? 'Work' : view === 'analytics' ? 'Analytics' : 'Overview'}</span>
               {view === 'work' ? (
                 <span id="nav-work-count">{overview ? records.length : '—'}</span>
               ) : null}
@@ -1026,7 +1043,7 @@ function App() {
           <span className="breadcrumb">
             <span>Workspace</span>
             <ChevronRightIcon aria-hidden="true" />
-            <strong id="breadcrumb">{work ? 'Work' : 'Overview'}</strong>
+            <strong id="breadcrumb">{work ? 'Work' : route.view === 'analytics' ? 'Analytics' : 'Overview'}</strong>
             {route.issue && (
               <>
                 <ChevronRightIcon aria-hidden="true" />
@@ -1069,10 +1086,10 @@ function App() {
               id="connection-state"
               role="status"
               aria-live="polite"
-              data-state={!overview ? 'offline' : stale ? 'stale' : 'online'}
+              data-state={!currentValue ? 'offline' : stale ? 'stale' : 'online'}
             >
-              {!overview
-                ? overviewError
+              {!currentValue
+                ? currentError
                   ? 'Unavailable'
                   : 'Connecting'
                 : stale
@@ -1082,7 +1099,7 @@ function App() {
             <Button
               id="refresh-button"
               type="button"
-              disabled={Boolean(overviewSnapshot.loading || issueSnapshot.loading)}
+              disabled={Boolean(overviewSnapshot.loading || issueSnapshot.loading || analyticsSnapshot.loading)}
               onClick={refresh}
             >
               <ReloadIcon aria-hidden="true" />
@@ -1094,30 +1111,32 @@ function App() {
           <div className="page-heading">
             <div>
               <h1 id="page-title">
-                {route.issue ? 'Issue inspection' : work ? 'Work' : 'Overview'}
+                {route.issue ? 'Issue inspection' : work ? 'Work' : analytics ? 'Analytics' : 'Overview'}
               </h1>
               <p id="page-description" className="muted">
                 {route.issue
                   ? 'Review the recorded result and choose the next step.'
                   : work
                     ? 'Search active and recent attempts.'
-                    : 'Execution, verification, and delivery.'}
+                    : analytics
+                      ? 'Delivery, PR quality signals, and the evidence behind them.'
+                      : 'Execution, verification, and delivery.'}
               </p>
             </div>
           </div>
           <Notice id="notice">
-            {overviewError
-              ? (overview
-                  ? 'Showing the last successful overview. '
-                  : 'Factory data is unavailable. ') + overviewError
+            {currentError
+              ? (currentValue
+                  ? analytics ? 'Showing the last successful analytics snapshot. ' : 'Showing the last successful overview. '
+                  : analytics ? 'Analytics data is unavailable. ' : 'Factory data is unavailable. ') + currentError
               : ''}
           </Notice>
           <p id="updated-at" className="freshness">
-            {overview
-              ? `${stale ? 'Last successful snapshot: ' : 'Snapshot: '}${time(overview.generated_at)} · age ${duration(age)}. Refreshes every 30s while visible.`
+            {currentValue
+              ? `${stale ? 'Last successful snapshot: ' : 'Snapshot: '}${time(currentValue.generated_at)} · age ${duration(age)}. Refreshes every 30s while visible.`
               : 'No snapshot available yet.'}
           </p>
-          <div data-view="overview" hidden={work || Boolean(route.issue)}>
+          <div data-view="overview" hidden={route.view !== 'overview' || Boolean(route.issue)}>
             <Overview overview={overview} error={overviewError} {...navigation} />
           </div>
           <div data-view="work" hidden={!work || Boolean(route.issue)}>
@@ -1127,6 +1146,10 @@ function App() {
               error={overviewError}
               {...navigation}
             />
+          </div>
+          <div data-view="analytics" hidden={!analytics}>
+            <Analytics report={analyticsSnapshot.value} days={route.days}
+              onDaysChange={(days) => navigate({ days })} error={analyticsSnapshot.error} />
           </div>
           <IssueDetail
             issue={route.issue}

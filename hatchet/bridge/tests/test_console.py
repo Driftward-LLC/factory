@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -8,6 +9,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from hatchet_hermes_bridge.analytics import factory_analytics
+from hatchet_hermes_bridge.cli import main
 from hatchet_hermes_bridge.console import make_console_server
 from hatchet_hermes_bridge.store import reserve_factory_attempt
 from factory_lifecycle_writer.outbox import Outbox
@@ -44,7 +47,8 @@ class FactoryConsoleTests(unittest.TestCase):
             "delivered_at": None, "suppressed_at": None, "last_error_code": None,
         })
         outbox.close()
-        self.server = make_console_server(self.db, "127.0.0.1", 0, ROOT / "factory/console", self.lifecycle_db)
+        self.ingress_db = str(Path(self.work.name) / "ingress.db")
+        self.server = make_console_server(self.db, "127.0.0.1", 0, ROOT / "factory/console", self.lifecycle_db, self.ingress_db)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self._stop_server)
@@ -105,11 +109,108 @@ class FactoryConsoleTests(unittest.TestCase):
         schema = json.loads(raw)
         self.assertIn("/api/overview", schema["paths"])
         self.assertIn("/api/lifecycle/{issue}", schema["paths"])
+        self.assertIn("/api/analytics", schema["paths"])
 
     def test_invalid_issue_is_rejected(self):
         with self.assertRaises(HTTPError) as raised:
             self.get("/api/lifecycle/not-an-issue")
         self.assertEqual(raised.exception.code, 400)
+
+    def test_analytics_is_authenticated_readonly_and_preserves_missing_evidence(self):
+        with patch.dict(os.environ, {"FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED": ""}):
+            with self.assertRaises(HTTPError) as raised:
+                self.get("/api/analytics", identity=False)
+        self.assertEqual(raised.exception.code, 401)
+        before = {path: Path(path).read_bytes() for path in (self.db, self.lifecycle_db)}
+        with patch("sqlite3.connect", wraps=sqlite3.connect) as opened:
+            status, headers, raw = self.get("/api/analytics")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(len(opened.call_args_list), 2)
+        for call in opened.call_args_list:
+            self.assertTrue(call.args[0].endswith("?mode=ro"))
+            self.assertTrue(call.kwargs["uri"])
+        self.assertEqual(before, {path: Path(path).read_bytes() for path in before})
+        self.assertFalse(Path(self.ingress_db).exists())
+        value = json.loads(raw)
+        self.assertEqual(value["schema"], "factory-console-analytics-v1")
+        self.assertEqual(value["window"]["days"], 30)
+        self.assertEqual(value["coverage"]["cohort_work_items"], 1)
+        self.assertFalse(value["coverage"]["ingress_available"])
+        self.assertEqual(value["funnel"]["stages"]["attempted"]["count"], 1)
+        self.assertIsNone(value["github"]["coverage"])
+        self.assertIsNone(value["github"]["merged_prs"])
+        self.assertFalse(value["github"]["reviews"]["available"])
+        self.assertIsNone(value["github"]["reviews"]["changes_requested_rate"])
+        self.assertFalse(value["github"]["first_pass_checks"]["available"])
+
+    def test_analytics_rejects_invalid_duplicate_and_unknown_parameters(self):
+        for query in ("days=0", "days=366", "days=-1", "days=1.5", "days=", "days=true", "days=7&days=30", "days=7&source=private", "other="):
+            with self.subTest(query=query), self.assertRaises(HTTPError) as raised:
+                self.get("/api/analytics?" + query)
+            self.assertEqual(raised.exception.code, 400)
+        for days in (1, 7, 90, 365):
+            with self.subTest(days=days):
+                self.assertEqual(json.loads(self.get(f"/api/analytics?days={days}")[2])["window"]["days"], days)
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(self.base + "/api/analytics", data=b"{}", headers={"Tailscale-User-Login": "operator@driftward.test"}), timeout=2)
+        self.assertEqual(raised.exception.code, 405)
+
+    def test_analytics_uses_optional_ingress_and_preserves_unverified_coverage(self):
+        conn = connect(self.db)
+        conn.execute("UPDATE factory_attempts SET prior_pr_url = ?", ("https://github.com/Driftward-LLC/capykit/pull/119",))
+        conn.commit()
+        conn.close()
+        conn = sqlite3.connect(self.ingress_db)
+        conn.execute("CREATE TABLE ingress_events (event_id TEXT, source TEXT, subject TEXT, normalized_json TEXT, decision TEXT, reason_code TEXT, hatchet_published INTEGER, created_at TEXT, provider_updated_at_us INTEGER)")
+        conn.commit()
+        conn.close()
+        value = json.loads(self.get("/api/analytics")[2])
+        self.assertTrue(value["coverage"]["ingress_available"])
+        self.assertIsNone(value["github"]["coverage"])
+        self.assertFalse(value["github"]["reviews"]["available"])
+        self.assertIsNone(value["github"]["merged_prs"])
+
+    def test_analytics_allowlist_excludes_private_fields_and_unknown_classifications(self):
+        report = factory_analytics(self.db, self.ingress_db, self.lifecycle_db)
+        private = "private-operator-label-and-path"
+        report["sources"] = {"bridge": {"path": private}}
+        report["backends"] = [{"configured_auth_mode": private}]
+        report["coverage"]["extra"] = private
+        report["funnel"]["stages"]["attempted"]["extra"] = private
+        report["github"]["coverage"] = {"observed": 0, "eligible": 18, "rate": 0, "complete": False, "extra": private}
+        report["github"]["reviews"] = {"available": True, "coverage": report["github"]["coverage"], "changes_requested_prs": 0, "changes_requested_rate": None, "actor": private}
+        report["failures"]["by_classification"] = [
+            {"failure_domain": "verification", "failure_stage": "verification_checks", "reason_code": "verification_github_check_failed", "count": 2, "error": private},
+            {"failure_domain": private, "failure_stage": private, "reason_code": private, "count": 3},
+            {"failure_domain": "unknown", "failure_stage": "unknown", "reason_code": "unknown", "count": 1},
+        ]
+        with patch("hatchet_hermes_bridge.console.factory_analytics", return_value=report):
+            value = json.loads(self.get("/api/analytics")[2])
+        self.assertNotIn(private, json.dumps(value))
+        self.assertEqual(set(value), {"schema", "generated_at", "window", "coverage", "funnel", "github", "recovery", "failures", "latency_ms"})
+        self.assertEqual(value["github"]["coverage"], {"observed": 0, "eligible": 18, "rate": 0, "complete": False})
+        self.assertIsNone(value["github"]["reviews"]["changes_requested_rate"])
+        self.assertEqual(value["failures"]["by_classification"], [
+            {"failure_domain": "unknown", "failure_stage": "unknown", "reason_code": "unknown", "count": 4},
+            {"failure_domain": "verification", "failure_stage": "verification_checks", "reason_code": "verification_github_check_failed", "count": 2},
+        ])
+
+    def test_analytics_data_failure_returns_sanitized_service_unavailable(self):
+        with patch("hatchet_hermes_bridge.console.factory_analytics", side_effect=RuntimeError("private database path")):
+            with self.assertRaises(HTTPError) as raised:
+                self.get("/api/analytics")
+        self.assertEqual(raised.exception.code, 503)
+        self.assertEqual(json.loads(raised.exception.read()), {"error": "analytics unavailable"})
+
+    def test_console_entry_points_pass_operator_analytics_sources(self):
+        env = {"HATCHET_FACTORY_OPERATOR_INGRESS_DB": self.ingress_db, "HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB": self.lifecycle_db}
+        with patch.dict(os.environ, env), patch("hatchet_hermes_bridge.console.serve_console") as serve:
+            self.assertEqual(main(["--db", self.db, "serve-console"]), 0)
+        self.assertEqual(serve.call_args.args[-2:], (self.lifecycle_db, self.ingress_db))
+        with patch.dict(os.environ, env), patch("hatchet_hermes_bridge.console.make_console_server") as make, patch("hatchet_hermes_bridge.cli.serve_operator"), patch("hatchet_hermes_bridge.cli.threading.Thread"):
+            self.assertEqual(main(["--db", self.db, "serve-operator", "--console-host", "127.0.0.1", "--console-port", "19881"]), 0)
+        self.assertEqual(make.call_args.args[-2:], (self.lifecycle_db, self.ingress_db))
 
 
 if __name__ == "__main__":

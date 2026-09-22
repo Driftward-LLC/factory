@@ -6,6 +6,7 @@ import re
 import socket
 import sqlite3
 import threading
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,10 +15,13 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from .analytics import factory_analytics
 from .store import (
     BridgeError,
     BridgeNotFound,
     BridgeValidationError,
+    EXECUTION_FAILURE_DOMAINS,
+    EXECUTION_FAILURE_STAGES,
     connect_readonly,
     get_factory_lifecycle,
     list_active_factory_attempts,
@@ -41,6 +45,27 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
+# Legacy report dimensions may contain free text; browser labels must be known.
+ANALYTICS_FAILURE_REASONS = frozenset({
+    "artifact_fence_changed", "artifact_fence_invalid",
+    "factory_execution_recovery_required", "factory_receipt_job_load_failed",
+    "factory_receipt_analytics_setup_failed", "hermes_process_timeout",
+    "hermes_process_exit_nonzero", "hermes_process_output_limit_exceeded",
+    "hermes_grpc_client_setup_failed", "hermes_grpc_response_malformed",
+    "hermes_grpc_gateway_unavailable", "hermes_grpc_gateway_timeout",
+    "hermes_grpc_gateway_unauthenticated", "hermes_grpc_gateway_forbidden",
+    "verification_pr_base_mismatch", "verification_pr_author_mismatch",
+    "verification_pr_linear_link_missing", "verification_changed_file_scope_invalid",
+    "verification_changed_file_forbidden", "verification_github_checks_missing",
+    "verification_github_checks_pending", "verification_github_checks_timeout",
+    "verification_github_required_check_missing", "verification_github_check_failed",
+    "verification_local_command_evidence_missing", "verification_local_command_failed",
+    "verification_local_command_policy_mismatch", "verification_secret_check_evidence_missing",
+    "verification_secret_check_failed", "verification_secret_check_policy_mismatch",
+    "verification_policy_unavailable", "verification_policy_missing", "verification_policy_invalid",
+    "verification_commit_mismatch", "verification_evidence_malformed",
+    "verification_evidence_unavailable", "verification_recovery_context_unavailable",
+})
 
 
 def _mode() -> str:
@@ -115,11 +140,75 @@ def lifecycle(db_path: str, issue: str) -> dict[str, Any]:
         conn.close()
 
 
+def _fields(value: dict[str, Any] | None, *keys: str) -> dict[str, Any] | None:
+    return {key: value.get(key) for key in keys} if value is not None else None
+
+
+def analytics(db_path: str, ingress_db_path: str | None, lifecycle_db_path: str | None, days: int) -> dict[str, Any]:
+    report = factory_analytics(db_path, ingress_db_path or "", lifecycle_db_path or "", days=days)
+    github = report["github"]
+    classifications: Counter[tuple[str, str, str]] = Counter()
+    for row in report["failures"]["by_classification"]:
+        key = tuple(
+            row[field] if row[field] in allowed else "unknown"
+            for field, allowed in (
+                ("failure_domain", EXECUTION_FAILURE_DOMAINS),
+                ("failure_stage", EXECUTION_FAILURE_STAGES),
+                ("reason_code", ANALYTICS_FAILURE_REASONS),
+            )
+        )
+        classifications[key] += row["count"]
+    return {
+        "schema": "factory-console-analytics-v1",
+        "generated_at": report["generated_at"],
+        "window": _fields(report["window"], "days", "started_at", "ended_at"),
+        "coverage": _fields(report["coverage"], "cohort_attempts", "cohort_work_items", "dry_run_attempts_excluded", "legacy_attempts_excluded", "bridge_available", "ingress_available"),
+        "funnel": {"stages": {
+            stage: _fields(report["funnel"]["stages"][stage], "count", "rate_from_attempted")
+            for stage in ("attempted", "executor_started", "effect_committed", "draft_pr_available", "verified_ready")
+        }},
+        "github": {
+            **_fields(github, "merged_prs", "closed_unmerged_prs", "open_prs", "unobserved_prs"),
+            "coverage": _fields(github.get("coverage"), "observed", "eligible", "rate", "complete"),
+            **{
+                key: {
+                    **_fields(github.get(key) or {}, *fields),
+                    "available": (github.get(key) or {}).get("available", False),
+                    "coverage": _fields((github.get(key) or {}).get("coverage"), "observed", "eligible", "rate", "complete"),
+                }
+                for key, fields in (
+                    ("check_suite_observations", ("available", "observations", "successful_observations")),
+                    ("reviews", ("available", "changes_requested_prs", "changes_requested_rate")),
+                )
+            },
+            "first_pass_checks": _fields(github.get("first_pass_checks") or {"available": False}, "available", "success_rate"),
+        },
+        "recovery": {
+            "by_attempt_kind": {
+                kind: _fields(report["recovery"]["by_attempt_kind"][kind], "attempts", "verified")
+                for kind in ("initial", "retry", "absence_retry", "repair", "unknown")
+            },
+            "repair_budgets_exhausted": report["recovery"]["repair_budgets_exhausted"],
+        },
+        "failures": {
+            "currently_failed_attempts": report["failures"]["currently_failed_attempts"],
+            "by_classification": [
+                {"failure_domain": key[0], "failure_stage": key[1], "reason_code": key[2], "count": count}
+                for key, count in sorted(classifications.items(), key=lambda item: (-item[1], item[0]))
+            ],
+        },
+        "latency_ms": {
+            stage: _fields(report["latency_ms"][stage], "samples", "p50", "p95", "eligible", "coverage_rate")
+            for stage in ("attempt_to_executor_started", "executor_started_to_effect_committed", "effect_committed_to_verified_ready", "attempt_to_terminal")
+        },
+    }
+
+
 def _error(status: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": message})
 
 
-def create_console_app(db_path: str, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None) -> FastAPI:
+def create_console_app(db_path: str, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None, ingress_db_path: str | None = None) -> FastAPI:
     assets = Path(asset_root or DEFAULT_ASSET_ROOT)
     app = FastAPI(
         title="Driftward Factory Console API",
@@ -179,6 +268,19 @@ def create_console_app(db_path: str, asset_root: str | Path | None = None, lifec
     def api_lifecycle(issue: str) -> dict[str, Any]:
         return lifecycle(db_path, issue)
 
+    @app.get("/api/analytics")
+    def api_analytics(request: Request) -> dict[str, Any]:
+        query = request.query_params
+        if set(query) - {"days"}:
+            raise HTTPException(status_code=400, detail="analytics has unsupported query parameters")
+        values = query.getlist("days") if "days" in query else ["30"]
+        if len(values) != 1 or not re.fullmatch(r"[0-9]{1,3}", values[0]) or not 1 <= int(values[0]) <= 365:
+            raise HTTPException(status_code=400, detail="analytics days must be an integer between 1 and 365")
+        try:
+            return analytics(db_path, ingress_db_path, lifecycle_db_path, int(values[0]))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="analytics unavailable") from exc
+
     def asset_handler(name: str, media_type: str) -> Any:
         def asset() -> FileResponse:
             path = assets / name
@@ -218,12 +320,12 @@ class ConsoleServer:
         self._socket.close()
 
 
-def make_console_server(db_path: str, host: str, port: int, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None) -> ConsoleServer:
-    return ConsoleServer(create_console_app(db_path, asset_root, lifecycle_db_path), host, port)
+def make_console_server(db_path: str, host: str, port: int, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None, ingress_db_path: str | None = None) -> ConsoleServer:
+    return ConsoleServer(create_console_app(db_path, asset_root, lifecycle_db_path, ingress_db_path), host, port)
 
 
-def serve_console(db_path: str, host: str, port: int, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None) -> None:
-    server = make_console_server(db_path, host, port, asset_root, lifecycle_db_path)
+def serve_console(db_path: str, host: str, port: int, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None, ingress_db_path: str | None = None) -> None:
+    server = make_console_server(db_path, host, port, asset_root, lifecycle_db_path, ingress_db_path)
     try:
         server.serve_forever()
     finally:

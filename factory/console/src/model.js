@@ -88,7 +88,8 @@ export function readRoute() {
   const status = query.get('status') || 'all';
   const mode = query.get('mode') || 'all';
   return {
-    view: query.get('view') === 'work' ? 'work' : 'overview',
+    view: ['work', 'analytics'].includes(query.get('view')) ? query.get('view') : 'overview',
+    days: [7, 30, 90].includes(Number(query.get('days'))) ? Number(query.get('days')) : 30,
     issue: (query.get('issue') || '').toUpperCase(),
     q: (query.get('q') || '').slice(0, 200),
     status: ['all', 'active', 'attention', 'verifying', 'verified', 'failed', 'finished'].includes(
@@ -105,6 +106,7 @@ export function routeUrl(next) {
   url.search = '';
   url.hash = '';
   for (const [key, value] of Object.entries(next)) {
+    if (key === 'days' && (value === 30 || next.view !== 'analytics')) continue;
     if (value && value !== 'all') url.searchParams.set(key, value);
   }
   return url.pathname + url.search;

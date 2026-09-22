@@ -2,8 +2,8 @@
 
 Factory analytics answers operational questions from the durable evidence the
 Factory already owns. It is a read-only projection over the bridge, ingress,
-and lifecycle SQLite ledgers; it is not a second event store, a tracing system,
-or a dashboard.
+and lifecycle SQLite ledgers. The operator CLI exposes the full report; the
+console's Analytics tab exposes a smaller aggregate view of the same evidence.
 
 The report schema is `factory-analytics-v1`. Missing evidence is returned as
 `unknown`, `null`, incomplete coverage, or an entry in `unavailable_metrics`.
@@ -29,8 +29,8 @@ as a measured zero.
 The CLI calls `GET /v1/analytics?days=N` through the root-owned Factory
 operator Unix socket. The endpoint requires the operator bearer token, accepts
 only one optional `days` query parameter, and returns the
-`factory-analytics-v1` JSON object. It is not exposed by the public ingress,
-the worker-facing bridge API, or the read-only web console.
+`factory-analytics-v1` JSON object. The full report is not exposed by the public
+ingress, the worker-facing bridge API, or the read-only web console.
 
 The operator opens the existing database files read-only. The bridge ledger is
 required; an unavailable bridge ledger fails the request. Ingress and lifecycle
@@ -42,6 +42,34 @@ joined by exact `event_key`. In either case authenticated Ready
 counts/correlation and canonical GitHub outcome/check/review metrics are
 `null` or `available: false`; unknown-authenticity observations remain
 explicitly observation-only.
+
+### Console Analytics tab
+
+The authenticated console provides `GET /api/analytics?days=N`, with schema
+`factory-console-analytics-v1`. It accepts one optional integer `days` from
+`1` through `365`, defaulting to `30`; duplicate or unknown parameters return
+`400`. It uses the existing Tailscale identity boundary and no-store security
+headers. A bridge/report failure returns the generic `503` response
+`{"error":"analytics unavailable"}` without source paths or exception details.
+
+This endpoint projects only window bounds, cohort/exclusion counts, delivery
+funnel counts and rates, GitHub observation coverage and outcomes, check-suite
+and review aggregates, repair counts, bounded failure classifications, and
+stage latency distributions. Coverage retains its `observed`, `eligible`,
+`rate`, and `complete` fields; missing evidence stays `null` or
+`available: false`. Check-suite observations do not become first-pass CI.
+Changes-requested rates use PRs with review observations as their denominator.
+Readiness still means recorded verification, not reviewer approval.
+
+The projection explicitly allows each field and stage name. Failure domains
+and stages use the bridge's fixed enums; reasons use the console's fixed
+allowlist, with other values grouped as `unknown`. It excludes source paths,
+raw events, issue/repository/PR identifiers, backend/configuration labels,
+provider/authentication settings, session material, and operator actions.
+Both console entry points receive the optional ingress ledger path from
+`HATCHET_FACTORY_OPERATOR_INGRESS_DB`; the existing lifecycle path is reused.
+All three sources are opened read-only through the existing reporter. There
+is no new database, background ingestion, migration, or operator API proxy.
 
 The top-level JSON sections are:
 
@@ -74,8 +102,9 @@ Source ownership and query paths are:
 | Lifecycle ledger | `/var/lib/driftward-factory-lifecycle-writer/outbox.db` | `lifecycle_outbox` | Optional delivery/dead-letter projection |
 
 There is no analytics table, write path, periodic ETL job, or historical
-backfill. Query the report through `factory analytics`; use the underlying
-ledgers directly only for focused forensic debugging.
+backfill. Query the full report through `factory analytics` or its aggregate
+view through the console; use the underlying ledgers directly only for
+focused forensic debugging.
 
 ## Window, cohort, and grains
 
@@ -740,5 +769,5 @@ validation boundaries; they are never valid release or backend labels.
 rows may retain historical `hermes_session_id` values, but new bounded
 execution receipts require that field to be null and the analytics projection
 never returns it. Continue to protect the underlying ledgers and operator
-socket as root-owned runtime data, and expose only the aggregate report to any
-future dashboard or export.
+socket as root-owned runtime data. The console exposes only the explicit
+aggregate allowlist described above; future exports must preserve that boundary.
