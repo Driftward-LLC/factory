@@ -13,6 +13,46 @@ parameters and returns at most two manifests and three checkpoints. The worker
 API and browser console do not expose this endpoint. These are observations of
 existing transitions; they do not grant execution, verification or merge authority.
 
+## Console verification view
+
+The issue inspection view adds `verification_evidence` to the existing
+authenticated `GET /api/lifecycle/{issue}` response. It is a separate allowlisted
+`factory-console-verification-v1` projection for the **newest returned attempt**,
+bound by `attempt_id`; it does not expose the root-only evidence endpoint or
+serialize full manifests. The lifecycle, checkpoints and inspection are read in
+one SQLite snapshot. Reading the view never requests a new inspection or
+changes any attempt, receipt, lease or outbox.
+
+The view shows specification, implementation and verification recording states,
+the full verified SHA, verification time, policy/receipt digests and recorded
+check counts. It labels local checks as executor-reported, not independently
+executed. Independent review remains unavailable in this projection.
+
+For a valid recorded verification, compare its full SHA only with the newest
+stored PR inspection for the same repository and exact PR URL:
+
+- `same_head`: the inspection was recorded after verification and matches its SHA.
+- `head_changed`: that later inspection records a different SHA. The historical
+  verification remains immutable and does not cover the inspected revision.
+- `inspection_predates_verification`: the inspection cannot establish a
+  post-verification head comparison.
+- `unavailable`: missing, pending, expired, invalid, unknown or short-SHA
+  evidence cannot establish a comparison.
+
+Inspection freshness is independent of SHA comparison. An old matching
+inspection stays visibly stale; page refresh only rereads the ledger and never
+certifies live GitHub state. A newer pending inspection is not silently replaced
+by an older successful result. Observed open/closed/merged state is historical,
+not a current review or merge decision. GitHub webhook/review aggregation is not
+part of this projection, so "latest" refers specifically to the stored inspection
+requests, not every possible artifact observation.
+
+Dry runs cannot establish real verification. Older attempts without checkpoints
+stay unavailable; later repair attempts never inherit the previous attempt's
+verification result. Unknown contract versions, invalid digests and malformed
+verification references are not presented as passed evidence. This view adds
+no database migration, verification producer, reviewer or approval authority.
+
 ## Producers and contracts
 
 | Record | Producer boundary | Meaning |

@@ -133,7 +133,14 @@ page and filters. Narrow screens show compact attempt entries with expandable
 metadata instead of horizontally scrolling tables.
 
 Verification labels describe recorded evidence, not a PR's current head,
-merge state, or outstanding review. Attempt age and recorded span are not
+merge state, or outstanding review. Issue inspection shows immutable checkpoint
+states for the newest returned attempt and compares its verified SHA with the
+latest stored PR inspection. Changed heads, inspections predating verification,
+stale observations and missing evidence are explicit. Refreshing does not call
+GitHub or request a new inspection. Local checks remain executor-reported and
+independent review remains unavailable in this view. See
+[`work evidence`](../docs/factory-work-evidence.md) for the contract.
+Attempt age and recorded span are not
 model-runtime measurements. The issue timeline shows at most 80 returned
 events; source/API limits also apply. Unknown and unavailable data remain
 explicit, and a failed refresh retains the last successful snapshot with a

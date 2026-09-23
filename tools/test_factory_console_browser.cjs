@@ -42,9 +42,24 @@ function overview() {
     links: { hatchet: 'https://attacker.example/' },
   };
 }
+let evidenceState = 'same_head';
+function verificationEvidence(issue) {
+  const item = records.find(record => record.attempt.work_item_key === issue);
+  if (!item || evidenceState === 'missing') return null;
+  return {
+    schema: 'factory-console-verification-v1', attempt_id: evidenceState === 'wrong_attempt' ? 'another-attempt' : item.attempt.attempt_id,
+    mode: item.attempt.mode, available: true,
+    specification: { result: 'recorded', recorded_at: new Date(now - 3600000).toISOString() },
+    implementation: { result: item.attempt.mode === 'dry-run' ? 'not_applicable' : 'recorded', recorded_at: new Date(now - 600000).toISOString() },
+    verification: { result: item.attempt.mode === 'dry-run' ? 'not_applicable' : 'passed', recorded_at: new Date(now - 300000).toISOString(), commit_sha: 'a'.repeat(40), checks_passed: 3, local_commands_passed: 2, policy_digest: 'c'.repeat(64), receipt_digest: 'd'.repeat(64), local_evidence_source: 'executor_reported' },
+    inspection: { status: evidenceState === 'stale' ? 'stale' : 'recorded', observed_at: new Date(now - 60000).toISOString(), head_sha: (evidenceState === 'head_changed' ? 'b' : 'a').repeat(40), pr_state: 'open', merged: false, draft: true },
+    head_comparison: evidenceState === 'stale' ? 'same_head' : evidenceState, independent_review: 'unavailable',
+  };
+}
 function lifecycle(issue) {
   return {
     work_item_key: issue,
+    verification_evidence: verificationEvidence(issue),
     attempts: records.filter((r) => r.attempt.work_item_key === issue).sort((a, b) => b.attempt.generation - a.attempt.generation),
     timeline: [{
       event_id: issue + '-event', event_type: 'execution_backend_invoked', generation: 1,
@@ -253,7 +268,44 @@ async function main() {
     await page.waitForFunction(() => !document.querySelector('#issue-content').hidden);
     assert.equal(await page.locator('[data-view="work"]').isVisible(), false);
     assert.match(await page.locator('#next-step').textContent(), /confirm its current head/);
-    assert.match(await page.locator('#artifact-note').textContent(), /Current merge or review status is not available/);
+    assert.match(await page.locator('#artifact-note').textContent(), /not live GitHub state or review approval/);
+    const evidencePanel = page.locator('.verification-evidence');
+    assert.match(await evidencePanel.textContent(), /matches the verified SHA/);
+    assert.match(await evidencePanel.textContent(), /Independent reviewUnavailable in this view/);
+    await evidencePanel.locator('summary').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await evidencePanel.locator('details').getAttribute('open'), '');
+    assert.match(await evidencePanel.textContent(), /executor-reported, not independent test execution/);
+    await page.keyboard.press('Enter');
+    for (const [state, message] of [
+      ['head_changed', 'Earlier verification does not cover that revision'],
+      ['inspection_predates_verification', 'The PR inspection predates verification'],
+      ['stale', 'outside its freshness window'],
+      ['missing', 'Verification evidence is unavailable'],
+      ['wrong_attempt', 'Verification evidence is unavailable'],
+      ['same_head', 'matches the verified SHA'],
+    ]) {
+      evidenceState = state;
+      await Promise.all([
+        page.waitForResponse(response => response.url().includes('/api/lifecycle/ENG-102')),
+        page.locator('#refresh-button').click(),
+      ]);
+      await page.waitForFunction(text => document.querySelector('.verification-evidence').textContent.includes(text), message);
+      await page.waitForFunction(() => document.querySelector('#issue-freshness').textContent.startsWith('Evidence retrieved'));
+    }
+    evidenceState = 'head_changed';
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('[data-comparison="head_changed"]'));
+    for (const width of [320, 700, 1024, 1440]) {
+      await page.setViewportSize({ width, height: 1080 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Evidence overflow at ' + width);
+      if (width === 320) await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-evidence-mobile.png'), fullPage: true });
+    }
+    await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Evidence overflow at 200% text');
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+    assert.deepEqual(await contrastFailures(page, '.verification-evidence .muted, .verification-evidence .pill, .verification-evidence small'), []);
+    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-evidence.png'), fullPage: true });
     assert.equal(await page.locator('#github-link').getAttribute('href'), verified.job.pr_url);
     await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-work.png'), fullPage: true });
     await page.goBack();
@@ -297,6 +349,7 @@ async function main() {
     delayedIssue = '';
     await page.waitForFunction(() => document.querySelector('#issue-title').textContent === 'ENG-103');
     assert.match(await page.locator('#next-step').textContent(), /dry-run attempt/);
+    assert.match(await page.locator('.verification-evidence').textContent(), /Dry-run evidence does not establish a real artifact/);
     assert.equal(await page.locator('#issue-timeline script').count(), 0);
 
     await page.locator('#refresh-button').click();

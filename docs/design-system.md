@@ -23,6 +23,9 @@ The Factory Analytics page also has fictional missing-evidence, partial-review,
 empty, loading, and unavailable examples composed from the shared components.
 Its daily activity chart also has missing-timestamp and disconnected-series
 examples, with keyboard day selection and an accessible table.
+The Factory verification evidence panel has matching, changed, stale, older,
+failed, legacy, dry-run, invalid and unavailable examples. It uses the shared
+status badge and summary components without implying live approval.
 The console's existing appearance is the initial design system. This change
 does not adopt Reflect's marketing-site theme.
 

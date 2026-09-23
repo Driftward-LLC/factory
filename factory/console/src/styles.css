@@ -119,6 +119,15 @@ td:last-child { color: var(--muted); font-size: .75rem; }
 .next-step p { margin: 6px 0 0; font-size: .875rem; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 28px; margin-top: 28px; }
 .detail-grid > section { min-width: 0; }
+.verification-evidence { margin-top: 24px; padding-block: 20px; border-block: 1px solid var(--line); }
+.verification-evidence > p, .evidence-comparison p { font-size: .8125rem; }
+.evidence-checkpoints { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 16px; }
+.evidence-checkpoints .summary-item { padding: 10px 0; }
+.evidence-checkpoints .summary-item strong { display: block; }
+.evidence-checkpoints small { display: block; margin-top: 8px; color: var(--muted); font-size: .75rem; font-weight: 400; }
+.evidence-comparison { margin-top: 16px; }
+.evidence-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 0 24px; }
+.evidence-facts > div { min-width: 0; }
 .detail-grid h3 { margin-bottom: 14px; font-weight: 600; }
 details { margin-top: 16px; border: 1px solid var(--line); border-radius: 6px; padding: 0 14px; background: var(--surface); }
 summary { cursor: pointer; font-size: .8125rem; font-weight: 500; min-height: 44px; padding: 11px 0; }

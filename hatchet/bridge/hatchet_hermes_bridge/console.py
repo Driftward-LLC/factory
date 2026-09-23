@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .analytics import factory_analytics
+from .console_evidence import attempt_evidence
 from .store import (
     BridgeError,
     BridgeNotFound,
@@ -135,7 +136,12 @@ def lifecycle(db_path: str, issue: str) -> dict[str, Any]:
         raise BridgeValidationError("issue must be an ENG identifier")
     conn = connect_readonly(db_path)
     try:
-        return get_factory_lifecycle(conn, issue)
+        # Keep the attempt, immutable checkpoints and inspection in one read snapshot.
+        with conn:
+            conn.execute("BEGIN")
+            report = get_factory_lifecycle(conn, issue)
+            report["verification_evidence"] = attempt_evidence(conn, report["attempts"][0]) if report["attempts"] else None
+            return report
     finally:
         conn.close()
 

@@ -44,6 +44,13 @@ Opening an issue shows its inspection view directly. Closing it restores the
 previous page and filters. Preserve URL sharing, browser history, keyboard
 focus, refresh behavior, and the existing read-only authorization boundary.
 
+The verification evidence panel is scoped to the newest returned attempt.
+Compare the full verified SHA only against a later stored inspection for the
+same PR. Keep an older inspection, stale observation, changed head and missing
+evidence distinct. A matching head is not live verification or approval. Local
+checks are executor-reported; independent review remains unavailable. Page
+refresh rereads evidence and does not request new execution or inspection.
+
 Analytics uses its own 7-, 30-, or 90-day attempt cohort, rather than the active
 and recent list used by Overview and Work. Show delivery stages, recorded
 verification, repair outcomes, and GitHub evidence coverage. Keep work-item,
