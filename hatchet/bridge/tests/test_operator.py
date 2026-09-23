@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from hatchet_hermes_bridge import store, work_evidence
 from hatchet_hermes_bridge.operator import OperatorError, OperatorHandler, archive_lifecycle_dead_letter, list_lifecycle_dead_letters, preview_lifecycle_dead_letter_archive, preview_retry, reserve_retry, preview_force_absence_retry, reserve_force_absence_retry, inspect_draft_pr_state, _analytics_days, _bounded_limit, _mode, _operator_lifecycle_path, _operator_paths, _services_healthy
 from test_support import connect_migrate as connect
 from hatchet_hermes_bridge.store import BridgeConflict, authorize_factory_effect, claim_factory_execution, commit_factory_execution, get_factory_attempt, list_events, list_factory_attempt_events, settle_factory_execution, submit_job, transition_job, utc_now
@@ -262,6 +263,11 @@ class FactoryOperatorTests(unittest.TestCase):
         self.assertEqual(reserved["job"]["payload"]["factory_absence_retry"]["prior_attempt_id"], first["attempt"]["attempt_id"])
         self.assertEqual(reserved["job"]["payload"]["factory_absence_evidence"], evidence)
         conn = connect(self.bridge_db)
+        work = store.get_factory_work_evidence(conn, reserved["attempt"]["attempt_id"])
+        self.assertTrue(work["available"])
+        self.assertEqual(len(work["manifests"]), 1)
+        self.assertEqual(work["manifests"][0]["document"]["prior_attempt_id"], first["attempt"]["attempt_id"])
+        self.assertEqual(work["checkpoints"][0]["checkpoint_type"], "specification_snapshot")
         self.assertEqual(get_factory_attempt(conn, first["attempt"]["attempt_id"])["status"], "superseded")
         self.assertIn("absence_superseded_unknown_attempt", [event["event_type"] for event in list_factory_attempt_events(conn, first["attempt"]["attempt_id"])])
         self.assertEqual([event["event_type"] for event in list_factory_attempt_events(conn, reserved["attempt"]["attempt_id"])][:2], ["absence_retry_reserved", "retry_requested"])
@@ -279,6 +285,27 @@ class FactoryOperatorTests(unittest.TestCase):
         )
         self.assertFalse(replay["created"])
         self.assertEqual(replay["job"]["job_id"], reserved["job"]["job_id"])
+        conn = store.connect_readonly(self.bridge_db)
+        self.addCleanup(conn.close)
+        self.assertEqual(store.get_factory_work_evidence(conn, reserved["attempt"]["attempt_id"]), work)
+
+    def test_absence_retry_evidence_failure_rolls_back_supersession_and_reservation(self):
+        first, _claim = self.unknown_effect_attempt()
+        evidence = self.absence_evidence(first["attempt"]["branch"])
+        preview = preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=evidence)
+        conn = store.connect_readonly(self.bridge_db)
+        self.addCleanup(conn.close)
+        tables = ("bridge_jobs", "bridge_events", "factory_attempts", "factory_attempt_events", "factory_attempt_outbox", "factory_execution_manifests", "factory_work_checkpoints", "factory_execution_leases")
+        before = {table: conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall() for table in tables}
+        with patch.object(work_evidence, "specification_snapshot", side_effect=RuntimeError("failpoint")):
+            with self.assertRaisesRegex(RuntimeError, "failpoint"):
+                reserve_force_absence_retry(
+                    **self.kwargs(), attempt_id=first["attempt"]["attempt_id"], request_id="absence-failed",
+                    reason="branch and PR are absent", actor="uid:0",
+                    snapshot_digest=preview["snapshot_digest"], absence_evidence=evidence,
+                )
+        for table in tables:
+            self.assertEqual(conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall(), before[table], table)
 
     def test_force_absence_retry_rejects_positive_or_stale_evidence(self):
         first, _claim = self.unknown_effect_attempt()
