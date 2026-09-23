@@ -65,6 +65,26 @@ class FactoryOperatorTests(unittest.TestCase):
         self.assertEqual(handler.response[1]["window"]["days"], 7)
         self.assertFalse(handler.response[1]["coverage"]["ingress_available"])
 
+    def test_work_evidence_read_is_bounded_and_does_not_export_requirements(self):
+        preview = preview_retry(**self.kwargs())
+        reserved = reserve_retry(**self.kwargs(), request_id="evidence", reason="test", actor="uid:0", snapshot_digest=preview["snapshot_digest"])
+        attempt_id = reserved["attempt"]["attempt_id"]
+        path = f"/v1/attempts/{attempt_id}/evidence"
+        handler = _OperatorGetHandler(self.bridge_db, self.ingress_db, path)
+        handler.do_GET()
+        self.assertEqual(handler.response[0], 200)
+        self.assertEqual(handler.response[1]["schema"], "factory-work-evidence-v1")
+        self.assertEqual(len(handler.response[1]["manifests"]), 1)
+        self.assertNotIn("ignore prior instructions", json.dumps(handler.response))
+        self.assertNotIn("implementation_prompt", handler.response[1]["manifests"][0]["document"])
+        for suffix in ("?limit=1", "?raw=true", "?raw", "/extra/evidence"):
+            invalid = _OperatorGetHandler(self.bridge_db, self.ingress_db, path + suffix)
+            invalid.do_GET()
+            self.assertEqual(invalid.response[0], 400)
+        missing = _OperatorGetHandler(self.bridge_db, self.ingress_db, "/v1/attempts/missing/evidence")
+        missing.do_GET()
+        self.assertEqual(missing.response[0], 404)
+
     def unknown_effect_attempt(self):
         preview = preview_retry(**self.kwargs())
         first = reserve_retry(**self.kwargs(), request_id="first-unknown", reason="test", actor="uid:0", snapshot_digest=preview["snapshot_digest"])

@@ -84,6 +84,9 @@ See
 [docs/execution-backend-evaluation.md](docs/execution-backend-evaluation.md)
 for the Hermes-versus-direct-Codex measurement and canary design.
 
+See [docs/factory-work-evidence.md](docs/factory-work-evidence.md) for immutable
+execution manifests, checkpoint receipts, and explicit replay-data gaps.
+
 See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboard-plan.md)
 for the proposed capability roadmap and first operator-dashboard implementation slice.
 
