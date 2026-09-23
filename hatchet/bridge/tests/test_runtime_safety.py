@@ -315,7 +315,7 @@ class ConflictResolutionTests(unittest.TestCase):
             old_rows = self._v3_38(conn)
             self.assertEqual(classify_factory_import_conflicts(conn), {"original": 38, "resolvable": 38, "unresolved": 0, "attested": 0, "attestation_required": 38})
             init_db(conn)
-            self.assertEqual(conn.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone()[0], 5)
+            self.assertEqual(conn.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone()[0], 6)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
             for table, rows in old_rows.items():
                 self.assertEqual(conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall(), rows)

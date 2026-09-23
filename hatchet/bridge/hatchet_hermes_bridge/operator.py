@@ -24,6 +24,7 @@ from urllib.request import urlopen
 
 from .analytics import factory_analytics
 from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_factory_lifecycle, get_job, get_supersedable_bridge_job, list_active_factory_attempts, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, refresh_factory_effect_receipt_inspection, sanitize_detail
+from .store import get_factory_work_evidence
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -682,6 +683,10 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 elif path.startswith("/v1/attempts/work-item/"): value = {"attempts": list_factory_attempts(conn, unquote(path.rsplit("/", 1)[1]))}
                 elif path.startswith("/v1/attempts/") and path.endswith("/events"):
                     value = {"events": list_factory_attempt_events(conn, unquote(path.split("/")[3]), _bounded_limit(query, default=100, label="factory attempt event limit"))}
+                elif path.startswith("/v1/attempts/") and path.endswith("/evidence"):
+                    if len(path.split("/")) != 5 or query:
+                        raise OperatorError("work evidence accepts an exact attempt ID and no query parameters")
+                    value = get_factory_work_evidence(conn, unquote(path.split("/")[3]))
                 elif path.startswith("/v1/lifecycle/work-item/"):
                     value = get_factory_lifecycle(conn, unquote(path.rsplit("/", 1)[1]), _bounded_limit(query, default=250, label="factory lifecycle limit"))
                 elif path.startswith("/v1/attempts/"): value = {"attempt": get_factory_attempt(conn, unquote(path.rsplit("/", 1)[1]))}

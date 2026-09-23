@@ -77,6 +77,7 @@ factory lifecycle dead-letters archive OUTBOX-KEY --reason "reviewed historical 
 factory attempts active
 factory attempts list ENG-62 --json
 factory attempts show ATTEMPT-ID
+factory attempts evidence ATTEMPT-ID
 factory attempts events ATTEMPT-ID
 factory attempts cancel ATTEMPT-ID --reason "operator canceled before execution" --yes
 factory attempts refresh-receipt ATTEMPT-ID --reason "retry exact PR receipt inspection" --yes

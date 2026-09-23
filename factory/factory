@@ -55,6 +55,7 @@ Usage:
   factory attempts active [--json]
   factory attempts list ENG-X [--json]
   factory attempts show ATTEMPT-ID
+  factory attempts evidence ATTEMPT-ID
   factory attempts events ATTEMPT-ID [--json] [--limit N]
   factory attempts cancel ATTEMPT-ID --reason TEXT --yes
   factory attempts refresh-receipt ATTEMPT-ID --reason TEXT --yes
@@ -672,6 +673,7 @@ attempts() {
       operator_request GET "/v1/attempts/work-item/$issue"
       ;;
     show) [[ $# -eq 1 ]] || die "usage: factory attempts show ATTEMPT-ID"; operator_request GET "/v1/attempts/$1" ;;
+    evidence) [[ $# -eq 1 ]] || die "usage: factory attempts evidence ATTEMPT-ID"; operator_request GET "/v1/attempts/$1/evidence" ;;
     events)
       local id="" json=0 limit="" path response
       while [[ $# -gt 0 ]]; do
@@ -721,7 +723,7 @@ attempts() {
       [[ -n "$reason" && "$yes" == "--yes" ]] || die "receipt refresh requires --reason and --yes; it performs one read-only PR inspection and never invokes the execution backend"
       operator_request POST "/v1/attempts/$id/receipt-recovery/refresh" "$(jq -cn --arg reason "$reason" '{reason:$reason}')"
       ;;
-    *) die "usage: factory attempts {active|list|show|events|cancel|refresh-receipt}" ;;
+    *) die "usage: factory attempts {active|list|show|events|evidence|cancel|refresh-receipt}" ;;
   esac
 }
 

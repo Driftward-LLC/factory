@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,10 +21,11 @@ from .legacy_artifacts import (
     routing_repositories,
 )
 from .runtime import acquire_shared, migration_capability, release
+from . import work_evidence
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
 # identity also binds the transitive source closure that implements these
@@ -277,6 +279,7 @@ def _require_runtime_schema(conn: sqlite3.Connection) -> None:
         "factory_attempt_events", "factory_attempt_outbox", "factory_execution_leases",
         "factory_import_conflicts", "factory_import_conflict_resolutions",
         "factory_import_conflict_attestations",
+        "factory_execution_manifests", "factory_work_checkpoints",
     }
     found = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= found:
@@ -417,6 +420,33 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_factory_attempt_events_attempt
             ON factory_attempt_events(attempt_id, created_at);
 
+        CREATE TABLE IF NOT EXISTS factory_execution_manifests (
+            manifest_id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL REFERENCES factory_attempts(attempt_id),
+            phase TEXT NOT NULL CHECK(phase IN ('admission','execution')),
+            parent_manifest_id TEXT,
+            contract_version INTEGER NOT NULL CHECK(contract_version=1),
+            document_json TEXT NOT NULL CHECK(json_valid(document_json)),
+            document_digest TEXT NOT NULL CHECK(length(document_digest)=64),
+            created_at TEXT NOT NULL,
+            UNIQUE(attempt_id,phase),
+            UNIQUE(manifest_id,attempt_id),
+            CHECK((phase='admission' AND parent_manifest_id IS NULL) OR (phase='execution' AND parent_manifest_id IS NOT NULL)),
+            FOREIGN KEY(parent_manifest_id,attempt_id) REFERENCES factory_execution_manifests(manifest_id,attempt_id)
+        );
+        CREATE TABLE IF NOT EXISTS factory_work_checkpoints (
+            checkpoint_id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL REFERENCES factory_attempts(attempt_id),
+            checkpoint_type TEXT NOT NULL CHECK(checkpoint_type IN ('specification_snapshot','implementation_receipt','verification_receipt')),
+            manifest_id TEXT NOT NULL,
+            contract_version INTEGER NOT NULL CHECK(contract_version=1),
+            document_json TEXT NOT NULL CHECK(json_valid(document_json)),
+            document_digest TEXT NOT NULL CHECK(length(document_digest)=64),
+            created_at TEXT NOT NULL,
+            UNIQUE(attempt_id,checkpoint_type),
+            FOREIGN KEY(manifest_id,attempt_id) REFERENCES factory_execution_manifests(manifest_id,attempt_id)
+        );
+
         CREATE TABLE IF NOT EXISTS factory_execution_leases (
             attempt_id TEXT PRIMARY KEY, lease_id TEXT NOT NULL UNIQUE,
             owner TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL,
@@ -501,6 +531,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_import_conflict_attestations_update BEFORE UPDATE ON factory_import_conflict_attestations FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'factory import conflict attestations are append-only'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_import_conflict_attestations_delete BEFORE DELETE ON factory_import_conflict_attestations FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'factory import conflict attestations are append-only'); END")
+        for table in ("factory_execution_manifests", "factory_work_checkpoints"):
+            for operation in ("UPDATE", "DELETE"):
+                conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_{table}_{operation.lower()} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'work evidence is append-only'); END")
+            identity, kind = ("manifest_id", "phase") if table == "factory_execution_manifests" else ("checkpoint_id", "checkpoint_type")
+            # REPLACE otherwise bypasses DELETE triggers when recursive_triggers is off.
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_{table}_replace BEFORE INSERT ON {table} WHEN EXISTS (SELECT 1 FROM {table} WHERE {identity}=NEW.{identity} OR (attempt_id=NEW.attempt_id AND {kind}=NEW.{kind})) BEGIN SELECT RAISE(ABORT, 'work evidence is append-only'); END")
         _migration_failpoint("after-ddl")
         _migrate_bridge_verification_columns(conn)
         _migrate_reconciliation_findings(conn)
@@ -1264,6 +1300,91 @@ def _append_factory_attempt_event(conn: sqlite3.Connection, attempt_id: str, eve
     )
 
 
+def _insert_work_evidence(
+    conn: sqlite3.Connection, *, attempt_id: str, kind: str,
+    document: dict[str, Any], manifest_id: str | None = None,
+) -> str:
+    """Insert producer-built evidence in the caller's lifecycle transaction."""
+    if not conn.in_transaction:
+        raise BridgeValidationError("work evidence requires a lifecycle transaction")
+    is_manifest = kind in {"admission", "execution"}
+    table = "factory_execution_manifests" if is_manifest else "factory_work_checkpoints"
+    identity = "manifest_id" if is_manifest else "checkpoint_id"
+    kind_column = "phase" if is_manifest else "checkpoint_type"
+    reference_column = "parent_manifest_id" if is_manifest else "manifest_id"
+    serialized = work_evidence.canonical(document)
+    if len(serialized) > 16384 or sanitize_detail(document) != document:
+        raise BridgeValidationError("work evidence contains disallowed material")
+    evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward.work-evidence:v1:{attempt_id}:{kind}"))
+    existing = conn.execute(f"SELECT * FROM {table} WHERE {identity}=?", (evidence_id,)).fetchone()
+    if existing:
+        if existing["document_json"] != serialized or existing[reference_column] != manifest_id:
+            raise BridgeConflict("work evidence is immutable")
+        return evidence_id
+    conn.execute(
+        f"INSERT INTO {table} ({identity},attempt_id,{kind_column},{reference_column},contract_version,document_json,document_digest,created_at) VALUES (?,?,?,?,1,?,?,?)",
+        (evidence_id, attempt_id, kind, manifest_id, serialized, work_evidence.digest(document), utc_now()),
+    )
+    return evidence_id
+
+
+def _record_factory_admission_evidence(conn: sqlite3.Connection, attempt_id: str) -> None:
+    attempt = get_factory_attempt(conn, attempt_id)
+    job = get_job(conn, attempt["job_id"])
+    manifest = work_evidence.admission_manifest(attempt, job)
+    manifest_id = _insert_work_evidence(conn, attempt_id=attempt_id, kind="admission", document=manifest)
+    _insert_work_evidence(
+        conn, attempt_id=attempt_id, kind="specification_snapshot", manifest_id=manifest_id,
+        document=work_evidence.specification_snapshot(manifest),
+    )
+
+
+def _record_factory_transition_checkpoint(conn: sqlite3.Connection, job: dict[str, Any], *, verification_completion: bool) -> None:
+    if job["payload"].get("dry_run") is True:
+        return
+    attempt = get_factory_attempt_for_job(conn, job["job_id"])
+    if not attempt:
+        return
+    manifest = conn.execute(
+        "SELECT manifest_id FROM factory_execution_manifests WHERE attempt_id=? ORDER BY phase DESC LIMIT 1",
+        (attempt["attempt_id"],),
+    ).fetchone()
+    # In-flight pre-upgrade work has no historical admission snapshot. Never invent one.
+    if manifest is None:
+        return
+    if job["state"] == "effect_committed":
+        kind, document = "implementation_receipt", work_evidence.implementation_receipt(job)
+    elif verification_completion:
+        kind = "verification_receipt"
+        document = work_evidence.verification_receipt(job, passed=job["state"] == "ready_for_human_review")
+    else:
+        return
+    _insert_work_evidence(conn, attempt_id=attempt["attempt_id"], kind=kind, document=document, manifest_id=manifest["manifest_id"])
+
+
+def get_factory_work_evidence(conn: sqlite3.Connection, attempt_id: str) -> dict[str, Any]:
+    """Root-operator read; no payloads, transcripts, arbitrary artifacts or writes."""
+    def records(table: str, order: str) -> list[dict[str, Any]]:
+        result = []
+        for row in conn.execute(f"SELECT * FROM {table} WHERE attempt_id=? ORDER BY {order}", (attempt_id,)):
+            item = dict(row)
+            item["document"] = json.loads(item.pop("document_json"))
+            result.append(item)
+        return result
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        get_factory_attempt(conn, attempt_id)
+        manifests = records("factory_execution_manifests", "phase")
+        checkpoints = records("factory_work_checkpoints", "created_at,checkpoint_id")
+    missing = work_evidence.replay_gaps(manifests[-1]["document"] if manifests else None)
+    return {
+        "schema": "factory-work-evidence-v1", "attempt_id": attempt_id,
+        "available": bool(manifests), "manifests": manifests, "checkpoints": checkpoints,
+        "replay": {"available": not missing, "missing": missing},
+    }
+
+
 def _append_factory_attempt_event_once(
     conn: sqlite3.Connection,
     attempt_id: str,
@@ -1413,7 +1534,8 @@ def submit_job(conn: sqlite3.Connection, request: dict[str, Any], *, internal_in
     serialized_payload = canonical_json(payload)
     digest = payload_hash(payload)
 
-    with conn:
+    # Admission, job, evidence and outbox must commit together when called by a reservation.
+    with nullcontext() if conn.in_transaction else conn:
         existing = conn.execute(
             "SELECT * FROM bridge_jobs WHERE idempotency_key = ?",
             (idempotency_key,),
@@ -2466,6 +2588,7 @@ def reserve_factory_retry(
         conn.execute("UPDATE factory_attempts SET status='accepted', job_id=?, prior_attempt_id=?, updated_at=? WHERE attempt_id=?", (job["job_id"], prior_attempt_id, utc_now(), attempt["attempt_id"]))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "retry_requested", {"generation": attempt["generation"], "job_id": job["job_id"]})
         _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_accepted", {"job_id": job["job_id"]})
+        _record_factory_admission_evidence(conn, attempt["attempt_id"])
         outbox_key = f"factory:accepted:{attempt['attempt_id']}"
         conn.execute("INSERT INTO factory_attempt_outbox (outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", utc_now(), utc_now()))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "accepted_event_enqueued", {"outbox_key": outbox_key})
@@ -2589,6 +2712,7 @@ def reserve_factory_absence_retry(
         conn.execute("UPDATE factory_attempts SET status='accepted', job_id=?, prior_attempt_id=?, updated_at=? WHERE attempt_id=?", (job["job_id"], prior_attempt_id, utc_now(), attempt["attempt_id"]))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "retry_requested", {"generation": attempt["generation"], "job_id": job["job_id"], "absence_evidence_digest": evidence_digest})
         _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_accepted", {"job_id": job["job_id"]})
+        _record_factory_admission_evidence(conn, attempt["attempt_id"])
         outbox_key = f"factory:accepted:{attempt['attempt_id']}"
         conn.execute("INSERT INTO factory_attempt_outbox (outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", utc_now(), utc_now()))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "accepted_event_enqueued", {"outbox_key": outbox_key})
@@ -2702,6 +2826,7 @@ def _reserve_factory_verification_repair(
     )
     _append_factory_attempt_event(conn, attempt["attempt_id"], "repair_requested", {"generation": attempt["generation"], "job_id": job["job_id"], "source_job_id": failed_job["job_id"], "reason_code": reason_code})
     _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_accepted", {"job_id": job["job_id"]})
+    _record_factory_admission_evidence(conn, attempt["attempt_id"])
     outbox_key = f"factory:accepted:{attempt['attempt_id']}"
     conn.execute("INSERT INTO factory_attempt_outbox (outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", now, now))
     _append_factory_attempt_event(conn, attempt["attempt_id"], "accepted_event_enqueued", {"outbox_key": outbox_key})
@@ -2805,6 +2930,7 @@ def reserve_factory_intake(
         conn.execute("UPDATE factory_attempts SET status='accepted', job_id=?, updated_at=? WHERE attempt_id=?", (job["job_id"], now, attempt["attempt_id"]))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "intake_requested", {"generation": attempt["generation"], "job_id": job["job_id"]})
         _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_accepted", {"job_id": job["job_id"]})
+        _record_factory_admission_evidence(conn, attempt["attempt_id"])
         outbox_key = f"factory:accepted:{attempt['attempt_id']}"
         conn.execute("INSERT INTO factory_attempt_outbox (outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", now, now))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "accepted_event_enqueued", {"outbox_key": outbox_key})
@@ -3001,6 +3127,12 @@ def record_factory_execution_route(
         if attempt["status"] != "accepted" or job["state"] != "accepted":
             raise BridgeConflict("factory execution route must precede execution")
         _append_factory_attempt_event(conn, attempt["attempt_id"], "execution_route_selected", validated)
+        admission = conn.execute("SELECT manifest_id,document_json FROM factory_execution_manifests WHERE attempt_id=? AND phase='admission'", (attempt["attempt_id"],)).fetchone()
+        if admission:
+            _insert_work_evidence(
+                conn, attempt_id=attempt["attempt_id"], kind="execution", manifest_id=admission["manifest_id"],
+                document=work_evidence.execution_manifest(json.loads(admission["document_json"]), validated),
+            )
         return True
 
 
@@ -4309,6 +4441,7 @@ def transition_job(
             state=state,
             details=details,
         )
+        _record_factory_transition_checkpoint(conn, get_job(conn, job["job_id"]), verification_completion=verification_completion)
         if verification_completion and state == "failed" and factory_attempt:
             _reserve_factory_verification_repair(
                 conn,

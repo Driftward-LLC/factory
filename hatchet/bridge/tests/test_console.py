@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 from hatchet_hermes_bridge.analytics import factory_analytics
 from hatchet_hermes_bridge.cli import main
 from hatchet_hermes_bridge.console import make_console_server
-from hatchet_hermes_bridge.store import reserve_factory_attempt
+from hatchet_hermes_bridge.store import connect_runtime, reserve_factory_attempt
 from factory_lifecycle_writer.outbox import Outbox
 from test_support import connect_migrate as connect
 
@@ -160,7 +160,7 @@ class FactoryConsoleTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 405)
 
     def test_analytics_uses_optional_ingress_and_preserves_unverified_coverage(self):
-        conn = connect(self.db)
+        conn = connect_runtime(self.db)
         conn.execute("UPDATE factory_attempts SET prior_pr_url = ?", ("https://github.com/Driftward-LLC/capykit/pull/119",))
         conn.commit()
         conn.close()
