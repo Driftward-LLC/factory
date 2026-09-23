@@ -92,6 +92,10 @@ class FactoryConsoleTests(unittest.TestCase):
         status, _, raw = self.get("/api/lifecycle/ENG-119")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(raw)["work_item_key"], "ENG-119")
+        evidence = json.loads(raw)["verification_evidence"]
+        self.assertEqual(evidence["schema"], "factory-console-verification-v1")
+        self.assertFalse(evidence["available"])
+        self.assertEqual(evidence["head_comparison"], "unavailable")
 
         status, headers, raw = self.get("/")
         self.assertEqual(status, 200)

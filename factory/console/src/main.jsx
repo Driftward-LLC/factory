@@ -18,6 +18,7 @@ import {
 } from '@driftward/ui/icons';
 import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark } from '@driftward/ui';
 import Analytics from './Analytics.jsx';
+import VerificationEvidence from './VerificationEvidence.jsx';
 import {
   activeStates,
   terminalStates,
@@ -861,9 +862,10 @@ function IssueDetail({ issue, snapshot, onClose }) {
           </p>
         </div>
         <p id="artifact-note" className="muted">
-          PR links and commit references are recorded evidence. Current merge or review status is
-          not available from this view.
+          PR links and commit references are recorded evidence. Stored inspections below are not
+          live GitHub state or review approval.
         </p>
+        <VerificationEvidence evidence={value?.verification_evidence} attemptId={attempt.attempt_id} />
         <div className="detail-grid">
           <section>
             <h3>Attempt history</h3>
