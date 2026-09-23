@@ -82,6 +82,7 @@ class WorkEvidenceTests(unittest.TestCase):
                     self.conn.execute(sql)
         self.assertEqual(before, self.evidence(attempt))
         with self.assertRaises(store.BridgeConflict), self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
             store._insert_work_evidence(self.conn, attempt_id=attempt["attempt_id"], kind="admission", document={**document, "mode": "dry-run"})
 
     def test_route_manifest_is_atomic_and_idempotent(self):
