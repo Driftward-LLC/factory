@@ -2712,6 +2712,7 @@ def reserve_factory_absence_retry(
         conn.execute("UPDATE factory_attempts SET status='accepted', job_id=?, prior_attempt_id=?, updated_at=? WHERE attempt_id=?", (job["job_id"], prior_attempt_id, utc_now(), attempt["attempt_id"]))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "retry_requested", {"generation": attempt["generation"], "job_id": job["job_id"], "absence_evidence_digest": evidence_digest})
         _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_accepted", {"job_id": job["job_id"]})
+        _record_factory_admission_evidence(conn, attempt["attempt_id"])
         outbox_key = f"factory:accepted:{attempt['attempt_id']}"
         conn.execute("INSERT INTO factory_attempt_outbox (outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", utc_now(), utc_now()))
         _append_factory_attempt_event(conn, attempt["attempt_id"], "accepted_event_enqueued", {"outbox_key": outbox_key})
