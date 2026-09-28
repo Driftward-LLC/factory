@@ -1672,9 +1672,10 @@ def enqueue_verification_resume(conn: sqlite3.Connection, ref: str, *, stale_aft
                 expected_branch = repair["branch"]
                 if repair["pr_url"] != job["pr_url"] or repair["source_attempt_id"] != attempt["prior_attempt_id"]:
                     raise BridgeValidationError("verification recovery repair identity is invalid")
+            # prior_pr_url can lag as a lineage summary. The committed job PR
+            # is authoritative; repairs also bind their source artifact above.
             if (job["requested_action"] not in DRAFT_PR_EFFECT_ACTIONS or attempt["action"] != "create_draft_pr" or payload.get("dry_run") is not False
                 or job["idempotency_key"] != attempt["idempotency_key"] or job["branch"] != expected_branch
-                or attempt["prior_pr_url"] != job["pr_url"]
                 or (payload.get("work_item_id") or payload.get("linear_issue")) != attempt["work_item_key"]
                 or not isinstance(job["commit_sha"], str) or not re.fullmatch(r"[0-9a-f]{7,64}", job["commit_sha"])):
                 raise BridgeValidationError("verification recovery artifact identity is invalid")
