@@ -29,6 +29,7 @@ from .store import (
     submit_job,
     transition_job,
     acquire_verification_lease,
+    enqueue_verification_resume,
     claim_verification_lease,
     record_verification_observation,
     get_factory_attempt,
@@ -263,6 +264,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "verification" and parts[3] == "lease":
                 self._write_json(200, acquire_verification_lease(self.conn, parts[1], attempt_id=body.get("attempt_id"), ttl_seconds=body.get("ttl_seconds", 300)))
+                return
+
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "verification" and parts[3] == "resume":
+                if set(body) != {"stale_after_minutes"}:
+                    raise BridgeValidationError("verification resume requires only stale_after_minutes")
+                self._write_json(200, enqueue_verification_resume(self.conn, parts[1], stale_after_minutes=body["stale_after_minutes"]))
                 return
 
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "claim":

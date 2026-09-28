@@ -67,11 +67,35 @@ while later chunks continue.
 An unsuccessful write fails the invocation and retains scan progress for retry.
 
 This is not a read-only bridge client: it persists findings and scan/ACK state,
-and currently reserves verification leases and republishes accepted events for
-eligible stale verification jobs. It never creates a new job/branch/PR for
-recovery. Scan endpoints are authenticated bridge-local POSTs at
+and requests durable verification resumes for eligible stale jobs. It never
+creates a new job/branch/PR for recovery. Scan endpoints are authenticated bridge-local POSTs at
 `/reconciliation/scan` and `/reconciliation/scan/ack`; the read-only batched
 `/reconciliation/correlations` POST accepts at most 250 keys per field.
+
+## Verification recovery
+
+`POST /jobs/{ref}/verification/resume` revalidates the current job and Factory
+attempt in one bridge transaction, then queues the ordinary same-job accepted
+wake in the existing Factory outbox. Only stale, real, current attempts in
+`effect_committed` or `verification_pending`, with a bound PR/branch/commit and
+no live verification lease, qualify. Pending or delivering wakes are coalesced;
+their delivery lease is not reset. Publication failures use the existing outbox
+retry/ACK protocol. The worker does not publish accepted events directly.
+
+The consumer acquires and claims a fresh verification owner only when it starts,
+so queue delays cannot consume a pre-reserved five-minute lease. Cancellation,
+supersession and terminal-attempt guards apply again at acquire, claim and
+completion/observation; expired owners cannot complete a newer lease. Recovery
+reuses durable context and the existing artifact, never re-executes an ambiguous
+effect or creates another PR. Existing receipt-recovery fencing is unchanged.
+
+Legacy bridge jobs without a Factory attempt, and imported generation-one real
+attempts already prohibited from verified completion, are reported as `legacy_job` skips
+in the run's `recovery` counts/reasons and retain their stale-job finding. They
+require reviewed operator recovery; no synthetic attempt or legacy direct event
+fallback is created. Other ineligible jobs are also explicit skips. A bridge
+enqueue error fails the scan and retains its page for retry. This is control-plane
+recovery independent of the executor's model/provider credentials.
 
 It does not call GitHub, Linear, Driftward Hermes, Docker, or arbitrary shell.
 Missing or unavailable observations are warnings; the reconciliation worker

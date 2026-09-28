@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
-import { recoverableStaleVerificationJobs } from './verification-recovery';
-import { redispatchStaleVerification } from './verification-lease-recovery';
-import type { ReconciliationFinding } from './cross-provider-reconciliation';
+import { enqueueStaleVerification, recoverableStaleVerificationJobs } from './verification-recovery';
 
 test('recovery redispatches only the original real PR verification work item', () => {
   const job = fixture();
@@ -17,29 +15,37 @@ test('recovery redispatches only the original real PR verification work item', (
   assert.equal(recoverableStaleVerificationJobs([{ kind: 'stale_active_bridge_job', jobId: job.job_id }], new Map([[job.job_id, noPr]])).length, 0);
 });
 
-test('concurrent reconciliation redelivery emits one resume event only after a lease is acquired', async () => {
+test('recovery requests a durable same-job wake, coalesces duplicate findings and reports outcomes', async () => {
   const job = fixture();
-  let acquires = 0;
-  let pushes = 0;
+  let enqueues = 0;
   const bridge = {
-    async acquireVerificationLease() {
-      acquires += 1;
-      return { acquired: acquires === 1, lease: {} };
+    async enqueueVerificationResume(ref: string, staleAfterMinutes: number = 30) {
+      assert.equal(ref, job.job_id);
+      assert.equal(staleAfterMinutes, 45);
+      enqueues += 1;
+      return enqueues === 1 ? { enqueued: true, reason: 'enqueued' } : { enqueued: false, reason: 'already_queued' };
     },
   };
-  const push = async () => { pushes += 1; };
-  const findings: ReconciliationFinding[] = [{
-    findingKey: 'reconciliation:v1:stale_active_bridge_job:job-recover', kind: 'stale_active_bridge_job', jobId: job.job_id,
-    severity: 'warning', subject: `bridge:${job.job_id}`, reason: 'stale', expected: {}, observed: {},
-  }];
+  const findings = Array.from({ length: 2 }, () => ({ kind: 'stale_active_bridge_job', jobId: job.job_id }));
   const jobs = new Map([[job.job_id, job]]);
   const [first, duplicate] = await Promise.all([
-    redispatchStaleVerification(findings, jobs, bridge, push),
-    redispatchStaleVerification(findings, jobs, bridge, push),
+    enqueueStaleVerification(findings, jobs, bridge, 45),
+    enqueueStaleVerification(findings, jobs, bridge, 45),
   ]);
-  assert.equal(first + duplicate, 0);
-  assert.equal(acquires, 2);
-  assert.equal(pushes, 1);
+  assert.equal(first.failed + duplicate.failed, 0);
+  assert.equal(first.enqueued + duplicate.enqueued, 1);
+  assert.equal(duplicate.reasons.already_queued, 1);
+  assert.equal(enqueues, 2);
+});
+
+test('legacy recovery is explicitly skipped; an enqueue error is a retryable scan failure', async () => {
+  const job = fixture();
+  const findings = [{ kind: 'stale_active_bridge_job', jobId: job.job_id }];
+  const jobs = new Map([[job.job_id, job]]);
+  const skipped = await enqueueStaleVerification(findings, jobs, { enqueueVerificationResume: async () => ({ enqueued: false, reason: 'legacy_job' }) }, 30);
+  assert.deepEqual(skipped, { enqueued: 0, skipped: 1, failed: 0, reasons: { legacy_job: 1 } });
+  const failed = await enqueueStaleVerification(findings, jobs, { enqueueVerificationResume: async () => { throw new Error('bridge unavailable'); } }, 30);
+  assert.deepEqual(failed, { enqueued: 0, skipped: 0, failed: 1, reasons: {} });
 });
 
 function fixture(): BridgeJob {

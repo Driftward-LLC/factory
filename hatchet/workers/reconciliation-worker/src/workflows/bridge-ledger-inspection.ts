@@ -5,12 +5,12 @@ import { compareCrossProvider, expectedJob, finding, type ReconciliationFinding 
 import { bridgeEventHistoryIncomplete, incompleteBridgeScan, inspectHatchetInventory, inspectIngressInventory, inventoryCorrelationQueries } from './inventory-reconciliation';
 import { recordFindingBatches } from './finding-batches';
 import type { BridgeStateReconciliationInput } from './reconciliation-input';
-import { redispatchStaleVerification } from './verification-lease-recovery';
+import { enqueueStaleVerification } from './verification-recovery';
 
 type BridgeEvent = { event_id: string; job_id: string; event_type: string; state: string; details: Record<string, unknown>; created_at: string };
 
 type Dependencies = {
-  bridge: Pick<BridgeClient, 'scanReconciliation' | 'acknowledgeReconciliationScan' | 'reconciliationCorrelations' | 'listEvents' | 'recordReconciliationFindings' | 'acquireVerificationLease'>;
+  bridge: Pick<BridgeClient, 'scanReconciliation' | 'acknowledgeReconciliationScan' | 'reconciliationCorrelations' | 'listEvents' | 'recordReconciliationFindings' | 'enqueueVerificationResume'>;
   observations: Pick<IngressObservationClient, 'latest' | 'inventory'>;
   runs: Parameters<typeof observeHatchetRuns>[0];
   pushEvent: (event: string, data: Record<string, unknown>, options: Record<string, unknown>) => Promise<unknown>;
@@ -75,11 +75,11 @@ export async function inspectBridgeLedger(options: BridgeStateReconciliationInpu
   // Pending-page replay is at-least-once; stable finding keys let consumers dedupe.
   const eventFindings = pages.some((page) => page.replayed) ? findings : newFindings;
   const jobById = new Map(jobs.map((job) => [job.job_id, job]));
-  const recoveryDispatchFailures = await redispatchStaleVerification(findings, jobById, bridge, pushEvent);
+  const recovery = await enqueueStaleVerification(findings, jobById, bridge, staleAfterMinutes);
   const sourceCounts = { bridge: jobs.length, ingress: ingressInventory.status === 'matched' ? ingressInventory.observations.length : 0, hatchet: hatchetInventory.status === 'matched' ? hatchetInventory.runs.length : 0 };
 
-  log('Bridge reconciliation check completed', { ...sourceCounts, bridgeTotal: total, coverage, complete, findingCount: findings.length, newFindingCount: newFindings.length, findingWriteFailures: recorded.failedBatches || 0, recoveryDispatchFailures, requestId: options.requestId });
-  if (recorded.failedBatches || recoveryDispatchFailures) throw new Error('Reconciliation writes failed; scan progress retained for retry');
+  log('Bridge reconciliation check completed', { ...sourceCounts, bridgeTotal: total, coverage, complete, findingCount: findings.length, newFindingCount: newFindings.length, findingWriteFailures: recorded.failedBatches || 0, recovery, requestId: options.requestId });
+  if (recorded.failedBatches || recovery.failed) throw new Error('Reconciliation writes failed; scan progress retained for retry');
   if (eventFindings.length > 0 || options.emitWhenClean === true) {
     await pushEvent(HATCHET_EVENTS.RECONCILIATION_DETECTED, {
       requestId: options.requestId || null, checkedJobs: jobs.length, sourceCounts, coverage, complete, findingCount: findings.length, newFindingCount: newFindings.length, findingWriteFailures: recorded.failedBatches || 0, findings: eventFindings, clean: complete && findings.length === 0,
@@ -87,7 +87,7 @@ export async function inspectBridgeLedger(options: BridgeStateReconciliationInpu
   }
   // Never advance on inspection, persistence, recovery or event-delivery failure.
   for (const page of pages) await bridge.acknowledgeReconciliationScan(page.cohort, page.token);
-  return { checkedJobs: jobs.length, sourceCounts, coverage, complete, findingCount: findings.length, findings };
+  return { checkedJobs: jobs.length, sourceCounts, coverage, complete, recovery, findingCount: findings.length, findings };
 }
 
 /** Re-delivery reuses the original bridge job, branch, and PR; it never submits a new effect. */
