@@ -23,9 +23,12 @@ token across worker restarts; retries reread those IDs with current job state.
 Only successful inspection, finding persistence, recovery dispatch and event
 publication acknowledge a page. Failed work leaves that page pending.
 Retries retain the original page size even if the requested budget changes.
-Pending-page replay republishes its findings at least once, including findings
-persisted before a failed publication; consumers deduplicate by stable finding
-key. Ordinary new pages publish newly recorded findings only.
+Pending-page replay recomputes current findings and republishes those still
+present, including already-persisted findings; consumers deduplicate by stable
+finding key. Notifications are best-effort if the underlying state changes
+after a failed publication: the original finding remains in the durable ledger
+but may no longer be emitted. Ordinary new pages publish newly recorded
+findings only.
 
 `coverage.active` and `coverage.history` report scanned/total counts,
 `complete`, and `sweepComplete`. Reaching the end of a multi-page sweep does
