@@ -70,7 +70,7 @@ jobs:
           if-no-files-found: ignore
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -122,6 +122,8 @@ jobs:
             --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" \
             --build-arg FACTORY_RELEASE_VERSION=ci \
             -f deploy/Dockerfile -t driftward/factory:ci .
+      - name: Prove isolated fresh install, restart, and restore
+        run: python3 tools/check_factory_portable.py --image driftward/factory:ci
       - name: Check changed-file whitespace
         run: |
           base="${{ github.event.pull_request.base.sha }}"

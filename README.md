@@ -14,6 +14,12 @@ Linear token-renewal, and operator services. The host should own Docker,
 systemd supervision, the runtime root, protected env files, and migrated key
 placement. Durable Factory state lives in Docker named volumes.
 
+For a fresh Linux/amd64 dry-run installation, use the image-pinned release
+bundle and [portable installation guide](deploy/PORTABLE.md). This path creates
+isolated configuration and state without the VPS's systemd, checkout, or
+Hermes socket. The host installer below remains the existing deployment's
+migration/real-execution path; it is not greenfield bootstrap.
+
 Historical bridge, ingress, lifecycle, and Hatchet control-plane records are
 intentionally not copied into the repository. They should be migrated into the
 Factory Docker volumes during the standalone deployment cutover.

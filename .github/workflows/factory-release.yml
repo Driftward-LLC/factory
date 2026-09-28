@@ -13,13 +13,14 @@ on:
         default: false
         type: boolean
       dry_run:
-        description: Validate only; do not create a tag or GitHub release
+        description: Validate only; do not push an image or create a tag or GitHub release
         required: true
         default: false
         type: boolean
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: factory-release
@@ -29,12 +30,13 @@ jobs:
   release:
     name: Validate And Release
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
       PRERELEASE: ${{ inputs.prerelease }}
       DRY_RUN: ${{ inputs.dry_run }}
       GH_TOKEN: ${{ github.token }}
+      IMAGE_REPOSITORY: ghcr.io/driftward-llc/factory
     steps:
       - uses: actions/checkout@v4
         with:
@@ -125,10 +127,13 @@ jobs:
             HATCHET_ADMIN_PASSWORD=ci-admin-password \
             FACTORY_SOURCE_ROOT="$PWD" \
             docker compose -f deploy/docker-compose.yml config >/dev/null
-          docker build \
+          docker build --platform linux/amd64 \
             --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" \
             --build-arg FACTORY_RELEASE_VERSION="$RELEASE_TAG" \
             -f deploy/Dockerfile -t driftward/factory:ci .
+
+      - name: Prove disposable portable installation and restore
+        run: python3 tools/check_factory_portable.py --image driftward/factory:ci
 
       - name: Check changed-file whitespace
         run: git diff --check HEAD
@@ -151,7 +156,49 @@ jobs:
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           /tmp/gitleaks git --redact --verbose .
 
+      - name: Validate portable release packaging
+        run: |
+          set -euo pipefail
+          # A local image ID is not a registry manifest digest. Never publish this preview.
+          local_image_id="$(docker image inspect driftward/factory:ci --format '{{.Id}}')"
+          bash deploy/package-release.sh --version "$RELEASE_TAG" \
+            --image "$IMAGE_REPOSITORY@$local_image_id" \
+            --source-commit "$(git rev-parse HEAD)" \
+            --output-dir "$RUNNER_TEMP/factory-release-preview" --validation-only
+          (cd "$RUNNER_TEMP/factory-release-preview" && sha256sum --check SHA256SUMS)
+
+      - name: Publish validated runtime image
+        id: image
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          image_tag="$IMAGE_REPOSITORY:$RELEASE_TAG"
+          if docker manifest inspect "$image_tag" >/dev/null 2>&1; then
+            echo "image tag already exists; refusing to overwrite: $image_tag" >&2
+            exit 64
+          fi
+          docker tag driftward/factory:ci "$image_tag"
+          docker push "$image_tag"
+          image_ref="$(docker image inspect "$image_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$IMAGE_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
+          [[ "$image_ref" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]]
+          echo "reference=$image_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Package digest-pinned portable release
+        if: env.DRY_RUN != 'true'
+        env:
+          PUBLISHED_IMAGE: ${{ steps.image.outputs.reference }}
+        run: |
+          set -euo pipefail
+          bash deploy/package-release.sh --version "$RELEASE_TAG" \
+            --image "$PUBLISHED_IMAGE" --source-commit "$(git rev-parse HEAD)" \
+            --output-dir "$RUNNER_TEMP/factory-release"
+          (cd "$RUNNER_TEMP/factory-release" && sha256sum --check SHA256SUMS)
+
       - name: Write release notes
+        env:
+          PUBLISHED_IMAGE: ${{ steps.image.outputs.reference }}
         run: |
           set -euo pipefail
           release_sha="$(git rev-parse HEAD)"
@@ -159,6 +206,8 @@ jobs:
           Factory $RELEASE_TAG
 
           Source: $release_sha
+          Platform: Linux amd64
+          Runtime image: ${PUBLISHED_IMAGE:-validation-only; no image published}
 
           Validation performed by this workflow:
           - Generated and checked Hatchet contracts.
@@ -166,18 +215,22 @@ jobs:
           - Built and tested Hatchet workers.
           - Ran bridge, ingress, and lifecycle writer tests.
           - Validated Docker Compose config and built the Factory image.
+          - Validated the allowlisted portable release bundle and its checksum.
           - Checked whitespace and scanned committed content with gitleaks.
 
           Deployment:
-          This workflow does not deploy the VPS runtime. Deploy from the host with:
+          This workflow does not deploy the VPS runtime or any other host.
+          Download the portable archive and SHA256SUMS, verify the checksum, then
+          follow deploy/PORTABLE.md inside the archive. The included factory.env
+          pins the runtime image by digest. No source checkout is required.
+          Docker Engine with Compose and Python 3 are host prerequisites.
+          Private package access requires docker login ghcr.io on the target host.
 
           \`\`\`bash
-          cd /root/driftward/repos/factory
-          git fetch --tags origin
-          git switch --detach $RELEASE_TAG
-          bash deploy/install-docker.sh --image-tag $RELEASE_TAG --start
-          git switch main
-          git pull --ff-only
+          sha256sum --check SHA256SUMS
+          tar -xzf factory-$RELEASE_TAG-linux-amd64.tar.gz
+          cd factory-$RELEASE_TAG-linux-amd64
+          python3 deploy/factory-portable.py --help
           \`\`\`
           EOF
 
@@ -197,9 +250,11 @@ jobs:
           if [[ "$PRERELEASE" == "true" ]]; then
             args+=(--prerelease)
           fi
+          args+=("$RUNNER_TEMP/factory-release/factory-$RELEASE_TAG-linux-amd64.tar.gz" "$RUNNER_TEMP/factory-release/SHA256SUMS")
           gh "${args[@]}"
 
       - name: Report dry run
         if: env.DRY_RUN == 'true'
         run: |
-          echo "Dry run complete. No tag or GitHub release was created."
+          echo "Dry run complete. No image was pushed and no tag or GitHub release was created."
+          echo "The validation-only preview is not installable and was not uploaded."

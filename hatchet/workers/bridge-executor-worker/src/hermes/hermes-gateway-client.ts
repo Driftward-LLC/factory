@@ -424,6 +424,20 @@ function channelCredentials(target: string): grpc.ChannelCredentials {
 }
 
 function validateTargetPolicy(target: string): void {
+  validateHermesGrpcTransport(target);
+  if (isHermesGrpcUnixTarget(target)) return;
+  const clientCertificate = process.env.DRIFTWARD_HERMES_GRPC_TLS === '1'
+    && process.env.DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH?.trim()
+    && process.env.DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH?.trim();
+  if (!(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim() && !clientCertificate) {
+    throw new NonRetryableBridgeExecutionError(
+      'hermes_grpc_tcp_auth_required',
+      'TCP Hermes gRPC targets require an auth token or a TLS client certificate and key'
+    );
+  }
+}
+
+export function validateHermesGrpcTransport(target: string): void {
   if (isHermesGrpcUnixTarget(target)) return;
   if (process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP !== '1') {
     throw new NonRetryableBridgeExecutionError(
@@ -431,10 +445,12 @@ function validateTargetPolicy(target: string): void {
       'TCP Hermes gRPC targets require DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1'
     );
   }
-  if (process.env.DRIFTWARD_HERMES_GRPC_TLS !== '1' && !(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim()) {
+  const insecureLoopback = process.env.DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP === '1'
+    && /^(127\.0\.0\.1|\[::1\]):\d+$/.test(target);
+  if (process.env.DRIFTWARD_HERMES_GRPC_TLS !== '1' && !insecureLoopback) {
     throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_tcp_auth_required',
-      'TCP Hermes gRPC targets require TLS or DRIFTWARD_HERMES_GRPC_AUTH_TOKEN'
+      'hermes_grpc_tcp_tls_required',
+      'TCP Hermes gRPC requires TLS; insecure development transport is limited to explicit loopback IP targets'
     );
   }
 }

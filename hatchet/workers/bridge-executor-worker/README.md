@@ -117,9 +117,30 @@ A/B cohort. A future router must perform and enforce the actual assignment.
 When `DRIFTWARD_HERMES_GRPC_TARGET` is set, the bridge executor and detached
 receipt runner call the typed Hermes Factory gRPC gateway instead of invoking
 the Hermes wrapper directly. The default production target is a Unix domain
-socket at `/run/driftward-hermes-factory/hermes.sock`; future TCP transport is
-opt-in with `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1` and TLS or
-`DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`.
+socket at `/run/driftward-hermes-factory/hermes.sock`; TCP transport is opt-in
+with `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1`. Remote TCP requires
+`DRIFTWARD_HERMES_GRPC_TLS=1` **and** caller authentication, using either:
+
+- A shared `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN` on server and client. Set
+  `DRIFTWARD_HERMES_GRPC_SERVER_KEY_PATH` and
+  `DRIFTWARD_HERMES_GRPC_SERVER_CERT_PATH` on the server; set
+  `DRIFTWARD_HERMES_GRPC_CA_PATH` on the client if the server certificate uses
+  a private CA.
+- Mutual TLS: additionally set `DRIFTWARD_HERMES_GRPC_CA_PATH` on the server
+  to a dedicated client CA and configure the client with
+  `DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH` and
+  `DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH`. The gateway requires and verifies
+  client certificates signed by this CA; trust only authorized Factory
+  callers. Server-only TLS is rejected. When a token is also configured,
+  both the certificate and token are required.
+
+Keep gateway tokens and TLS private keys in protected runtime configuration,
+not command-line arguments. Provider credentials still belong only to Hermes.
+The existing `DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP=1` development escape
+hatch is limited to literal `127.0.0.1:PORT` or `[::1]:PORT` targets and still
+requires a token. Unix sockets retain their existing local permission boundary.
+Authenticated transport alone does not provide durable remote execution or
+make an unknown execution outcome safe to retry.
 
 `DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN`,
 `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME`, and
