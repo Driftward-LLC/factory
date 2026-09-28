@@ -19,6 +19,9 @@ from .store import (
     list_events,
     list_lifecycle_events,
     list_jobs,
+    reconciliation_scan,
+    acknowledge_reconciliation_scan,
+    reconciliation_correlations,
     reconciliation_findings_status,
     record_reconciliation_findings,
     record_job_correlation,
@@ -199,6 +202,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             parts = [unquote(part) for part in path.split("/") if part]
             body = self._read_json()
+
+            if parts == ["reconciliation", "scan"]:
+                if set(body) != {"cohort", "limit"}:
+                    raise BridgeValidationError("reconciliation scan requires only cohort and limit")
+                self._write_json(200, reconciliation_scan(self.conn, cohort=body["cohort"], limit=body["limit"]))
+                return
+            if parts == ["reconciliation", "scan", "ack"]:
+                if set(body) != {"cohort", "token"}:
+                    raise BridgeValidationError("reconciliation scan acknowledgement requires only cohort and token")
+                acknowledge_reconciliation_scan(self.conn, cohort=body["cohort"], token=body["token"])
+                self._write_json(200, {"ok": True})
+                return
+            if parts == ["reconciliation", "correlations"]:
+                self._write_json(200, reconciliation_correlations(self.conn, body))
+                return
 
             if parts == ["jobs"]:
                 job, created = submit_job(self.conn, body)

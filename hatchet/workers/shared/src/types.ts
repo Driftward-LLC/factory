@@ -29,6 +29,7 @@ export type BridgeJob = JsonObject & {
   error: string | null;
   created_at: string;
   updated_at: string;
+  reconciliation_duplicate_refs?: { branch_job_id?: string; pr_job_id?: string };
 };
 
 export type BridgeSubmitRequest = {
@@ -94,6 +95,20 @@ export type BridgeEventsResponse = {
 export type BridgeJobsResponse = {
   jobs: BridgeJob[];
   total: number;
+};
+
+export type ReconciliationScanPage = BridgeJobsResponse & {
+  cohort: 'active' | 'history';
+  token: string;
+  complete: boolean;
+  sweep_complete: boolean;
+  replayed: boolean;
+};
+
+export type ReconciliationCorrelations = {
+  source_event_keys: string[];
+  legacy_work_items: string[];
+  hatchet_run_ids: string[];
 };
 
 export type FactoryAttempt = JsonObject & {

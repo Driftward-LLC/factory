@@ -2,6 +2,8 @@ import type {
   BridgeEventsResponse,
   BridgeJob,
   BridgeJobsResponse,
+  ReconciliationScanPage,
+  ReconciliationCorrelations,
   BridgeSubmitRequest,
   BridgeSubmitResponse,
   BridgeTransitionRequest,
@@ -91,6 +93,18 @@ export class BridgeClient {
       method: 'POST',
       body: JSON.stringify(request)
     });
+  }
+
+  async scanReconciliation(cohort: ReconciliationScanPage['cohort'], limit: number): Promise<ReconciliationScanPage> {
+    return this.requestJson('/reconciliation/scan', { method: 'POST', body: JSON.stringify({ cohort, limit }) });
+  }
+
+  async acknowledgeReconciliationScan(cohort: ReconciliationScanPage['cohort'], token: string): Promise<{ ok: boolean }> {
+    return this.requestJson('/reconciliation/scan/ack', { method: 'POST', body: JSON.stringify({ cohort, token }) });
+  }
+
+  async reconciliationCorrelations(query: ReconciliationCorrelations): Promise<ReconciliationCorrelations> {
+    return this.requestJson('/reconciliation/correlations', { method: 'POST', body: JSON.stringify(query) });
   }
 
   async completeVerifiedReady(ref: string, attemptId: string, receipt: JsonObject): Promise<BridgeTransitionResponse> {

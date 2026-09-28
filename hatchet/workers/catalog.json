@@ -373,7 +373,7 @@
       "worker": "reconciliation-worker",
       "stage": "reconciliation",
       "status": "source_added",
-      "purpose": "Inspect bridge ledger state and persist deduplicated reconciliation findings for stale or inconsistent jobs.",
+      "purpose": "Rotate bounded active/history bridge scans, persist findings and scan progress, and resume eligible stale verification against the same artifact.",
       "does_not": [
         "create pull requests",
         "merge, deploy, or release code",

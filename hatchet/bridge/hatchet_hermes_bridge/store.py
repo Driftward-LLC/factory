@@ -25,7 +25,7 @@ from . import work_evidence
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
 # identity also binds the transitive source closure that implements these
@@ -280,6 +280,7 @@ def _require_runtime_schema(conn: sqlite3.Connection) -> None:
         "factory_import_conflicts", "factory_import_conflict_resolutions",
         "factory_import_conflict_attestations",
         "factory_execution_manifests", "factory_work_checkpoints",
+        "reconciliation_scan_state",
     }
     found = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= found:
@@ -369,6 +370,23 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_bridge_jobs_state
             ON bridge_jobs(state, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_bridge_jobs_scan
+            ON bridge_jobs(created_at, job_id);
+        CREATE INDEX IF NOT EXISTS idx_bridge_jobs_branch
+            ON bridge_jobs(branch);
+        CREATE INDEX IF NOT EXISTS idx_bridge_jobs_pr_url
+            ON bridge_jobs(pr_url);
+
+        CREATE TABLE IF NOT EXISTS reconciliation_scan_state (
+            cohort TEXT PRIMARY KEY CHECK(cohort IN ('active','history')),
+            cursor_created_at TEXT, cursor_job_id TEXT,
+            upper_created_at TEXT, upper_job_id TEXT,
+            page_token TEXT, pending_json TEXT CHECK(pending_json IS NULL OR (json_valid(pending_json) AND length(pending_json)<=32768)),
+            last_ack_token TEXT,
+            CHECK((cursor_created_at IS NULL)=(cursor_job_id IS NULL)),
+            CHECK((upper_created_at IS NULL)=(upper_job_id IS NULL)),
+            CHECK((page_token IS NULL)=(pending_json IS NULL))
+        );
 
         CREATE INDEX IF NOT EXISTS idx_bridge_events_job
             ON bridge_events(job_id, created_at);
@@ -1703,6 +1721,139 @@ def list_jobs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]
 
 def count_jobs(conn: sqlite3.Connection) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM bridge_jobs").fetchone()[0])
+
+
+def _reconciliation_states(cohort: Any) -> tuple[str, ...]:
+    if not isinstance(cohort, str) or cohort not in {"active", "history"}:
+        raise BridgeValidationError("reconciliation cohort must be active or history")
+    return tuple(sorted(ACTIVE_STATES if cohort == "active" else TERMINAL_STATES))
+
+
+def _reconciliation_job(conn: sqlite3.Connection, job_id: str) -> dict[str, Any]:
+    job = get_job(conn, job_id)
+    duplicates = {}
+    if job["state"] != "failed":
+        for field, result in (("branch", "branch_job_id"), ("pr_url", "pr_job_id")):
+            if job.get(field):
+                other = conn.execute(
+                    f"SELECT job_id FROM bridge_jobs WHERE {field}=? AND job_id<>? "
+                    "AND state<>'failed' ORDER BY created_at,job_id LIMIT 1",
+                    (job[field], job_id),
+                ).fetchone()
+                if other:
+                    duplicates[result] = other["job_id"]
+    job["reconciliation_duplicate_refs"] = duplicates
+    return job
+
+
+def reconciliation_scan(conn: sqlite3.Connection, *, cohort: Any, limit: Any = 250) -> dict[str, Any]:
+    """Freeze one bounded page until acknowledged; a crash cannot skip its jobs."""
+    states = _reconciliation_states(cohort)
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 250:
+        raise BridgeValidationError("reconciliation scan limit must be between 1 and 250")
+    state_sql = f"state IN ({','.join('?' for _ in states)})"
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT OR IGNORE INTO reconciliation_scan_state(cohort) VALUES (?)", (cohort,))
+        scan = conn.execute("SELECT * FROM reconciliation_scan_state WHERE cohort=?", (cohort,)).fetchone()
+        replayed = scan["pending_json"] is not None
+        if scan["pending_json"] is None:
+            upper = (scan["upper_created_at"], scan["upper_job_id"])
+            if upper[0] is None:
+                row = conn.execute(
+                    f"SELECT created_at,job_id FROM bridge_jobs WHERE {state_sql} "
+                    "ORDER BY created_at DESC,job_id DESC LIMIT 1", states,
+                ).fetchone()
+                upper = (row["created_at"], row["job_id"]) if row else (None, None)
+            rows = []
+            if upper[0] is not None:
+                after = " AND (created_at,job_id)>(?,?)" if scan["cursor_created_at"] is not None else ""
+                params = (*states, *upper, *((scan["cursor_created_at"], scan["cursor_job_id"]) if after else ()), limit + 1)
+                rows = conn.execute(
+                    f"SELECT created_at,job_id FROM bridge_jobs WHERE {state_sql} "
+                    f"AND (created_at,job_id)<=(?,?){after} ORDER BY created_at,job_id LIMIT ?", params,
+                ).fetchall()
+            page = rows[:limit]
+            pending = {
+                "job_ids": [row["job_id"] for row in page],
+                "end": [page[-1]["created_at"], page[-1]["job_id"]] if page else None,
+                "sweep_complete": len(rows) <= limit,
+                "first": scan["cursor_created_at"] is None,
+            }
+            token = str(uuid.uuid4())
+            conn.execute(
+                "UPDATE reconciliation_scan_state SET upper_created_at=?,upper_job_id=?,"
+                "page_token=?,pending_json=? WHERE cohort=?",
+                (*upper, token, canonical_json(pending), cohort),
+            )
+        else:
+            pending = json.loads(scan["pending_json"])
+            token = scan["page_token"]
+        jobs = [_reconciliation_job(conn, job_id) for job_id in pending["job_ids"]]
+        total = int(conn.execute(f"SELECT COUNT(*) FROM bridge_jobs WHERE {state_sql}", states).fetchone()[0])
+        # Reaching the tail is not full coverage. New arrivals and changes of
+        # cohort can also make even a formerly single-page scan incomplete.
+        unseen = total
+        if pending["job_ids"]:
+            unseen = int(conn.execute(
+                f"SELECT COUNT(*) FROM bridge_jobs WHERE {state_sql} "
+                f"AND job_id NOT IN ({','.join('?' for _ in pending['job_ids'])})",
+                (*states, *pending["job_ids"]),
+            ).fetchone()[0])
+        return {"cohort": cohort, "token": token, "jobs": jobs, "total": total,
+                "complete": pending["first"] and pending["sweep_complete"] and unseen == 0,
+                "sweep_complete": pending["sweep_complete"], "replayed": replayed}
+
+
+def acknowledge_reconciliation_scan(conn: sqlite3.Connection, *, cohort: Any, token: Any) -> None:
+    _reconciliation_states(cohort)
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", token):
+        raise BridgeValidationError("reconciliation scan token is invalid")
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        scan = conn.execute("SELECT * FROM reconciliation_scan_state WHERE cohort=?", (cohort,)).fetchone()
+        if scan and scan["last_ack_token"] == token:
+            return
+        if not scan or scan["page_token"] != token:
+            raise BridgeConflict("reconciliation scan token is stale or unknown")
+        pending = json.loads(scan["pending_json"])
+        end = (None, None) if pending["sweep_complete"] else pending["end"]
+        upper = (None, None) if pending["sweep_complete"] else (scan["upper_created_at"], scan["upper_job_id"])
+        conn.execute(
+            "UPDATE reconciliation_scan_state SET cursor_created_at=?,cursor_job_id=?,"
+            "upper_created_at=?,upper_job_id=?,last_ack_token=?,page_token=NULL,pending_json=NULL "
+            "WHERE cohort=? AND page_token=?", (*end, *upper, token, cohort, token),
+        )
+
+
+def reconciliation_correlations(conn: sqlite3.Connection, request: Any) -> dict[str, list[str]]:
+    keys = {"source_event_keys", "legacy_work_items", "hatchet_run_ids"}
+    if not isinstance(request, dict) or set(request) != keys:
+        raise BridgeValidationError("reconciliation correlations require only source_event_keys, legacy_work_items, hatchet_run_ids")
+    for values in request.values():
+        if not isinstance(values, list) or len(values) > 250 or any(
+            not isinstance(value, str) or not value or len(value) > 500 or value != value.strip() for value in values
+        ):
+            raise BridgeValidationError("reconciliation correlations require at most 250 bounded strings per field")
+    event_array = "CASE WHEN json_type(j.payload_json,'$.source_event_keys')='array' THEN json_extract(j.payload_json,'$.source_event_keys') ELSE '[]' END"
+    legacy = f"COALESCE(json_type(j.payload_json,'$.source_event_key')='text' AND length(json_extract(j.payload_json,'$.source_event_key'))>0,0)=0 AND NOT EXISTS (SELECT 1 FROM json_each({event_array}) k WHERE k.type='text' AND length(k.value)>0)"
+    sources = {
+        "source_event_keys": f"SELECT json_extract(payload_json,'$.source_event_key') FROM bridge_jobs UNION SELECT k.value FROM bridge_jobs j,json_each({event_array}) k WHERE k.type='text'",
+        "legacy_work_items": f"SELECT json_extract(j.payload_json,'$.linear_issue') FROM bridge_jobs j WHERE {legacy} UNION SELECT json_extract(j.payload_json,'$.work_item_id') FROM bridge_jobs j WHERE {legacy}",
+        "hatchet_run_ids": "SELECT hatchet_workflow_run_id FROM bridge_jobs UNION SELECT hatchet_step_run_id FROM bridge_jobs",
+    }
+    owns_snapshot = not conn.in_transaction
+    with conn if owns_snapshot else nullcontext():
+        if owns_snapshot:
+            conn.execute("BEGIN")
+        return {
+            key: [row[0] for row in conn.execute(
+                f"SELECT DISTINCT requested.value FROM json_each(?) requested "
+                f"WHERE requested.value IN ({sources[key]}) ORDER BY requested.key",
+                (canonical_json(values),),
+            ).fetchall()]
+            for key, values in request.items()
+        }
 
 
 def list_factory_attempts(conn: sqlite3.Connection, work_item_key: str) -> list[dict[str, Any]]:
