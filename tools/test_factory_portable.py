@@ -37,6 +37,29 @@ class PortableTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             portable.Installation(self.directory)
 
+    def test_foreign_docker_resources_are_rejected_before_stop_or_migration(self):
+        install = portable.Installation(self.directory)
+        responses = ["factory-unit-test-bridge-data\n", "", "", json.dumps([{"Labels": {"io.driftward.factory.installation": "another-installation"}}])]
+        with patch.object(portable, "run", side_effect=responses), patch.object(install, "compose") as compose:
+            with self.assertRaisesRegex(ValueError, "collides"):
+                install.up()
+        compose.assert_not_called()
+
+    def test_owned_docker_resources_can_be_reused(self):
+        install = portable.Installation(self.directory)
+        responses = ["factory-unit-test-bridge-data\n", "", "", json.dumps([{"Labels": {"io.driftward.factory.installation": install.metadata["installation_id"]}}])]
+        with patch.object(portable, "run", side_effect=responses):
+            install.assert_owned_resources()
+
+    def test_real_execution_cannot_be_enabled_by_editing_env(self):
+        install = portable.Installation(self.directory)
+        path = self.directory / "env" / "hatchet-workers.env"
+        path.write_text(path.read_text().replace("HATCHET_INTAKE_DRY_RUN='true'", "HATCHET_INTAKE_DRY_RUN='false'"))
+        with patch.object(install, "assert_owned_resources"), patch.object(install, "compose") as compose:
+            with self.assertRaisesRegex(ValueError, "dry-run only"):
+                install.up()
+        compose.assert_not_called()
+
     def test_missing_or_unhealthy_services_fail_status(self):
         install = portable.Installation(self.directory)
         rows = [{"Service": service, "State": "running", "Health": "healthy"} for service in portable.SERVICES]
@@ -56,12 +79,32 @@ class PortableTests(unittest.TestCase):
         self.assertNotIn("secret-material", str(error.exception))
         self.assertNotIn("secret-error", str(error.exception))
 
+    def test_release_metadata_requires_published_digest_and_supported_platform(self):
+        metadata = {"FACTORY_RELEASE_VALIDATION_ONLY": "false", "FACTORY_RELEASE_SCHEMA": "1",
+                    "FACTORY_RELEASE_PLATFORM": "linux/amd64", "FACTORY_IMAGE": "ghcr.io/driftward-llc/factory@sha256:" + "a" * 64}
+        with patch.object(Path, "is_file", return_value=True), patch.object(portable, "read_env", return_value=metadata):
+            self.assertEqual(portable.release_image(), metadata["FACTORY_IMAGE"])
+            for key, value in (("FACTORY_RELEASE_VALIDATION_ONLY", "true"), ("FACTORY_RELEASE_PLATFORM", "windows/amd64"), ("FACTORY_IMAGE", "factory:latest")):
+                original = metadata[key]
+                metadata[key] = value
+                with self.assertRaises(ValueError):
+                    portable.release_image()
+                metadata[key] = original
+
     def test_portable_profile_has_no_host_executor_socket_or_docker_socket(self):
         source = (DEPLOY / "compose.portable.yml").read_text()
         self.assertIn("bridge-executor-worker:\n    <<: *portable\n    volumes: !reset []", source)
         self.assertNotIn("docker.sock", source)
         self.assertIn("127.0.0.1:${FACTORY_CONSOLE_PORT", source)
         self.assertNotIn("FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED", source)
+
+    def test_lifecycle_operations_are_serialized(self):
+        with portable.installation_lock(self.directory):
+            with self.assertRaisesRegex(ValueError, "another operation"):
+                with portable.installation_lock(self.directory):
+                    self.fail("second operation obtained the lock")
+        with portable.installation_lock(self.directory):
+            pass
 
 
 if __name__ == "__main__":

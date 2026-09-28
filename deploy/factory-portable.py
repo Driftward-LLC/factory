@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 
@@ -19,6 +22,27 @@ SERVICES = (
     "execution-dispatch-worker", "bridge-executor-worker", "pr-event-worker",
     "reconciliation-worker", "factory-operator", "outbox-dispatcher",
 )
+
+
+@contextmanager
+def installation_lock(directory: Path):
+    """Serialize our lifecycle commands without adding a daemon or lock service."""
+    directory = bootstrap.checked_path(directory)
+    if not directory.parent.is_dir():
+        raise ValueError("installation parent directory must already exist")
+    path = directory.parent / ("." + directory.name + ".factory-lock")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+            raise ValueError("unsafe installation operation lock")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("another operation is using this installation") from exc
+        yield
+    finally:
+        os.close(fd)
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -53,6 +77,10 @@ def release_image() -> str:
     values = read_env(metadata)
     if values.get("FACTORY_RELEASE_VALIDATION_ONLY") != "false":
         raise ValueError("validation-only artifacts cannot be installed")
+    if values.get("FACTORY_RELEASE_SCHEMA") != "1" or values.get("FACTORY_RELEASE_PLATFORM") != "linux/amd64":
+        raise ValueError("unsupported release bundle format or platform")
+    if not re.fullmatch(r"ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}", values.get("FACTORY_IMAGE", "")):
+        raise ValueError("release bundle must pin its runtime image by digest")
     return values["FACTORY_IMAGE"]
 
 
@@ -66,7 +94,7 @@ class Installation:
         if self.values.get("FACTORY_INSTALL_DIR") != str(self.directory):
             raise ValueError("installation was moved; restore it with an explicit new directory")
         # Do not let an ambient Compose profile or another deployment's env
-        # silently select a different daemon/project/image/secret directory.
+        # silently select a different project/image/secret directory.
         self.env = {key: value for key, value in os.environ.items() if not key.startswith(("COMPOSE_", "FACTORY_", "HATCHET_"))}
         self.env.update(self.values)
         self.env["FACTORY_INSTALLATION_ID"] = self.metadata["installation_id"]
@@ -106,6 +134,7 @@ class Installation:
         if not any(path.exists() for path in expected):
             if any(keys.iterdir()):
                 raise ValueError("key directory is not empty; refusing to overwrite unknown key material")
+            print("Generating native Hatchet key material (private output withheld).")
             self.compose("run", "--rm", "--no-deps", "keygen", private=True)
         if not all(path.is_file() and not path.is_symlink() for path in expected):
             raise ValueError("Hatchet keys are incomplete; refusing to regenerate or replace them")
@@ -115,9 +144,11 @@ class Installation:
         client_path = self.directory / "env" / "hatchet-client.env"
         worker_env = bootstrap.read_env(client_path) if client_path.exists() else {}
         if not worker_env.get("HATCHET_CLIENT_TOKEN"):
+            print("Creating this installation's Hatchet worker credential (private output withheld).")
             token = self.compose("exec", "-T", "hatchet-lite", "/hatchet-admin", "token", "create", "--config", "/config",
                                  "--name", "factory-workers", "--tenant-id", self.values["HATCHET_DEFAULT_TENANT_ID"], private=True)
             bootstrap.finalize_directory(self.directory, bootstrap.extract_client_token(token), apply=True)
+        print("Initializing the stopped bridge and ingress ledgers.")
         self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "bridge",
                      "/app/hatchet/bridge/maintenance_lock_exec.py", "exec", "python3", "-m", "hatchet_hermes_bridge.cli", "init", private=True)
         self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "event-ingress", "-m", "hatchet_event_ingress.cli", "init", private=True)
@@ -166,31 +197,41 @@ def main() -> int:
     restore.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        if args.command == "init":
-            bootstrap.init_directory(args.directory.absolute(), args.image or release_image(), args.project, apply=args.apply, port_offset=args.port_offset)
-            print("Private dry-run installation configured." if args.apply else "Preview only; use --apply to create the installation.")
-            return 0
-        if args.command == "restore":
-            portable_state.restore(args.snapshot, args.directory, args.project, apply=args.apply, port_offset=args.port_offset)
-            return 0
-        install = Installation(args.directory)
-        if args.command == "up":
-            install.up()
-        elif args.command == "status":
-            install.status()
-        elif args.command == "pull":
-            install.compose("pull", *SERVICES, "keygen")
-        elif args.command == "stop":
-            install.assert_owned_resources()
-            install.compose("stop")
-        elif args.command == "logs":
-            install.compose("logs", "--tail", "100", args.service)
-        elif args.command == "backup":
-            portable_state.backup(install, args.snapshot, apply=args.apply)
-        return 0
+        # Read-only status/logs and preview-only init/restore do not create a
+        # lock file. All state-changing paths take the same host-local lock.
+        mutating = args.command in {"up", "stop", "pull"} or getattr(args, "apply", False)
+        if mutating:
+            with installation_lock(args.directory):
+                return dispatch(args)
+        return dispatch(args)
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         print(f"Factory: {exc}", file=sys.stderr)
         return 1
+
+
+def dispatch(args: argparse.Namespace) -> int:
+    if args.command == "init":
+        bootstrap.init_directory(args.directory.absolute(), args.image or release_image(), args.project, apply=args.apply, port_offset=args.port_offset)
+        print("Private dry-run installation configured." if args.apply else "Preview only; use --apply to create the installation.")
+        return 0
+    if args.command == "restore":
+        portable_state.restore(args.snapshot, args.directory, args.project, apply=args.apply, port_offset=args.port_offset)
+        return 0
+    install = Installation(args.directory)
+    if args.command == "up":
+        install.up()
+    elif args.command == "status":
+        install.status()
+    elif args.command == "pull":
+        install.compose("pull", *SERVICES, "keygen")
+    elif args.command == "stop":
+        install.assert_owned_resources()
+        install.compose("stop")
+    elif args.command == "logs":
+        install.compose("logs", "--tail", "100", args.service)
+    elif args.command == "backup":
+        portable_state.backup(install, args.snapshot, apply=args.apply)
+    return 0
 
 
 if __name__ == "__main__":

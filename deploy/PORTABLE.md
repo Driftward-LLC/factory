@@ -90,6 +90,14 @@ Resume explicitly with `up` after a successful backup. Snapshots include
 credentials and encryption keys: keep them private, encrypt them before
 off-host transfer, and control retention separately.
 
+```bash
+python3 deploy/factory-portable.py --directory /srv/factory-pilot backup /srv/factory-snapshot
+python3 deploy/factory-portable.py --directory /srv/factory-pilot backup /srv/factory-snapshot --apply
+python3 deploy/factory-portable.py --directory /srv/factory-restored restore /srv/factory-snapshot --project factory-restored --port-offset 1000
+python3 deploy/factory-portable.py --directory /srv/factory-restored restore /srv/factory-snapshot --project factory-restored --port-offset 1000 --apply
+python3 deploy/factory-portable.py --directory /srv/factory-restored up
+```
+
 Restore is only into a new directory and new Compose namespace. Existing
 volumes are never overwritten. The snapshot verifies file checksums and exact
 image identities; it is a same-version disaster-recovery mechanism, not an
