@@ -1,5 +1,10 @@
 # Factory Docker Deployment
 
+For a **new Linux/amd64 dry-run installation**, start with
+[the portable release guide](PORTABLE.md). That path uses published images,
+private per-installation configuration and namespaced state. The installer and
+cutover procedure below remain the existing VPS migration/real-execution path.
+
 Factory should deploy as a Docker Compose application owned by this repository.
 The host keeps Docker, the Compose wrapper, systemd supervision, and protected
 env files; the Factory Compose app owns Hatchet Lite/Postgres plus the CLI,
@@ -63,7 +68,10 @@ DRIFTWARD_HERMES_MODEL=unknown
 
 The gateway may bind TCP later by setting `DRIFTWARD_HERMES_GRPC_TARGET` or
 `DRIFTWARD_HERMES_GRPC_BIND_TARGET` plus `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1`
-and either TLS or `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`. Do not solve Factory to
+and TLS plus `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`, or TLS with enforced client
+certificates (`DRIFTWARD_HERMES_GRPC_CA_PATH`). Server-only TLS does not
+authenticate callers. Explicit insecure development TCP is limited to literal
+loopback addresses and still requires a token. Do not solve Factory to
 Hermes access by copying Hermes credentials or session state into Factory.
 The gateway is bundled during install and requires a host Node.js 18+ binary;
 override the default `/usr/bin/node` with `DRIFTWARD_FACTORY_NODE_BIN` if the

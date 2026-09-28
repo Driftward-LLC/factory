@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
@@ -20,6 +21,7 @@ import {
   DEFAULT_HERMES_GRPC_TARGET,
   isHermesGrpcUnixTarget,
   resolveHermesGatewayProtoPath,
+  validateHermesGrpcTransport,
   type HermesIdentityCheck
 } from './hermes-gateway-client';
 
@@ -205,17 +207,14 @@ function serverCredentials(target: string): grpc.ServerCredentials {
 }
 
 function validateServerTarget(target: string): void {
+  validateHermesGrpcTransport(target);
   if (isHermesGrpcUnixTarget(target)) return;
-  if (process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP !== '1') {
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_tcp_disabled',
-      'TCP Hermes gRPC gateway binds require DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1'
-    );
-  }
-  if (process.env.DRIFTWARD_HERMES_GRPC_TLS !== '1' && !(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim()) {
+  const mutualTls = process.env.DRIFTWARD_HERMES_GRPC_TLS === '1'
+    && process.env.DRIFTWARD_HERMES_GRPC_CA_PATH?.trim();
+  if (!(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim() && !mutualTls) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_auth_required',
-      'TCP Hermes gRPC gateway binds require TLS or DRIFTWARD_HERMES_GRPC_AUTH_TOKEN'
+      'TCP Hermes gRPC gateway binds require an auth token or a CA that enforces TLS client certificates'
     );
   }
 }
@@ -224,11 +223,13 @@ function authorize(metadata: grpc.Metadata, target: string): void {
   const expected = (process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim();
   if (!expected) {
     if (isHermesGrpcUnixTarget(target)) return;
-    if (process.env.DRIFTWARD_HERMES_GRPC_TLS === '1') return;
+    if (process.env.DRIFTWARD_HERMES_GRPC_TLS === '1' && process.env.DRIFTWARD_HERMES_GRPC_CA_PATH?.trim()) return;
     throw serviceError(grpc.status.UNAUTHENTICATED, 'hermes_grpc_auth_required', 'Hermes gRPC TCP gateway requires an auth token');
   }
-  const observed = metadata.get('authorization')[0];
-  if (observed !== `Bearer ${expected}`) {
+  const observed = metadata.get('authorization');
+  const expectedBytes = Buffer.from(`Bearer ${expected}`);
+  const observedBytes = typeof observed[0] === 'string' ? Buffer.from(observed[0]) : Buffer.alloc(0);
+  if (observed.length !== 1 || observedBytes.length !== expectedBytes.length || !timingSafeEqual(observedBytes, expectedBytes)) {
     throw serviceError(grpc.status.UNAUTHENTICATED, 'hermes_grpc_auth_failed', 'Hermes gRPC gateway authentication failed');
   }
 }

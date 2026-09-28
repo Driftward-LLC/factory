@@ -369,8 +369,8 @@ class FactoryCliStaticTests(unittest.TestCase):
     def test_compose_honors_protected_worker_mode_env(self) -> None:
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
 
-        self.assertIn("- path: /etc/driftward/hatchet-workers.env", compose)
-        self.assertIn("- path: /etc/driftward/hatchet-worker-bridge-executor.env", compose)
+        self.assertIn("- path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env", compose)
+        self.assertIn("- path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-worker-bridge-executor.env", compose)
         self.assertIn("/run/driftward-hermes-factory:/run/driftward-hermes-factory", compose)
         self.assertIn("HATCHET_FACTORY_OPERATOR_RUNTIME: docker", compose)
         self.assertIn("HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/driftward-hatchet-event-ingress/ingress.db", compose)
@@ -378,8 +378,8 @@ class FactoryCliStaticTests(unittest.TestCase):
         self.assertIn("factory-bridge-data:/var/lib/driftward-hatchet-bridge", compose)
         self.assertIn("factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro", compose)
         self.assertIn("factory-lifecycle-data:/var/lib/driftward-factory-lifecycle-writer", compose)
-        self.assertIn("name: driftward-factory-bridge-data", compose)
-        self.assertIn("name: driftward-factory-ingress-data", compose)
+        self.assertIn("name: ${FACTORY_PROJECT_NAME:-driftward-factory}-bridge-data", compose)
+        self.assertIn("name: ${FACTORY_PROJECT_NAME:-driftward-factory}-ingress-data", compose)
         self.assertNotIn("./data/bridge:/var/lib/driftward-hatchet-bridge", compose)
         self.assertNotIn("./data/ingress:/var/lib/driftward-hatchet-event-ingress", compose)
         self.assertNotIn("/var/run/docker.sock", compose)

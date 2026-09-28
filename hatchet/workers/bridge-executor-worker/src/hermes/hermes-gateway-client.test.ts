@@ -65,19 +65,42 @@ test('Hermes gRPC TCP targets fail closed until explicitly authorized', () => {
   const previous = snapshotEnv([
     'DRIFTWARD_HERMES_GRPC_TARGET',
     'DRIFTWARD_HERMES_GRPC_ALLOW_TCP',
-    'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN'
+    'DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP',
+    'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
+    'DRIFTWARD_HERMES_GRPC_TLS',
+    'DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH',
+    'DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH',
   ]);
   try {
+    for (const key of previous.keys()) delete process.env[key];
     process.env.DRIFTWARD_HERMES_GRPC_TARGET = 'dns:///hermes.internal:50051';
     delete process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP;
     delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_disabled');
 
     process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP = '1';
+    assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_tls_required');
+
+    process.env.DRIFTWARD_HERMES_GRPC_TLS = '1';
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_auth_required');
 
     process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = 'test-token';
     assert.equal(hermesGrpcTarget(), 'dns:///hermes.internal:50051');
+
+    delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
+    process.env.DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH = '/test/client.key';
+    assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_auth_required');
+    process.env.DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH = '/test/client.crt';
+    assert.equal(hermesGrpcTarget(), 'dns:///hermes.internal:50051');
+
+    delete process.env.DRIFTWARD_HERMES_GRPC_TLS;
+    process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = 'test-token';
+    process.env.DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP = '1';
+    assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_tls_required');
+    process.env.DRIFTWARD_HERMES_GRPC_TARGET = '127.0.0.1:50051';
+    assert.equal(hermesGrpcTarget(), '127.0.0.1:50051');
+    delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
+    assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_auth_required');
   } finally {
     restoreEnv(previous);
   }

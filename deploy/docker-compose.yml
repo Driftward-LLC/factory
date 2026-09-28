@@ -1,4 +1,4 @@
-name: driftward-factory
+name: ${FACTORY_PROJECT_NAME:-driftward-factory}
 
 x-factory-image: &factory-image
   image: ${FACTORY_IMAGE:-driftward/factory:${FACTORY_IMAGE_TAG:-local}}
@@ -112,9 +112,9 @@ services:
     <<: *factory-image
     command: ["python3", "-m", "hatchet_hermes_bridge.cli", "--db", "/var/lib/driftward-hatchet-bridge/bridge.db", "serve", "--host", "0.0.0.0", "--port", "19877"]
     env_file:
-      - path: /etc/driftward/hatchet-bridge.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-bridge.env
         required: false
-      - path: /etc/driftward/hatchet-verifier.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-verifier.env
         required: false
     environment:
       HATCHET_VERIFIER_POLICY_PATH: /app/hatchet/workers/verifier-policy.json
@@ -141,9 +141,11 @@ services:
       bridge:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/hatchet-workers.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env
         required: false
-      - path: /etc/driftward/hatchet-event-ingress.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-event-ingress.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -167,7 +169,7 @@ services:
       event-ingress:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/hatchet-event-ingress.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-event-ingress.env
         required: false
     environment:
       HATCHET_PUBLIC_LINEAR_WEBHOOK_TARGET_URL: http://event-ingress:19878/events/linear/issue
@@ -192,7 +194,9 @@ services:
       bridge:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/hatchet-workers.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -209,7 +213,9 @@ services:
       bridge:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/hatchet-workers.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -226,11 +232,13 @@ services:
       bridge:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/hatchet-workers.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env
         required: false
-      - path: /etc/driftward/hatchet-worker-bridge-executor.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
         required: false
-      - path: /etc/driftward/hatchet-verifier.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-worker-bridge-executor.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-verifier.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -247,7 +255,9 @@ services:
       hatchet-lite:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/hatchet-workers.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -266,9 +276,11 @@ services:
       event-ingress:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/hatchet-workers.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env
         required: false
-      - path: /etc/driftward/hatchet-worker-reconciliation.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-worker-reconciliation.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -287,9 +299,9 @@ services:
       factory-linear-token-refresh:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/factory-lifecycle-writer.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/factory-lifecycle-writer.env
         required: false
-      - path: /etc/driftward/hatchet-bridge.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-bridge.env
         required: false
     environment:
       FACTORY_LIFECYCLE_HOST: 0.0.0.0
@@ -316,7 +328,7 @@ services:
     <<: *factory-image
     command: ["sh", "-ec", "while true; do python3 /app/hatchet/factory-lifecycle-writer/factory-lifecycle-token-refresh; sleep \"$${FACTORY_LINEAR_TOKEN_REFRESH_INTERVAL_SECONDS:-3600}\"; done"]
     env_file:
-      - path: /etc/driftward/factory-linear-token.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/factory-linear-token.env
         required: false
     environment:
       FACTORY_TOKEN_STATE_DIR: /var/lib/driftward-factory-linear-token
@@ -345,7 +357,9 @@ services:
       factory-lifecycle-writer:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/factory-operator.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/factory-operator.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -380,7 +394,9 @@ services:
       event-ingress:
         condition: service_healthy
     env_file:
-      - path: /etc/driftward/factory-operator.env
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/factory-operator.env
+        required: false
+      - path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-client.env
         required: false
     environment:
       <<: *hatchet-client-env
@@ -399,21 +415,21 @@ services:
 
 volumes:
   factory-hatchet-postgres-data:
-    name: driftward-factory-hatchet-postgres-data
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}-hatchet-postgres-data
   factory-hatchet-config-data:
-    name: driftward-factory-hatchet-config-data
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}-hatchet-config-data
   factory-bridge-data:
-    name: driftward-factory-bridge-data
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}-bridge-data
   factory-ingress-data:
-    name: driftward-factory-ingress-data
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}-ingress-data
   factory-lifecycle-data:
-    name: driftward-factory-lifecycle-data
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}-lifecycle-data
   factory-linear-token-data:
-    name: driftward-factory-linear-token-data
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}-linear-token-data
 
   factory-linear-published-token:
-    name: driftward-factory-linear-published-token
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}-linear-published-token
 
 networks:
   factory:
-    name: driftward-factory
+    name: ${FACTORY_PROJECT_NAME:-driftward-factory}
