@@ -1,4 +1,4 @@
-import { webcrypto } from 'node:crypto';
+import { randomUUID, webcrypto } from 'node:crypto';
 import {
   BridgeClient,
   HATCHET_EVENTS,
@@ -77,8 +77,9 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
     const bridge = new BridgeClient();
     const job = await bridge.getJob(ref);
     const retryAttempt = await bridge.getFactoryAttemptForJob(job.job_id);
-    if (retryAttempt && (retryAttempt.status === 'canceled' || retryAttempt.status === 'canceled_after_effect')) {
-      return { executed: false, blockedReason: 'factory_attempt_canceled', job, dryRun: Boolean(job.payload.dry_run), reused: true };
+    const blockedReason = blockedFactoryAttemptReason(retryAttempt?.status);
+    if (blockedReason) {
+      return { executed: false, blockedReason, job, dryRun: Boolean(job.payload.dry_run), reused: true };
     }
 
     if (job.requested_action === 'inspect_draft_pr_state') {
@@ -128,7 +129,7 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
     }
 
     if (job.state === 'effect_committed' || job.state === 'verification_pending') {
-      const attemptId = input.verificationAttemptId || `${job.idempotency_key}:verify:${job.commit_sha || 'unknown'}`;
+      const attemptId = input.verificationAttemptId || `verify:${randomUUID()}`;
       const recovered = await recoverClaimedVerification({
         bridge, job, attemptId, attemptReserved: Boolean(input.verificationAttemptId),
         ensurePending: () => ensureVerificationPending(bridge, job),
@@ -313,6 +314,9 @@ bridgeExecutorCreateDraftPr.durableTask({
     }
     const bridge = new BridgeClient();
     let job = await bridge.getJob(ref);
+    const retryAttempt = await bridge.getFactoryAttemptForJob(job.job_id);
+    const blockedReason = blockedFactoryAttemptReason(retryAttempt?.status);
+    if (blockedReason) return { executed: false, blockedReason, job, dryRun: Boolean(job.payload.dry_run), reused: true };
     if (!isDraftPrEffectAction(job.requested_action)) {
       return { executed: false, blockedReason: `unsupported action ${job.requested_action}`, job };
     }
@@ -392,8 +396,15 @@ function isDraftPrEffectAction(action: string): action is 'create_draft_pr' | 'r
   return action === 'create_draft_pr' || action === 'repair_draft_pr';
 }
 
+function blockedFactoryAttemptReason(status?: string): string | undefined {
+  if (status && ['canceled', 'canceled_after_effect', 'cancellation_requested'].includes(status)) return 'factory_attempt_canceled';
+  if (status && ['superseded', 'failed', 'completed', 'verified_ready'].includes(status)) return 'factory_attempt_terminal';
+  if (status === 'effect_outcome_unknown') return 'factory_execution_recovery_required';
+  return undefined;
+}
+
 async function finishVerification(bridge: BridgeClient, pending: BridgeJob, result: HermesDraftPrResult, reused: boolean, reservedAttemptId?: string, alreadyClaimed: boolean = false): Promise<BridgeExecutorOutput['execute-create-draft-pr']> {
-  const attemptId = reservedAttemptId || `${pending.idempotency_key}:verify:${pending.commit_sha || 'unknown'}`;
+  const attemptId = reservedAttemptId || `verify:${randomUUID()}`;
   try {
     const claimed = alreadyClaimed || (reservedAttemptId
       ? await bridge.claimVerificationLease(pending.job_id, attemptId)

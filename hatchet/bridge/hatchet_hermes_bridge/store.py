@@ -1637,20 +1637,72 @@ def get_job(conn: sqlite3.Connection, ref: str) -> dict[str, Any]:
     return _row_to_job(row)
 
 
+def _require_verification_eligible(conn: sqlite3.Connection, job: dict[str, Any]) -> dict[str, Any] | None:
+    if job["state"] not in {"effect_committed", "verification_pending"} or not job.get("pr_url") or not job.get("branch"):
+        raise BridgeValidationError("verification lease requires a committed draft PR job")
+    attempt = get_factory_attempt_for_job(conn, job["job_id"])
+    if attempt:
+        current = conn.execute(
+            "SELECT attempt_id FROM factory_attempts WHERE work_item_key=? AND action=? AND mode=? ORDER BY generation DESC LIMIT 1",
+            (attempt["work_item_key"], attempt["action"], attempt["mode"]),
+        ).fetchone()
+        if attempt["mode"] != "real" or attempt["status"] not in {"effect_committed", "verification_pending"} or current["attempt_id"] != attempt["attempt_id"]:
+            raise BridgeValidationError("verification requires the current eligible Factory attempt")
+    return attempt
+
+
+def enqueue_verification_resume(conn: sqlite3.Connection, ref: str, *, stale_after_minutes: Any) -> dict[str, Any]:
+    """Durably wake verification without holding a lease during event delivery."""
+    if not isinstance(stale_after_minutes, int) or isinstance(stale_after_minutes, bool) or not 1 <= stale_after_minutes <= 10080:
+        raise BridgeValidationError("verification resume stale_after_minutes must be between 1 and 10080")
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        job = get_job(conn, ref)
+        attempt = get_factory_attempt_for_job(conn, job["job_id"])
+        if not attempt or (attempt["actor"] == "legacy-import" and attempt["generation"] == 1):
+            return {"enqueued": False, "reason": "legacy_job"}
+        try:
+            _require_verification_eligible(conn, job)
+            payload = job["payload"]
+            _parse_pr_reference(payload.get("repo"), job["pr_url"])
+            expected_branch = attempt["branch"]
+            if job["requested_action"] == "repair_draft_pr":
+                _validate_repair_payload(payload)
+                repair = payload["factory_repair"]
+                expected_branch = repair["branch"]
+                if repair["pr_url"] != job["pr_url"] or repair["source_attempt_id"] != attempt["prior_attempt_id"]:
+                    raise BridgeValidationError("verification recovery repair identity is invalid")
+            # prior_pr_url can lag as a lineage summary. The committed job PR
+            # is authoritative; repairs also bind their source artifact above.
+            if (job["requested_action"] not in DRAFT_PR_EFFECT_ACTIONS or attempt["action"] != "create_draft_pr" or payload.get("dry_run") is not False
+                or job["idempotency_key"] != attempt["idempotency_key"] or job["branch"] != expected_branch
+                or (payload.get("work_item_id") or payload.get("linear_issue")) != attempt["work_item_key"]
+                or not isinstance(job["commit_sha"], str) or not re.fullmatch(r"[0-9a-f]{7,64}", job["commit_sha"])):
+                raise BridgeValidationError("verification recovery artifact identity is invalid")
+            updated_at = _canonical_time(job["updated_at"])
+        except (BridgeValidationError, TypeError, ValueError):
+            return {"enqueued": False, "reason": "not_eligible"}
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=stale_after_minutes)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        if updated_at > cutoff:
+            return {"enqueued": False, "reason": "not_stale"}
+        lease = conn.execute("SELECT * FROM verification_leases WHERE job_id=?", (job["job_id"],)).fetchone()
+        if lease and lease["closed_at"] is None and lease["expires_at"] > now.isoformat(timespec="microseconds").replace("+00:00", "Z"):
+            return {"enqueued": False, "reason": "lease_active"}
+        enqueued = _enqueue_factory_attempt_resume(conn, attempt, job, preserve_pending=True, event_type="verification_recovery_wake_enqueued")
+        return {"enqueued": enqueued, "reason": "enqueued" if enqueued else "already_queued"}
+
+
 def acquire_verification_lease(conn: sqlite3.Connection, ref: str, *, attempt_id: str, ttl_seconds: int = 300) -> dict[str, Any]:
     if not isinstance(attempt_id, str) or not attempt_id or len(attempt_id) > 200:
         raise BridgeValidationError("verification attempt_id is invalid")
     if not isinstance(ttl_seconds, int) or ttl_seconds < 30 or ttl_seconds > 900:
         raise BridgeValidationError("verification lease ttl_seconds must be between 30 and 900")
-    with conn:
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         job = get_job(conn, ref)
-        if job["state"] not in {"effect_committed", "verification_pending"} or not job.get("pr_url") or not job.get("branch"):
-            # There is no valid owner to authorize a verifier completion. Keep
-            # the artifact recoverable, but make the blocked recovery visible
-            # and defer another attempt through updated_at rather than looping.
-            conn.execute("UPDATE bridge_jobs SET reason_code = ?, error = ?, updated_at = ? WHERE job_id = ?", ("verification_recovery_lease_unavailable", "immutable verification references are unavailable", utc_now(), job["job_id"]))
-            _append_event(conn, job_id=job["job_id"], event_type="verification_lease_blocked", state=job["state"], details={"reason_code": "verification_recovery_lease_unavailable"})
-            raise BridgeValidationError("verification lease requires a committed draft PR job")
+        _require_verification_eligible(conn, job)
         now = datetime.now(timezone.utc)
         now_text = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
         expires_text = (now + timedelta(seconds=ttl_seconds)).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -1668,8 +1720,11 @@ def acquire_verification_lease(conn: sqlite3.Connection, ref: str, *, attempt_id
 
 
 def claim_verification_lease(conn: sqlite3.Connection, ref: str, *, attempt_id: str) -> bool:
-    with conn:
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         job = get_job(conn, ref)
+        _require_verification_eligible(conn, job)
         now = utc_now()
         updated = conn.execute("UPDATE verification_leases SET claimed_at = ? WHERE job_id = ? AND owner_attempt_id = ? AND claimed_at IS NULL AND closed_at IS NULL AND expires_at > ?", (now, job["job_id"], attempt_id, now)).rowcount
         if updated:
@@ -1682,6 +1737,7 @@ def _close_verification_lease(conn: sqlite3.Connection, job_id: str, outcome: st
 
 
 def _require_claimed_verification_lease(conn: sqlite3.Connection, job: dict[str, Any], attempt_id: Any) -> None:
+    _require_verification_eligible(conn, job)
     if not isinstance(attempt_id, str) or not attempt_id or len(attempt_id) > 200:
         raise BridgeValidationError("verification completion requires verification_attempt_id")
     lease = conn.execute("SELECT * FROM verification_leases WHERE job_id = ?", (job["job_id"],)).fetchone()
@@ -1692,7 +1748,9 @@ def _require_claimed_verification_lease(conn: sqlite3.Connection, job: dict[str,
 
 
 def record_verification_observation(conn: sqlite3.Connection, ref: str, *, attempt_id: Any, receipt: Any) -> dict[str, Any]:
-    with conn:
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         job = get_job(conn, ref)
         if job["state"] != "verification_pending":
             raise BridgeValidationError("verification observation requires verification_pending")
@@ -3608,7 +3666,10 @@ def _enqueue_factory_attempt_resume(
     conn: sqlite3.Connection,
     attempt: dict[str, Any],
     job: dict[str, Any],
-) -> None:
+    *,
+    preserve_pending: bool = False,
+    event_type: str = "execution_effect_commit_recovery_wake_enqueued",
+) -> bool:
     """Reuse the safe accepted-event path to resume after receipt recovery."""
     outbox_key = f"factory:accepted:{attempt['attempt_id']}"
     payload = canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]})
@@ -3623,6 +3684,8 @@ def _enqueue_factory_attempt_resume(
         or row["payload_json"] != payload
     ):
         raise BridgeConflict("factory recovery wake conflicts with the accepted-event outbox")
+    if preserve_pending and row and row["acknowledged_at"] is None:
+        return False
     now = utc_now()
     if row:
         # Clear even an in-flight lease. Its stale acknowledgement is fenced by
@@ -3639,17 +3702,18 @@ def _enqueue_factory_attempt_resume(
             "VALUES (?,?,?,?,?,?,?,?)",
             (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", payload, "pending", now, now),
         )
-    if not conn.execute(
+    if preserve_pending or not conn.execute(
         "SELECT 1 FROM factory_attempt_events WHERE attempt_id=? "
-        "AND event_type='execution_effect_commit_recovery_wake_enqueued'",
-        (attempt["attempt_id"],),
+        "AND event_type=?",
+        (attempt["attempt_id"], event_type),
     ).fetchone():
         _append_factory_attempt_event(
             conn,
             attempt["attempt_id"],
-            "execution_effect_commit_recovery_wake_enqueued",
+            event_type,
             {"outbox_key": outbox_key},
         )
+    return True
 
 
 def _commit_observed_execution_receipt(
@@ -4450,7 +4514,9 @@ def transition_job(
     if state == "failed":
         _validate_failure_classification(details)
 
-    with conn:
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT * FROM bridge_jobs

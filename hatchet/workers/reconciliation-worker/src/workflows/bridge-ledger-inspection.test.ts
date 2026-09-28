@@ -79,7 +79,7 @@ for (const failure of ['listEvents', 'correlations', 'findingWrites', 'recovery'
       fixture.deps.bridge.reconciliationCorrelations = fail;
     }
     if (failure === 'findingWrites') fixture.deps.bridge.recordReconciliationFindings = fail;
-    if (failure === 'recovery') fixture.deps.bridge.acquireVerificationLease = fail;
+    if (failure === 'recovery') fixture.deps.bridge.enqueueVerificationResume = fail;
     if (failure === 'eventPush') fixture.deps.pushEvent = fail;
     await assert.rejects(inspectBridgeLedger({}, fixture.deps));
     assert.deepEqual(fixture.calls.filter((call) => call.startsWith('ack:')), []);
@@ -121,15 +121,18 @@ test('a retained page republishes already-persisted findings after an event deli
   assert.equal(payload.findings[0].findingKey, [...stored][0]);
 });
 
-test('recovery event publication failure also retains progress', async () => {
+test('recovery is queued before progress advances without publishing a direct accepted event', async () => {
   const fixture = harness([job({ state: 'verification_pending', requested_action: 'create_draft_pr', payload: { dry_run: false }, pr_url: 'https://github.com/Driftward-LLC/factory/pull/1', hermes_session_id: 'session' })]);
-  fixture.deps.bridge.acquireVerificationLease = async () => ({ acquired: true });
-  fixture.deps.pushEvent = async (event) => {
-    assert.equal(event, HATCHET_EVENTS.HERMES_JOB_ACCEPTED);
-    throw new Error('forced delivery failure');
+  fixture.deps.bridge.enqueueVerificationResume = async (ref, staleAfterMinutes) => {
+    assert.equal(ref, 'sample');
+    assert.equal(staleAfterMinutes, 45);
+    fixture.calls.push('enqueue');
+    return { enqueued: true, reason: 'enqueued' };
   };
-  await assert.rejects(inspectBridgeLedger({}, fixture.deps), /writes failed/);
-  assert.deepEqual(fixture.calls.filter((call) => call.startsWith('ack:')), []);
+  const result = await inspectBridgeLedger({ staleAfterMinutes: 45 }, fixture.deps);
+  assert.equal(result.recovery.enqueued, 1);
+  assert.deepEqual(fixture.calls, ['persist', 'enqueue', `event:${HATCHET_EVENTS.RECONCILIATION_DETECTED}`, 'ack:active', 'ack:history']);
+  assert.equal(fixture.events.some((item) => item.event === HATCHET_EVENTS.HERMES_JOB_ACCEPTED), false);
 });
 
 function harness(active: BridgeJob[] = [], history: BridgeJob[] = []) {
@@ -148,7 +151,7 @@ function harness(active: BridgeJob[] = [], history: BridgeJob[] = []) {
       reconciliationCorrelations: async (query) => { queries.push(query); return query; },
       listEvents: async (ref) => ({ total: 1, events: [{ event_id: 'accepted', job_id: ref, event_type: 'accepted', state: 'accepted', details: { hermes_session_id: 'session' }, created_at: '2026-01-01T00:00:00Z' }] }),
       recordReconciliationFindings: async (findings) => { calls.push('persist'); return { created_finding_keys: findings.map((item) => item.finding_key), existing_finding_keys: [] }; },
-      acquireVerificationLease: async () => ({ acquired: false }),
+      enqueueVerificationResume: async () => ({ enqueued: false, reason: 'lease_active' }),
     },
     observations: { inventory: async () => ({ status: 'matched', complete: true, observations: [] }), latest: async () => ({ status: 'unavailable' }) },
     runs: { list: async () => [], getDetails: async () => ({ status: 'RUNNING', taskRuns: {} }) },
