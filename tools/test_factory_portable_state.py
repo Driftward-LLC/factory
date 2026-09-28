@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -48,23 +50,19 @@ class FakeDocker:
             return ""
         if args[0] == "ps":
             return "writer" if (self.foreign_container if "--all" in args else self.running) else ""
-        if args[0] == "run":
-            mounts = [dict(part.split("=", 1) for part in args[index + 1].split(",") if "=" in part)
-                      for index, item in enumerate(args) if item == "--mount"]
-            volume = next(item["src"] for item in mounts if item["type"] == "volume")
-            directory = Path(next(item["src"] for item in mounts if item["type"] == "bind"))
-            filename = next(item.removeprefix("/snapshot/") for item in args if item.startswith("/snapshot/"))
-            if "-cf" in args:
-                with tarfile.open(directory / filename, "w") as archive:
-                    data = self.volumes[volume]["data"]
-                    info = tarfile.TarInfo("./ledger")
-                    info.size = len(data)
-                    archive.addfile(info, io.BytesIO(data))
-            else:
-                with tarfile.open(directory / filename) as archive:
-                    self.volumes[volume]["data"] = archive.extractfile("./ledger").read()
-            return ""
         raise AssertionError(args)
+
+    def tar(self, image, volume, directory, filename, *, restore, env=None):
+        if restore:
+            with tarfile.open(directory / filename) as archive:
+                self.volumes[volume]["data"] = archive.extractfile("./ledger").read()
+        else:
+            with tarfile.open(directory / filename, "w") as archive:
+                data = self.volumes[volume]["data"]
+                info = tarfile.TarInfo("./ledger")
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+            (directory / filename).chmod(0o600)
 
 
 class PortableStateTests(unittest.TestCase):
@@ -86,6 +84,9 @@ class PortableStateTests(unittest.TestCase):
         self.patcher = patch.object(state, "_docker", self.docker)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
+        tar_patcher = patch.object(state, "_tar", self.docker.tar)
+        tar_patcher.start()
+        self.addCleanup(tar_patcher.stop)
 
     def backup(self) -> None:
         state.backup(self.installation, self.snapshot, apply=True)
@@ -184,6 +185,74 @@ class PortableStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "same deployment bundle"):
             state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
         self.assertFalse(self.restored.exists())
+
+
+class ArchiveStreamTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.archive = self.directory / "volume.tar"
+        self.payload = b"binary archive\x00\xff\x80"
+
+    def test_backup_stream_is_private_and_owned_by_caller(self) -> None:
+        def execute(args, **kwargs):
+            self.assertEqual(args[:3], ["docker", "run", "--rm"])
+            self.assertIn("type=volume,src=factory-test-data,dst=/state,readonly", args)
+            self.assertNotIn("--user", args)  # Root must still read the volume's owned files.
+            self.assertFalse(any("type=bind" in arg for arg in args))
+            self.assertIn("-cf", args)
+            self.assertEqual(args[args.index("-cf") + 1], "-")
+            self.assertFalse(kwargs.get("text", False))
+            self.assertEqual(kwargs["stderr"], subprocess.PIPE)
+            handle = kwargs["stdout"]
+            info = os.fstat(handle.fileno())
+            self.assertEqual(info.st_uid, os.geteuid())
+            self.assertEqual(info.st_mode & 0o777, 0o600)
+            handle.write(self.payload)
+            return subprocess.CompletedProcess(args, 0, stderr=b"")
+
+        with patch.object(state.subprocess, "run", side_effect=execute):
+            state._tar("factory:test", "factory-test-data", self.directory, self.archive.name, restore=False)
+        self.assertEqual(self.archive.read_bytes(), self.payload)
+
+    def test_restore_stream_uses_stdin_and_keeps_volume_writable(self) -> None:
+        self.archive.write_bytes(self.payload)
+        self.archive.chmod(0o600)
+
+        def execute(args, **kwargs):
+            self.assertIn("--interactive", args)
+            self.assertIn("type=volume,src=factory-test-data,dst=/state", args)
+            self.assertFalse(any("type=bind" in arg for arg in args))
+            self.assertIn("-xf", args)
+            self.assertEqual(args[args.index("-xf") + 1], "-")
+            self.assertEqual(kwargs["stdin"].read(), self.payload)
+            self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
+            self.assertEqual(kwargs["stderr"], subprocess.PIPE)
+            self.assertFalse(kwargs.get("text", False))
+            return subprocess.CompletedProcess(args, 0, stderr=b"")
+
+        with patch.object(state.subprocess, "run", side_effect=execute):
+            state._tar("factory:test", "factory-test-data", self.directory, self.archive.name, restore=True)
+        self.assertEqual(self.archive.read_bytes(), self.payload)
+
+    def test_backup_never_overwrites_existing_archive_or_symlink(self) -> None:
+        self.archive.write_bytes(self.payload)
+        alias = self.directory / "alias.tar"
+        alias.symlink_to(self.archive)
+        with patch.object(state.subprocess, "run") as execute:
+            for path in (self.archive, alias):
+                with self.subTest(path=path.name), self.assertRaises(OSError):
+                    state._tar("factory:test", "factory-test-data", self.directory, path.name, restore=False)
+            execute.assert_not_called()
+        self.assertEqual(self.archive.read_bytes(), self.payload)
+
+    def test_archive_failure_withholds_private_stderr(self) -> None:
+        result = subprocess.CompletedProcess([], 1, stderr=b"private-key-and-token")
+        with patch.object(state.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "withheld") as error:
+                state._tar("factory:test", "factory-test-data", self.directory, self.archive.name, restore=False)
+        self.assertNotIn("private-key-and-token", str(error.exception))
 
 
 if __name__ == "__main__":

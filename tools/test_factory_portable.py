@@ -106,6 +106,24 @@ class PortableTests(unittest.TestCase):
         with portable.installation_lock(self.directory):
             pass
 
+    def test_key_generation_uses_host_operator_identity(self):
+        install = portable.Installation(self.directory)
+        portable.bootstrap.finalize_directory(self.directory, "fixture.worker.token", apply=True)
+
+        def compose(*args, **kwargs):
+            if "keygen" in args:
+                self.assertEqual(args, ("run", "--rm", "--no-deps", "--user", "1001:1002", "keygen"))
+                for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"):
+                    (self.directory / "keys" / "hatchet" / name).write_text("fixture")
+            return ""
+
+        with patch.object(install, "assert_owned_resources"), patch.object(install, "status"), \
+                patch.object(install, "compose", side_effect=compose) as invoked, \
+                patch.object(portable.os, "geteuid", return_value=1001), \
+                patch.object(portable.os, "getegid", return_value=1002), patch("builtins.print"):
+            install.up()
+        self.assertEqual(sum("keygen" in call.args for call in invoked.call_args_list), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

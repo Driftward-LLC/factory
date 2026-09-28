@@ -135,7 +135,7 @@ class Installation:
             if any(keys.iterdir()):
                 raise ValueError("key directory is not empty; refusing to overwrite unknown key material")
             print("Generating native Hatchet key material (private output withheld).")
-            self.compose("run", "--rm", "--no-deps", "keygen", private=True)
+            self.compose("run", "--rm", "--no-deps", "--user", f"{os.geteuid()}:{os.getegid()}", "keygen", private=True)
         if not all(path.is_file() and not path.is_symlink() for path in expected):
             raise ValueError("Hatchet keys are incomplete; refusing to regenerate or replace them")
         for path in expected:

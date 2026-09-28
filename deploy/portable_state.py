@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
@@ -73,11 +74,19 @@ def _no_writers(volumes: list[str], env: dict | None = None) -> None:
 
 
 def _tar(image: str, volume: str, directory: Path, filename: str, *, restore: bool, env: dict | None = None) -> None:
-    _docker(["run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges:true",
-             "--mount", f"type=volume,src={volume},dst=/state" + ("" if restore else ",readonly"),
-             "--mount", f"type=bind,src={directory},dst=/snapshot" + (",readonly" if restore else ""),
-             "--entrypoint", "tar", image, "-xf" if restore else "-cf", f"/snapshot/{filename}", "-C", "/state",
-             *([] if restore else ["."])], env)
+    # Container root must read/restore database ownership, but archive files
+    # must belong to the host operator. Stream over stdio, never a writable bind.
+    command = ["docker", "run", "--rm", "--network", "none", "--read-only", "--security-opt", "no-new-privileges:true",
+               "--mount", f"type=volume,src={volume},dst=/state" + ("" if restore else ",readonly"),
+               *(["--interactive"] if restore else []), "--entrypoint", "tar", image,
+               "-xf" if restore else "-cf", "-", "-C", "/state", *([] if restore else ["."])]
+    flags = os.O_RDONLY if restore else os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(directory / filename, flags | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "rb" if restore else "wb") as archive:
+        result = subprocess.run(command, env=env, stdin=archive if restore else subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL if restore else archive, stderr=subprocess.PIPE)
+    if result.returncode:
+        raise RuntimeError("Docker volume archive operation failed; private output withheld")
 
 
 def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
