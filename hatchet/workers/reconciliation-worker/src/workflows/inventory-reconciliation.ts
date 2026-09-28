@@ -1,14 +1,24 @@
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
-import type { IngressObservationClient } from '../ingress-observation-client';
-import type { observeHatchetRuns } from '../hatchet-run-observer';
+import type { BridgeJob, ReconciliationCorrelations } from '@driftward/hatchet-worker-shared';
+import type { ObservationInventoryLookup } from '../ingress-observation-client';
+import type { HatchetRunInventoryLookup } from '../hatchet-run-observer';
 import { expectedJob, finding, scopedFinding, type ReconciliationFinding } from './cross-provider-reconciliation';
 
-export function inspectIngressInventory(inventory: Awaited<ReturnType<IngressObservationClient['inventory']>>, jobs: BridgeJob[], cutoff: number): ReconciliationFinding[] {
+export function inventoryCorrelationQueries(ingress: ObservationInventoryLookup, hatchet: HatchetRunInventoryLookup): ReconciliationCorrelations {
+  const observations = ingress.status === 'matched' ? ingress.observations : [];
+  const runs = hatchet.status === 'matched' ? hatchet.runs : [];
+  return {
+    source_event_keys: [...new Set(observations.map((observation) => observation.eventKey))],
+    legacy_work_items: [...new Set(observations.filter((observation) => observation.source === 'linear').map((observation) => observation.subject))],
+    hatchet_run_ids: [...new Set(runs.flatMap((run) => [run.workflowRunId, run.taskExternalId]))],
+  };
+}
+
+export function inspectIngressInventory(inventory: ObservationInventoryLookup, jobs: BridgeJob[], cutoff: number, correlations?: ReconciliationCorrelations): ReconciliationFinding[] {
   if (inventory.status !== 'matched') return [systemFinding('ingress_inventory_unavailable', 'sanitized ingress inventory is unavailable', { source: 'ingress' }, { status: inventory.status })];
   const findings: ReconciliationFinding[] = [];
   if (!inventory.complete) findings.push(systemFinding('ingress_inventory_incomplete', 'ingress inventory reached its safe limit', { source: 'ingress' }, { scanned: inventory.observations.length }));
-  const consumedEventKeys = new Set(jobs.flatMap((job) => sourceEventKeys(job)));
-  const legacyIssues = new Set(jobs.filter((job) => sourceEventKeys(job).length === 0).map((job) => typeof job.payload.linear_issue === 'string' ? job.payload.linear_issue : '').filter(Boolean));
+  const consumedEventKeys = new Set(correlations?.source_event_keys ?? jobs.flatMap((job) => sourceEventKeys(job)));
+  const legacyIssues = new Set(correlations?.legacy_work_items ?? jobs.filter((job) => sourceEventKeys(job).length === 0).map((job) => typeof job.payload.linear_issue === 'string' ? job.payload.linear_issue : '').filter(Boolean));
   for (const observation of inventory.observations) {
     const subject = { jobId: null, subject: `ingress:${observation.eventKey}` };
     const expected = { source: observation.source, subject: observation.subject, published: true };
@@ -29,11 +39,11 @@ function sourceEventKeys(job: BridgeJob): string[] {
   return typeof job.payload.source_event_key === 'string' ? [job.payload.source_event_key] : [];
 }
 
-export function inspectHatchetInventory(inventory: Awaited<ReturnType<typeof observeHatchetRuns>>, jobs: BridgeJob[], cutoff: number): ReconciliationFinding[] {
+export function inspectHatchetInventory(inventory: HatchetRunInventoryLookup, jobs: BridgeJob[], cutoff: number, correlations?: ReconciliationCorrelations): ReconciliationFinding[] {
   if (inventory.status !== 'matched') return [systemFinding('hatchet_inventory_unavailable', 'Hatchet run inventory is unavailable', { source: 'hatchet' }, { status: inventory.status })];
   const findings: ReconciliationFinding[] = [];
   if (!inventory.complete) findings.push(systemFinding('hatchet_inventory_incomplete', 'Hatchet run inventory reached its safe limit', { source: 'hatchet' }, { scanned: inventory.runs.length }));
-  const correlated = new Set(jobs.flatMap((job) => [job.hatchet_workflow_run_id, job.hatchet_step_run_id]).filter((id): id is string => Boolean(id)));
+  const correlated = new Set(correlations?.hatchet_run_ids ?? jobs.flatMap((job) => [job.hatchet_workflow_run_id, job.hatchet_step_run_id]).filter((id): id is string => Boolean(id)));
   for (const run of inventory.runs) {
     if (correlated.has(run.workflowRunId) || correlated.has(run.taskExternalId) || (run.insertedAt && Date.parse(run.insertedAt) > cutoff)) continue;
     findings.push(scopedFinding({ jobId: null, subject: `hatchet:${run.workflowRunId}:${run.taskExternalId}` }, 'warning', 'hatchet_run_without_bridge', 'Hatchet run has no correlated bridge job after grace period', { bridgeJob: true }, { workflowRunId: run.workflowRunId, taskExternalId: run.taskExternalId, status: run.status, workflowName: run.workflowName }));
@@ -41,8 +51,10 @@ export function inspectHatchetInventory(inventory: Awaited<ReturnType<typeof obs
   return findings;
 }
 
-export function incompleteBridgeScan(total: number, scanned: number, limit: number): ReconciliationFinding | null {
-  return total > scanned ? systemFinding('reconciliation_scan_incomplete', 'bridge inventory exceeded bounded scan limit', { total }, { scanned, limit }) : null;
+export function incompleteBridgeScan(total: number, scanned: number, limit: number, coverage?: { complete: boolean; scope?: string }): ReconciliationFinding | null {
+  return total > scanned || coverage?.complete === false
+    ? systemFinding('reconciliation_scan_incomplete', 'bridge inventory is not completely covered by this bounded scan', { total }, { scanned, limit, ...coverage })
+    : null;
 }
 
 export function bridgeEventHistoryIncomplete(job: BridgeJob, total: number, scanned: number, limit: number): ReconciliationFinding | null {

@@ -374,7 +374,7 @@ health="$(curl --silent --fail --max-time 2 -H "Authorization: Bearer $token" ht
 HEALTH="$health" RELEASE="$release_version" python3 - <<'PY'
 import json,os
 health=json.loads(os.environ['HEALTH'])
-assert health == {'ok':True,'schema_version':6,'release_commit':os.environ['RELEASE']}
+assert health == {'ok':True,'schema_version':7,'release_commit':os.environ['RELEASE']}
 PY
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$release_root/current" DB="$db" python3 -B - <<'PY'
 import os

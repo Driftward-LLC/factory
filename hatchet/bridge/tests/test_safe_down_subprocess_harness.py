@@ -193,7 +193,7 @@ exit 0
         self._write(self.fake / "factory", "#!/bin/sh\n[ \"$1\" = mode ] && echo dry-run\n")
         self._write(self.fake / "curl", f'''#!/bin/sh
 case " $* " in *"/health"*)
-  [ -f {started!s} ] && printf '%s\\n' '{{"ok":true,"schema_version":6,"release_commit":"{self.release_version}"}}' && exit 0
+  [ -f {started!s} ] && printf '%s\\n' '{{"ok":true,"schema_version":7,"release_commit":"{self.release_version}"}}' && exit 0
   ;;
 esac
 exit 22
@@ -620,7 +620,7 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         self.assertEqual(postdeploy.returncode, 0, postdeploy.stdout + postdeploy.stderr)
         self.assertIn("legacy import conflicts: original=38 resolvable=38 unresolved=0", postdeploy.stdout)
         con = sqlite3.connect(db)
-        self.assertEqual(con.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone()[0], 6)
+        self.assertEqual(con.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone()[0], 7)
         self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflicts").fetchone()[0], 38)
         self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflict_resolutions").fetchone()[0], 38)
         self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflict_resolutions WHERE operator='migration'",).fetchone()[0], 38)

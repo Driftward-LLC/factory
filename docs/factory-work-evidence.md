@@ -125,7 +125,8 @@ configuration change in this slice.
 
 Bridge schema 6 adds `factory_execution_manifests` and
 `factory_work_checkpoints` using the existing installer-only migration
-transaction. Runtime connections require schema 6; they perform no DDL.
+transaction. Runtime connections now require schema 7 (which also adds durable
+reconciliation scan progress); they perform no DDL.
 Deployment uses the existing reviewed release, backup and migration procedure.
 Rollback across the schema change requires the matching pre-upgrade database
 snapshot and release, as described in the deployment runbooks.
