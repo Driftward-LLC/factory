@@ -51,6 +51,31 @@ class PortableTests(unittest.TestCase):
         with patch.object(portable, "run", side_effect=responses):
             install.assert_owned_resources()
 
+    def test_factory_checks_exact_volumes_not_other_factory_projects(self):
+        directory = Path(self.tmp.name) / "factory"
+        portable.bootstrap.init_directory(directory, "factory:test", "factory", apply=True)
+        install = portable.Installation(directory)
+        self.assertEqual(install.args[install.args.index("--project-name") + 1], "factory")
+        volumes = [f"factory-{suffix}" for suffix in portable.portable_state.PROJECT_VOLUMES]
+        unrelated = ["factory-pilot-bridge-data", "factory-restored-maintenance", "driftward-factory-bridge-data"]
+        owned = {"Labels": {"io.driftward.factory.installation": install.metadata["installation_id"]}}
+        responses = ["\n".join(volumes + unrelated), "", "", json.dumps([owned] * len(volumes))]
+        with patch.object(portable, "run", side_effect=responses) as invoked:
+            install.assert_owned_resources()
+        self.assertEqual(invoked.call_args_list[-1].args[0], ["docker", "volume", "inspect", *volumes])
+
+    def test_factory_rejects_foreign_exact_volume_before_mutation(self):
+        directory = Path(self.tmp.name) / "factory"
+        portable.bootstrap.init_directory(directory, "factory:test", "factory", apply=True)
+        install = portable.Installation(directory)
+        for suffix in portable.portable_state.PROJECT_VOLUMES:
+            responses = [f"factory-{suffix}\n", "", "", json.dumps([{"Labels": {}}])]
+            with self.subTest(suffix=suffix), patch.object(portable, "run", side_effect=responses), \
+                    patch.object(install, "compose") as compose:
+                with self.assertRaisesRegex(ValueError, "collides"):
+                    install.up()
+                compose.assert_not_called()
+
     def test_real_execution_cannot_be_enabled_by_editing_env(self):
         install = portable.Installation(self.directory)
         path = self.directory / "env" / "hatchet-workers.env"

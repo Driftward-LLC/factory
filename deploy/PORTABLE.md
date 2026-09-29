@@ -15,7 +15,7 @@ real-execution deployment path; do not point this bootstrap at its state.
 - Capacity for PostgreSQL, Hatchet and Factory services; use a separate test
   host or distinct project name and loopback ports when validating.
 - A private installation directory on a local filesystem and a unique
-  `factory-NAME` project. Do not use shared/NFS SQLite storage.
+  `factory` or `factory-NAME` project. Do not use shared/NFS SQLite storage.
 
 Only Hatchet's dashboard and the Factory console are published, on loopback.
 The console still requires Tailscale Serve's authenticated identity header.
@@ -37,11 +37,11 @@ from the same trusted GitHub release. Verify before extracting:
 sha256sum --check SHA256SUMS
 tar -xzf factory-VERSION-linux-amd64.tar.gz
 cd factory-VERSION-linux-amd64
-python3 deploy/factory-portable.py --directory /srv/factory-pilot init --project factory-pilot
-python3 deploy/factory-portable.py --directory /srv/factory-pilot init --project factory-pilot --apply
-python3 deploy/factory-portable.py --directory /srv/factory-pilot pull
-python3 deploy/factory-portable.py --directory /srv/factory-pilot up
-python3 deploy/factory-portable.py --directory /srv/factory-pilot status
+python3 deploy/factory-portable.py --directory /srv/factory init --project factory
+python3 deploy/factory-portable.py --directory /srv/factory init --project factory --apply
+python3 deploy/factory-portable.py --directory /srv/factory pull
+python3 deploy/factory-portable.py --directory /srv/factory up
+python3 deploy/factory-portable.py --directory /srv/factory status
 ```
 
 The parent `/srv` must exist and be writable by your operator. Use another
@@ -50,6 +50,9 @@ creates mode-0700 directories and mode-0600 configuration without printing
 secrets. Repeating the same initialization preserves identities and secrets;
 foreign, incomplete, changed-image, or symlinked installations are rejected.
 Use `--port-offset 20000` on both init calls to run beside another installation.
+The `factory` project has its own volumes and network; it does not rename or
+reuse the existing `driftward-factory` deployment. Resource ownership checks
+still reject foreign resources with an exact target name.
 
 Release metadata selects a digest-pinned image. For an explicitly local source
 build only, pass `init --image driftward/factory:my-test-tag`; deployments do not
@@ -73,9 +76,9 @@ receive only the credentials needed by their existing responsibilities.
 ## Operate and recover
 
 ```bash
-python3 deploy/factory-portable.py --directory /srv/factory-pilot logs intake-worker
-python3 deploy/factory-portable.py --directory /srv/factory-pilot stop
-python3 deploy/factory-portable.py --directory /srv/factory-pilot up
+python3 deploy/factory-portable.py --directory /srv/factory logs intake-worker
+python3 deploy/factory-portable.py --directory /srv/factory stop
+python3 deploy/factory-portable.py --directory /srv/factory up
 ```
 
 `stop` preserves every volume. Status checks this deployment's containers and
@@ -91,8 +94,8 @@ credentials and encryption keys: keep them private, encrypt them before
 off-host transfer, and control retention separately.
 
 ```bash
-python3 deploy/factory-portable.py --directory /srv/factory-pilot backup /srv/factory-snapshot
-python3 deploy/factory-portable.py --directory /srv/factory-pilot backup /srv/factory-snapshot --apply
+python3 deploy/factory-portable.py --directory /srv/factory backup /srv/factory-snapshot
+python3 deploy/factory-portable.py --directory /srv/factory backup /srv/factory-snapshot --apply
 python3 deploy/factory-portable.py --directory /srv/factory-restored restore /srv/factory-snapshot --project factory-restored --port-offset 1000
 python3 deploy/factory-portable.py --directory /srv/factory-restored restore /srv/factory-snapshot --project factory-restored --port-offset 1000 --apply
 python3 deploy/factory-portable.py --directory /srv/factory-restored up

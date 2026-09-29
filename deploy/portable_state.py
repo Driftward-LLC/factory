@@ -16,6 +16,7 @@ VOLUMES = (
     "hatchet-postgres-data", "hatchet-config-data", "bridge-data", "ingress-data",
     "lifecycle-data", "linear-token-data", "linear-published-token",
 )
+PROJECT_VOLUMES = (*VOLUMES, "operator-socket", "maintenance")
 CONFIG_FILES = {".env", bootstrap.MARKER, "env/hatchet-client.env",
                 *("env/" + name for name in bootstrap.ENV_FILES),
                 *("keys/hatchet/" + name for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"))}
@@ -172,7 +173,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     if project in _docker(["network", "ls", "--format", "{{.Name}}"]).splitlines():
         raise ValueError("restore project already has a network")
     existing = _available_volumes()
-    if any(f"{project}-{suffix}" in existing for suffix in (*VOLUMES, "operator-socket")):
+    if any(f"{project}-{suffix}" in existing for suffix in PROJECT_VOLUMES):
         raise ValueError("restore project already has volumes")
     if manifest["factory_image"] not in manifest["images"]:
         raise ValueError("snapshot does not identify its Factory image")

@@ -20,6 +20,7 @@ import uuid
 
 
 MARKER = ".factory-install.json"
+PROJECT_PATTERN = r"factory(?:-[a-z0-9][a-z0-9-]{0,48})?"
 ENV_FILES = (
     "hatchet-bridge.env", "hatchet-workers.env", "hatchet-event-ingress.env",
     "hatchet-worker-bridge-executor.env", "hatchet-worker-reconciliation.env",
@@ -120,8 +121,8 @@ def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
 def init_directory(directory: str | Path, image: str, project: str, *,
                    apply: bool = False, port_offset: int = 0) -> dict[str, str]:
     directory = checked_path(directory)
-    if not re.fullmatch(r"factory-[a-z0-9][a-z0-9-]{0,48}", project):
-        raise ValueError("project must be a unique factory- prefixed lowercase name")
+    if not re.fullmatch(PROJECT_PATTERN, project):
+        raise ValueError("project must be factory or a unique factory-NAME lowercase name of at most 57 characters")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@-]*", image):
         raise ValueError("invalid container image reference")
     if ":" not in image.rsplit("/", 1)[-1] or image.endswith(":latest"):

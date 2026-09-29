@@ -131,6 +131,25 @@ class PortableStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "new directory"):
             self.backup()
 
+    def test_restore_to_factory_preserves_other_projects_and_rejects_collisions(self) -> None:
+        self.backup()
+        original_volumes = dict(self.docker.volumes)
+        for suffix in state.PROJECT_VOLUMES:
+            name = f"factory-{suffix}"
+            self.docker.volumes[name] = {}
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(ValueError, "already has volumes"):
+                state.restore(self.snapshot, self.restored, "factory", apply=True)
+            self.assertFalse(self.restored.exists())
+            del self.docker.volumes[name]
+        state.restore(self.snapshot, self.restored, "factory", apply=True)
+        metadata, _ = bootstrap.validate_directory(self.restored)
+        self.assertEqual(metadata["project"], "factory")
+        for name, value in original_volumes.items():
+            self.assertEqual(self.docker.volumes[name], value)
+        for suffix in state.VOLUMES[:5]:
+            self.assertEqual(self.docker.volumes[f"factory-{suffix}"]["data"],
+                             original_volumes[f"factory-source-{suffix}"]["data"])
+
     def test_restore_preview_is_read_only_and_existing_targets_are_rejected(self) -> None:
         self.backup()
         self.docker.calls.clear()

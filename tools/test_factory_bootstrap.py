@@ -29,6 +29,24 @@ class FactoryBootstrapTests(unittest.TestCase):
         self.initialize()
         self.assertFalse(self.directory.exists())
 
+    def test_exact_factory_project_is_repeat_safe(self):
+        config = bootstrap.init_directory(self.directory, "factory:test", "factory")
+        self.assertFalse(self.directory.exists())
+        self.assertEqual(config["COMPOSE_PROJECT_NAME"], "factory")
+        config = bootstrap.init_directory(self.directory, "factory:test", "factory", apply=True)
+        self.assertEqual(config, bootstrap.init_directory(self.directory, "factory:test", "factory", apply=True))
+        metadata, saved = bootstrap.validate_directory(self.directory)
+        self.assertEqual(metadata["project"], "factory")
+        self.assertEqual(saved["FACTORY_PROJECT_NAME"], "factory")
+
+    def test_project_name_boundaries_remain_restricted(self):
+        bootstrap.init_directory(self.directory, "factory:test", "factory-" + "a" * 49)
+        for project in ("", "driftward-factory", "factory-", "factory_", "factoryx", "Factory",
+                        "factory--test", "factory/test", "factory-" + "a" * 50):
+            with self.subTest(project=project), self.assertRaises(ValueError):
+                bootstrap.init_directory(self.directory, "factory:test", project, apply=True)
+            self.assertFalse(self.directory.exists())
+
     def test_repeat_preserves_identity_secrets_and_private_permissions(self):
         config = self.initialize(apply=True)
         before = {path.relative_to(self.directory): path.read_bytes()
