@@ -89,8 +89,8 @@ class Installation:
         self.directory = bootstrap.checked_path(directory)
         self.metadata, self.values = bootstrap.validate_directory(self.directory)
         self.project = self.values["FACTORY_PROJECT_NAME"]
-        if not re.fullmatch(r"factory-[a-z0-9][a-z0-9-]{0,48}", self.project):
-            raise ValueError("portable project must start with factory- and be at most 57 characters")
+        if not re.fullmatch(bootstrap.PROJECT_PATTERN, self.project):
+            raise ValueError("portable project must be factory or factory-NAME and be at most 57 characters")
         if self.values.get("FACTORY_INSTALL_DIR") != str(self.directory):
             raise ValueError("installation was moved; restore it with an explicit new directory")
         # Do not let an ambient Compose profile or another deployment's env
@@ -108,7 +108,8 @@ class Installation:
     def assert_owned_resources(self) -> None:
         label = "io.driftward.factory.installation"
         volume_names = run(["docker", "volume", "ls", "--format", "{{.Name}}"], env=self.env, private=True).splitlines()
-        volumes = [name for name in volume_names if name.startswith(self.project + "-")]
+        expected_volumes = {f"{self.project}-{suffix}" for suffix in portable_state.PROJECT_VOLUMES}
+        volumes = [name for name in volume_names if name in expected_volumes]
         containers = run(["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=" + self.project], env=self.env, private=True).splitlines()
         networks = run(["docker", "network", "ls", "-q", "--filter", "name=^" + self.project + "$"], env=self.env, private=True).splitlines()
         for kind, ids in (("volume", volumes), ("container", containers), ("network", networks)):
@@ -178,7 +179,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="preview a fresh installation; --apply writes new private configuration")
     init.add_argument("--image", help="explicit release digest or local development image")
-    init.add_argument("--project", required=True, help="unique factory-NAME Compose namespace")
+    init.add_argument("--project", required=True, help="unique factory or factory-NAME Compose namespace")
     init.add_argument("--apply", action="store_true")
     init.add_argument("--port-offset", type=int, default=0, help="offset published loopback ports for a second installation")
     sub.add_parser("pull", help="pull pinned runtime images; never build source")
