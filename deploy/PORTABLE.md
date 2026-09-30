@@ -7,6 +7,11 @@ host Node/npm, systemd, Hatchet CLI profile, or Hermes socket. It is deliberatel
 enabled by this profile. The existing VPS installer remains the migration and
 real-execution deployment path; do not point this bootstrap at its state.
 
+Moving the existing Compose deployment is a separate workflow: see
+[same-host cutover preparation](CUTOVER.md). Its explicit production overlay
+does not change this guide's dry-run defaults or authorize starting a migrated
+candidate alongside its source.
+
 ## Requirements and boundaries
 
 - Linux amd64, Docker Engine, Docker Compose 2.24.4 or newer, Python 3.11+.

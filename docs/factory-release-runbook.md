@@ -28,6 +28,11 @@ The existing VPS migration/recovery path remains available separately. It uses
 Do not put secrets, tokens, Hatchet profile files, runtime database files, or
 Hermes session material in the release.
 
+The bundle also contains preview-first [same-host cutover preparation](../deploy/CUTOVER.md)
+and an explicit production Compose overlay. These do not alter fresh-install
+dry-run defaults. A migrated candidate preserves its source images and remains
+stopped; release publication does not approve a cold copy or live cutover.
+
 ## Versioning
 
 Use date-based release tags:

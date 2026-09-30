@@ -20,6 +20,11 @@ isolated configuration and state without the VPS's systemd, checkout, or
 Hermes socket. The host installer below remains the existing deployment's
 migration/real-execution path; it is not greenfield bootstrap.
 
+For a staged move from the existing Compose runtime into a new isolated
+installation, use the [same-host cutover preparation guide](deploy/CUTOVER.md).
+Its default is read-only preview; an approved cold copy leaves the candidate
+stopped and does not switch live traffic.
+
 Historical bridge, ingress, lifecycle, and Hatchet control-plane records are
 intentionally not copied into the repository. They should be migrated into the
 Factory Docker volumes during the standalone deployment cutover.

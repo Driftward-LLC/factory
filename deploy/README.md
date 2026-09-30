@@ -5,6 +5,12 @@ For a **new Linux/amd64 dry-run installation**, start with
 private per-installation configuration and namespaced state. The installer and
 cutover procedure below remain the existing VPS migration/real-execution path.
 
+To prepare a move from that existing Compose app to a new installation, follow
+[same-host cutover preparation](CUTOVER.md). The new helper previews first and
+can only copy an already stopped, quiescent source; it does not start the
+candidate or switch production routing. The legacy host-to-Docker gate below
+is a different migration and should not be used to rename the live deployment.
+
 Factory should deploy as a Docker Compose application owned by this repository.
 The host keeps Docker, the Compose wrapper, systemd supervision, and protected
 env files; the Factory Compose app owns Hatchet Lite/Postgres plus the CLI,
