@@ -165,6 +165,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         changed = {**row, "document": document, "document_digest": work_evidence.digest(document)}
         self.assertNotIn("private", console_evidence._checkpoint([changed], "verification_receipt"))
 
+    @patch.dict(os.environ, {"HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
     def test_repair_does_not_inherit_preceding_attempts_pass_or_failure(self):
         self.commit()
         self.verify(passed=False)

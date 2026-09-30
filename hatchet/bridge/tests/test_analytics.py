@@ -2398,7 +2398,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         self.assertEqual([(point["date"], point["prs_recorded"]) for point in series["points"]], [("2026-09-11", 0), ("2026-09-12", 0), ("2026-09-13", 1), ("2026-09-14", 0)])
 
     def test_time_series_real_automatic_repair_missing_marker_is_unknown(self) -> None:
-        policy_env = patch.dict("os.environ", {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "workers/verifier-policy.json")})
+        policy_env = patch.dict("os.environ", {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "workers/verifier-policy.json"), "HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
         policy_env.start()
         self.addCleanup(policy_env.stop)
         attempt, job, _ = self._reserve("ENG-REPAIR-SERIES")

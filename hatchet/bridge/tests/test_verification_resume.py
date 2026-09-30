@@ -285,6 +285,7 @@ class VerificationResumeTests(unittest.TestCase):
         self.assertEqual(self.enqueue(imported)["reason"], "legacy_job")
         self.assertTrue(self.acquire(imported)["acquired"])
 
+    @patch.dict(os.environ, {"HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
     def test_repair_wake_reuses_source_branch_and_pr_not_the_generation_reserved_branch(self):
         attempt, job = self.pending()
         self.assertTrue(self.acquire(job)["acquired"])

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from hatchet_hermes_bridge.store import (
     BridgeConflict,
@@ -400,6 +401,39 @@ class BridgeStoreTests(unittest.TestCase):
         lease = self.conn.execute("SELECT closed_at, outcome FROM verification_leases WHERE job_id = ?", (failed["job_id"],)).fetchone()
         self.assertIsNotNone(lease["closed_at"]); self.assertEqual(lease["outcome"], "failed")
 
+    def test_failed_docs_only_check_does_not_queue_repair_without_explicit_opt_in(self):
+        setting = "HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS"
+        for index, value in enumerate((None, "", "invalid", "0", "-1", "1")):
+            with self.subTest(value=value), patch.dict(os.environ):
+                os.environ.pop(setting, None)
+                if value is not None:
+                    os.environ[setting] = value
+                attempt, job, _ = reserve_factory_intake(
+                    self.conn, work_item_key=f"ENG-{120 + index}", mode="real", request_id="docs-canary",
+                    reason="Documentation-only canary", actor="intake-worker",
+                    payload={**verifier_payload("Driftward-LLC/capykit"), "implementation_prompt": "Documentation-only: update README.md; do not change dependencies."},
+                )
+                transition_job(self.conn, job["job_id"], state="running")
+                pr_url = f"https://github.com/Driftward-LLC/capykit/pull/{120 + index}"
+                transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": pr_url}, _factory_execution_commit=True)
+                transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
+                acquire_verification_lease(self.conn, job["job_id"], attempt_id="docs-verifier")
+                claim_verification_lease(self.conn, job["job_id"], attempt_id="docs-verifier")
+                outbox_count = self.conn.execute("SELECT COUNT(*) FROM factory_attempt_outbox").fetchone()[0]
+
+                failed = transition_job(
+                    self.conn, job["job_id"], state="failed",
+                    details={"reason_code": "verification_github_check_failed", "verification_attempt_id": "docs-verifier", "error": "GitHub dependency audit check failed"},
+                    _factory_verifier_completion=True,
+                )
+
+                self.assertEqual((failed["state"], failed["pr_url"]), ("failed", pr_url))
+                self.assertEqual(get_factory_attempt(self.conn, attempt["attempt_id"])["status"], "failed")
+                self.assertEqual(len(list_factory_attempts(self.conn, attempt["work_item_key"])), 1)
+                self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_attempt_outbox").fetchone()[0], outbox_count)
+                self.assertNotIn("repair_queued", [event["event_type"] for event in list_factory_attempt_events(self.conn, attempt["attempt_id"])])
+
+    @patch.dict(os.environ, {"HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
     def test_failed_github_check_queues_bounded_repair_for_existing_pr(self):
         attempt, job, _ = reserve_factory_intake(
             self.conn, work_item_key="ENG-11", mode="real", request_id="linear:issue:ENG-11:update:first",
@@ -437,6 +471,7 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertIn("repair_queued", [event["event_type"] for event in list_factory_attempt_events(self.conn, attempt["attempt_id"])])
         self.assertEqual([event["event_type"] for event in list_factory_attempt_events(self.conn, repair["attempt_id"])][:2], ["repair_reserved", "repair_requested"])
 
+    @patch.dict(os.environ, {"HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
     def test_non_repairable_verifier_failures_do_not_queue_repair(self):
         attempt, job, _ = reserve_factory_intake(
             self.conn, work_item_key="ENG-12", mode="real", request_id="linear:issue:ENG-12:update:first",

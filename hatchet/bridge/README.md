@@ -430,6 +430,21 @@ only that owner may settle or commit the eventual provider receipt. An observed
 effect settlement preserves that authorization record rather than releasing it;
 post-effect and verification states are permanently non-claimable.
 
+### Automatic verification repair
+
+Automatic repair is off by default. An unset, empty, or invalid
+`HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS` uses `1`: the failed attempt and
+its PR evidence remain recorded, but no follow-up repair is queued. Explicit
+values above `1` opt in deployment-wide, capped at `10` total generations
+(including the initial attempt), and require reviewed operator approval.
+
+Opt-in repairs reuse the existing draft PR and inherit its repository-wide
+verification policy. This is not a task-specific scope guarantee: a docs-only
+request does not narrow the repository's allowed paths, and an unrelated failing
+check may trigger repair. Keep automatic repair disabled for bounded canaries;
+remediate unrelated failures as separately approved work. Changing the setting
+does not cancel already queued or executing repairs.
+
 ## CLI
 
 Use a local database path for development:
