@@ -2930,9 +2930,9 @@ def reserve_factory_absence_retry(
 
 def _factory_auto_repair_max_generations() -> int:
     try:
-        value = int(os.environ.get("HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS", "3"))
+        value = int(os.environ.get("HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS", "1"))
     except ValueError:
-        value = 3
+        value = 1
     return max(1, min(value, 10))
 
 

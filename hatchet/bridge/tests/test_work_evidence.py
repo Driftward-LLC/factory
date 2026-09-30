@@ -122,6 +122,7 @@ class WorkEvidenceTests(unittest.TestCase):
         self.assertEqual(verified["local_evidence_source"], "executor_reported")
         self.assertEqual(verified["review_approval"], "unknown")
 
+    @patch.dict(os.environ, {"HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
     def test_failed_verification_preserves_checkpoint_and_repair_lineage(self):
         attempt, job, _ = self.reserve()
         self.pending(job)
@@ -137,6 +138,7 @@ class WorkEvidenceTests(unittest.TestCase):
         self.assertEqual(manifest["expected_head_sha"], "a" * 40)
         self.assertIsNone(manifest["base_commit_sha"])
 
+    @patch.dict(os.environ, {"HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
     def test_repair_admission_failure_rolls_back_verification_and_checkpoint(self):
         attempt, job, _ = self.reserve()
         self.pending(job)
