@@ -85,6 +85,16 @@ class PortableTests(unittest.TestCase):
                 install.up()
         compose.assert_not_called()
 
+    def test_production_candidate_cannot_use_dry_run_lifecycle_commands(self):
+        path = self.directory / portable.bootstrap.MARKER
+        metadata = json.loads(path.read_text())
+        metadata["profile"] = "same-host-production"
+        path.write_text(json.dumps(metadata))
+        with patch.object(portable, "run") as invoked:
+            with self.assertRaisesRegex(ValueError, "separately reviewed operations"):
+                portable.Installation(self.directory)
+        invoked.assert_not_called()
+
     def test_missing_or_unhealthy_services_fail_status(self):
         install = portable.Installation(self.directory)
         rows = [{"Service": service, "State": "running", "Health": "healthy"} for service in portable.SERVICES]

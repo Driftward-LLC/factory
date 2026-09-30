@@ -13,10 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "deploy/docker-compose.yml",
     "deploy/compose.portable.yml",
+    "deploy/compose.production.yml",
     "deploy/factory-portable.py",
+    "deploy/factory-cutover.py",
+    "deploy/factory-production.py",
     "deploy/bootstrap.py",
     "deploy/portable_state.py",
     "deploy/PORTABLE.md",
+    "deploy/CUTOVER.md",
 )
 IMAGE = "ghcr.io/driftward-llc/factory@sha256:" + "a" * 64
 
@@ -106,6 +110,27 @@ class FactoryReleaseTests(unittest.TestCase):
         with tarfile.open(self.output / f"{self.bundle}-validation-only.tar.gz") as bundle:
             metadata = bundle.extractfile(f"{self.bundle}/factory.env").read().decode()
             self.assertIn("FACTORY_RELEASE_VALIDATION_ONLY=true\n", metadata)
+
+    def test_bundled_clis_run_without_source_checkout(self) -> None:
+        output = Path(self.directory.name) / "real-source-bundle"
+        result = subprocess.run(
+            ["bash", str(ROOT / "deploy/package-release.sh"), "--version", "v2026.9.28",
+             "--image", IMAGE, "--output-dir", str(output), "--validation-only"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        subprocess.run(
+            ["tar", "-xzf", str(output / f"{self.bundle}-validation-only.tar.gz"), "-C", str(output)],
+            check=True, capture_output=True,
+        )
+        for tool in ("factory-portable.py", "factory-cutover.py", "factory-production.py"):
+            with self.subTest(tool=tool):
+                help_result = subprocess.run(
+                    ["python3", "-E", "-s", str(output / self.bundle / "deploy" / tool), "--help"],
+                    cwd=output, capture_output=True, text=True,
+                )
+                self.assertEqual(help_result.returncode, 0, help_result.stderr)
+                self.assertIn("--directory", help_result.stdout)
 
     def test_release_writes_are_guarded_by_dry_run(self) -> None:
         workflow = (ROOT / ".github/workflows/factory-release.yml").read_text(encoding="utf-8")

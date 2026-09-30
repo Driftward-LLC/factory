@@ -88,6 +88,8 @@ class Installation:
     def __init__(self, directory: Path):
         self.directory = bootstrap.checked_path(directory)
         self.metadata, self.values = bootstrap.validate_directory(self.directory)
+        if self.metadata.get("profile", "portable-dry-run") != "portable-dry-run":
+            raise ValueError("production candidates require separately reviewed operations; the portable wrapper is dry-run only")
         self.project = self.values["FACTORY_PROJECT_NAME"]
         if not re.fullmatch(bootstrap.PROJECT_PATTERN, self.project):
             raise ValueError("portable project must be factory or factory-NAME and be at most 57 characters")

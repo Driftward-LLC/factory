@@ -135,6 +135,9 @@ jobs:
       - name: Prove disposable portable installation and restore
         run: python3 tools/check_factory_portable.py --image driftward/factory:ci
 
+      - name: Rehearse stopped production-state relocation
+        run: python3 tools/check_factory_cutover.py --image driftward/factory:ci
+
       - name: Check changed-file whitespace
         run: git diff --check HEAD
 

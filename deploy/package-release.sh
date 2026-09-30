@@ -35,7 +35,7 @@ done
 source_commit="${source_commit:-$(git -C "$repo_root" rev-parse HEAD)}"
 [[ "$source_commit" =~ ^[a-f0-9]{40}$ ]] || { echo "invalid source commit" >&2; exit 64; }
 source_epoch="$(git -C "$repo_root" show -s --format=%ct "$source_commit")"
-files=(deploy/docker-compose.yml deploy/compose.portable.yml deploy/factory-portable.py deploy/bootstrap.py deploy/portable_state.py deploy/PORTABLE.md)
+files=(deploy/docker-compose.yml deploy/compose.portable.yml deploy/compose.production.yml deploy/factory-portable.py deploy/factory-cutover.py deploy/factory-production.py deploy/bootstrap.py deploy/portable_state.py deploy/PORTABLE.md deploy/CUTOVER.md)
 for file in "${files[@]}"; do
   [[ -f "$repo_root/$file" && ! -L "$repo_root/$file" ]] || {
     echo "missing or symlinked release input: $file" >&2; exit 66;

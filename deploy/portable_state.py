@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import subprocess
 import tarfile
@@ -22,6 +23,27 @@ CONFIG_FILES = {".env", bootstrap.MARKER, "env/hatchet-client.env",
                 *("keys/hatchet/" + name for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"))}
 DEPLOYMENT_FILES = ("docker-compose.yml", "compose.portable.yml")
 IDENTITY_LABEL = "io.driftward.factory.installation"
+PRODUCTION = "same-host-production"
+PROVENANCE = ".factory-cutover.json"
+
+
+def deployment_files(profile: str) -> tuple[str, ...]:
+    if profile not in {"portable-dry-run", PRODUCTION}:
+        raise ValueError("unsupported installation profile")
+    return (*DEPLOYMENT_FILES, "compose.production.yml") if profile == PRODUCTION else DEPLOYMENT_FILES
+
+
+def config_files(profile: str) -> set[str]:
+    deployment_files(profile)  # Reject unknown profiles before selecting files.
+    return CONFIG_FILES | ({PROVENANCE} if profile == PRODUCTION else set())
+
+
+def read_provenance(path: Path) -> dict:
+    value = json.loads(bootstrap._read_private(path))
+    if (not isinstance(value, dict) or type(value.get("activation_approved")) is not bool
+            or value.get("profile_sha256") != _hash(Path(__file__).parent / "compose.production.yml")):
+        raise ValueError("invalid production provenance or changed production profile")
+    return value
 
 
 def _docker(args: list[str], env: dict | None = None) -> str:
@@ -94,20 +116,27 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     source = _path(installation.directory)
     snapshot = _path(snapshot)
     metadata, values = bootstrap.validate_directory(source)
+    profile = metadata.get("profile", "portable-dry-run")
+    expected_config = config_files(profile)
+    if profile == PRODUCTION:
+        if read_provenance(source / PROVENANCE).get("destination_project") != metadata["project"]:
+            raise ValueError("production provenance names a different installation")
     installation.assert_owned_resources()
     if snapshot.exists() or source == snapshot or source in snapshot.parents or not snapshot.parent.is_dir():
         raise ValueError("snapshot must be a new directory outside the installation")
     files = {".env", bootstrap.MARKER}
+    if profile == PRODUCTION:
+        files.add(PROVENANCE)
     for relative in ("env", "keys"):
         files.update(relative + "/" + name for name in _private_files(source / relative))
-    if files != CONFIG_FILES:
+    if files != expected_config:
         raise ValueError("backup requires complete keys/client credentials and only known configuration files")
     config = json.loads(installation.compose("config", "--format", "json", private=True))
     images = {item["image"] for item in config["services"].values()}
     image_ids = {image: _docker(["image", "inspect", "--format", "{{.Id}}", image], installation.env) for image in images}
     existing = _available_volumes(installation.env)
     volumes = [suffix for suffix in VOLUMES if f"{installation.project}-{suffix}" in existing]
-    if not set(VOLUMES[:5]).issubset(volumes):
+    if not set(VOLUMES if profile == PRODUCTION else VOLUMES[:5]).issubset(volumes):
         raise ValueError("installation has not created all required durable volumes")
     for suffix in volumes:
         info = json.loads(_docker(["volume", "inspect", f"{installation.project}-{suffix}"], installation.env))[0]
@@ -133,19 +162,25 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     bootstrap._create_private(snapshot / "manifest.json", json.dumps({
         "format_version": 1, "project": installation.project, "installation_id": metadata["installation_id"],
         "factory_image": values["FACTORY_IMAGE"], "images": image_ids, "volumes": volumes, "sha256": hashes,
-        "deployment_sha256": {name: _hash(Path(__file__).parent / name) for name in DEPLOYMENT_FILES},
+        "profile": profile,
+        "deployment_sha256": {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile)},
     }, sort_keys=True, indent=2) + "\n")
-    print("Backup complete; installation remains stopped. Use up to resume it explicitly.")
+    print("Backup complete; installation remains stopped. Resume only through its matching operations wrapper after review.")
 
 
-def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = False, port_offset: int = 0) -> None:
+def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = False, port_offset: int = 0,
+            production: bool = False) -> None:
     snapshot, directory = _path(snapshot), _path(directory)
     if not snapshot.is_dir() or snapshot.stat().st_mode & 0o077:
         raise ValueError("snapshot must be a private directory")
     manifest = json.loads(bootstrap._read_private(snapshot / "manifest.json"))
     if manifest.get("format_version") != 1:
         raise ValueError("unsupported snapshot format")
-    if manifest.get("deployment_sha256") != {name: _hash(Path(__file__).parent / name) for name in DEPLOYMENT_FILES}:
+    profile = manifest.get("profile", "portable-dry-run")
+    if (profile == PRODUCTION) != production:
+        raise ValueError("snapshot profile requires its matching operations wrapper")
+    expected_config = config_files(profile)
+    if manifest.get("deployment_sha256") != {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile)}:
         raise ValueError("restore requires the same deployment bundle; cross-version restore is unsupported")
     if directory.exists() or snapshot == directory or snapshot in directory.parents:
         raise ValueError("restore requires a new directory outside the snapshot")
@@ -154,9 +189,9 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     # Reuse bootstrap's project, image, path and port validation without writing.
     updated = bootstrap.init_directory(directory, manifest["factory_image"], project, port_offset=port_offset)
     volumes = manifest["volumes"]
-    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(VOLUMES[:5]).issubset(volumes) or not set(volumes).issubset(VOLUMES):
+    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(VOLUMES if production else VOLUMES[:5]).issubset(volumes) or not set(volumes).issubset(VOLUMES):
         raise ValueError("invalid snapshot volume list")
-    expected = {"config/" + name for name in CONFIG_FILES} | {f"volumes/{suffix}.tar" for suffix in volumes}
+    expected = {"config/" + name for name in expected_config} | {f"volumes/{suffix}.tar" for suffix in volumes}
     if set(manifest["sha256"]) != expected or _private_files(snapshot) != expected | {"manifest.json"}:
         raise ValueError("snapshot contains missing or unexpected files")
     for name, digest in manifest["sha256"].items():
@@ -166,6 +201,16 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         _archive_check(snapshot / "volumes" / f"{suffix}.tar")
     values = bootstrap.read_env(snapshot / "config" / ".env")
     marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
+    provenance = read_provenance(snapshot / "config" / PROVENANCE) if production else None
+    if production:
+        predecessors = provenance.get("predecessors", [])
+        if not isinstance(predecessors, list):
+            raise ValueError("invalid production predecessor inventory")
+        if provenance.get("destination_project") == manifest["project"]:
+            predecessor = {"project": manifest["project"], "installation_id": marker["installation_id"]}
+            provenance["predecessors"] = [*predecessors, *([] if predecessor in predecessors else [predecessor])]
+    if marker.get("profile", "portable-dry-run") != profile:
+        raise ValueError("snapshot profile differs from its installation marker")
     if values["FACTORY_IMAGE"] != manifest["factory_image"] or marker["installation_id"] != manifest["installation_id"] or values["FACTORY_PROJECT_NAME"] != manifest["project"]:
         raise ValueError("snapshot installation identity mismatch")
     if _docker(["ps", "--all", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.ID}}"]):
@@ -177,6 +222,11 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         raise ValueError("restore project already has volumes")
     if manifest["factory_image"] not in manifest["images"]:
         raise ValueError("snapshot does not identify its Factory image")
+    if production:
+        pins = {values[name] for name in ("FACTORY_IMAGE", "FACTORY_POSTGRES_IMAGE", "FACTORY_HATCHET_IMAGE")}
+        if (any(not re.fullmatch(r"sha256:[0-9a-f]{64}", image) for image in pins)
+                or manifest["images"] != {image: image for image in pins}):
+            raise ValueError("production restore requires exact saved local image IDs; never pull")
     print(f"Restore {len(volumes)} cold volumes into new project {project} at {directory}; leave stopped")
     if not apply:
         return
@@ -192,9 +242,14 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     directory.mkdir(mode=0o700)
     for relative in ("env", "keys", "keys/hatchet", "run", "run/operator"):
         (directory / relative).mkdir(mode=0o700)
-    for name in sorted(CONFIG_FILES - {".env", bootstrap.MARKER}):
+    for name in sorted(expected_config - {".env", bootstrap.MARKER, PROVENANCE}):
         bootstrap._create_private(directory / name, bootstrap._read_private(snapshot / "config" / name))
-    for key in ("FACTORY_PROJECT_NAME", "COMPOSE_PROJECT_NAME", "FACTORY_INSTALL_DIR", "FACTORY_ENV_DIR", "FACTORY_OPERATOR_RUN_DIR", "HATCHET_SERVER_URL", *bootstrap.PORTS):
+    relocated = ["FACTORY_PROJECT_NAME", "COMPOSE_PROJECT_NAME", "FACTORY_INSTALL_DIR", "FACTORY_ENV_DIR", "FACTORY_OPERATOR_RUN_DIR", *bootstrap.PORTS]
+    # Production keeps its public URL; routing to the new loopback listener is
+    # a separately reviewed operation. Dry-run copies get their own local URL.
+    if not production:
+        relocated.append("HATCHET_SERVER_URL")
+    for key in relocated:
         values[key] = updated[key]
     bootstrap._create_private(directory / ".env", bootstrap.env_text(values))
     restored_id = str(uuid.uuid4())
@@ -210,6 +265,9 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
             raise ValueError("restore volume was created by another installation; refusing to overwrite it")
         _no_writers([name])
         _tar(manifest["images"][manifest["factory_image"]], name, snapshot / "volumes", f"{suffix}.tar", restore=True)
+    if production:
+        provenance.update(destination_project=project, snapshot_sha256=_hash(snapshot / "manifest.json"), activation_approved=False)
+        bootstrap._create_private(directory / PROVENANCE, json.dumps(provenance, sort_keys=True, indent=2) + "\n")
     marker.update(project=project, installation_id=restored_id)
     bootstrap._create_private(directory / bootstrap.MARKER, json.dumps(marker, sort_keys=True) + "\n")
     bootstrap.validate_directory(directory)
