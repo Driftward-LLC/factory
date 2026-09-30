@@ -204,6 +204,8 @@ def main() -> int:
         report = json.loads((directory / ".factory-cutover.json").read_text())
         assert report["activation_approved"] is False
         assert report["ledger_counts"]["jobs"] == expected_counts
+        run(sys.executable, str(ROOT / "deploy/factory-production.py"), "--directory", str(directory), "preview",
+            stage="production preview")
         compose_command = ["docker", "compose", "--project-name", project, "--project-directory", str(directory),
                            "--env-file", str(directory / ".env")]
         for name in ("docker-compose.yml", "compose.portable.yml", "compose.production.yml"):

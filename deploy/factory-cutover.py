@@ -239,7 +239,9 @@ def ledger_summary(archive: Path) -> dict:
                 pending_effects = conn.execute("SELECT count(*) FROM factory_execution_leases WHERE released_at IS NULL AND effect_observed_at IS NULL").fetchone()[0]
                 pending_verification = conn.execute("SELECT count(*) FROM verification_leases WHERE closed_at IS NULL").fetchone()[0]
                 if (set(jobs) - {"completed", "failed", "ready_for_human_review"}
-                        or set(attempts) - {"completed", "failed", "verified_ready", "canceled", "canceled_after_effect", "superseded"}
+                        # legacy_completed is an imported historical receipt,
+                        # not an active attempt (see bridge/legacy_artifacts.py).
+                        or set(attempts) - {"completed", "legacy_completed", "failed", "verified_ready", "canceled", "canceled_after_effect", "superseded"}
                         or pending_effects or pending_verification):
                     raise CutoverRefusal("source has active/unknown execution or verification; reconcile before migration")
                 return {"jobs": jobs, "attempts": attempts}
@@ -308,21 +310,24 @@ def prepare(source_project: str, env_dir: Path, keys: Path, directory: Path,
         state._archive_check(snapshot / "volumes" / (suffix + ".tar"))
     revalidate_source()
     counts = ledger_summary(snapshot / "volumes/bridge-data.tar")
+    provenance = {**report, "ledger_counts": counts, "source_container_ids": sorted(row["Id"] for row in source["rows"]),
+                  "tenant_id": source["values"]["HATCHET_DEFAULT_TENANT_ID"],
+                  "profile_sha256": state._hash(HERE / "compose.production.yml"),
+                  "deployment_sha256": {name: state._hash(HERE / name) for name in state.deployment_files(state.PRODUCTION)},
+                  "source_images": {name: row["Image"] for name, row in source["services"].items()},
+                  "activation_approved": False}
+    bootstrap._create_private(snapshot / "config" / state.PROVENANCE, json.dumps(provenance, sort_keys=True, indent=2) + "\n")
     hashes = {name: state._hash(snapshot / name) for name in sorted(state._private_files(snapshot))}
     manifest = {"format_version": 1, "project": source_project, "installation_id": source_id,
                 "factory_image": source["image"], "images": {image: image for image in source["images"]},
-                "volumes": list(state.VOLUMES), "sha256": hashes,
-                "deployment_sha256": {name: state._hash(HERE / name) for name in state.DEPLOYMENT_FILES}}
+                "volumes": list(state.VOLUMES), "sha256": hashes, "profile": state.PRODUCTION,
+                "deployment_sha256": {name: state._hash(HERE / name) for name in state.deployment_files(state.PRODUCTION)}}
     bootstrap._create_private(snapshot / "manifest.json", json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     target_unused(directory, project)
     revalidate_source()
-    state.restore(snapshot, directory, project, apply=True, port_offset=port_offset)
+    state.restore(snapshot, directory, project, apply=True, port_offset=port_offset, production=True)
     revalidate_source()
-    provenance = {**report, "ledger_counts": counts, "source_container_ids": sorted(row["Id"] for row in source["rows"]),
-                  "snapshot_sha256": state._hash(snapshot / "manifest.json"), "profile_sha256": state._hash(HERE / "compose.production.yml"),
-                  "source_images": {name: row["Image"] for name, row in source["services"].items()},
-                  "activation_approved": False}
-    bootstrap._create_private(directory / ".factory-cutover.json", json.dumps(provenance, sort_keys=True, indent=2) + "\n")
+    provenance = json.loads(bootstrap._read_private(directory / state.PROVENANCE))
     print("Prepared and STOPPED. No routing, credential rotation, schema upgrade, or execution activation occurred.")
     return provenance
 

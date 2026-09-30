@@ -76,7 +76,12 @@ class ProductionProfileTests(unittest.TestCase):
         executor = services["bridge-executor-worker"]
         self.assertEqual(executor["environment"]["DRIFTWARD_HERMES_GRPC_TARGET"],
                          f"unix://{SOCKET_DIRECTORY}/hermes.sock")
-        self.assertEqual(executor["volumes"], [{
+        # Compose versions may omit the false create_host_path default.
+        gateway_mounts = [
+            {**mount, "bind": {"create_host_path": False, **mount.get("bind", {})}}
+            for mount in executor["volumes"]
+        ]
+        self.assertEqual(gateway_mounts, [{
             "type": "bind", "source": SOCKET_DIRECTORY, "target": SOCKET_DIRECTORY,
             "read_only": True, "bind": {"create_host_path": False},
         }])

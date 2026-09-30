@@ -1,6 +1,9 @@
 # Same-host production migration only: layer after docker-compose.yml and
 # compose.portable.yml. This does not enable execution or authorize cutover.
 # Protected env files and copied state must pass the cutover preflight first.
+x-production-labels: &production-labels
+  io.driftward.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?The preserved Hatchet tenant is required}
+
 x-production-worker-env: &production-worker-env !override
   - path: ${FACTORY_ENV_DIR:?Production environment directory is required}/hatchet-workers.env
     required: true
@@ -9,16 +12,20 @@ x-production-worker-env: &production-worker-env !override
 
 services:
   postgres:
+    labels: *production-labels
     image: ${FACTORY_POSTGRES_IMAGE:?Source Postgres image ID is required}
   hatchet-lite:
+    labels: *production-labels
     image: ${FACTORY_HATCHET_IMAGE:?Source Hatchet image ID is required}
   bridge:
+    labels: *production-labels
     env_file: !override
       - path: ${FACTORY_ENV_DIR:?}/hatchet-bridge.env
         required: true
       - path: ${FACTORY_ENV_DIR:?}/hatchet-verifier.env
         required: true
   event-ingress:
+    labels: *production-labels
     env_file: !override
       - path: ${FACTORY_ENV_DIR:?}/hatchet-workers.env
         required: true
@@ -27,15 +34,19 @@ services:
       - path: ${FACTORY_ENV_DIR:?}/hatchet-event-ingress.env
         required: true
   linear-webhook-proxy:
+    labels: *production-labels
     profiles: !reset []
     env_file: !override
       - path: ${FACTORY_ENV_DIR:?}/hatchet-event-ingress.env
         required: true
   intake-worker:
+    labels: *production-labels
     env_file: *production-worker-env
   execution-dispatch-worker:
+    labels: *production-labels
     env_file: *production-worker-env
   bridge-executor-worker:
+    labels: *production-labels
     env_file: !override
       - path: ${FACTORY_ENV_DIR:?}/hatchet-workers.env
         required: true
@@ -55,8 +66,10 @@ services:
         bind:
           create_host_path: false
   pr-event-worker:
+    labels: *production-labels
     env_file: *production-worker-env
   reconciliation-worker:
+    labels: *production-labels
     env_file: !override
       - path: ${FACTORY_ENV_DIR:?}/hatchet-workers.env
         required: true
@@ -65,6 +78,7 @@ services:
       - path: ${FACTORY_ENV_DIR:?}/hatchet-worker-reconciliation.env
         required: true
   factory-lifecycle-writer:
+    labels: *production-labels
     profiles: !reset []
     env_file: !override
       - path: ${FACTORY_ENV_DIR:?}/factory-lifecycle-writer.env
@@ -72,11 +86,13 @@ services:
       - path: ${FACTORY_ENV_DIR:?}/hatchet-bridge.env
         required: true
   factory-linear-token-refresh:
+    labels: *production-labels
     profiles: !reset []
     env_file: !override
       - path: ${FACTORY_ENV_DIR:?}/factory-linear-token.env
         required: true
   factory-operator:
+    labels: *production-labels
     env_file: &production-operator-env !override
       - path: ${FACTORY_ENV_DIR:?}/factory-operator.env
         required: true
@@ -88,4 +104,5 @@ services:
       factory-lifecycle-writer:
         condition: service_healthy
   outbox-dispatcher:
+    labels: *production-labels
     env_file: *production-operator-env

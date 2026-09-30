@@ -135,8 +135,7 @@ portable command's dry-run guard. **All `factory-portable.py` lifecycle commands
 are unsupported for the production candidate**, not only `up`: they select the
 dry-run Compose files, exclude Linear services, and do not use the production
 infrastructure image pins. The production installation marker fails closed on
-that wrapper. A later reviewed production wrapper/activation path must own
-startup, stop, status, and backup/restore operations.
+that wrapper. Use `factory-production.py` for scoped production operations.
 
 The candidate records `profile: same-host-production` in its installation
 marker and `activation_approved: false` in `.factory-cutover.json`, together
@@ -158,14 +157,73 @@ execution receipt, and lifecycle updates before opening normal intake. Existing
 review PRs must remain reviewable with their original evidence. Only **one**
 deployment may authorize execution or deliver lifecycle effects at any time.
 
+### Scoped production operations
+
+The production wrapper uses the three reviewed Compose files and the copied
+image IDs. It never builds, pulls, regenerates keys, mints credentials, or runs
+explicit database migrations. Do not use the legacy host installer for the
+candidate: it targets the original runtime and shared gateway.
+
+```bash
+python3 deploy/factory-production.py --directory /srv/factory-candidate preview
+python3 deploy/factory-production.py --directory /srv/factory-candidate core-start
+```
+
+Starting is preview-only without `--apply`. Before either startup path, the
+source containers must match recorded provenance, remain stopped, and have
+Docker restart policies disabled. Separately disable and persistently fence the
+source systemd unit and any legacy timers, retaining their exact previous
+configuration for recovery. A Docker stop alone is not a reboot-safe fence.
+The wrapper does not perform host supervision or routing changes for you.
+It also binds the declared tenant to the preserved Hatchet token, labels every
+production service with that tenant, and serializes startup with a host-local
+tenant lock. Another restored copy cannot start while a sibling is running or
+restart-enabled. Restores retain predecessor fencing requirements. These are
+same-host safeguards, not a distributed lock for multi-host production copies.
+
+After the approved cold copy, `core-start --apply` starts only Postgres,
+Hatchet Lite, and the bridge for internal validation. It does not start ingress,
+execution workers, outbox dispatch, lifecycle delivery, or Linear token refresh.
+Existing Hatchet cron schedules may become queued when the control plane starts;
+inspect those queues before allowing workers to run.
+
+After reviewing that evidence and the exact canary task:
+
+```bash
+python3 deploy/factory-production.py --directory /srv/factory-candidate activate --apply --approve-effects
+python3 deploy/factory-production.py --directory /srv/factory-candidate status
+```
+
+Activation starts all fourteen services and can immediately produce effects.
+Keep normal external intake routed away until the canary passes. The flag
+approves this invocation, not a durable permission to replay work. Preserve
+the original cutover provenance as preparation evidence, not an activation log.
+Record the actual approval, canary, supervision, and routing separately in the
+private operator handoff. Docker's candidate restart policy supervises existing
+containers; do not leave the legacy startup unit enabled alongside it.
+
+`stop --apply` stops only the candidate and retains state. `backup SNAPSHOT
+--apply` stops it and captures all seven durable volumes, protected config,
+provenance, and all three deployment-file hashes. Restore a production snapshot
+using the production wrapper into a fresh directory/project; it leaves services
+stopped and resets activation approval. The dry-run wrapper rejects production
+snapshots. Never restore over either original deployment.
+
+The global `factory` CLI remains legacy-scoped. Its raw-env parser and host Unix
+socket do not match the candidate's private dotenv files and volume-backed
+operator socket. Use the scoped production wrapper for lifecycle operations and
+candidate-local operator diagnostics; do not silently use legacy retry commands.
+
 ## Recovery boundary
 
 Before the candidate starts or makes external effects, the untouched source is
 the recovery point. With the candidate confirmed stopped, the operator can
 review resuming the source and its intake routes.
 
-After the candidate creates a PR, receives new events, or delivers lifecycle
-updates, simply restarting the old snapshot is unsafe: it may forget new
+Starting the Linear token refresher can immediately rotate the OAuth token.
+That crosses the recovery boundary even before any canary PR exists. After
+token refresh, a new PR, new events, or lifecycle updates, simply restarting the
+old snapshot is unsafe: it may use stale credentials or forget new
 deduplication/effect records or repeat delivery. Stop new intake, reconcile
 candidate effects and state, and approve a recovery plan before resuming any
 executor. Do not delete outbox rows, reset fences, or run both installations

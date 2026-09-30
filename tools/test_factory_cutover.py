@@ -414,6 +414,23 @@ class LegacyEnvTests(unittest.TestCase):
 
 
 class LedgerTests(unittest.TestCase):
+    def test_imported_legacy_completed_receipts_are_preserved_not_reactivated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database, archive = root / "bridge.db", root / "bridge.tar"
+            with ledger(database) as conn:
+                conn.executemany("INSERT INTO factory_attempts VALUES (?)", [("legacy_completed",)] * 38)
+            before = database.read_bytes()
+            write_archive(archive, {"bridge.db": before})
+            self.assertEqual(cutover.ledger_summary(archive)["attempts"],
+                             {"verified_ready": 1, "legacy_completed": 38})
+            self.assertEqual(database.read_bytes(), before)
+            with sqlite3.connect(database) as conn:
+                conn.execute("INSERT INTO factory_attempts VALUES ('legacy_unknown')")
+            write_archive(archive, {"bridge.db": database.read_bytes()})
+            with self.assertRaisesRegex(ValueError, "active/unknown"):
+                cutover.ledger_summary(archive)
+
     def test_verification_in_flight_and_missing_schema_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

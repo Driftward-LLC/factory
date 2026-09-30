@@ -16,6 +16,7 @@ FILES = (
     "deploy/compose.production.yml",
     "deploy/factory-portable.py",
     "deploy/factory-cutover.py",
+    "deploy/factory-production.py",
     "deploy/bootstrap.py",
     "deploy/portable_state.py",
     "deploy/PORTABLE.md",
@@ -122,7 +123,7 @@ class FactoryReleaseTests(unittest.TestCase):
             ["tar", "-xzf", str(output / f"{self.bundle}-validation-only.tar.gz"), "-C", str(output)],
             check=True, capture_output=True,
         )
-        for tool in ("factory-portable.py", "factory-cutover.py"):
+        for tool in ("factory-portable.py", "factory-cutover.py", "factory-production.py"):
             with self.subTest(tool=tool):
                 help_result = subprocess.run(
                     ["python3", "-E", "-s", str(output / self.bundle / "deploy" / tool), "--help"],
