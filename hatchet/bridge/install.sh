@@ -72,7 +72,7 @@ ledger_snapshot() {
 import hashlib,json,sqlite3,sys
 c=sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True)
 tables={row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-for table in ('bridge_jobs','bridge_events','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events','factory_import_conflicts','factory_import_conflict_resolutions','factory_import_conflict_attestations'):
+for table in ('bridge_jobs','bridge_events','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events','factory_import_conflicts','factory_import_conflict_resolutions','factory_import_conflict_attestations','factory_issue_controls','factory_issue_control_commands'):
  if table not in tables:
   print(f'{table}=missing'); continue
  rows=c.execute("SELECT * FROM "+table).fetchall()

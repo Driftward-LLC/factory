@@ -25,7 +25,10 @@ ledger_snapshot() {
   python3 - "$db" <<'PY'
 import hashlib,json,sqlite3,sys
 c=sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True)
-for table in ('bridge_jobs','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events'):
+tables={row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+for table in ('bridge_jobs','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events','factory_issue_controls','factory_issue_control_commands'):
+ if table not in tables and table in ('factory_issue_controls','factory_issue_control_commands'):
+  print(f'{table}=missing'); continue
  rows=c.execute('SELECT * FROM '+table).fetchall()
  hashes=sorted(hashlib.sha256(json.dumps(tuple(row),default=str,separators=(',',':')).encode()).hexdigest() for row in rows)
  print(f'{table}={len(rows)}:{hashlib.sha256("".join(hashes).encode()).hexdigest()}')
@@ -40,7 +43,13 @@ c=sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True); print(c.execute('prag
 PY
 )"
 [[ "$actual_schema" == "$expected_schema" ]] || { echo "recovery refuses changed bridge schema" >&2; exit 1; }
-for line in $(ledger_snapshot); do grep -Fqx "$line" "$state" || { echo "recovery refuses changed immutable ledger" >&2; exit 1; }; done
+current_ledger="$(ledger_snapshot)" || { echo "recovery could not read immutable ledger" >&2; exit 1; }
+for line in $current_ledger; do
+  # Older recovery snapshots predate issue ownership. Only absent-in-both is
+  # compatible; an existing table must have the captured, unchanged digest.
+  if [[ "$line" == factory_issue_controls=missing || "$line" == factory_issue_control_commands=missing ]] && ! grep -q "^${line%%=*}=" "$state"; then continue; fi
+  grep -Fqx "$line" "$state" || { echo "recovery refuses changed immutable ledger" >&2; exit 1; }
+done
 
 acquire_maintenance_lock
 recovered=0
