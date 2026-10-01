@@ -1,4 +1,4 @@
-"""Read-only FastAPI console for sanitized Factory lifecycle data."""
+"""Sanitized Factory console with opt-in, narrowly scoped issue approvals."""
 from __future__ import annotations
 
 import os
@@ -17,8 +17,10 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .analytics import factory_analytics
 from .console_evidence import attempt_evidence
+from .console_control import install_issue_control_routes
 from .store import (
     BridgeError,
+    BridgeConflict,
     BridgeNotFound,
     BridgeValidationError,
     EXECUTION_FAILURE_DOMAINS,
@@ -257,6 +259,10 @@ def create_console_app(db_path: str, asset_root: str | Path | None = None, lifec
     async def bridge_error(_: Request, exc: BridgeError) -> JSONResponse:
         return _error(400, str(exc))
 
+    @app.exception_handler(BridgeConflict)
+    async def conflict(_: Request, exc: BridgeConflict) -> JSONResponse:
+        return _error(409, str(exc))
+
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
         return _error(exc.status_code, str(exc.detail))
@@ -280,6 +286,8 @@ def create_console_app(db_path: str, asset_root: str | Path | None = None, lifec
     @app.get("/api/overview")
     def api_overview(request: Request) -> dict[str, Any]:
         return overview(db_path, request.state.viewer, lifecycle_db_path)
+
+    install_issue_control_routes(app, db_path, ingress_db_path)
 
     @app.get("/api/lifecycle/{issue}")
     def api_lifecycle(issue: str) -> dict[str, Any]:

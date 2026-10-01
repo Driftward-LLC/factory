@@ -19,6 +19,7 @@ import {
 import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark } from '@driftward/ui';
 import Analytics from './Analytics.jsx';
 import VerificationEvidence from './VerificationEvidence.jsx';
+import IssueControl from './IssueControl.jsx';
 import {
   activeStates,
   terminalStates,
@@ -757,7 +758,7 @@ function Work({ records, available, error, route, navigate }) {
     </section>
   );
 }
-function IssueDetail({ issue, snapshot, onClose }) {
+function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
   const heading = useRef(null);
   useEffect(() => {
     if (issue) heading.current?.focus();
@@ -840,6 +841,7 @@ function IssueDetail({ issue, snapshot, onClose }) {
             ? `Could not refresh ${issue}. ${error}`
             : ''}
       </Notice>
+      {valid && <IssueControl issue={issue} onChanged={onControlChange} />}
       <div id="issue-content" hidden={!value}>
         <div id="issue-summary" className="issue-summary">
           <SummaryItem title="Recorded stage">
@@ -1044,9 +1046,9 @@ function App() {
           </ExternalLink>
           <div className="operator-label">
             <LockClosedIcon aria-hidden="true" />
-            <strong>Read-only workspace</strong>
+            <strong>Operator workspace</strong>
           </div>
-          <p>Execution controls live in the Factory CLI.</p>
+          <p>Issue handoffs require an authorized operator. Recovery operations remain in the Factory CLI.</p>
         </div>
       </aside>
       <div className="shell">
@@ -1165,6 +1167,7 @@ function App() {
           <IssueDetail
             issue={route.issue}
             snapshot={issueSnapshot}
+            onControlChange={refresh}
             onClose={() => {
               navigate({ issue: '' });
               issueInput.current?.focus();

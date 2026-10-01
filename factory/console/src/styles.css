@@ -109,6 +109,22 @@ td:last-child { color: var(--muted); font-size: .75rem; }
 .filter-toggle { display: none; }
 #work-count { font-size: .75rem; margin-bottom: 14px; }
 .issue-detail { margin-top: 24px; }
+.issue-control { margin: 24px 0; padding-block: 20px; border-block: 1px solid var(--line); min-width: 0; }
+.issue-control .section-heading { align-items: center; flex-wrap: wrap; }
+.issue-control .section-heading h3 { margin: 0; font-weight: 600; }
+.control-state p, .control-preview p, .control-unresolved p { margin: 8px 0; font-size: .8125rem; }
+.control-metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 0 16px; }
+.control-metadata .summary-item { padding: 12px 0; }
+.control-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr); gap: 12px; margin-top: 16px; }
+.control-form > button { justify-self: start; }
+.control-handback-note { grid-column: 1 / -1; margin: 0; }
+.control-preview, .control-unresolved { padding: 16px; margin-top: 16px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); overflow-wrap: anywhere; }
+.control-preview h4 { margin: 0 0 12px; font-size: .875rem; font-weight: 600; }
+.control-preview ul { font-size: .8125rem; padding-left: 20px; }
+.control-pending { padding-left: 20px; font-size: .75rem; color: var(--muted); overflow-wrap: anywhere; }
+.control-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.control-audit .empty { padding: 16px 0; text-align: left; }
+@media (max-width: 700px) { .control-form { grid-template-columns: minmax(0, 1fr); } }
 .issue-detail h2 { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 1.25rem; }
 .issue-links { display: flex; gap: 16px; align-items: center; font-size: .8125rem; }
 .issue-links a { display: inline-flex; align-items: center; gap: 5px; min-height: 44px; }

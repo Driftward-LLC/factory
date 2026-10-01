@@ -244,7 +244,7 @@ class ReconciliationScanTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 6)
         self.assertFalse(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='reconciliation_scan_state'").fetchone())
         store.init_db(self.conn)
-        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 7)
+        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 8)
         self.assertTrue(self.scan()["complete"])
         with self.assertRaises(sqlite3.IntegrityError), self.conn:
             self.conn.execute("INSERT INTO reconciliation_scan_state(cohort) VALUES ('arbitrary')")

@@ -2146,12 +2146,12 @@ class FactoryAnalyticsTests(unittest.TestCase):
             )
             return attempt, job
 
-        recovered_source, _ = failed_attempt("ENG-RECOVERED")
-        terminal_source, _ = failed_attempt("ENG-TERMINAL")
-        active_source, _ = failed_attempt("ENG-ACTIVE")
+        recovered_source, _ = failed_attempt("ENG-60001")
+        terminal_source, _ = failed_attempt("ENG-60002")
+        active_source, _ = failed_attempt("ENG-60003")
         recovered_retry, _job, _created = reserve_factory_retry(
             self.conn,
-            work_item_key="ENG-RECOVERED",
+            work_item_key="ENG-60001",
             mode="real",
             request_id="operator:retry:ENG-RECOVERED:one",
             reason="retry recovered inside seven days",
@@ -2161,7 +2161,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         )
         active_retry, _job, _created = reserve_factory_retry(
             self.conn,
-            work_item_key="ENG-ACTIVE",
+            work_item_key="ENG-60003",
             mode="real",
             request_id="operator:retry:ENG-ACTIVE:one",
             reason="retry remains active",
@@ -2288,10 +2288,10 @@ class FactoryAnalyticsTests(unittest.TestCase):
         )
 
     def test_time_series_uses_utc_activity_first_markers_and_unique_prs(self) -> None:
-        original, job, _ = self._reserve("ENG-DAILY-1")
-        failed, _, _ = self._reserve("ENG-DAILY-2")
-        repair, repair_job, _ = self._reserve("ENG-DAILY-3")
-        older, _, _ = self._reserve("ENG-DAILY-4")
+        original, job, _ = self._reserve("ENG-61001")
+        failed, _, _ = self._reserve("ENG-61002")
+        repair, repair_job, _ = self._reserve("ENG-61003")
+        older, _, _ = self._reserve("ENG-61004")
         self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-01T00:00:00Z'")
         self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/119", "2026-09-11T12:00:00Z", job["job_id"]))
         self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-13T10:00:00Z',prior_pr_url=? WHERE attempt_id=?", ("https://github.com/Driftward-LLC/capykit/pull/119", repair["attempt_id"]))
@@ -2325,7 +2325,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_time_series_excludes_dry_runs_imports_and_future_events(self) -> None:
         for index, kind in enumerate(("dry-run", "legacy-import", "future-created", "future-events")):
-            attempt, job, _ = self._reserve(f"ENG-EXCLUDED-{index}")
+            attempt, job, _ = self._reserve(f"ENG-{62000 + index}")
             if kind == "dry-run":
                 self.conn.execute("UPDATE factory_attempts SET mode='dry-run' WHERE attempt_id=?", (attempt["attempt_id"],))
             elif kind == "legacy-import":
@@ -2347,8 +2347,8 @@ class FactoryAnalyticsTests(unittest.TestCase):
                 self.assertEqual(series["coverage"][metric], {"observed": 0, "eligible": 0, "rate": None, "complete": True})
 
     def test_time_series_missing_dates_withhold_only_affected_metrics(self) -> None:
-        verified, _, _ = self._reserve("ENG-MISSING-1")
-        missing, job, _ = self._reserve("ENG-MISSING-2")
+        verified, _, _ = self._reserve("ENG-63001")
+        missing, job, _ = self._reserve("ENG-63002")
         self._series_event(verified, "attempt_verified_ready", "2026-09-13T00:00:00Z")
         self._series_event(missing, "attempt_verified_ready", "not-a-timestamp")
         self._series_event(missing, "attempt_failed", "2026-09-13T00:00:00Z")
@@ -2368,7 +2368,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         self.assertEqual(sum(point["failed_attempts"] for point in series["points"]), 1)
 
     def test_time_series_never_dates_a_pr_from_mutable_job_updates(self) -> None:
-        _attempt, job, _ = self._reserve("ENG-UNDATED-PR")
+        _attempt, job, _ = self._reserve("ENG-64001")
         reports = []
         for updated_at in ("2026-09-12T00:00:00Z", "2026-09-13T12:00:00Z"):
             self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/123", updated_at, job["job_id"]))
@@ -2380,7 +2380,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         self.assertEqual(reports[0], reports[1])
 
     def test_time_series_real_commit_dates_mirrored_prior_url_at_effect_commit(self) -> None:
-        attempt, job, _ = self._reserve("ENG-MIRRORED-PR")
+        attempt, job, _ = self._reserve("ENG-64002")
         transition_job(self.conn, job["job_id"], state="running")
         lease = claim_factory_execution(self.conn, job["job_id"], owner="executor-series")["lease"]
         authorize_factory_effect(self.conn, job["job_id"], lease)
@@ -2401,7 +2401,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         policy_env = patch.dict("os.environ", {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "workers/verifier-policy.json"), "HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
         policy_env.start()
         self.addCleanup(policy_env.stop)
-        attempt, job, _ = self._reserve("ENG-REPAIR-SERIES")
+        attempt, job, _ = self._reserve("ENG-64003")
         transition_job(self.conn, job["job_id"], state="running")
         committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc1245", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/125"}, _factory_execution_commit=True)
         context = {
@@ -2671,7 +2671,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_post_merge_pr_association_does_not_seed_repair_efficiency(self) -> None:
         source, source_job, _ = self._reserve("ENG-81")
-        old_unrelated, _old_job, _ = self._reserve("ENG-OLD-81")
+        old_unrelated, _old_job, _ = self._reserve("ENG-65081")
         pr_url = "https://github.com/Driftward-LLC/capykit/pull/81"
         self.conn.execute(
             "UPDATE factory_attempts SET prior_pr_url=?,created_at='2026-07-01T00:00:00Z',"
@@ -2861,7 +2861,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         self.assertEqual(report["sources"]["lifecycle"]["future_timestamp_rows"], 1)
 
     def test_bridge_source_health_covers_attempt_cohort_timestamp(self) -> None:
-        attempt, _job, _created = self._reserve("ENG-BAD-TIME")
+        attempt, _job, _created = self._reserve("ENG-66001")
         self.conn.execute(
             "UPDATE factory_attempts SET created_at='!',"
             "updated_at='2026-09-12T00:00:00Z' WHERE attempt_id=?",
