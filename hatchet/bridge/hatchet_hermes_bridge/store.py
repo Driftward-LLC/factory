@@ -25,7 +25,7 @@ from . import work_evidence
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
 # identity also binds the transitive source closure that implements these
@@ -281,6 +281,7 @@ def _require_runtime_schema(conn: sqlite3.Connection) -> None:
         "factory_import_conflict_attestations",
         "factory_execution_manifests", "factory_work_checkpoints",
         "reconciliation_scan_state",
+        "factory_issue_controls", "factory_issue_control_commands",
     }
     found = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= found:
@@ -438,6 +439,25 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_factory_attempt_events_attempt
             ON factory_attempt_events(attempt_id, created_at);
 
+        CREATE TABLE IF NOT EXISTS factory_issue_controls (
+            work_item_key TEXT PRIMARY KEY,
+            held INTEGER NOT NULL CHECK(held IN (0,1)),
+            revision INTEGER NOT NULL CHECK(revision>0),
+            actor TEXT NOT NULL, reason TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS factory_issue_control_commands (
+            request_id TEXT PRIMARY KEY, work_item_key TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('take_control','return_control')),
+            intent_digest TEXT NOT NULL CHECK(length(intent_digest)=64),
+            command_digest TEXT NOT NULL CHECK(length(command_digest)=64),
+            actor TEXT NOT NULL, reason TEXT NOT NULL, revision INTEGER NOT NULL,
+            attempt_id TEXT, created_at TEXT NOT NULL,
+            FOREIGN KEY(work_item_key) REFERENCES factory_issue_controls(work_item_key),
+            FOREIGN KEY(attempt_id) REFERENCES factory_attempts(attempt_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_factory_issue_control_commands_issue
+            ON factory_issue_control_commands(work_item_key, revision);
+
         CREATE TABLE IF NOT EXISTS factory_execution_manifests (
             manifest_id TEXT PRIMARY KEY,
             attempt_id TEXT NOT NULL REFERENCES factory_attempts(attempt_id),
@@ -549,6 +569,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_import_conflict_attestations_update BEFORE UPDATE ON factory_import_conflict_attestations FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'factory import conflict attestations are append-only'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_import_conflict_attestations_delete BEFORE DELETE ON factory_import_conflict_attestations FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'factory import conflict attestations are append-only'); END")
+        for operation in ("UPDATE", "DELETE"):
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_factory_issue_control_commands_{operation.lower()} BEFORE {operation} ON factory_issue_control_commands BEGIN SELECT RAISE(ABORT, 'issue control history is append-only'); END")
+        conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_issue_control_commands_replace BEFORE INSERT ON factory_issue_control_commands WHEN EXISTS (SELECT 1 FROM factory_issue_control_commands WHERE request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT, 'issue control history is append-only'); END")
         for table in ("factory_execution_manifests", "factory_work_checkpoints"):
             for operation in ("UPDATE", "DELETE"):
                 conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_{table}_{operation.lower()} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'work evidence is append-only'); END")
@@ -1554,6 +1577,17 @@ def submit_job(conn: sqlite3.Connection, request: dict[str, Any], *, internal_in
 
     # Admission, job, evidence and outbox must commit together when called by a reservation.
     with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if action in DRAFT_PR_EFFECT_ACTIONS:
+            issue = payload.get("work_item_id") or payload.get("linear_issue")
+            _require_issue_factory_control(conn, issue)
+            if conn.execute("SELECT 1 FROM factory_issue_controls WHERE work_item_key=?", (issue,)).fetchone():
+                lineage = payload.get("factory_retry")
+                bound = conn.execute("SELECT 1 FROM factory_attempts WHERE attempt_id=? AND work_item_key=? AND idempotency_key=? AND status IN ('reserved','accepted','running','effect_authorized','effect_committed','verification_pending','verified_ready','completed')",
+                                     ((lineage or {}).get("attempt_id") if isinstance(lineage, dict) else None, issue, idempotency_key)).fetchone()
+                if not bound:
+                    raise BridgeConflict("controlled issue requires an explicitly reserved Factory attempt")
         existing = conn.execute(
             "SELECT * FROM bridge_jobs WHERE idempotency_key = ?",
             (idempotency_key,),
@@ -1638,6 +1672,7 @@ def get_job(conn: sqlite3.Connection, ref: str) -> dict[str, Any]:
 
 
 def _require_verification_eligible(conn: sqlite3.Connection, job: dict[str, Any]) -> dict[str, Any] | None:
+    _require_issue_factory_control(conn, _job_work_item(job))
     if job["state"] not in {"effect_committed", "verification_pending"} or not job.get("pr_url") or not job.get("branch"):
         raise BridgeValidationError("verification lease requires a committed draft PR job")
     attempt = get_factory_attempt_for_job(conn, job["job_id"])
@@ -1680,7 +1715,7 @@ def enqueue_verification_resume(conn: sqlite3.Connection, ref: str, *, stale_aft
                 or not isinstance(job["commit_sha"], str) or not re.fullmatch(r"[0-9a-f]{7,64}", job["commit_sha"])):
                 raise BridgeValidationError("verification recovery artifact identity is invalid")
             updated_at = _canonical_time(job["updated_at"])
-        except (BridgeValidationError, TypeError, ValueError):
+        except (BridgeValidationError, BridgeConflict, TypeError, ValueError):
             return {"enqueued": False, "reason": "not_eligible"}
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(minutes=stale_after_minutes)).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -2624,6 +2659,229 @@ def complete_pr_inspection(conn: sqlite3.Connection, job_id: str, result: dict[s
 record_pr_inspection = complete_pr_inspection
 
 
+def _issue_control_held(conn: sqlite3.Connection, work_item_key: str | None) -> bool:
+    # Fail closed for legacy aliases too; new reservations require canonical keys.
+    key = work_item_key.strip().upper() if isinstance(work_item_key, str) else None
+    row = conn.execute("SELECT held FROM factory_issue_controls WHERE work_item_key=?", (key,)).fetchone()
+    return bool(row and row["held"])
+
+
+def _require_issue_factory_control(conn: sqlite3.Connection, work_item_key: str | None) -> None:
+    if _issue_control_held(conn, work_item_key):
+        raise BridgeConflict("factory issue is under manual control")
+
+
+def _job_work_item(job: dict[str, Any]) -> str | None:
+    return job["payload"].get("work_item_id") or job["payload"].get("linear_issue")
+
+
+def _issue_control_attempts(conn: sqlite3.Connection, work_item_key: str) -> list[dict[str, Any]]:
+    # LIKE narrows legacy candidates; Python strip matches the hold lookup for
+    # every whitespace alias, including ones SQLite's default TRIM misses.
+    return [_row_to_factory_attempt(row) for row in conn.execute(
+        "SELECT * FROM factory_attempts WHERE UPPER(work_item_key) LIKE ? ORDER BY generation DESC,attempt_id", (f"%{work_item_key}%",),
+    ) if row["work_item_key"].strip().upper() == work_item_key]
+
+
+def get_factory_issue_control(conn: sqlite3.Connection, work_item_key: str) -> dict[str, Any]:
+    """Read ownership separately from workflow status; lease expiry is not settlement."""
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        return _factory_issue_control_projection(conn, work_item_key)
+
+
+def _factory_issue_control_projection(conn: sqlite3.Connection, work_item_key: str) -> dict[str, Any]:
+    if not isinstance(work_item_key, str) or not LINEAR_KEY_RE.fullmatch(work_item_key):
+        raise BridgeValidationError("issue control requires a canonical Linear issue key")
+    row = conn.execute("SELECT * FROM factory_issue_controls WHERE work_item_key=?", (work_item_key,)).fetchone()
+    attempts = _issue_control_attempts(conn, work_item_key)
+    evidence, blockers = [], []
+    for attempt in attempts:
+        lease = conn.execute("SELECT * FROM factory_execution_leases WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()
+        job = get_job(conn, attempt["job_id"]) if attempt.get("job_id") else None
+        # Heartbeats alone do not invalidate a preview, but grants, cancellation,
+        # receipts and ownership settlement must. Never derive safety from expiry.
+        lease_evidence = {key: lease[key] for key in ("lease_id", "epoch", "effect_authorized_at", "released_at", "cancel_requested_at", "effect_observed_at")} if lease else None
+        evidence.append({"attempt_id": attempt["attempt_id"], "status": attempt["status"], "generation": attempt["generation"], "lease": lease_evidence,
+                         "job": {key: job[key] for key in ("job_id", "state", "branch", "commit_sha", "pr_url", "updated_at")} if job else None})
+        if lease and lease["released_at"] is None:
+            blockers.append({"attempt_id": attempt["attempt_id"], "kind": "effect_in_flight" if lease["effect_authorized_at"] else "executor_unsettled"})
+        elif attempt["status"] in {"running", "effect_authorized", "effect_outcome_unknown", "cancellation_requested"}:
+            blockers.append({"attempt_id": attempt["attempt_id"], "kind": "execution_outcome_unsettled"})
+    untracked = conn.execute(
+        "SELECT j.job_id,j.state,j.updated_at,json_extract(j.payload_json,'$.work_item_id') AS work_item_id,json_extract(j.payload_json,'$.linear_issue') AS linear_issue FROM bridge_jobs j LEFT JOIN factory_attempts a ON a.job_id=j.job_id "
+        "WHERE a.attempt_id IS NULL AND j.requested_action IN ('create_draft_pr','repair_draft_pr') "
+        "AND j.state IN ('accepted','running','effect_committed','verification_pending') "
+        "AND (UPPER(json_extract(j.payload_json,'$.work_item_id')) LIKE ? OR UPPER(json_extract(j.payload_json,'$.linear_issue')) LIKE ?) "
+        "AND COALESCE(json_extract(j.payload_json,'$.dry_run'),0)!=1 ORDER BY j.job_id", (f"%{work_item_key}%", f"%{work_item_key}%"),
+    ).fetchall()
+    untracked = [item for item in untracked if any(isinstance(item[key], str) and item[key].strip().upper() == work_item_key for key in ("work_item_id", "linear_issue"))]
+    blockers.extend({"job_id": item["job_id"], "kind": "untracked_active_job"} for item in untracked)
+    held = bool(row and row["held"])
+    revision = row["revision"] if row else 0
+    history = [dict(item) for item in conn.execute(
+        "SELECT request_id,action,actor,reason,revision,attempt_id,created_at FROM factory_issue_control_commands "
+        "WHERE work_item_key=? ORDER BY revision DESC LIMIT 100", (work_item_key,),
+    )]
+    return {
+        "work_item_key": work_item_key, "held": held, "revision": revision,
+        "mode": ("handoff_pending" if blockers else "manual") if held else "factory",
+        "snapshot_digest": payload_hash({"control": dict(row) if row else None, "attempts": evidence, "untracked": [dict(item) for item in untracked]}),
+        "actor": row["actor"] if row else None, "reason": row["reason"] if row else None,
+        "updated_at": row["updated_at"] if row else None, "blockers": blockers,
+        "automatic_intake_blocked": row is not None, "history": history,
+    }
+
+
+def _issue_control_command(
+    conn: sqlite3.Connection, *, work_item_key: str, request_id: str, actor: str, reason: str,
+    action: str, expected_revision: int, expected_snapshot_digest: str, extra: dict[str, Any] | None = None,
+    command_context_digest: str | None = None,
+) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
+    if not all(isinstance(value, str) and value.strip() and len(value) <= 200 for value in (request_id, actor)):
+        raise BridgeValidationError("issue control command requires request_id and authenticated actor")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 320:
+        raise BridgeValidationError("issue control command requires a bounded reason")
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0 or not isinstance(expected_snapshot_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_digest):
+        raise BridgeValidationError("issue control command requires its preview revision and digest")
+    if command_context_digest is not None and (not isinstance(command_context_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", command_context_digest)):
+        raise BridgeValidationError("issue control command context digest is invalid")
+    intent = {"work_item_key": work_item_key, "actor": actor, "reason": reason, "action": action,
+              "expected_revision": expected_revision, "expected_snapshot_digest": expected_snapshot_digest, "extra": extra,
+              "command_context_digest": command_context_digest}
+    digest = payload_hash(intent)
+    existing = conn.execute("SELECT * FROM factory_issue_control_commands WHERE request_id=?", (request_id,)).fetchone()
+    if existing:
+        if existing["intent_digest"] != digest:
+            raise BridgeConflict("issue control request_id conflicts with existing intent")
+        return get_factory_issue_control(conn, work_item_key), digest, dict(existing)
+    control = get_factory_issue_control(conn, work_item_key)
+    if control["revision"] != expected_revision or control["snapshot_digest"] != expected_snapshot_digest:
+        raise BridgeConflict("issue control preview is stale; refresh before confirming")
+    return control, digest, None
+
+
+def _record_issue_control_command(
+    conn: sqlite3.Connection, *, work_item_key: str, request_id: str, actor: str, reason: str,
+    action: str, revision: int, digest: str, expected_revision: int,
+    expected_snapshot_digest: str, attempt_id: str | None = None, command_context_digest: str | None = None,
+) -> None:
+    command_digest = payload_hash({"work_item_key": work_item_key, "actor": actor, "reason": reason, "action": action,
+                                   "expected_revision": expected_revision, "expected_snapshot_digest": expected_snapshot_digest,
+                                   "command_context_digest": command_context_digest})
+    conn.execute(
+        "INSERT INTO factory_issue_control_commands(request_id,work_item_key,action,intent_digest,command_digest,actor,reason,revision,attempt_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (request_id, work_item_key, action, digest, command_digest, sanitize_detail(actor, 200), sanitize_detail(reason.strip(), 320), revision, attempt_id, utc_now()),
+    )
+
+
+def get_factory_issue_control_command(
+    conn: sqlite3.Connection, *, work_item_key: str, request_id: str, actor: str, reason: str,
+    action: str, expected_revision: int, expected_snapshot_digest: str,
+    command_context_digest: str | None = None,
+) -> dict[str, Any] | None:
+    """Recover a committed response before repeating external preview freshness checks."""
+    row = conn.execute("SELECT * FROM factory_issue_control_commands WHERE request_id=?", (request_id,)).fetchone()
+    if not row:
+        return None
+    digest = payload_hash({"work_item_key": work_item_key, "actor": actor, "reason": reason, "action": action,
+                           "expected_revision": expected_revision, "expected_snapshot_digest": expected_snapshot_digest,
+                           "command_context_digest": command_context_digest})
+    if row["command_digest"] != digest:
+        raise BridgeConflict("issue control request_id conflicts with existing intent")
+    control = get_factory_issue_control(conn, work_item_key)
+    if row["attempt_id"]:
+        attempt = get_factory_attempt(conn, row["attempt_id"])
+        return {"control": control, "attempt": attempt, "job": get_job(conn, attempt["job_id"]), "created": False}
+    return {"control": control, "created": False}
+
+
+def take_factory_issue_control(
+    conn: sqlite3.Connection, *, work_item_key: str, request_id: str, actor: str, reason: str,
+    expected_revision: int, expected_snapshot_digest: str,
+    command_context_digest: str | None = None,
+) -> dict[str, Any]:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        control, digest, existing = _issue_control_command(
+            conn, work_item_key=work_item_key, request_id=request_id, actor=actor, reason=reason,
+            action="take_control", expected_revision=expected_revision, expected_snapshot_digest=expected_snapshot_digest,
+            command_context_digest=command_context_digest,
+        )
+        if existing:
+            return control
+        if control["held"]:
+            raise BridgeConflict("factory issue is already under manual control")
+        now, revision = utc_now(), control["revision"] + 1
+        conn.execute(
+            "INSERT INTO factory_issue_controls(work_item_key,held,revision,actor,reason,updated_at) VALUES (?,1,?,?,?,?) "
+            "ON CONFLICT(work_item_key) DO UPDATE SET held=1,revision=excluded.revision,actor=excluded.actor,reason=excluded.reason,updated_at=excluded.updated_at",
+            (work_item_key, revision, sanitize_detail(actor, 200), sanitize_detail(reason.strip(), 320), now),
+        )
+        for attempt in _issue_control_attempts(conn, work_item_key):
+            conn.execute("UPDATE factory_execution_leases SET cancel_requested_at=COALESCE(cancel_requested_at,?) WHERE attempt_id=? AND released_at IS NULL", (now, attempt["attempt_id"]))
+            cancel_factory_attempt(conn, attempt["attempt_id"], reason=reason, actor=actor)
+            if attempt.get("job_id"):
+                _close_verification_lease(conn, attempt["job_id"], "manual_takeover")
+            conn.execute(
+                "UPDATE factory_attempt_outbox SET state='suppressed',acknowledged_at=?,delivery_lease_id=NULL,delivery_lease_expires_at=NULL,updated_at=? WHERE attempt_id=? AND acknowledged_at IS NULL",
+                (now, now, attempt["attempt_id"]),
+            )
+        _record_issue_control_command(conn, work_item_key=work_item_key, request_id=request_id, actor=actor, reason=reason,
+                                      action="take_control", revision=revision, digest=digest,
+                                      expected_revision=expected_revision, expected_snapshot_digest=expected_snapshot_digest,
+                                      command_context_digest=command_context_digest)
+        return get_factory_issue_control(conn, work_item_key)
+
+
+def return_factory_issue_control(
+    conn: sqlite3.Connection, *, work_item_key: str, request_id: str, actor: str, reason: str,
+    expected_revision: int, expected_snapshot_digest: str, payload: dict[str, Any], mode: str = "real",
+    prior_attempt_id: str | None = None, supersede_pr_url: str | None = None,
+    command_context_digest: str | None = None,
+) -> dict[str, Any]:
+    """Return by admitting one reviewed fresh attempt, never by replaying old events.
+
+    The operator boundary must validate current Linear and GitHub artifacts using
+    the same trusted preview and effect fence as fresh retry. Open-PR continuation
+    and verification of manually changed heads need a separate adoption contract.
+    """
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        control, digest, existing = _issue_control_command(
+            conn, work_item_key=work_item_key, request_id=request_id, actor=actor, reason=reason,
+            action="return_control", expected_revision=expected_revision, expected_snapshot_digest=expected_snapshot_digest,
+            extra={"payload": payload, "mode": mode, "prior_attempt_id": prior_attempt_id, "supersede_pr_url": supersede_pr_url},
+            command_context_digest=command_context_digest,
+        )
+        if existing:
+            attempt = get_factory_attempt(conn, existing["attempt_id"])
+            return {"control": control, "attempt": attempt, "job": get_job(conn, attempt["job_id"]), "created": False}
+        if control["mode"] != "manual":
+            raise BridgeConflict("return requires a settled manual handoff")
+        if not isinstance(payload, dict) or not isinstance(payload.get("trusted_snapshot_digest"), str) or not re.fullmatch(r"[0-9a-f]{64}", payload["trusted_snapshot_digest"]):
+            raise BridgeValidationError("return requires a trusted fresh-attempt snapshot")
+        if prior_attempt_id:
+            prior = get_factory_attempt(conn, prior_attempt_id)
+            if prior["work_item_key"] != work_item_key:
+                raise BridgeValidationError("return prior attempt belongs to another issue")
+        now, revision = utc_now(), control["revision"] + 1
+        conn.execute("UPDATE factory_issue_controls SET held=0,revision=?,actor=?,reason=?,updated_at=? WHERE work_item_key=?",
+                     (revision, sanitize_detail(actor, 200), sanitize_detail(reason.strip(), 320), now, work_item_key))
+        attempt, job, created = reserve_factory_retry(
+            conn, work_item_key=work_item_key, request_id=f"issue-control:{request_id}", actor=actor, reason=reason,
+            payload=payload, mode=mode, prior_attempt_id=prior_attempt_id, supersede_pr_url=supersede_pr_url,
+        )
+        if not created:
+            raise BridgeConflict("return attempt request already exists outside this command")
+        _record_issue_control_command(conn, work_item_key=work_item_key, request_id=request_id, actor=actor, reason=reason,
+                                      action="return_control", revision=revision, digest=digest, attempt_id=attempt["attempt_id"],
+                                      expected_revision=expected_revision, expected_snapshot_digest=expected_snapshot_digest,
+                                      command_context_digest=command_context_digest)
+        return {"control": get_factory_issue_control(conn, work_item_key), "attempt": attempt, "job": job, "created": True}
+
+
 def _reserve_factory_attempt_locked(
     conn: sqlite3.Connection, *, work_item_key: str, mode: str, request_id: str,
     reason: str, actor: str, supersede_pr_url: str | None = None,
@@ -2631,10 +2889,11 @@ def _reserve_factory_attempt_locked(
     trusted_snapshot_digest: str | None = None,
     reserved_event_type: str = "retry_reserved",
 ) -> tuple[dict[str, Any], bool]:
-    if not all(isinstance(value, str) and value and len(value) <= 200 for value in (work_item_key, request_id, actor)) or mode not in {"real", "dry-run"}:
+    if not all(isinstance(value, str) and value and len(value) <= 200 for value in (work_item_key, request_id, actor)) or not LINEAR_KEY_RE.fullmatch(work_item_key) or mode not in {"real", "dry-run"}:
         raise BridgeValidationError("factory retry request is invalid")
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 320:
         raise BridgeValidationError("factory retry reason is invalid")
+    _require_issue_factory_control(conn, work_item_key)
     safe_reason = sanitize_detail(reason.strip(), 320)
     existing = conn.execute("SELECT * FROM factory_attempts WHERE work_item_key=? AND action='create_draft_pr' AND mode=? AND request_id=?", (work_item_key, mode, request_id)).fetchone()
     if existing:
@@ -2760,8 +3019,9 @@ def reserve_factory_retry(
     """
     if not isinstance(payload, dict):
         raise BridgeValidationError("factory retry payload must be an object")
-    with conn:
-        conn.execute("BEGIN IMMEDIATE")
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         attempt, created = _reserve_factory_attempt_locked(
             conn, work_item_key=work_item_key, mode=mode, request_id=request_id,
             reason=reason, actor=actor, supersede_pr_url=supersede_pr_url,
@@ -2827,6 +3087,7 @@ def reserve_factory_absence_retry(
         raise BridgeValidationError("factory absence retry reason is invalid")
     with conn:
         conn.execute("BEGIN IMMEDIATE")
+        _require_issue_factory_control(conn, work_item_key)
         safe_reason = sanitize_detail(reason.strip(), 320)
         existing = conn.execute("SELECT * FROM factory_attempts WHERE work_item_key=? AND action='create_draft_pr' AND mode=? AND request_id=?", (work_item_key, mode, request_id)).fetchone()
         if existing:
@@ -2943,6 +3204,8 @@ def _reserve_factory_verification_repair(
     factory_attempt: dict[str, Any],
     details: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
+    if _issue_control_held(conn, factory_attempt["work_item_key"]) or factory_attempt["status"] in {"canceled", "canceled_after_effect", "cancellation_requested", "superseded"}:
+        return None
     reason_code = failed_job.get("reason_code")
     if (
         failed_job.get("requested_action") not in DRAFT_PR_EFFECT_ACTIONS
@@ -3052,12 +3315,17 @@ def reserve_factory_intake(
     """Atomically reserve fresh Linear intake through the factory attempt path."""
     if not isinstance(payload, dict):
         raise BridgeValidationError("factory intake payload must be an object")
-    if not all(isinstance(value, str) and value and len(value) <= 200 for value in (work_item_key, request_id, actor)) or mode not in {"real", "dry-run"}:
+    if not all(isinstance(value, str) and value and len(value) <= 200 for value in (work_item_key, request_id, actor)) or not LINEAR_KEY_RE.fullmatch(work_item_key) or mode not in {"real", "dry-run"}:
         raise BridgeValidationError("factory intake request is invalid")
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 320:
         raise BridgeValidationError("factory intake reason is invalid")
     with conn:
         conn.execute("BEGIN IMMEDIATE")
+        # Ingress events have no control revision. Once explicitly controlled,
+        # only a reviewed handback may admit work; a delayed pre-hold webhook
+        # must never regain authority just because held becomes false.
+        if conn.execute("SELECT 1 FROM factory_issue_controls WHERE work_item_key=?", (work_item_key,)).fetchone():
+            raise BridgeConflict("controlled issue requires explicit Factory handback, not automatic intake")
         existing = conn.execute(
             "SELECT * FROM factory_attempts WHERE work_item_key=? AND action='create_draft_pr' AND mode=? AND request_id=?",
             (work_item_key, mode, request_id),
@@ -3161,7 +3429,9 @@ def _factory_intake_job_matches(job: dict[str, Any], *, work_item_key: str, mode
 def cancel_factory_attempt(conn: sqlite3.Connection, attempt_id: str, *, reason: str, actor: str) -> dict[str, Any]:
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 320 or not isinstance(actor, str) or not actor or len(actor) > 200:
         raise BridgeValidationError("factory cancellation is invalid")
-    with conn:
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         attempt = get_factory_attempt(conn, attempt_id)
         if attempt["status"] in FACTORY_ATTEMPT_TERMINAL:
             return attempt
@@ -3188,12 +3458,14 @@ def claim_factory_execution(conn: sqlite3.Connection, job_id: str, *, owner: str
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         attempt = get_factory_attempt_for_job(conn, job_id)
+        if _issue_control_held(conn, attempt["work_item_key"] if attempt else _job_work_item(get_job(conn, job_id))):
+            return {"claimed": False, "reason": "factory_issue_manual_control", "attempt": attempt}
         if not attempt:
             job = get_job(conn, job_id)
             if job["requested_action"] == "create_draft_pr" and job["payload"].get("dry_run") is not True:
                 return {"claimed": False, "reason": "factory_attempt_required", "attempt": None}
             return {"claimed": True, "attempt": None, "lease": None}
-        if attempt["status"] in {"canceled", "canceled_after_effect", "superseded", "failed", "verified_ready", "effect_outcome_unknown", "effect_committed", "verification_pending"}:
+        if attempt["status"] in {"canceled", "canceled_after_effect", "superseded", "failed", "verified_ready", "completed", "effect_outcome_unknown", "effect_committed", "verification_pending"}:
             return {"claimed": False, "reason": "factory_attempt_terminal", "attempt": attempt}
         now = datetime.now(timezone.utc); now_text = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
         active = conn.execute("SELECT * FROM factory_execution_leases WHERE attempt_id=? AND released_at IS NULL", (attempt["attempt_id"],)).fetchone()
@@ -3210,6 +3482,8 @@ def claim_factory_execution(conn: sqlite3.Connection, job_id: str, *, owner: str
                 conn.execute("UPDATE factory_attempts SET status='effect_outcome_unknown',updated_at=? WHERE attempt_id=?", (now_text, attempt["attempt_id"]))
             _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_execution_recovery_required", {"expired_lease_id": active["lease_id"]})
             return {"claimed": False, "reason": "factory_execution_recovery_required", "attempt": attempt}
+        if attempt["status"] == "cancellation_requested":
+            return {"claimed": False, "reason": "factory_cancellation_pending", "attempt": attempt}
         lease_id, fence_token = str(uuid.uuid4()), str(uuid.uuid4())
         expires = (now + timedelta(seconds=ttl_seconds)).isoformat(timespec="microseconds").replace("+00:00", "Z")
         prior_epoch = conn.execute("SELECT COALESCE(MAX(epoch),0) FROM factory_execution_leases WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()[0]
@@ -3250,7 +3524,7 @@ def heartbeat_factory_execution(conn: sqlite3.Connection, job_id: str, claim: di
 
 
 def execution_may_effect(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any]) -> bool:
-    return _current_execution_lease(conn, job_id, claim) is not None
+    return not _issue_control_held(conn, _job_work_item(get_job(conn, job_id))) and _current_execution_lease(conn, job_id, claim) is not None
 
 
 def _execution_route_details(details: Any) -> dict[str, Any]:
@@ -3671,6 +3945,9 @@ def _enqueue_factory_attempt_resume(
     event_type: str = "execution_effect_commit_recovery_wake_enqueued",
 ) -> bool:
     """Reuse the safe accepted-event path to resume after receipt recovery."""
+    current = get_factory_attempt(conn, attempt["attempt_id"])
+    if _issue_control_held(conn, current["work_item_key"]) or current["status"] in {"canceled", "canceled_after_effect", "cancellation_requested", "superseded"}:
+        return False
     outbox_key = f"factory:accepted:{attempt['attempt_id']}"
     payload = canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]})
     row = conn.execute(
@@ -3758,7 +4035,7 @@ def _commit_observed_execution_receipt(
         _factory_execution_commit=True,
     )
     context = details.get("verification_context")
-    if isinstance(context, dict):
+    if isinstance(context, dict) and not _issue_control_held(conn, attempt["work_item_key"]) and get_factory_attempt(conn, attempt["attempt_id"])["status"] not in {"canceled", "canceled_after_effect", "cancellation_requested", "superseded"}:
         job = transition_job(
             conn,
             job["job_id"],
@@ -3786,11 +4063,14 @@ def _commit_observed_execution_receipt(
 def authorize_factory_effect(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any]) -> bool:
     """Irrevocably assign the one external-effect authority for a generation."""
     with conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = _current_execution_lease(conn, job_id, claim)
         if not row:
             return False
         job = get_job(conn, job_id)
         attempt = get_factory_attempt(conn, row["attempt_id"])
+        if _issue_control_held(conn, attempt["work_item_key"]):
+            return False
         if job["state"] != "running" or attempt["job_id"] != job_id or attempt["status"] not in {"running", "effect_authorized"}:
             raise BridgeConflict("factory effect authorization requires a running attempt and job")
         if row["effect_authorized_at"] is not None:
@@ -4017,8 +4297,12 @@ def list_factory_outbox(conn: sqlite3.Connection, limit: int = 50) -> list[dict[
 
 def claim_factory_outbox_delivery(conn: sqlite3.Connection, outbox_key: str) -> dict[str, Any] | None:
     with conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM factory_attempt_outbox WHERE outbox_key=? AND acknowledged_at IS NULL", (outbox_key,)).fetchone()
         if not row: return None
+        attempt = get_factory_attempt(conn, row["attempt_id"])
+        if _issue_control_held(conn, attempt["work_item_key"]) or attempt["status"] in {"canceled", "canceled_after_effect", "cancellation_requested", "superseded"}:
+            return None
         now = datetime.now(timezone.utc)
         now_text = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
         if row["delivery_lease_expires_at"] and row["delivery_lease_expires_at"] > now_text:
@@ -4534,6 +4818,10 @@ def transition_job(
         if state == "completed" and job["payload"].get("dry_run") is not True:
             raise BridgeValidationError("completed is reserved for dry_run bridge jobs")
         factory_attempt = get_factory_attempt_for_job(conn, job["job_id"])
+        if not _factory_execution_commit and (_issue_control_held(conn, _job_work_item(job)) or (factory_attempt and factory_attempt["status"] in {"canceled", "canceled_after_effect", "cancellation_requested", "superseded"})):
+            if _factory_verifier_completion and not _issue_control_held(conn, _job_work_item(job)):
+                raise BridgeValidationError("verification requires the current eligible Factory attempt")
+            raise BridgeConflict("issue control fences this attempt from further workflow transitions")
         if factory_attempt and factory_attempt["mode"] == "real":
             immutable_legacy_import = (
                 factory_attempt["generation"] == 1

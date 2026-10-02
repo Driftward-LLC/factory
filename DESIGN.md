@@ -9,7 +9,7 @@ and [application redesign](https://linear.app/now/how-we-redesigned-the-linear-u
 The user approved these references after Mobbin's app library required sign-in.
 Use the actual product screens, rather than Linear's marketing page, as the
 reference for navigation, list density, status icons, and surface hierarchy.
-Factory retains its own identity, read-only controls, and evidence semantics.
+Factory retains its own identity, explicit operator approvals, and evidence semantics.
 
 Shared components, theme tokens, and icons live in the `@driftward/ui` workspace
 at `factory/console/ui/`. Storybook renders the same implementations as the
@@ -42,7 +42,22 @@ API only provides a count.
 
 Opening an issue shows its inspection view directly. Closing it restores the
 previous page and filters. Preserve URL sharing, browser history, keyboard
-focus, refresh behavior, and the existing read-only authorization boundary.
+focus and refresh behavior. Browsing remains read-only; only explicitly enabled,
+allowlisted operators can preview and confirm per-issue ownership changes.
+
+Execution ownership is separate from both attempt status and Linear status.
+Show Factory-controlled, Handoff pending, and Manual control distinctly. Never
+show "safe to edit" merely because cancellation was requested or a lease expired.
+Only a fresh backend confirmation with no unsettled execution permits that label;
+suppress it on stale/error/unresolved responses. Other operators can change
+ownership, so show observation time and refresh guidance.
+
+Takeover and fresh-attempt handback require a reason, an expiring preview, and
+explicit confirmation. Show any affected PR/branch/SHA. Preserve the same command
+ID across an ambiguous response and page reload; do not silently submit a new
+attempt. Display actor, time, and reason in the ownership audit. Returning does
+not replay queued events, restore ordinary intake for a controlled issue, or
+verify/continue a manually edited open PR. Unsupported actions must not appear.
 
 The verification evidence panel is scoped to the newest returned attempt.
 Compare the full verified SHA only against a later stored inspection for the

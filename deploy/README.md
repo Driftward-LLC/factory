@@ -221,7 +221,7 @@ image reference.
 
 ## Operations
 
-The Factory operator container also serves the read-only Factory Console on
+The Factory operator container also serves the Factory Console (read-only by default) on
 loopback port `19881`. Publish it privately through Tailscale Serve, never
 through Funnel or a public listener:
 
@@ -232,7 +232,64 @@ factory console
 
 The console requires the `Tailscale-User-Login` identity header on every page
 and API request; `/health` is the only unauthenticated endpoint. For local
-development only, set `FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED=1`.
+development only, set `FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED=1`. This bypass
+**always disables ownership commands**, including requests carrying an identity.
+
+### Per-issue manual ownership (opt-in)
+
+After a reviewed rollout and bridge schema-8 migration, an operator may enable
+the narrow console approval API in the protected `factory-operator.env` file:
+
+```dotenv
+FACTORY_CONSOLE_PUBLIC_ORIGIN=https://your-host.your-tailnet.ts.net:19881
+FACTORY_CONSOLE_OPERATOR_LOGINS=operator@example.com
+```
+
+Use the exact HTTPS origin, without a trailing slash, path, query, or credentials.
+The login list is comma-separated and exact-match. Missing/invalid configuration
+leaves commands disabled. This change does not enable them automatically.
+Deploy all bridge/operator/dispatcher processes from the same schema-8 release;
+do not run mixed versions against the shared database. Use the existing reviewed
+backup/quiesce/migration procedure, not console-triggered migration.
+
+Tailscale identity headers are **not cryptographic authentication on their own**.
+Only the trusted Tailscale Serve proxy and trusted local/runtime processes may
+reach port 19881. Verify host firewall, loopback publication, container-network
+access, and tailnet ACLs before enabling commands. Do not put an untrusted proxy
+or public listener in front of it. POSTs additionally require exact Origin,
+JSON content type, and the console's action header; forwarded host or browser
+supplied actor fields never confer authority. There is no generic root-operator
+proxy or browser dead-letter archive action.
+
+In an issue's **Execution control** panel:
+
+1. Choose **Take manual control**, enter a reason, preview, then confirm. The
+   durable hold fences new intake, queued execution, verification, and repairs.
+2. Wait for **Manual control—safe to edit**. Handoff pending means execution is
+   still unsettled. An already-authorized external effect can finish and record
+   its receipt; cancellation and lease expiry do not prove it has stopped. An
+   unknown outcome requires the existing reviewed operator recovery procedure.
+3. To start over, choose **Return for a fresh attempt**, preview, and confirm.
+   The latest stored Linear observation must be Ready, unblocked, and routed to
+   an enabled repository. A previous PR must be closed/unmerged with a current
+   worker inspection and exact artifact fencing. Missing/stale inspection or an
+   open/merged PR blocks handback. The preview uses cached provider observations,
+   not a synchronous live Linear query, and displays the recorded update time.
+
+Handback atomically clears the hold and reserves one new generation/outbox event;
+normal configured verification/repair policy then applies. Failed reservation
+retains manual control. Once controlled, this issue requires explicit future
+reservations; ordinary webhook intake stays fenced so delayed pre-hold events
+cannot regain authority. Linear workflow status is not changed by these commands.
+Fresh handback checks recorded Factory artifacts; it does not discover or adopt
+a separate PR or branch created manually. Reconcile those artifacts deliberately
+before approving a new attempt.
+Verification or continuation of manually edited **open PRs is not implemented**;
+it needs a new commit-bound validation/execution contract, not an old-job resume.
+
+If confirmation times out, use **Check previous request**. Its durable command ID
+recovers the committed result even after token expiry or a server restart, without
+duplicating execution. Ownership audit history retains actor, time, and reason.
 
 ```bash
 systemctl status driftward-factory.service --no-pager
@@ -262,5 +319,6 @@ The same cycle advances bounded recovery for observed effect receipts whose
 read-only PR inspection worker never returned; it does not reinvoke Hermes.
 Lifecycle status reports permanent dead letters by bounded reason code. The
 operator mounts only the lifecycle named volume needed for root-only,
-snapshot-fenced dead-letter archival; the FastAPI console remains read-only.
+snapshot-fenced dead-letter archival; that action remains unavailable to the
+browser, even when per-issue ownership approvals are enabled.
 Reconciliation runs natively in Hatchet every 15 minutes.

@@ -37,6 +37,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install real-console test dependencies
+        run: python3 -m pip install --requirement hatchet/bridge/requirements.txt
       - name: Install isolated browser test dependencies
         run: |
           npm install --prefix "$RUNNER_TEMP/factory-console-checks" --no-save --ignore-scripts playwright@1.55.0
@@ -47,6 +52,10 @@ jobs:
           npm run build --prefix factory/console
       - name: Check console behavior with disposable fixtures
         run: NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_console_browser.cjs
+      - name: Check issue ownership controls with disposable fixtures
+        run: NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_issue_control_browser.cjs
+      - name: Check issue ownership through the real console backend
+        run: NODE_PATH="$RUNNER_TEMP/factory-console-checks/node_modules" node tools/test_factory_issue_control_backend_browser.cjs
       - name: Build and check shared component catalog
         run: |
           npm run check:ui --prefix factory/console
@@ -66,6 +75,7 @@ jobs:
           name: factory-console-fixtures
           path: |
             /tmp/factory-dashboard-*.png
+            /tmp/factory-control-*.png
             /tmp/factory-storybook-*.png
           if-no-files-found: ignore
   validate:
