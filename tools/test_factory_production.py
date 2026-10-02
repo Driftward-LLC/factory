@@ -86,6 +86,99 @@ class ProductionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dry-run only"):
             production.portable.Installation(self.directory)
 
+    def upgrade_backup(self):
+        snapshot = Path(self.temp.name) / "snapshot"
+        snapshot.mkdir(mode=0o700)
+        for folder in ("config", "config/env", "config/keys", "config/keys/hatchet", "volumes"):
+            (snapshot / folder).mkdir(mode=0o700)
+        for name in production.state.config_files(production.state.PRODUCTION):
+            production.bootstrap._create_private(snapshot / "config" / name,
+                                                  production.bootstrap._read_private(self.directory / name))
+        for name in production.state.VOLUMES:
+            production.bootstrap._create_private(snapshot / "volumes" / (name + ".tar"), "synthetic archive")
+        hashes = {name: production.state._hash(snapshot / name) for name in production.state._private_files(snapshot)}
+        manifest = {"format_version": 1, "profile": production.state.PRODUCTION,
+                    "project": self.install.project, "installation_id": self.metadata["installation_id"],
+                    "factory_image": self.image, "volumes": list(production.state.VOLUMES),
+                    "images": {image: image for image in self.install.images.values()},
+                    "deployment_sha256": self.provenance["deployment_sha256"], "sha256": hashes}
+        production.bootstrap._create_private(snapshot / "manifest.json", json.dumps(manifest))
+        return snapshot
+
+    def test_image_upgrade_keeps_source_provenance_and_requires_stopped_writers(self):
+        snapshot = self.upgrade_backup()
+        image = "sha256:" + "d" * 64
+        image_info = {"Id": image, "Architecture": "amd64", "Config": {"Labels": {
+            "org.opencontainers.image.source": "https://github.com/Driftward-LLC/factory",
+            "org.opencontainers.image.revision": "e" * 40,
+            "org.opencontainers.image.version": "v2026.10.2"}}}
+        with patch.object(self.install, "preflight"), patch.object(production.state, "_docker", return_value=json.dumps([image_info])), \
+                patch.object(production.state, "_no_writers") as writers, patch.object(self.install, "assert_source_fenced"), \
+                patch.object(self.install, "service_rows", return_value=[]), patch("builtins.print"):
+            self.install.record_upgrade(image, snapshot)
+            writers.assert_not_called()
+            self.assertEqual(production.Production(self.directory).images["factory"], self.image)
+            self.install.record_upgrade(image, snapshot, apply=True)
+            writers.assert_called_once()
+        upgraded = production.Production(self.directory)
+        self.assertEqual(upgraded.images["factory"], image)
+        self.assertEqual(upgraded.provenance["factory_image"], self.image)
+        self.assertEqual(upgraded.provenance["source_images"], self.provenance["source_images"])
+        self.assertEqual(upgraded.release_images, [self.image, image])
+        ids = "\n".join(self.provenance["source_container_ids"])
+        with patch.object(production.state, "_docker", side_effect=[ids, json.dumps(self.source_rows()), ""]), \
+                patch.object(production.state, "_no_writers"):
+            upgraded.assert_source_fenced()
+        row = {"Image": self.image, "State": {"Status": "exited"}, "Config": {"Labels": {
+            "com.docker.compose.service": "bridge", production.state.IDENTITY_LABEL: self.metadata["installation_id"],
+            production.TENANT_LABEL: self.tenant}}}
+        with patch.object(production.state, "_docker", side_effect=["old-container", json.dumps([row]), *("" for _ in production.state.VOLUMES)]):
+            upgraded.assert_candidate_writers()
+        row["State"]["Status"] = "running"
+        with patch.object(production.state, "_docker", side_effect=["old-container", json.dumps([row])]):
+            with self.assertRaisesRegex(ValueError, "inventory"):
+                upgraded.assert_candidate_writers()
+
+    def test_upgrade_rejects_stale_backup_unknown_files_and_incomplete_image(self):
+        snapshot = self.upgrade_backup()
+        with patch.object(self.install, "preflight"), patch.object(production.state, "_docker", return_value="[{}]"), \
+                patch.object(production.state, "_no_writers") as writers:
+            with self.assertRaisesRegex(ValueError, "release provenance"):
+                self.install.record_upgrade("sha256:" + "d" * 64, snapshot, apply=True)
+            writers.assert_not_called()
+            production.bootstrap._create_private(snapshot / "unexpected", "unrecognized")
+            with self.assertRaisesRegex(ValueError, "unknown or unsafe"):
+                self.install.record_upgrade("sha256:" + "d" * 64, snapshot, apply=True)
+            (snapshot / "unexpected").unlink()
+            production.bootstrap._create_private(self.directory / ".env.changed", production.bootstrap.env_text({**self.values, "FACTORY_CONSOLE_PORT": "59999"}))
+            os.replace(self.directory / ".env.changed", self.directory / ".env")
+            with self.assertRaisesRegex(ValueError, "changed since"):
+                self.install.record_upgrade("sha256:" + "d" * 64, snapshot, apply=True)
+            writers.assert_not_called()
+
+    def test_invalid_upgrade_history_fails_closed(self):
+        for history in (None, {}, [{"image": "sha256:" + "d" * 64}], [{"previous_image": "wrong"}]):
+            (self.directory / ".factory-cutover.json").write_text(json.dumps({**self.provenance, "image_upgrades": history}))
+            with self.subTest(history=history), self.assertRaisesRegex(ValueError, "upgrade history"):
+                production.Production(self.directory)
+
+    def test_upgrade_running_service_or_volume_writer_never_changes_configuration(self):
+        snapshot = self.upgrade_backup()
+        image = "sha256:" + "d" * 64
+        image_info = {"Id": image, "Architecture": "amd64", "Config": {"Labels": {
+            "org.opencontainers.image.source": "https://github.com/Driftward-LLC/factory",
+            "org.opencontainers.image.revision": "e" * 40}}}
+        original = (self.directory / ".factory-cutover.json").read_bytes()
+        for volume_error in (False, True):
+            with self.subTest(volume_error=volume_error), patch.object(self.install, "preflight"), \
+                    patch.object(production.state, "_docker", return_value=json.dumps([image_info])), \
+                    patch.object(production.state, "_no_writers", side_effect=ValueError("volume writer") if volume_error else None), \
+                    patch.object(self.install, "service_rows", return_value=[{"State": "running", "Service": "intake-worker"}]):
+                with self.assertRaisesRegex(ValueError, "volume writer|every candidate service stopped"):
+                    self.install.record_upgrade(image, snapshot, apply=True)
+            self.assertEqual((self.directory / ".factory-cutover.json").read_bytes(), original)
+            self.assertEqual(production.Production(self.directory).images["factory"], self.image)
+
     def test_provenance_drift_refused_without_docker(self):
         for key, value in (("destination_project", "factory-foreign"), ("profile_sha256", "bad"), ("deployment_sha256", {}), ("factory_image", "bad"), ("source_images", {}), ("activation_approved", "true")):
             altered = {**self.provenance, key: value}
