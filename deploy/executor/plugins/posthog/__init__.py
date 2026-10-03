@@ -143,7 +143,7 @@ def _event(kwargs: dict[str, Any], *, error: str = "") -> dict[str, Any]:
         "hermes.request_id": str(kwargs.get("api_request_id") or ""),
         "hermes.api_mode": str(kwargs.get("api_mode") or ""),
         "hermes.finish_reason": str(kwargs.get("finish_reason") or ""),
-        "hermes.input_chars": int(kwargs.get("request_char_count") or 0),
+        "hermes.input_chars": int(kwargs.get("request_char_count", started.get("request_char_count")) or 0),
         "hermes.output_chars": int(kwargs.get("assistant_content_chars") or 0),
         "$process_person_profile": False,
         **_factory_properties(),
@@ -162,7 +162,10 @@ def _event(kwargs: dict[str, Any], *, error: str = "") -> dict[str, Any]:
 def on_pre_api_request(**kwargs: Any) -> None:
     if _enabled():
         with _LOCK:
-            _PENDING[_request_key(kwargs)] = {"started": time.monotonic()}
+            _PENDING[_request_key(kwargs)] = {
+                "started": time.monotonic(),
+                "request_char_count": int(kwargs.get("request_char_count") or 0),
+            }
 
 
 def on_post_api_request(**kwargs: Any) -> None:
@@ -173,7 +176,10 @@ def on_api_request_error(**kwargs: Any) -> None:
     error_type = str(kwargs.get("error_type") or "").strip()
     if not error_type:
         error = kwargs.get("error")
-        error_type = type(error).__name__ if error is not None else "RequestError"
+        if isinstance(error, dict):
+            error_type = str(error.get("type") or "RequestError").strip()
+        else:
+            error_type = type(error).__name__ if error is not None else "RequestError"
     if not re.fullmatch(r"[A-Za-z0-9_]{1,128}", error_type):
         error_type = "RequestError"
     _enqueue(_event(kwargs, error=error_type))

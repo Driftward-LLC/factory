@@ -136,6 +136,33 @@ class PostHogObserverTest(unittest.TestCase):
         self.assertEqual(props["$ai_error"], "AuthenticationError")
         self.assertNotIn("error_message", props)
 
+    def test_native_error_dictionary_exports_only_validated_type(self):
+        captured = []
+        with patch.object(posthog, "_enqueue", captured.append):
+            for error_type, expected in (("AuthenticationError", "AuthenticationError"),
+                                         ("SECRET provider response", "RequestError"),
+                                         (None, "RequestError")):
+                with self.subTest(error_type=error_type):
+                    posthog.on_api_request_error(error={"type": error_type, "message": "SECRET"})
+                    self.assertEqual(captured[-1]["properties"]["$ai_error"], expected)
+                    self.assertTrue(captured[-1]["properties"]["$ai_is_error"])
+        self.assertNotIn("SECRET", json.dumps(captured))
+
+    def test_native_pre_request_count_survives_success_and_error_hooks(self):
+        common = {"session_id": "session-1", "task_id": "task-1", "turn_id": "turn-1"}
+        captured = []
+        with patch.dict(os.environ, {"POSTHOG_API_KEY": "test"}), patch.object(posthog, "_PENDING", {}), patch.object(posthog, "_enqueue", captured.append):
+            for request, count in (("success", 12345), ("error", 6789), ("zero", 123)):
+                posthog.on_pre_api_request(**common, api_request_id=request, request_char_count=count, messages="SECRET")
+            # Complete out of order; native completion hooks omit request_char_count.
+            posthog.on_api_request_error(**common, api_request_id="error", error={"type": "AuthenticationError", "message": "SECRET"})
+            posthog.on_post_api_request(**common, api_request_id="success")
+            posthog.on_post_api_request(**common, api_request_id="zero", request_char_count=0)
+            posthog.on_post_api_request(**common, api_request_id="without-pre")
+            self.assertEqual([event["properties"]["hermes.input_chars"] for event in captured], [6789, 12345, 0, 0])
+            self.assertEqual(posthog._PENDING, {})
+        self.assertNotIn("SECRET", json.dumps(captured))
+
     def test_delivery_failure_is_fail_open(self):
         old_post = posthog.requests.post
         old_key = os.environ.get("POSTHOG_API_KEY")
