@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_GH="${DRIFTWARD_HERMES_REAL_GH:-/opt/data/libexec/gh-real}"
+APP_SLUG="${DRIFTWARD_HERMES_GITHUB_APP_SLUG:-factory-hermes}"
+APP_DIR="${DRIFTWARD_HERMES_GITHUB_APP_DIR:-/opt/data/github-apps/$APP_SLUG}"
+APP_ID_FILE="${DRIFTWARD_HERMES_GITHUB_APP_ID_FILE:-$APP_DIR/app-id}"
+INSTALLATION_ID_FILE="${DRIFTWARD_HERMES_GITHUB_APP_INSTALLATION_ID_FILE:-$APP_DIR/installation-id}"
+PRIVATE_KEY_FILE="${DRIFTWARD_HERMES_GITHUB_APP_PRIVATE_KEY_FILE:-$APP_DIR/private-key.pem}"
+TOKEN_CACHE="${DRIFTWARD_HERMES_GITHUB_APP_TOKEN_CACHE:-$APP_DIR/token-cache.json}"
+
+if [[ ! -x "$REAL_GH" ]]; then
+  printf 'factory-hermes gh wrapper: real gh binary is missing: %s\n' "$REAL_GH" >&2
+  exit 127
+fi
+
+if [[ ! -r "$APP_ID_FILE" || ! -r "$INSTALLATION_ID_FILE" || ! -r "$PRIVATE_KEY_FILE" ]]; then
+  printf 'factory-hermes gh wrapper: GitHub App credentials are incomplete; refusing fallback auth\n' >&2
+  exit 78
+fi
+
+base64url() {
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+cached_token() {
+  [[ -r "$TOKEN_CACHE" ]] || return 1
+  python3 - "$TOKEN_CACHE" <<'PY'
+import json
+import sys
+import time
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+token = payload.get("token")
+expires_at_epoch = int(payload.get("expires_at_epoch") or 0)
+if not token or expires_at_epoch <= int(time.time()) + 300:
+    raise SystemExit(1)
+print(token)
+PY
+}
+
+mint_jwt() {
+  local app_id iat exp header payload unsigned signature
+
+  app_id="$(tr -d '[:space:]' <"$APP_ID_FILE")"
+  iat="$(($(date +%s) - 60))"
+  exp="$((iat + 540))"
+  header="$(printf '{"alg":"RS256","typ":"JWT"}' | base64url)"
+  payload="$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "$iat" "$exp" "$app_id" | base64url)"
+  unsigned="$header.$payload"
+  signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$PRIVATE_KEY_FILE" -binary | base64url)"
+  printf '%s.%s\n' "$unsigned" "$signature"
+}
+
+mint_installation_token() {
+  local installation_id jwt response tmp
+
+  installation_id="$(tr -d '[:space:]' <"$INSTALLATION_ID_FILE")"
+  jwt="$(mint_jwt)"
+  response="$(
+    curl --fail --silent --show-error --request POST \
+      --url "https://api.github.com/app/installations/$installation_id/access_tokens" \
+      --header "Accept: application/vnd.github+json" \
+      --header "Authorization: Bearer $jwt" \
+      --header "X-GitHub-Api-Version: 2022-11-28"
+  )"
+
+  tmp="$(mktemp "$APP_DIR/token-cache.XXXXXX")"
+  GITHUB_APP_TOKEN_RESPONSE="$response" python3 - >"$tmp" <<'PY'
+import datetime
+import json
+import os
+import sys
+
+payload = json.loads(os.environ["GITHUB_APP_TOKEN_RESPONSE"])
+token = payload["token"]
+expires_at = payload["expires_at"]
+expires_at_epoch = int(datetime.datetime.fromisoformat(
+    expires_at.replace("Z", "+00:00")
+).timestamp())
+print(json.dumps({
+    "token": token,
+    "expires_at": expires_at,
+    "expires_at_epoch": expires_at_epoch,
+}))
+PY
+  chmod 0600 "$tmp"
+  mv "$tmp" "$TOKEN_CACHE"
+  python3 - "$TOKEN_CACHE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    print(json.load(handle)["token"])
+PY
+}
+
+token="$(cached_token || mint_installation_token)"
+export GH_TOKEN="$token"
+exec "$REAL_GH" "$@"

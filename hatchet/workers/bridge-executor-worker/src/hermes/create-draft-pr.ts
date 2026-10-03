@@ -1094,7 +1094,8 @@ async function execHermesRuntimeJson<T>(args: string[], timeout: number, maxBuff
 
 async function execHermesRuntimeCommand(args: string[], timeout: number, maxBuffer: number = 128 * 1024): Promise<ExecResult> {
   try {
-    return await execFileAsync('docker', hermesRuntimeDockerArgs(args), {
+    const invocation = hermesRuntimeInvocation(args);
+    return await execFileAsync(invocation.command, invocation.args, {
       timeout,
       maxBuffer,
       env: process.env
@@ -1118,6 +1119,21 @@ async function execHermesRuntimeCommand(args: string[], timeout: number, maxBuff
       },
     );
   }
+}
+
+/** Only the typed gateway calls this; never accept executable/argv from RPC payloads. */
+export function hermesRuntimeInvocation(args: string[]): { command: string; args: string[] } {
+  const mode = process.env.DRIFTWARD_HERMES_RUNTIME_MODE || 'host-docker';
+  if (mode === 'local-executor') {
+    if (!['git', 'gh'].includes(args[0])) {
+      throw new NonRetryableBridgeExecutionError('hermes_runtime_command_forbidden', 'Local executor supports only its typed Git/GitHub operations');
+    }
+    return { command: args[0], args: args.slice(1) };
+  }
+  if (mode !== 'host-docker') {
+    throw new NonRetryableBridgeExecutionError('hermes_runtime_mode_invalid', 'Unsupported Hermes runtime mode');
+  }
+  return { command: 'docker', args: hermesRuntimeDockerArgs(args) };
 }
 
 function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Exercise a NEW disposable Factory project; delete only that project's test data.
 
-Requires a locally built runtime image and Docker Compose >= 2.24.4. Does not
-read production configuration, start Hermes, or authorize real execution.
+Requires local runtime images and Docker Compose >= 2.24.4. Never reads
+production configuration or authorizes real execution. Optional bundled
+executor validation uses only this test's fresh Hermes container and fixtures.
 """
 from __future__ import annotations
 
@@ -65,11 +66,43 @@ def console_boundary(port: int) -> None:
 
 
 SAFETY_CHECK = """
-import os
+import os, sys
 assert os.environ.get('HATCHET_INTAKE_DRY_RUN') == 'true'
 assert os.environ.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '0'
-assert not os.environ.get('DRIFTWARD_HERMES_GRPC_TARGET')
+assert os.environ.get('DRIFTWARD_HERMES_GRPC_TARGET') == ('unix:///run/factory-executor/hermes.sock' if sys.argv[2] == 'bundled' else None)
+assert not any(os.environ.get(key) for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'POSTHOG_API_KEY'))
 print('dry-run-only')
+"""
+
+EXECUTOR_FIXTURE = """
+import json, os, time
+from pathlib import Path
+assert os.getuid() == 10000
+assert not Path('/var/run/docker.sock').exists()
+assert not os.environ.get('HATCHET_CLIENT_TOKEN')
+assert not os.environ.get('HATCHET_HERMES_BRIDGE_TOKEN')
+assert os.environ['GH_TOKEN'] == 'executor-only-fixture'
+assert os.environ['DRIFTWARD_HERMES_RUNTIME_MODE'] == 'local-executor'
+assert Path('/opt/hermes/plugins/observability/posthog/plugin.yaml').is_file()
+directory = Path('/opt/data/github-apps/factory-hermes')
+directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+for name, content in {'app-id': '123456', 'installation-id': '123456', 'private-key.pem': 'NOT-A-REAL-KEY', 'token-cache.json': json.dumps({'token': 'synthetic-not-a-secret', 'expires_at_epoch': int(time.time()) + 3600})}.items():
+    path = directory / name
+    path.write_text(content)
+    path.chmod(0o600)
+fixture = Path('/opt/data/gh-fixture')
+fixture.write_text('#!/bin/sh\\n[ "$1" = api ] && [ "$2" = repos/Driftward-LLC/capykit ] || exit 78\\nprintf "%s\\\\n" Driftward-LLC/capykit\\n')
+fixture.chmod(0o700)
+"""
+
+EXECUTOR_PREFLIGHT = """
+const assert = require('node:assert/strict');
+const {assertHermesIdentity} = require('/app/hatchet/workers/bridge-executor-worker/dist/hermes/create-draft-pr.js');
+assertHermesIdentity('Driftward-LLC/capykit').then(identity => {
+  assert.equal(identity.githubLogin, 'factory-fixture[bot]');
+  assert.equal(identity.accessibleRepo, 'Driftward-LLC/capykit');
+  console.log('PASS: private gRPC and typed executor-local Git/GitHub fixture');
+}).catch(() => { console.error('Executor preflight failed; private output withheld'); process.exit(1); });
 """
 
 SIGNED_DELIVERY = """
@@ -153,6 +186,7 @@ print(json.dumps({'event': row[0], 'receipts': receipts}))
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, help="existing local runtime image, e.g. factory:test")
+    parser.add_argument("--executor-image", default="", help="optional locally built bundled executor image")
     parser.add_argument("--port-offset", type=int, default=20000)
     args = parser.parse_args()
     project = "factory-acceptance-" + uuid.uuid4().hex[:16]
@@ -176,8 +210,21 @@ def main() -> int:
             restored_wrapper: list[str] = []
             try:
                 run([*wrapper, "init", "--image", args.image, "--project", project,
+                     *(["--executor-image", args.executor_image] if args.executor_image else []),
                      "--port-offset", str(args.port_offset), "--apply"], env=env, label="fresh configuration")
                 metadata, config = bootstrap.validate_directory(directory)
+                if args.executor_image:
+                    bootstrap_path = directory / "env" / "executor-identity.env"
+                    bootstrap_path.write_text(bootstrap.env_text({
+                        "DRIFTWARD_HERMES_ALLOWED_REPOS": "Driftward-LLC/capykit",
+                        "DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN": "factory-fixture[bot]",
+                        "DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME": "factory-fixture[bot]",
+                        "DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL": "123456+factory-fixture[bot]@users.noreply.github.com",
+                    }))
+                    (directory / "env" / "executor.env").write_text(bootstrap.env_text({
+                        "GH_TOKEN": "executor-only-fixture",
+                        "DRIFTWARD_HERMES_REAL_GH": "/opt/data/gh-fixture",
+                    }))
                 if config["FACTORY_PROJECT_NAME"] != project:
                     raise RuntimeError("unexpected test project identity")
                 env.update(config)
@@ -186,12 +233,25 @@ def main() -> int:
                            "--project-directory", str(directory), "--env-file", str(directory / ".env"),
                            "-f", str(ROOT / "deploy" / "docker-compose.yml"),
                            "-f", str(ROOT / "deploy" / "compose.portable.yml")]
+                if args.executor_image:
+                    compose += ["-f", str(ROOT / "deploy" / "compose.executor.yml")]
                 print("Starting empty installation and native bootstrap.", flush=True)
                 run([*wrapper, "up"], env=env, label="fresh startup")
                 def execute(service: str, source: str) -> str:
-                    return run([*compose, "exec", "-T", service, "python3", "-", issue],
+                    return run([*compose, "exec", "-T", service, "python3", "-", issue, "bundled" if args.executor_image else "control-plane"],
                                env=env, source=source, label=f"{service} acceptance assertion")
+                def executor_preflight(commands, command_env):
+                    run([*commands, "exec", "-T", "bridge-executor-worker", "node", "-e", EXECUTOR_PREFLIGHT],
+                        env=command_env, label="bundled gRPC preflight")
+                    rows = json.loads(run(["docker", "inspect", f"{command_env['FACTORY_PROJECT_NAME']}-bridge-executor-worker-1"], label="worker mount inspection"))
+                    mounts = rows[0]["Mounts"]
+                    if len(mounts) != 1 or mounts[0]["Destination"] != "/run/factory-executor" or mounts[0]["RW"]:
+                        raise RuntimeError("worker must mount only the private executor socket read-only")
+                if args.executor_image:
+                    execute("hermes-executor", EXECUTOR_FIXTURE)
                 execute("bridge-executor-worker", SAFETY_CHECK)
+                if args.executor_image:
+                    executor_preflight(compose, env)
                 console_boundary(int(config["FACTORY_CONSOLE_PORT"]))
                 credentials = credential_snapshot(directory)
                 print("Checking signed ingress, duplicate suppression, and Hatchet dry-run completion.", flush=True)
@@ -209,6 +269,8 @@ def main() -> int:
                 run([*wrapper, "stop"], env=env, label="test restart stop")
                 run([*wrapper, "up"], env=env, label="test restart startup")
                 execute("bridge-executor-worker", SAFETY_CHECK)
+                if args.executor_image:
+                    executor_preflight(compose, env)
                 console_boundary(int(config["FACTORY_CONSOLE_PORT"]))
                 if credential_snapshot(directory) != credentials:
                     raise RuntimeError("restart replaced native keys or worker credentials")
@@ -236,6 +298,8 @@ def main() -> int:
                                     "--project-directory", str(restored_directory), "--env-file", str(restored_directory / ".env"),
                                     "-f", str(ROOT / "deploy" / "docker-compose.yml"),
                                     "-f", str(ROOT / "deploy" / "compose.portable.yml")]
+                if args.executor_image:
+                    restored_compose += ["-f", str(ROOT / "deploy" / "compose.executor.yml")]
                 restore_incomplete = False
                 if credential_snapshot(restored_directory) != credentials:
                     raise RuntimeError("restore replaced native keys or worker credentials")
@@ -243,9 +307,11 @@ def main() -> int:
                     raise RuntimeError("restore started services without explicit up")
                 run([*restored_wrapper, "up"], env=restored_env, label="restored startup")
                 def restored_execute(service: str, source: str) -> str:
-                    return run([*restored_compose, "exec", "-T", service, "python3", "-", issue],
+                    return run([*restored_compose, "exec", "-T", service, "python3", "-", issue, "bundled" if args.executor_image else "control-plane"],
                                env=restored_env, source=source, label=f"restored {service} assertion")
                 restored_execute("bridge-executor-worker", SAFETY_CHECK)
+                if args.executor_image:
+                    executor_preflight(restored_compose, restored_env)
                 console_boundary(int(restored_config["FACTORY_CONSOLE_PORT"]))
                 if json.loads(restored_execute("bridge", BRIDGE_SNAPSHOT)) != receipt:
                     raise RuntimeError("restore changed the durable dry-run receipt")

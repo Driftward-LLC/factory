@@ -16,6 +16,21 @@ SPEC.loader.exec_module(bootstrap)
 
 
 class FactoryBootstrapTests(unittest.TestCase):
+    def test_bundled_profile_is_repeat_safe_and_credential_minimal(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "factory"
+            kwargs = dict(apply=True, executor_image="factory-executor:test")
+            config = bootstrap.init_directory(directory, "factory:test", "factory-bundled", **kwargs)
+            self.assertEqual(config, bootstrap.init_directory(directory, "factory:test", "factory-bundled", **kwargs))
+            metadata, _ = bootstrap.validate_directory(directory)
+            self.assertEqual(metadata["profile"], bootstrap.BUNDLED_PROFILE)
+            self.assertEqual(bootstrap.read_env(directory / "env/executor.env"), {})
+            identity = directory / "env/executor-identity.env"
+            self.assertEqual(set(bootstrap.read_env(identity)), bootstrap.EXECUTOR_IDENTITY_KEYS)
+            identity.write_text(identity.read_text() + "OPENAI_API_KEY='do-not-share'\n")
+            with self.assertRaisesRegex(ValueError, "four public identity"):
+                bootstrap.validate_directory(directory)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

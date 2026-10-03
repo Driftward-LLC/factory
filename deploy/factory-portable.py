@@ -70,7 +70,7 @@ def run(args: list[str], *, env: dict[str, str] | None = None, private: bool = F
     return result.stdout or ""
 
 
-def release_image() -> str:
+def release_image(*, executor: bool = False) -> str:
     metadata = HERE.parent / "factory.env"
     if not metadata.is_file():
         raise ValueError("use a release bundle, or explicitly supply --image for a local development build")
@@ -81,6 +81,11 @@ def release_image() -> str:
         raise ValueError("unsupported release bundle format or platform")
     if not re.fullmatch(r"ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}", values.get("FACTORY_IMAGE", "")):
         raise ValueError("release bundle must pin its runtime image by digest")
+    if executor:
+        image = values.get("FACTORY_EXECUTOR_IMAGE", "")
+        if image and not re.fullmatch(r"ghcr\.io/driftward-llc/factory-executor@sha256:[a-f0-9]{64}", image):
+            raise ValueError("release bundle must pin its executor image by digest")
+        return image  # Older release bundles remain explicitly control-plane only.
     return values["FACTORY_IMAGE"]
 
 
@@ -88,7 +93,7 @@ class Installation:
     def __init__(self, directory: Path):
         self.directory = bootstrap.checked_path(directory)
         self.metadata, self.values = bootstrap.validate_directory(self.directory)
-        if self.metadata.get("profile", "portable-dry-run") != "portable-dry-run":
+        if self.metadata.get("profile", "portable-dry-run") not in {"portable-dry-run", bootstrap.BUNDLED_PROFILE}:
             raise ValueError("production candidates require separately reviewed operations; the portable wrapper is dry-run only")
         self.project = self.values["FACTORY_PROJECT_NAME"]
         if not re.fullmatch(bootstrap.PROJECT_PATTERN, self.project):
@@ -103,6 +108,10 @@ class Installation:
         self.args = ["docker", "compose", "--project-name", self.project,
                      "--project-directory", str(self.directory), "--env-file", str(self.directory / ".env"),
                      "-f", str(HERE / "docker-compose.yml"), "-f", str(HERE / "compose.portable.yml")]
+        self.services = SERVICES
+        if self.metadata.get("profile") == bootstrap.BUNDLED_PROFILE:
+            self.args += ["-f", str(HERE / "compose.executor.yml")]
+            self.services = (*SERVICES, "hermes-executor")
 
     def compose(self, *args: str, private: bool = False) -> str:
         return run([*self.args, *args], env=self.env, private=private)
@@ -113,7 +122,7 @@ class Installation:
         expected_volumes = {f"{self.project}-{suffix}" for suffix in portable_state.PROJECT_VOLUMES}
         volumes = [name for name in volume_names if name in expected_volumes]
         containers = run(["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=" + self.project], env=self.env, private=True).splitlines()
-        networks = run(["docker", "network", "ls", "-q", "--filter", "name=^" + self.project + "$"], env=self.env, private=True).splitlines()
+        networks = run(["docker", "network", "ls", "-q", "--filter", "name=^(" + self.project + "|" + self.project + "-executor)$"], env=self.env, private=True).splitlines()
         for kind, ids in (("volume", volumes), ("container", containers), ("network", networks)):
             if not ids:
                 continue
@@ -155,7 +164,7 @@ class Installation:
         self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "bridge",
                      "/app/hatchet/bridge/maintenance_lock_exec.py", "exec", "python3", "-m", "hatchet_hermes_bridge.cli", "init", private=True)
         self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "event-ingress", "-m", "hatchet_event_ingress.cli", "init", private=True)
-        self.compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "180", *SERVICES)
+        self.compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "180", *self.services)
         self.status()
 
     def status(self) -> None:
@@ -163,14 +172,15 @@ class Installation:
         rows = json.loads(raw) if raw.strip().startswith("[") else [json.loads(line) for line in raw.splitlines() if line.strip()]
         found = {row["Service"]: row for row in rows if not row.get("Service") == "keygen"}
         failed = []
-        for service in SERVICES:
+        for service in self.services:
             row = found.get(service, {})
             state, health = row.get("State", "missing"), row.get("Health", "")
             print(f"{service}: {state}" + (f" ({health})" if health else ""))
             if state != "running" or health not in ("", "healthy"):
                 failed.append(service)
         print("Linear delivery: disabled in the portable dry-run profile")
-        print("Real execution: disabled by bootstrap; no Hermes credentials installed")
+        print("Real execution: disabled by bootstrap")
+        print("Executor: bundled and isolated; integration credentials require operator configuration" if "hermes-executor" in self.services else "Executor: not bundled in this installation")
         if failed:
             raise RuntimeError("unhealthy services: " + ", ".join(failed))
 
@@ -181,6 +191,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="preview a fresh installation; --apply writes new private configuration")
     init.add_argument("--image", help="explicit release digest or local development image")
+    init.add_argument("--executor-image", help="explicit local executor image; release bundles select their pinned executor automatically")
     init.add_argument("--project", required=True, help="unique factory or factory-NAME Compose namespace")
     init.add_argument("--apply", action="store_true")
     init.add_argument("--port-offset", type=int, default=0, help="offset published loopback ports for a second installation")
@@ -189,7 +200,9 @@ def main() -> int:
     sub.add_parser("status", help="inspect this installation only")
     sub.add_parser("stop", help="stop services; retain all volumes and credentials")
     logs = sub.add_parser("logs", help="view logs for one service")
-    logs.add_argument("service", choices=SERVICES)
+    logs.add_argument("service", choices=(*SERVICES, "hermes-executor"))
+    executor = sub.add_parser("executor", help="run native Hermes CLI inside this installation's isolated executor")
+    executor.add_argument("args", nargs=argparse.REMAINDER)
     backup = sub.add_parser("backup", help="preview a private cold snapshot; --apply stops this project")
     backup.add_argument("snapshot", type=Path)
     backup.add_argument("--apply", action="store_true")
@@ -202,7 +215,7 @@ def main() -> int:
     try:
         # Read-only status/logs and preview-only init/restore do not create a
         # lock file. All state-changing paths take the same host-local lock.
-        mutating = args.command in {"up", "stop", "pull"} or getattr(args, "apply", False)
+        mutating = args.command in {"up", "stop", "pull", "executor"} or getattr(args, "apply", False)
         if mutating:
             with installation_lock(args.directory):
                 return dispatch(args)
@@ -214,7 +227,8 @@ def main() -> int:
 
 def dispatch(args: argparse.Namespace) -> int:
     if args.command == "init":
-        bootstrap.init_directory(args.directory.absolute(), args.image or release_image(), args.project, apply=args.apply, port_offset=args.port_offset)
+        executor_image = args.executor_image if args.executor_image is not None else ("" if args.image else release_image(executor=True))
+        bootstrap.init_directory(args.directory.absolute(), args.image or release_image(), args.project, apply=args.apply, port_offset=args.port_offset, executor_image=executor_image)
         print("Private dry-run installation configured." if args.apply else "Preview only; use --apply to create the installation.")
         return 0
     if args.command == "restore":
@@ -226,12 +240,19 @@ def dispatch(args: argparse.Namespace) -> int:
     elif args.command == "status":
         install.status()
     elif args.command == "pull":
-        install.compose("pull", *SERVICES, "keygen")
+        install.compose("pull", *install.services, "keygen")
     elif args.command == "stop":
         install.assert_owned_resources()
         install.compose("stop")
     elif args.command == "logs":
+        if args.service not in install.services:
+            raise ValueError("service is not part of this installation")
         install.compose("logs", "--tail", "100", args.service)
+    elif args.command == "executor":
+        if "hermes-executor" not in install.services:
+            raise ValueError("this installation has no bundled executor")
+        install.assert_owned_resources()
+        install.compose("exec", "hermes-executor", "hermes", *args.args)
     elif args.command == "backup":
         portable_state.backup(install, args.snapshot, apply=args.apply)
     return 0

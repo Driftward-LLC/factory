@@ -13,6 +13,7 @@ import {
   findAddedTempFileReference,
   hermesReceiptEventExpression,
   hermesObservabilityEnvironment,
+  hermesRuntimeInvocation,
   hermesReceiptEventScope,
   hermesReceiptWaitDuration,
   jobMatchesHermesDraftPrReceipt,
@@ -35,6 +36,24 @@ import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+
+test('bundled executor runs typed Git/GitHub operations locally without Docker access', () => {
+  const previous = process.env.DRIFTWARD_HERMES_RUNTIME_MODE;
+  try {
+    process.env.DRIFTWARD_HERMES_RUNTIME_MODE = 'local-executor';
+    assert.deepEqual(hermesRuntimeInvocation(['gh', 'api', 'repos/Driftward-LLC/capykit']), {
+      command: 'gh', args: ['api', 'repos/Driftward-LLC/capykit'],
+    });
+    assert.throws(() => hermesRuntimeInvocation(['sh', '-c', 'untrusted']), /typed Git\/GitHub/);
+    process.env.DRIFTWARD_HERMES_RUNTIME_MODE = 'invalid';
+    assert.throws(() => hermesRuntimeInvocation(['git', 'config']), /Unsupported Hermes/);
+    delete process.env.DRIFTWARD_HERMES_RUNTIME_MODE;
+    assert.equal(hermesRuntimeInvocation(['git', 'config']).command, 'docker');
+  } finally {
+    if (previous === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_MODE;
+    else process.env.DRIFTWARD_HERMES_RUNTIME_MODE = previous;
+  }
+});
 
 test('Hermes observability uses bounded sealed lineage, not issue content or ambient metadata', () => {
   const job = greenJob();

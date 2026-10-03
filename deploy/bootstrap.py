@@ -27,6 +27,12 @@ ENV_FILES = (
     "hatchet-verifier.env", "factory-operator.env", "factory-lifecycle-writer.env",
     "factory-linear-token.env",
 )
+EXECUTOR_ENV_FILES = ("executor.env", "executor-identity.env")
+EXECUTOR_IDENTITY_KEYS = {
+    "DRIFTWARD_HERMES_ALLOWED_REPOS", "DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN",
+    "DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME", "DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL",
+}
+BUNDLED_PROFILE = "portable-bundled-executor"
 PORTS = {
     "FACTORY_HATCHET_PORT": 8888,
     "FACTORY_HATCHET_GRPC_PORT": 7077,
@@ -109,6 +115,16 @@ def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
             raise ValueError("installation identity does not match its configuration")
         for name in ENV_FILES:
             read_env(directory / "env" / name)
+        if metadata.get("profile") == BUNDLED_PROFILE:
+            if config.get("FACTORY_EXECUTOR_IMAGE") != metadata.get("executor_image") or not metadata.get("executor_image"):
+                raise ValueError("executor image differs from its installation identity")
+            for name in EXECUTOR_ENV_FILES:
+                read_env(directory / "env" / name)
+            identity = read_env(directory / "env" / "executor-identity.env")
+            if set(identity) != EXECUTOR_IDENTITY_KEYS:
+                raise ValueError("executor identity envelope may contain only the four public identity fields")
+        elif config.get("FACTORY_EXECUTOR_IMAGE"):
+            raise ValueError("executor image requires its matching installation profile")
         for relative in ("env", "keys", "keys/hatchet", "run", "run/operator"):
             child = checked_path(directory / relative)
             if not child.is_dir() or child.stat().st_mode & 0o077:
@@ -119,7 +135,7 @@ def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
 
 
 def init_directory(directory: str | Path, image: str, project: str, *,
-                   apply: bool = False, port_offset: int = 0) -> dict[str, str]:
+                   apply: bool = False, port_offset: int = 0, executor_image: str = "") -> dict[str, str]:
     directory = checked_path(directory)
     if not re.fullmatch(PROJECT_PATTERN, project):
         raise ValueError("project must be factory or a unique factory-NAME lowercase name of at most 57 characters")
@@ -127,6 +143,9 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         raise ValueError("invalid container image reference")
     if ":" not in image.rsplit("/", 1)[-1] or image.endswith(":latest"):
         raise ValueError("select an explicit image version or digest, not latest")
+    if executor_image and (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@-]*", executor_image)
+                           or ":" not in executor_image.rsplit("/", 1)[-1] or executor_image.endswith(":latest")):
+        raise ValueError("select an explicit executor image version or digest, not latest")
     if any(not 1024 <= port + port_offset <= 65535 for port in PORTS.values()):
         raise ValueError("port offset must keep every listener between 1024 and 65535")
     # Validate values before creating anything, including quote/control handling.
@@ -135,6 +154,8 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         metadata, config = validate_directory(directory)
         if metadata["project"] != project or metadata["image"] != image:
             raise ValueError("existing installation has a different project or image")
+        if config.get("FACTORY_EXECUTOR_IMAGE", "") != executor_image:
+            raise ValueError("existing installation has a different executor; never attach an executor implicitly")
         if any(config[name] != str(port + port_offset) for name, port in PORTS.items()):
             raise ValueError("existing installation uses different ports")
         return config
@@ -161,6 +182,8 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         "HATCHET_DEFAULT_TENANT_ID": str(uuid.uuid4()),
         **{name: str(port + port_offset) for name, port in PORTS.items()},
     }
+    if executor_image:
+        config["FACTORY_EXECUTOR_IMAGE"] = executor_image
     if not apply:
         return config
     bridge_token = secrets.token_hex(32)
@@ -193,6 +216,8 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         "factory-lifecycle-writer.env": {},
         "factory-linear-token.env": {},
     }
+    if executor_image:
+        env_files.update({"executor.env": {}, "executor-identity.env": {key: "" for key in sorted(EXECUTOR_IDENTITY_KEYS)}})
     directory.mkdir(mode=0o700)
     for relative in ("env", "keys", "keys/hatchet", "run", "run/operator"):
         (directory / relative).mkdir(mode=0o700)
@@ -204,6 +229,7 @@ def init_directory(directory: str | Path, image: str, project: str, *,
     _create_private(directory / MARKER, json.dumps({
         "format_version": 1, "installation_id": str(uuid.uuid4()),
         "project": project, "image": image,
+        **({"profile": BUNDLED_PROFILE, "executor_image": executor_image} if executor_image else {}),
     }, sort_keys=True) + "\n")
     return config
 

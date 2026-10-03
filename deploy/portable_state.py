@@ -17,7 +17,7 @@ VOLUMES = (
     "hatchet-postgres-data", "hatchet-config-data", "bridge-data", "ingress-data",
     "lifecycle-data", "linear-token-data", "linear-published-token",
 )
-PROJECT_VOLUMES = (*VOLUMES, "operator-socket", "maintenance")
+PROJECT_VOLUMES = (*VOLUMES, "operator-socket", "maintenance", "executor-data", "executor-socket")
 CONFIG_FILES = {".env", bootstrap.MARKER, "env/hatchet-client.env",
                 *("env/" + name for name in bootstrap.ENV_FILES),
                 *("keys/hatchet/" + name for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"))}
@@ -28,14 +28,21 @@ PROVENANCE = ".factory-cutover.json"
 
 
 def deployment_files(profile: str) -> tuple[str, ...]:
-    if profile not in {"portable-dry-run", PRODUCTION}:
+    if profile not in {"portable-dry-run", PRODUCTION, bootstrap.BUNDLED_PROFILE}:
         raise ValueError("unsupported installation profile")
+    if profile == bootstrap.BUNDLED_PROFILE:
+        return (*DEPLOYMENT_FILES, "compose.executor.yml")
     return (*DEPLOYMENT_FILES, "compose.production.yml") if profile == PRODUCTION else DEPLOYMENT_FILES
 
 
 def config_files(profile: str) -> set[str]:
     deployment_files(profile)  # Reject unknown profiles before selecting files.
-    return CONFIG_FILES | ({PROVENANCE} if profile == PRODUCTION else set())
+    return CONFIG_FILES | ({PROVENANCE} if profile == PRODUCTION else set()) | (
+        {"env/" + name for name in bootstrap.EXECUTOR_ENV_FILES} if profile == bootstrap.BUNDLED_PROFILE else set())
+
+
+def durable_volumes(profile: str) -> tuple[str, ...]:
+    return (*VOLUMES, "executor-data") if profile == bootstrap.BUNDLED_PROFILE else VOLUMES
 
 
 def read_provenance(path: Path) -> dict:
@@ -135,8 +142,9 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     images = {item["image"] for item in config["services"].values()}
     image_ids = {image: _docker(["image", "inspect", "--format", "{{.Id}}", image], installation.env) for image in images}
     existing = _available_volumes(installation.env)
-    volumes = [suffix for suffix in VOLUMES if f"{installation.project}-{suffix}" in existing]
-    if not set(VOLUMES if profile == PRODUCTION else VOLUMES[:5]).issubset(volumes):
+    volumes = [suffix for suffix in durable_volumes(profile) if f"{installation.project}-{suffix}" in existing]
+    required = VOLUMES if profile == PRODUCTION else (*VOLUMES[:5], *(["executor-data"] if profile == bootstrap.BUNDLED_PROFILE else []))
+    if not set(required).issubset(volumes):
         raise ValueError("installation has not created all required durable volumes")
     for suffix in volumes:
         info = json.loads(_docker(["volume", "inspect", f"{installation.project}-{suffix}"], installation.env))[0]
@@ -189,7 +197,8 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     # Reuse bootstrap's project, image, path and port validation without writing.
     updated = bootstrap.init_directory(directory, manifest["factory_image"], project, port_offset=port_offset)
     volumes = manifest["volumes"]
-    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(VOLUMES if production else VOLUMES[:5]).issubset(volumes) or not set(volumes).issubset(VOLUMES):
+    required = VOLUMES if production else (*VOLUMES[:5], *(["executor-data"] if profile == bootstrap.BUNDLED_PROFILE else []))
+    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(required).issubset(volumes) or not set(volumes).issubset(durable_volumes(profile)):
         raise ValueError("invalid snapshot volume list")
     expected = {"config/" + name for name in expected_config} | {f"volumes/{suffix}.tar" for suffix in volumes}
     if set(manifest["sha256"]) != expected or _private_files(snapshot) != expected | {"manifest.json"}:
@@ -201,6 +210,10 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         _archive_check(snapshot / "volumes" / f"{suffix}.tar")
     values = bootstrap.read_env(snapshot / "config" / ".env")
     marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
+    if profile == bootstrap.BUNDLED_PROFILE and (not values.get("FACTORY_EXECUTOR_IMAGE")
+            or values["FACTORY_EXECUTOR_IMAGE"] != marker.get("executor_image")
+            or values["FACTORY_EXECUTOR_IMAGE"] not in manifest["images"]):
+        raise ValueError("snapshot does not identify its exact executor image")
     provenance = read_provenance(snapshot / "config" / PROVENANCE) if production else None
     if production:
         predecessors = provenance.get("predecessors", [])
@@ -215,7 +228,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         raise ValueError("snapshot installation identity mismatch")
     if _docker(["ps", "--all", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.ID}}"]):
         raise ValueError("restore project already has containers")
-    if project in _docker(["network", "ls", "--format", "{{.Name}}"]).splitlines():
+    if {project, project + "-executor"}.intersection(_docker(["network", "ls", "--format", "{{.Name}}"]).splitlines()):
         raise ValueError("restore project already has a network")
     existing = _available_volumes()
     if any(f"{project}-{suffix}" in existing for suffix in PROJECT_VOLUMES):

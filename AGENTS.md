@@ -38,6 +38,12 @@ Docker availability, host package installs, and secret-file placement.
 Driftward Hermes remains responsible for agent execution, credentials, MCP,
 browser state, and Hermes session retention.
 
+Fresh bundled deployments use `deploy/compose.executor.yml` and the
+Factory-owned executor image instead of the separately provisioned Driftward
+Hermes runtime. Its own named data volume, provider/App credentials and native
+observer belong exclusively to the executor role. Packaging does not authorize
+real execution or migration of shared Driftward Hermes data.
+
 ## Safety
 
 - Do not commit secrets, tokens, webhook URLs, cookies, Hatchet profile files,
@@ -48,6 +54,9 @@ browser state, and Hermes session retention.
 - Do not mount Driftward Hermes data, provider credentials, browser state, root
   GitHub auth, the Docker socket, or the host root filesystem into Factory
   containers.
+- The bundled executor is the only role permitted to hold its own newly
+  provisioned execution credentials/state; workers mount only its private
+  gateway socket, never executor data or the Docker socket.
 - `factory doctor hatchet` is read-only. Pause/remove/apply paths for live
   Hatchet workflows require explicit reviewed operator approval.
 - Lifecycle dead-letter archive must use the root-only operator preview and

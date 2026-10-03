@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "deploy/docker-compose.yml",
     "deploy/compose.portable.yml",
+    "deploy/compose.executor.yml",
     "deploy/compose.production.yml",
     "deploy/factory-portable.py",
     "deploy/factory-cutover.py",
@@ -20,6 +21,7 @@ FILES = (
     "deploy/bootstrap.py",
     "deploy/portable_state.py",
     "deploy/PORTABLE.md",
+    "deploy/EXECUTOR.md",
     "deploy/CUTOVER.md",
 )
 IMAGE = "ghcr.io/driftward-llc/factory@sha256:" + "a" * 64
@@ -110,6 +112,14 @@ class FactoryReleaseTests(unittest.TestCase):
         with tarfile.open(self.output / f"{self.bundle}-validation-only.tar.gz") as bundle:
             metadata = bundle.extractfile(f"{self.bundle}/factory.env").read().decode()
             self.assertIn("FACTORY_RELEASE_VALIDATION_ONLY=true\n", metadata)
+
+    def test_executor_image_is_pinned_in_same_release_bundle(self) -> None:
+        image = "ghcr.io/driftward-llc/factory-executor@sha256:" + "b" * 64
+        result = self.package("--executor-image", image)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with tarfile.open(self.output / f"{self.bundle}.tar.gz") as bundle:
+            metadata = bundle.extractfile(f"{self.bundle}/factory.env").read().decode()
+            self.assertIn(f"FACTORY_EXECUTOR_IMAGE={image}\n", metadata)
 
     def test_bundled_clis_run_without_source_checkout(self) -> None:
         output = Path(self.directory.name) / "real-source-bundle"

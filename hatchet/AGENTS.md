@@ -57,7 +57,9 @@ Workers may use Hatchet client settings plus the bridge URL/token. The
 `bridge-executor-worker` is the only worker that may contact the typed Hermes
 gateway, and only for allowlisted bridge actions after a bridge job row exists
 and a deterministic branch has been reserved. Containerized workers must not
-invoke `driftward-hermes` directly; the host-local gateway owns that wrapper.
+invoke `driftward-hermes` directly. Legacy deployments use the host gateway;
+fresh bundled deployments run the typed gateway inside their isolated executor
+and perform its allowlisted Git/GitHub operations locally without Docker access.
 
 Root-owned host Codex uses the separate verified `VPS-Agent` Linear identity.
 Its renewable token and OAuth client credentials remain under

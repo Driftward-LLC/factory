@@ -16,6 +16,16 @@ spec.loader.exec_module(portable)
 
 
 class PortableTests(unittest.TestCase):
+    def test_bundled_executor_uses_same_project_and_no_host_socket(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "factory"
+            portable.bootstrap.init_directory(directory, "factory:test", "factory-bundled", apply=True, executor_image="factory-executor:test")
+            install = portable.Installation(directory)
+            self.assertIn("hermes-executor", install.services)
+            self.assertIn(str(DEPLOY / "compose.executor.yml"), install.args)
+            self.assertEqual(install.values["FACTORY_EXECUTOR_IMAGE"], "factory-executor:test")
+            self.assertEqual(install.metadata["executor_image"], "factory-executor:test")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -20,6 +20,12 @@ isolated configuration and state without the VPS's systemd, checkout, or
 Hermes socket. The host installer below remains the existing deployment's
 migration/real-execution path; it is not greenfield bootstrap.
 
+Releases with a bundled executor image also install Hermes, the typed gateway,
+GitHub tooling and optional PostHog observer in the same Compose product.
+No `driftward-host` checkout or separately installed Hermes runtime is required.
+See [bundled executor setup and boundaries](deploy/EXECUTOR.md). The initial
+portable profile remains dry-run; real execution is a separate activation gate.
+
 For a staged move from the existing Compose runtime into a new isolated
 installation, use the [same-host cutover preparation guide](deploy/CUTOVER.md).
 Its default is read-only preview; an approved cold copy leaves the candidate

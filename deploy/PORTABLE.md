@@ -112,6 +112,15 @@ image identities; it is a same-version disaster-recovery mechanism, not an
 arbitrary database downgrade. Restore leaves services stopped. Never run a
 restored real-execution deployment alongside its original executor authority.
 
+## Bundled executor
+
+Release metadata may also pin a Factory executor image. In that case the same
+`init`/`pull`/`up` commands provision the bundled Hermes executor automatically,
+with its own credentials, state and private gateway socket. No host Hermes,
+Node or systemd setup is needed. See [EXECUTOR.md](EXECUTOR.md) for native setup,
+ownership boundaries and remaining real-execution activation requirements.
+Older bundles without an executor image remain control-plane-only dry-run.
+
 ## Validation and remaining work
 
 The disposable acceptance check is `python3 tools/check_factory_portable.py
@@ -120,7 +129,7 @@ It owns an isolated project and cleans up only its own test resources. It must
 not receive production credentials or target existing installations.
 
 This milestone does not claim Docker Desktop/ARM64, multi-tenancy, generic
-organization policy, a packaged remote Hermes runtime, or independently
+organization policy, an independently managed remote Hermes runtime, or independently
 resumable remote execution. Keep those as explicit subsequent acceptance gates.
 TCP gateway authentication is hardened now, but real remote execution still
 needs durable invocation/result lookup and a documented execution envelope.
