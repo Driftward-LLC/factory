@@ -570,7 +570,7 @@ export async function runHermesCreateDraftPr(job: BridgeJob): Promise<HermesDraf
 
 /** Metadata only: never derive analytics identifiers from issue prose or prompts. */
 export function hermesObservabilityEnvironment(job: BridgeJob): Record<string, string> {
-  const uuid = (value: unknown): string => typeof value === 'string' &&
+  const uuid = (value: unknown): string => typeof value === 'string' && value.length === 36 &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : '';
   const lineage = job.payload.factory_retry;
   const retry = lineage && typeof lineage === 'object' && !Array.isArray(lineage) ? lineage : {};
@@ -580,7 +580,7 @@ export function hermesObservabilityEnvironment(job: BridgeJob): Record<string, s
   return {
     FACTORY_OBSERVABILITY_JOB_ID: uuid(job.job_id),
     FACTORY_OBSERVABILITY_ATTEMPT_ID: attempt,
-    FACTORY_OBSERVABILITY_LINEAR_ISSUE: typeof issue === 'string' && /^[A-Z][A-Z0-9]{0,31}-[1-9][0-9]{0,14}$/.test(issue) ? issue : '',
+    FACTORY_OBSERVABILITY_LINEAR_ISSUE: typeof issue === 'string' && issue === issue.trim() && /^[A-Z][A-Z0-9]{0,31}-[1-9][0-9]{0,14}$/.test(issue) ? issue : '',
     FACTORY_OBSERVABILITY_GENERATION: attempt && typeof retry.generation === 'number' &&
       Number.isSafeInteger(retry.generation) && retry.generation > 0 ? String(retry.generation) : '',
   };

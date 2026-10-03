@@ -53,6 +53,11 @@ test('Hermes observability uses bounded sealed lineage, not issue content or amb
   assert.deepEqual(Object.values(hermesObservabilityEnvironment(job)), ['', '', '', '']);
   delete job.payload.factory_retry;
   assert.equal(hermesObservabilityEnvironment(job).FACTORY_OBSERVABILITY_ATTEMPT_ID, '');
+  job.job_id = '01234567-89ab-cdef-0123-456789abcdef\n';
+  job.payload.linear_issue = 'ENG-61\n';
+  assert.deepEqual(Object.values(hermesObservabilityEnvironment(job)), ['', '', '', '']);
+  job.payload.factory_retry = { attempt_id: 'abcdef01-2345-6789-abcd-ef0123456789', generation: 9007199254740992 };
+  assert.equal(hermesObservabilityEnvironment(job).FACTORY_OBSERVABILITY_GENERATION, '');
 });
 
 test('execution analytics identity reports configured backend boundary without inferring auth', () => {
