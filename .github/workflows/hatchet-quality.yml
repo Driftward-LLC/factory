@@ -134,6 +134,14 @@ jobs:
             -f deploy/Dockerfile -t driftward/factory:ci .
       - name: Prove isolated fresh install, restart, and restore
         run: python3 tools/check_factory_portable.py --image driftward/factory:ci
+      - name: Build and prove bundled executor deployment
+        run: |
+          docker build -f deploy/executor/Dockerfile \
+            --build-arg FACTORY_IMAGE=driftward/factory:ci \
+            --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" \
+            --build-arg FACTORY_RELEASE_VERSION=ci -t driftward/factory-executor:ci .
+          python3 tools/check_factory_portable.py --image driftward/factory:ci \
+            --executor-image driftward/factory-executor:ci
       - name: Rehearse stopped production-state relocation
         run: python3 tools/check_factory_cutover.py --image driftward/factory:ci
       - name: Check changed-file whitespace

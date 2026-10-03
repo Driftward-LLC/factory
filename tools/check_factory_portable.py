@@ -75,7 +75,7 @@ print('dry-run-only')
 """
 
 EXECUTOR_FIXTURE = """
-import json, os, time
+import json, os, subprocess, time
 from pathlib import Path
 assert os.getuid() == 10000
 assert not Path('/var/run/docker.sock').exists()
@@ -84,6 +84,7 @@ assert not os.environ.get('HATCHET_HERMES_BRIDGE_TOKEN')
 assert os.environ['GH_TOKEN'] == 'executor-only-fixture'
 assert os.environ['DRIFTWARD_HERMES_RUNTIME_MODE'] == 'local-executor'
 assert Path('/opt/hermes/plugins/observability/posthog/plugin.yaml').is_file()
+subprocess.run(['hermes', 'plugins', 'enable', 'observability/posthog'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 directory = Path('/opt/data/github-apps/factory-hermes')
 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
 for name, content in {'app-id': '123456', 'installation-id': '123456', 'private-key.pem': 'NOT-A-REAL-KEY', 'token-cache.json': json.dumps({'token': 'synthetic-not-a-secret', 'expires_at_epoch': int(time.time()) + 3600})}.items():
@@ -97,8 +98,8 @@ fixture.chmod(0o700)
 
 EXECUTOR_PREFLIGHT = """
 const assert = require('node:assert/strict');
-const {assertHermesIdentity} = require('/app/hatchet/workers/bridge-executor-worker/dist/hermes/create-draft-pr.js');
-assertHermesIdentity('Driftward-LLC/capykit').then(identity => {
+const {checkHermesIdentity} = require('/app/hatchet/workers/bridge-executor-worker/dist/hermes/create-draft-pr.js');
+checkHermesIdentity('Driftward-LLC/capykit').then(identity => {
   assert.equal(identity.githubLogin, 'factory-fixture[bot]');
   assert.equal(identity.accessibleRepo, 'Driftward-LLC/capykit');
   console.log('PASS: private gRPC and typed executor-local Git/GitHub fixture');
@@ -320,6 +321,16 @@ def main() -> int:
                 if credential_snapshot(restored_directory) != credentials:
                     raise RuntimeError("restored startup replaced native keys or worker credentials")
                 print("PASS: bootstrap, signed intake, dry-run receipt, deduplication, restart, cold backup/restore.", flush=True)
+            except Exception:
+                if compose:
+                    try:
+                        state = run([*compose, "ps", "--all", "--format", "json"], env=env, label="sanitized failure status")
+                        rows = json.loads(state) if state.strip().startswith('[') else [json.loads(line) for line in state.splitlines()]
+                        for row in rows:
+                            print(f"Test service {row.get('Service')}: {row.get('State')} ({row.get('Health') or 'no healthcheck'})", file=sys.stderr)
+                    except Exception:
+                        pass
+                raise
             finally:
                 for owned_compose, owned_wrapper, owned_env in ((restored_compose, restored_wrapper, restored_env), (compose, wrapper, env)):
                     if owned_compose is not None:

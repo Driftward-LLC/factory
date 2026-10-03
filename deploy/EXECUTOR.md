@@ -38,7 +38,7 @@ python3 deploy/factory-portable.py --directory /srv/factory executor setup
 
 `executor` runs native Hermes commands inside this installation's container.
 Provider configuration/auth, MCP configuration, browser state, sessions and
-worktrees persist in its dedicated `factory-PROJECT-executor-data` volume.
+worktrees persist in its dedicated `PROJECT-executor-data` volume.
 No credentials or memories are imported from root, Driftward or personal Hermes.
 
 Private `env/executor.env` contains executor-only environment settings, such as
@@ -75,7 +75,7 @@ checked-in allowlists; packaging does not make arbitrary repositories eligible.
 
 ## Isolation, recovery and acceptance
 
-Workers mount only `factory-PROJECT-executor-socket` read-only. The executor
+Workers mount only `PROJECT-executor-socket` read-only. The executor
 has a separate network for its outbound tool traffic, publishes no port,
 runs as UID/GID 10000, and receives no bridge/Hatchet credentials. Only its
 own executor data volume is writable; it sees neither host repositories nor

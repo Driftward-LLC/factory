@@ -39,6 +39,7 @@ process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 've
 
 test('bundled executor runs typed Git/GitHub operations locally without Docker access', () => {
   const previous = process.env.DRIFTWARD_HERMES_RUNTIME_MODE;
+  const previousUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
   try {
     process.env.DRIFTWARD_HERMES_RUNTIME_MODE = 'local-executor';
     assert.deepEqual(hermesRuntimeInvocation(['gh', 'api', 'repos/Driftward-LLC/capykit']), {
@@ -48,10 +49,14 @@ test('bundled executor runs typed Git/GitHub operations locally without Docker a
     process.env.DRIFTWARD_HERMES_RUNTIME_MODE = 'invalid';
     assert.throws(() => hermesRuntimeInvocation(['git', 'config']), /Unsupported Hermes/);
     delete process.env.DRIFTWARD_HERMES_RUNTIME_MODE;
+    // Legacy invocation construction must not depend on a VPS-only Unix group.
+    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
     assert.equal(hermesRuntimeInvocation(['git', 'config']).command, 'docker');
   } finally {
     if (previous === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_MODE;
     else process.env.DRIFTWARD_HERMES_RUNTIME_MODE = previous;
+    if (previousUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+    else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousUser;
   }
 });
 

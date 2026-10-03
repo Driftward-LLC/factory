@@ -13,6 +13,13 @@ COPY --from=factory /app/hatchet/workers /app/hatchet/workers
 COPY --chmod=0755 deploy/executor/entrypoint.sh /usr/local/bin/factory-executor
 COPY --chmod=0755 deploy/executor/gh /usr/local/bin/gh
 COPY deploy/executor/plugins/posthog /opt/hermes/plugins/observability/posthog
+RUN chmod -R a+rX /app/hatchet/workers /opt/hermes/plugins/observability/posthog
+
+ARG FACTORY_RELEASE_COMMIT=development-unversioned
+ARG FACTORY_RELEASE_VERSION=local
+LABEL org.opencontainers.image.source="https://github.com/Driftward-LLC/factory" \
+      org.opencontainers.image.revision="$FACTORY_RELEASE_COMMIT" \
+      org.opencontainers.image.version="$FACTORY_RELEASE_VERSION"
 
 ENV HERMES_HOME=/opt/data HOME=/opt/data \
     PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin \

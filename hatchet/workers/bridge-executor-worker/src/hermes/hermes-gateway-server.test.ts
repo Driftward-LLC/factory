@@ -89,6 +89,18 @@ test('gateway transport authenticates TCP callers before handling requests', asy
         await request(target, grpc.credentials.createInsecure());
       }, `unix://${file('gateway.sock')}`);
     });
+
+    await t.test('bundled executor rejects direct effect RPCs before parsing or execution', async () => {
+      for (const enabled of [undefined, '0']) {
+        await withGateway({ DRIFTWARD_HERMES_RUNTIME_MODE: 'local-executor', DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: enabled }, async (target) => {
+          await assert.rejects(request(target, grpc.credentials.createInsecure(), [], 'createDraftPullRequest'), (error: grpc.ServiceError) => {
+            assert.equal(error.code, grpc.status.FAILED_PRECONDITION);
+            assert.deepEqual(error.metadata.get('reason-code'), ['hermes_execution_disabled']);
+            return true;
+          });
+        }, `unix://${file('gateway.sock')}`);
+      }
+    });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -128,7 +140,7 @@ async function withGateway(
   return output;
 }
 
-async function request(target: string, credentials: grpc.ChannelCredentials, authorization: string[] = []): Promise<void> {
+async function request(target: string, credentials: grpc.ChannelCredentials, authorization: string[] = [], method = 'inspectPullRequestState'): Promise<void> {
   const definition = protoLoader.loadSync(resolveHermesGatewayProtoPath(), { keepCase: false, longs: Number, defaults: true });
   const loaded = grpc.loadPackageDefinition(definition);
   const service = (((loaded.driftward as grpc.GrpcObject).factory as grpc.GrpcObject).hermes as grpc.GrpcObject).v1 as grpc.GrpcObject;
@@ -139,7 +151,7 @@ async function request(target: string, credentials: grpc.ChannelCredentials, aut
   try {
     await new Promise<void>((resolve, reject) => {
       // This handler validates the reference locally; it never calls Hermes or GitHub.
-      client.inspectPullRequestState({ repository: 'example/repo', reference: 'invalid' }, metadata, { deadline: Date.now() + 3000 },
+      client[method]({ repository: 'example/repo', reference: 'invalid' }, metadata, { deadline: Date.now() + 3000 },
         (error: grpc.ServiceError | null, response: { reason: string }) => {
           if (error) reject(error);
           else {

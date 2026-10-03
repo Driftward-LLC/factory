@@ -31,6 +31,26 @@ class FactoryBootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "four public identity"):
                 bootstrap.validate_directory(directory)
 
+    def test_executor_cannot_be_implicitly_attached_or_replaced(self):
+        with tempfile.TemporaryDirectory() as root:
+            for executor in ("", "factory-executor:test"):
+                with self.subTest(executor=executor):
+                    directory = Path(root) / ("bundled" if executor else "legacy")
+                    bootstrap.init_directory(directory, "factory:test", "factory-unit", apply=True, executor_image=executor)
+                    before = (directory / bootstrap.MARKER).read_bytes()
+                    with self.assertRaisesRegex(ValueError, "different executor"):
+                        bootstrap.init_directory(directory, "factory:test", "factory-unit", apply=True, executor_image="factory-executor:other")
+                    self.assertEqual((directory / bootstrap.MARKER).read_bytes(), before)
+
+    def test_bundled_executor_image_tampering_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "factory"
+            config = bootstrap.init_directory(directory, "factory:test", "factory-unit", apply=True, executor_image="factory-executor:test")
+            config["FACTORY_EXECUTOR_IMAGE"] = "factory-executor:other"
+            (directory / ".env").write_text(bootstrap.env_text(config))
+            with self.assertRaisesRegex(ValueError, "executor image differs"):
+                bootstrap.validate_directory(directory)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

@@ -10,6 +10,12 @@ services:
         required: true
       - path: ${FACTORY_ENV_DIR:?}/executor-identity.env
         required: true
+    environment:
+      DRIFTWARD_HERMES_RUNTIME_MODE: local-executor
+      DRIFTWARD_HERMES_COMMAND: /opt/hermes/.venv/bin/hermes
+      DRIFTWARD_HERMES_GRPC_BIND_TARGET: unix:///run/factory-executor/hermes.sock
+      # A healthy bundled executor is not execution approval.
+      DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: "0"
     volumes:
       - factory-executor-data:/opt/data
       - factory-executor-socket:/run/factory-executor

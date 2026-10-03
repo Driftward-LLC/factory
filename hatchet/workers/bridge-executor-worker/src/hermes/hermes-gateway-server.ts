@@ -68,6 +68,9 @@ function createServer(target: string): grpc.Server {
       return identityResponse(identity);
     }),
     createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest) => {
+      if (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor' && process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED !== '1') {
+        throw new NonRetryableBridgeExecutionError('hermes_execution_disabled', 'Bundled executor effects require explicit activation');
+      }
       const job = parseBridgeJob(request);
       const result = await runHermesCreateDraftPrViaCommand(job, undefined, optionalPositiveInt(request.timeoutMs));
       return draftPrResponse(result);

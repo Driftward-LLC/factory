@@ -23,6 +23,7 @@ type UntrustedReceipt = {
 const GATEWAY_REASON_CODES = new Set([
   'github_head_inspection_malformed',
   'hermes_async_receipts_disabled',
+  'hermes_execution_disabled',
   'hermes_expected_git_author_email_not_bot',
   'hermes_expected_git_author_name_not_bot',
   'hermes_expected_github_identity_forbidden',
@@ -71,6 +72,8 @@ const GATEWAY_REASON_CODES = new Set([
   'hermes_receipt_runner_missing',
   'hermes_repair_pr_url_mismatch',
   'hermes_runtime_group_missing',
+  'hermes_runtime_command_forbidden',
+  'hermes_runtime_mode_invalid',
   'hermes_runtime_identity_check_failed',
   'hermes_runtime_json_parse_failed',
   'invalid_branch',

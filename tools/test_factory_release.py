@@ -153,7 +153,8 @@ class FactoryReleaseTests(unittest.TestCase):
         self.assertIn("packages: write", workflow)
         self.assertIn("--validation-only", workflow)
         self.assertLess(workflow.index("python3 tools/check_factory_portable.py --image driftward/factory:ci"), workflow.index("docker push"))
-        self.assertIn("refusing to overwrite: $image_tag", workflow)
+        self.assertIn('for tag in "$image_tag" "$executor_tag"', workflow)
+        self.assertIn("refusing to overwrite: $tag", workflow)
         self.assertIn('"$RUNNER_TEMP/factory-release/SHA256SUMS"', workflow)
         self.assertNotIn("actions/upload-artifact", workflow)
 

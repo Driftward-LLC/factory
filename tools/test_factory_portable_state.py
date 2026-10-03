@@ -68,6 +68,38 @@ class FakeDocker:
 
 
 class PortableStateTests(unittest.TestCase):
+    def test_bundled_backup_restores_executor_identity_config_and_data(self):
+        with tempfile.TemporaryDirectory() as root:
+            source, snapshot, restored = (Path(root) / name for name in ("source", "snapshot", "restored"))
+            values = bootstrap.init_directory(source, "factory:test", "factory-bundle", apply=True, executor_image="executor:test")
+            for name in state.CONFIG_FILES - {".env", bootstrap.MARKER}:
+                path = source / name
+                if not path.exists():
+                    bootstrap._create_private(path, "fixture-credential\n")
+            metadata, _ = bootstrap.validate_directory(source)
+            docker = FakeDocker("factory-bundle", metadata["installation_id"])
+            docker.volumes['factory-bundle-executor-data'] = {
+                'data': b'executor-owned-state',
+                'Labels': {'com.docker.compose.project': 'factory-bundle',
+                           'com.docker.compose.volume': 'factory-executor-data',
+                           state.IDENTITY_LABEL: metadata['installation_id']},
+            }
+            install = SimpleNamespace(directory=source, project="factory-bundle", values=values, env={},
+                compose=Mock(return_value=json.dumps({'services': {'factory': {'image': 'factory:test'}, 'executor': {'image': 'executor:test'}}})),
+                assert_owned_resources=Mock())
+            with patch.object(state, '_docker', docker), patch.object(state, '_tar', docker.tar):
+                state.backup(install, snapshot, apply=True)
+                manifest = json.loads((snapshot / 'manifest.json').read_text())
+                self.assertIn('executor-data', manifest['volumes'])
+                self.assertIn('executor:test', manifest['images'])
+                self.assertIn('compose.executor.yml', manifest['deployment_sha256'])
+                state.restore(snapshot, restored, 'factory-restored-bundle', apply=True)
+            saved, config = bootstrap.validate_directory(restored)
+            self.assertEqual(saved['profile'], bootstrap.BUNDLED_PROFILE)
+            self.assertEqual(config['FACTORY_EXECUTOR_IMAGE'], 'executor:test')
+            self.assertEqual(docker.volumes['factory-restored-bundle-executor-data']['data'], b'executor-owned-state')
+            self.assertEqual((restored / 'env/executor-identity.env').read_bytes(), (source / 'env/executor-identity.env').read_bytes())
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

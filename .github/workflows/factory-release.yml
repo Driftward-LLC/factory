@@ -37,6 +37,7 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run }}
       GH_TOKEN: ${{ github.token }}
       IMAGE_REPOSITORY: ghcr.io/driftward-llc/factory
+      EXECUTOR_IMAGE_REPOSITORY: ghcr.io/driftward-llc/factory-executor
     steps:
       - uses: actions/checkout@v4
         with:
@@ -134,6 +135,14 @@ jobs:
 
       - name: Prove disposable portable installation and restore
         run: python3 tools/check_factory_portable.py --image driftward/factory:ci
+      - name: Build and prove bundled executor deployment
+        run: |
+          docker build --platform linux/amd64 -f deploy/executor/Dockerfile \
+            --build-arg FACTORY_IMAGE=driftward/factory:ci \
+            --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" \
+            --build-arg FACTORY_RELEASE_VERSION="$RELEASE_TAG" -t driftward/factory-executor:ci .
+          python3 tools/check_factory_portable.py --image driftward/factory:ci \
+            --executor-image driftward/factory-executor:ci
 
       - name: Rehearse stopped production-state relocation
         run: python3 tools/check_factory_cutover.py --image driftward/factory:ci
@@ -164,8 +173,10 @@ jobs:
           set -euo pipefail
           # A local image ID is not a registry manifest digest. Never publish this preview.
           local_image_id="$(docker image inspect driftward/factory:ci --format '{{.Id}}')"
+          executor_image_id="$(docker image inspect driftward/factory-executor:ci --format '{{.Id}}')"
           bash deploy/package-release.sh --version "$RELEASE_TAG" \
             --image "$IMAGE_REPOSITORY@$local_image_id" \
+            --executor-image "$EXECUTOR_IMAGE_REPOSITORY@$executor_image_id" \
             --source-commit "$(git rev-parse HEAD)" \
             --output-dir "$RUNNER_TEMP/factory-release-preview" --validation-only
           (cd "$RUNNER_TEMP/factory-release-preview" && sha256sum --check SHA256SUMS)
@@ -178,30 +189,41 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           image_tag="$IMAGE_REPOSITORY:$RELEASE_TAG"
-          if docker manifest inspect "$image_tag" >/dev/null 2>&1; then
-            echo "image tag already exists; refusing to overwrite: $image_tag" >&2
-            exit 64
-          fi
+          executor_tag="$EXECUTOR_IMAGE_REPOSITORY:$RELEASE_TAG"
+          for tag in "$image_tag" "$executor_tag"; do
+            if docker manifest inspect "$tag" >/dev/null 2>&1; then
+              echo "image tag already exists; refusing to overwrite: $tag" >&2
+              exit 64
+            fi
+          done
           docker tag driftward/factory:ci "$image_tag"
           docker push "$image_tag"
           image_ref="$(docker image inspect "$image_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$IMAGE_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
           [[ "$image_ref" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]]
           echo "reference=$image_ref" >> "$GITHUB_OUTPUT"
+          docker tag driftward/factory-executor:ci "$executor_tag"
+          docker push "$executor_tag"
+          executor_ref="$(docker image inspect "$executor_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$EXECUTOR_IMAGE_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
+          [[ "$executor_ref" =~ ^ghcr\.io/driftward-llc/factory-executor@sha256:[a-f0-9]{64}$ ]]
+          echo "executor_reference=$executor_ref" >> "$GITHUB_OUTPUT"
 
       - name: Package digest-pinned portable release
         if: env.DRY_RUN != 'true'
         env:
           PUBLISHED_IMAGE: ${{ steps.image.outputs.reference }}
+          PUBLISHED_EXECUTOR_IMAGE: ${{ steps.image.outputs.executor_reference }}
         run: |
           set -euo pipefail
           bash deploy/package-release.sh --version "$RELEASE_TAG" \
-            --image "$PUBLISHED_IMAGE" --source-commit "$(git rev-parse HEAD)" \
+            --image "$PUBLISHED_IMAGE" --executor-image "$PUBLISHED_EXECUTOR_IMAGE" \
+            --source-commit "$(git rev-parse HEAD)" \
             --output-dir "$RUNNER_TEMP/factory-release"
           (cd "$RUNNER_TEMP/factory-release" && sha256sum --check SHA256SUMS)
 
       - name: Write release notes
         env:
           PUBLISHED_IMAGE: ${{ steps.image.outputs.reference }}
+          PUBLISHED_EXECUTOR_IMAGE: ${{ steps.image.outputs.executor_reference }}
         run: |
           set -euo pipefail
           release_sha="$(git rev-parse HEAD)"
@@ -211,6 +233,7 @@ jobs:
           Source: $release_sha
           Platform: Linux amd64
           Runtime image: ${PUBLISHED_IMAGE:-validation-only; no image published}
+          Bundled executor image: ${PUBLISHED_EXECUTOR_IMAGE:-validation-only; no image published}
 
           Validation performed by this workflow:
           - Generated and checked Hatchet contracts.
