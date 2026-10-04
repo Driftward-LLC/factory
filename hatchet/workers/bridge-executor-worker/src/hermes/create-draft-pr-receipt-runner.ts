@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const started = process.hrtime.bigint();
   let result: Awaited<ReturnType<typeof runHermesCreateDraftPr>>;
   try {
-    result = await runHermesCreateDraftPr(job);
+    result = await runHermesCreateDraftPr(job, lease);
   } catch (error) {
     const classified = error instanceof NonRetryableBridgeExecutionError ? error : null;
     const reasonCode = classified?.reasonCode || 'factory_execution_recovery_required';
@@ -111,6 +111,7 @@ async function main(): Promise<void> {
       pr_url: result.prUrl,
       reason_code: `hermes_${result.status}`,
       branch: result.branch,
+      ...(result.validation ? { verification_context: result.validation } : {}),
       ...analytics,
       backend_outcome: result.status,
       backend_elapsed_ms: elapsed,

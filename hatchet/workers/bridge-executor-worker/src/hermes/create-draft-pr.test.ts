@@ -389,7 +389,7 @@ test('receipt runner requires a unique durable invocation fence before Hermes', 
   const setup = source.indexOf('await prepareReceiptRunnerInvocation');
   const fence = source.indexOf('invocationRecorded = await bridge.recordFactoryExecutionAnalytics');
   const rejection = source.indexOf('if (!invocationRecorded)');
-  const invoke = source.indexOf('result = await runHermesCreateDraftPr(job)');
+  const invoke = source.indexOf('result = await runHermesCreateDraftPr(job, lease)');
   assert.ok(setup >= 0 && fence > setup && rejection > fence && invoke > rejection);
 });
 

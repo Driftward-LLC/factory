@@ -143,6 +143,14 @@ export class BridgeClient {
     return this.requestJson(`/jobs/${encodeURIComponent(ref)}/verification/resume`, { method: 'POST', body: JSON.stringify({ stale_after_minutes: staleAfterMinutes }) });
   }
 
+  async enqueueExecutionReceiptRecovery(ref: string, staleAfterMinutes: number = 30): Promise<{ enqueued: boolean; reason: string }> {
+    return this.requestJson(`/jobs/${encodeURIComponent(ref)}/factory-execution/resume`, { method: 'POST', body: JSON.stringify({ stale_after_minutes: staleAfterMinutes }) });
+  }
+
+  async recordExecutionReceiptObservation(ref: string, observation: JsonObject): Promise<void> {
+    await this.requestJson(`/jobs/${encodeURIComponent(ref)}/factory-execution/observation`, { method: 'POST', body: JSON.stringify(observation) });
+  }
+
   async claimVerificationLease(ref: string, attemptId: string): Promise<VerificationLeaseResponse> {
     const headers: Record<string, string> = {};
     if (this.verifierToken) headers['X-Hatchet-Verifier-Token'] = this.verifierToken;

@@ -135,6 +135,20 @@ test('recovery is queued before progress advances without publishing a direct ac
   assert.equal(fixture.events.some((item) => item.event === HATCHET_EVENTS.HERMES_JOB_ACCEPTED), false);
 });
 
+test('execution receipt recovery dispatch failure retains scan progress, then retries the same job', async () => {
+  const fixture = harness([job({ state: 'running', requested_action: 'create_draft_pr', payload: { dry_run: false, repo: 'example/project' }, branch: 'codex/test' })]);
+  fixture.deps.bridge.enqueueExecutionReceiptRecovery = async () => { throw new Error('outbox unavailable'); };
+  await assert.rejects(inspectBridgeLedger({}, fixture.deps), /writes failed/);
+  assert.equal(fixture.calls.some((call) => call.startsWith('ack:')), false);
+  fixture.deps.bridge.enqueueExecutionReceiptRecovery = async (id) => {
+    assert.equal(id, 'sample');
+    return { enqueued: true, reason: 'enqueued' };
+  };
+  const result = await inspectBridgeLedger({}, fixture.deps);
+  assert.equal(result.executionRecovery.enqueued, 1);
+  assert.deepEqual(fixture.calls.slice(-2), ['ack:active', 'ack:history']);
+});
+
 function harness(active: BridgeJob[] = [], history: BridgeJob[] = []) {
   const calls: string[] = [];
   const scans: Array<[string, number]> = [];
@@ -152,6 +166,7 @@ function harness(active: BridgeJob[] = [], history: BridgeJob[] = []) {
       listEvents: async (ref) => ({ total: 1, events: [{ event_id: 'accepted', job_id: ref, event_type: 'accepted', state: 'accepted', details: { hermes_session_id: 'session' }, created_at: '2026-01-01T00:00:00Z' }] }),
       recordReconciliationFindings: async (findings) => { calls.push('persist'); return { created_finding_keys: findings.map((item) => item.finding_key), existing_finding_keys: [] }; },
       enqueueVerificationResume: async () => ({ enqueued: false, reason: 'lease_active' }),
+      enqueueExecutionReceiptRecovery: async () => ({ enqueued: false, reason: 'not_eligible' }),
     },
     observations: { inventory: async () => ({ status: 'matched', complete: true, observations: [] }), latest: async () => ({ status: 'unavailable' }) },
     runs: { list: async () => [], getDetails: async () => ({ status: 'RUNNING', taskRuns: {} }) },

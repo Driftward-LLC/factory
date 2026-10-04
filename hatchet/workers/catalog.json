@@ -309,7 +309,7 @@
       "worker": "bridge-executor-worker",
       "stage": "execution",
       "status": "source_added",
-      "purpose": "Consume accepted create_draft_pr bridge jobs, perform the dry-run or fenced Hermes execution path, and record durable bridge state.",
+      "purpose": "Consume accepted bridge jobs, execute newly authorized work or recover the original executor receipt, and record durable bridge state.",
       "does_not": [
         "submit fresh Linear intake",
         "bypass bridge idempotency",
@@ -373,7 +373,7 @@
       "worker": "reconciliation-worker",
       "stage": "reconciliation",
       "status": "source_added",
-      "purpose": "Rotate bounded active/history bridge scans, persist findings and scan progress, and resume eligible stale verification against the same artifact.",
+      "purpose": "Rotate bounded bridge scans, persist findings, and queue original-invocation receipt lookup or resume stale verification against the same artifact.",
       "does_not": [
         "create pull requests",
         "merge, deploy, or release code",

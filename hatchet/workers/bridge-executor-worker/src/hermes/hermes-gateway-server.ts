@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
+import path from 'node:path';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
@@ -17,6 +18,7 @@ import {
   type HermesDraftPrResult
 } from './create-draft-pr';
 import { NonRetryableBridgeExecutionError } from './errors';
+import { InvocationJournal, invocationLease } from './invocation-journal';
 import {
   DEFAULT_HERMES_GRPC_TARGET,
   isHermesGrpcUnixTarget,
@@ -37,6 +39,7 @@ type CreateDraftPullRequestRequest = {
   branch?: string;
   jobJson?: string;
   timeoutMs?: number;
+  executionLeaseJson?: string;
 };
 
 type InspectDraftPullRequestRequest = {
@@ -60,18 +63,33 @@ type GatewayService = grpc.ServiceClientConstructor & { service: grpc.ServiceDef
 type UnaryCall<T> = grpc.ServerUnaryCall<T, unknown>;
 type SendUnary<T> = grpc.sendUnaryData<T>;
 
-function createServer(target: string): grpc.Server {
+export function createServer(target: string, runDraftPr = runHermesCreateDraftPrViaCommand): grpc.Server {
+  // Open lazily so read-only identity/inspection remains available during a storage fault.
+  let journal: InvocationJournal | undefined;
+  const invocations = () => journal ||= new InvocationJournal(process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY ||
+    (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor'
+      ? path.join(process.env.HERMES_HOME || '/opt/data', 'factory-invocations')
+      : '/var/lib/driftward-hermes-factory/invocations'));
+  const inspectInvocation = (request: CreateDraftPullRequestRequest, cancel: boolean) => {
+    const status = invocations().status(parseBridgeJob(request), cancel);
+    return { ...status, receipt: status.receipt ? draftPrResponse(status.receipt) : undefined,
+      executionLeaseJson: status.lease ? JSON.stringify(status.lease) : '' };
+  };
   const server = new grpc.Server();
   server.addService(loadGatewayService().service, {
     checkIdentity: unary(target, async (request: CheckIdentityRequest) => {
+      invocations();
       const identity = await assertHermesIdentityViaCommand(requiredString(request.repo, 'repo'));
       return identityResponse(identity);
     }),
     createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest) => {
       const job = parseBridgeJob(request);
-      const result = await runHermesCreateDraftPrViaCommand(job, undefined, optionalPositiveInt(request.timeoutMs));
+      const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
+      const result = await invocations().execute(job, lease, () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs)));
       return draftPrResponse(result);
     }),
+    inspectInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => inspectInvocation(request, false)),
+    cancelInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => inspectInvocation(request, true)),
     inspectDraftPullRequest: unary(target, async (request: InspectDraftPullRequestRequest) => {
       const repo = requiredString(request.repo, 'repo');
       const prNumber = requiredPositiveInt(request.prNumber, 'pr_number');
@@ -266,6 +284,7 @@ function parsePrReference(repository: string, reference: string): { number: numb
 
 function identityResponse(identity: HermesIdentityCheck): Record<string, unknown> {
   return {
+    invocationProtocolVersion: 1,
     githubLogin: identity.githubLogin,
     gitAuthorName: identity.gitAuthorName,
     gitAuthorEmail: identity.gitAuthorEmail,

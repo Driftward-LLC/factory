@@ -21,6 +21,9 @@ type UntrustedReceipt = {
 };
 
 const GATEWAY_REASON_CODES = new Set([
+  'hermes_invocation_conflict',
+  'hermes_grpc_invocation_inspection_failed',
+  'hermes_grpc_invocation_protocol_unsupported',
   'github_head_inspection_malformed',
   'hermes_async_receipts_disabled',
   'hermes_expected_git_author_email_not_bot',

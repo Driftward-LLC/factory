@@ -77,6 +77,13 @@ creates a new job/branch/PR for recovery. Scan endpoints are authenticated bridg
 
 ## Verification recovery
 
+Stale `running` jobs also request bounded execution receipt recovery through
+`POST /jobs/{ref}/factory-execution/resume`. The bridge permits only an existing
+authorized invocation and coalesces wakes in its outbox. The executor worker
+retrieves a durable gateway receipt using the original fence, including during
+manual handoff. Missing receipts never authorize another implementation. See
+[execution recovery](../../../docs/execution-recovery.md).
+
 `POST /jobs/{ref}/verification/resume` revalidates the current job and Factory
 attempt in one bridge transaction, then queues the ordinary same-job accepted
 wake in the existing Factory outbox. Only stale, real, current attempts in

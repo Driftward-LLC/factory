@@ -19,6 +19,7 @@ import {
 
 type MockCall = grpc.ServerUnaryCall<Record<string, unknown>, Record<string, unknown>>;
 type MockCallback = grpc.sendUnaryData<Record<string, unknown>>;
+const testLease = { lease_id: '00000000-0000-4000-8000-000000000001', owner: 'test-executor', epoch: 1, fence_token: 'test-fence' };
 
 test('Hermes gRPC client speaks over a Unix domain socket', async () => {
   await withGateway(async (target) => {
@@ -35,7 +36,7 @@ test('Hermes gRPC client speaks over a Unix domain socket', async () => {
     });
     assert.equal(identity.accessibleRepo, 'Driftward-LLC/capykit');
 
-    const result = await runHermesCreateDraftPrViaGrpc(greenJob(), 5000);
+    const result = await runHermesCreateDraftPrViaGrpc(greenJob(), 5000, testLease);
     assert.equal(result.prUrl, 'https://github.com/Driftward-LLC/capykit/pull/28');
     assert.deepEqual(result.validation, {
       local_commands: [{ command: 'npm test', exit_code: 0 }],
@@ -59,6 +60,21 @@ test('Hermes gRPC client speaks over a Unix domain socket', async () => {
     assert.equal(head.branch_exists, false);
     assert.equal(head.pull_requests.length, 0);
   });
+});
+
+test('identity preflight rejects a gateway without durable invocation support', async () => {
+  const gateway = mockGateway();
+  gateway.checkIdentity = (_call: MockCall, callback: MockCallback) => callback(null, {
+    githubLogin: 'factory-hermes[bot]', gitAuthorName: 'factory-hermes[bot]',
+    gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com', accessibleRepo: 'Driftward-LLC/capykit',
+  });
+  await withGateway(async (target) => {
+    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+    await assert.rejects(checkHermesIdentityViaGrpc({ repo: 'Driftward-LLC/capykit', expectedGithubLogin: 'factory-hermes[bot]',
+      expectedGitAuthorName: 'factory-hermes[bot]', expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
+      forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeoutMs: 5000 }),
+    (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'hermes_grpc_invocation_protocol_unsupported' && error.failureStage === 'preflight');
+  }, gateway);
 });
 
 test('Hermes gRPC TCP targets fail closed until explicitly authorized', () => {
@@ -151,7 +167,7 @@ test('malformed Hermes gRPC results are attributed to protocol result parsing', 
   await withGateway(async (target) => {
     process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
     await assert.rejects(
-      () => runHermesCreateDraftPrViaGrpc(greenJob(), 5000),
+      () => runHermesCreateDraftPrViaGrpc(greenJob(), 5000, testLease),
       (error: unknown) => {
         assert.ok(error instanceof NonRetryableBridgeExecutionError);
         assert.equal(error.reasonCode, 'hermes_grpc_response_malformed');
@@ -327,6 +343,7 @@ function mockGateway(): grpc.UntypedServiceImplementation {
     checkIdentity: (call: MockCall, callback: MockCallback) => {
       assert.equal(call.request.repo, 'Driftward-LLC/capykit');
       callback(null, {
+        invocationProtocolVersion: 1,
         githubLogin: 'factory-hermes[bot]',
         gitAuthorName: 'factory-hermes[bot]',
         gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',

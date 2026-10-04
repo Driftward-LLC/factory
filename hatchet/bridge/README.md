@@ -432,6 +432,10 @@ post-effect and verification states are permanently non-claimable.
 
 ### Automatic verification repair
 
+For durable gateway receipts, original-invocation recovery, and manual handoff,
+see [execution recovery](../../docs/execution-recovery.md). Receipt lookup can
+run while an issue is held; it never grants another execution authorization.
+
 Automatic repair is off by default. An unset, empty, or invalid
 `HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS` uses `1`: the failed attempt and
 its PR evidence remain recorded, but no follow-up repair is queued. Explicit

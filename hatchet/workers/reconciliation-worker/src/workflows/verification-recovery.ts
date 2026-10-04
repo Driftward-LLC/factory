@@ -32,3 +32,19 @@ export async function enqueueStaleVerification(findings: StaleFinding[], jobs: M
   }
   return result;
 }
+
+export async function enqueueStaleExecutionReceipts(findings: StaleFinding[], jobs: Map<string, BridgeJob>, bridge: Pick<BridgeClient, 'enqueueExecutionReceiptRecovery'>, staleAfterMinutes: number) {
+  const result = { enqueued: 0, skipped: 0, failed: 0 };
+  const seen = new Set<string>();
+  for (const item of findings) {
+    if (item.kind !== 'stale_active_bridge_job' || !item.jobId || seen.has(item.jobId)) continue;
+    seen.add(item.jobId);
+    const job = jobs.get(item.jobId);
+    if (!job || job.state !== 'running' || job.payload.dry_run === true) continue;
+    try {
+      const wake = await bridge.enqueueExecutionReceiptRecovery(job.job_id, staleAfterMinutes);
+      if (wake.enqueued) result.enqueued++; else result.skipped++;
+    } catch { result.failed++; }
+  }
+  return result;
+}
