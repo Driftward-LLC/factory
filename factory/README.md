@@ -81,7 +81,15 @@ factory attempts evidence ATTEMPT-ID
 factory attempts events ATTEMPT-ID
 factory attempts cancel ATTEMPT-ID --reason "operator canceled before execution" --yes
 factory attempts refresh-receipt ATTEMPT-ID --reason "retry exact PR receipt inspection" --yes
+factory attempts resolve-interrupted ATTEMPT-ID inspect --yes
+factory attempts resolve-interrupted ATTEMPT-ID preview --attestation FILE --reason "reviewed containment"
 ```
+
+Root-attested interrupted-execution resolution has a separate
+[safety contract and confirmation procedure](../docs/interrupted-execution.md).
+It requires proven external containment and preserved workspace evidence;
+lease expiry or an unchanged PR is not sufficient. It never retries execution
+or marks the implementation successful.
 
 `factory logs lifecycle` follows the root-owned Shipwright lifecycle writer.
 It publishes bounded Linear status only; it never executes work or changes

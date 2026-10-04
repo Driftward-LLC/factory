@@ -31,6 +31,11 @@ an expired lease remain blocked. Old attempts such as ENG-134 cannot acquire
 receipts retroactively: their executor and GitHub evidence still need reviewed
 operator recovery. This release does not clear them or authorize new attempts.
 
+For held interrupted executions without receipts but with a known prior PR,
+see the separate [root-attested resolution procedure](interrupted-execution.md).
+It requires reviewed external containment, not merely an expired lease or an
+unchanged PR. It records unknown outcome rather than fabricating a receipt.
+
 ## Storage and rollout
 
 The host gateway owns `/var/lib/driftward-hermes-factory/invocations`, provisioned

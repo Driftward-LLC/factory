@@ -25,6 +25,7 @@ from urllib.request import urlopen
 from .analytics import factory_analytics
 from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_factory_lifecycle, get_job, get_supersedable_bridge_job, list_active_factory_attempts, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, refresh_factory_effect_receipt_inspection, sanitize_detail
 from .store import get_factory_work_evidence
+from . import interrupted_resolution
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -632,6 +633,22 @@ class OperatorHandler(BaseHTTPRequestHandler):
             if path == "/v1/lifecycle/dead-letters/archive" and set(body) == {"outbox_key", "reason", "snapshot_digest"}:
                 self._reply(200, archive_lifecycle_dead_letter(_operator_lifecycle_path(), actor=self._actor(), **body)); return
             bridge_db, ingress_db, routes, policy = self._paths()
+            resolution_path = re.fullmatch(r"/v1/attempts/([0-9a-f-]{36})/interrupted-resolution/(inspect|preview|confirm)", path)
+            if resolution_path and not urlparse(self.path).query:
+                attempt_id, action = resolution_path.groups()
+                fields = set() if action == "inspect" else {"attestation", "reason"}
+                if action == "confirm": fields |= {"request_id", "snapshot_digest"}
+                if set(body) != fields:
+                    raise OperatorError("unsupported interrupted resolution fields")
+                actor = self._actor()
+                interrupted_resolution._principal(actor)
+                conn = connect_readonly(bridge_db) if action == "preview" else connect_runtime(bridge_db)
+                try:
+                    operation = {"inspect": interrupted_resolution.inspect, "preview": interrupted_resolution.preview,
+                                 "confirm": interrupted_resolution.resolve}[action]
+                    self._reply(200, operation(conn, attempt_id, actor=actor, **body))
+                finally: conn.close()
+                return
             if path == "/v1/retry/preview" and set(body) <= {"issue", "mode", "supersede_pr_url", "supersede_job_id"}:
                 self._reply(200, preview_retry(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes, policy_path=policy, **body)); return
             if path == "/v1/retry/reserve" and set(body) <= {"issue", "mode", "supersede_pr_url", "supersede_job_id", "request_id", "reason", "snapshot_digest"}:
