@@ -111,6 +111,16 @@ async function main() {
     assert.match(await panel.locator('.control-audit').textContent(), /authenticated-operator@example.test/);
     assert.equal(await panel.locator('script').count(), 0);
 
+    controls.set('ENG-901', { ...control('ENG-901'), pending_attempts: [{ attempt_id: 'fixture-attempt', kind: 'effect_in_flight',
+      recovery: { state: 'not_found', observed_at: stamp } }] });
+    await panel.getByRole('button', { name: 'Refresh control' }).click();
+    await panel.getByText(/No durable executor receipt was found/).waitFor();
+    assert.equal(await panel.getByText(/Manual control—safe to edit/).count(), 0);
+    await page.screenshot({ path: join(tmpdir(), 'factory-control-recovery-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(tmpdir(), 'factory-control-recovery-mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 960 });
+
     // Only authoritative safe_to_edit makes the manual editing label available.
     controls.set('ENG-901', { ...control('ENG-901'), status: 'manual', safe_to_edit: true,
       pending_attempts: [], available_actions: [{ action: 'return', intent: 'fresh_attempt', label: 'Return to Factory: fresh attempt' }] });

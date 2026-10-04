@@ -58,9 +58,21 @@ test('a legacy event with a reserved verification owner still claims that exact 
 
 type Handler = (input: { jobId: string; verificationAttemptId?: string }) => Promise<{ executed: boolean; blockedReason?: string }>;
 
+test('running authorized and canceled invocations route only to receipt recovery', async () => {
+  for (const status of ['effect_authorized', 'effect_outcome_unknown', 'cancellation_requested']) {
+    const fixture = executorFixture(status);
+    fixture.job.state = 'running';
+    const result = await fixture.tasks.get('execute-create-draft-pr')!({ jobId: fixture.job.job_id });
+    assert.equal(result.executed, false);
+    assert.deepEqual(fixture.recovery, [status === 'cancellation_requested']);
+    assert.deepEqual(fixture.acquired, []);
+  }
+});
+
 function executorFixture(status = 'verification_pending') {
   const tasks = new Map<string, Handler>();
   const acquired: string[] = []; const claimed: string[] = []; const observed: string[] = []; const completed: string[] = [];
+  const recovery: boolean[] = [];
   const job: BridgeJob = {
     job_id: 'same-job', idempotency_key: 'long-idempotency-key:'.repeat(25), state: 'verification_pending', requested_action: 'create_draft_pr',
     payload: { dry_run: false }, payload_hash: 'hash', branch: 'codex/same-branch', commit_sha: 'a'.repeat(40), pr_url: 'https://github.com/Driftward-LLC/factory/pull/1', hermes_session_id: 'same-session',
@@ -81,6 +93,7 @@ function executorFixture(status = 'verification_pending') {
     '../hatchet-client': { hatchet: { workflow: () => ({ task: register, durableTask: register }), events: { push: async () => undefined } } },
     '@hatchet-dev/typescript-sdk/v1/conditions': {},
     './factory-artifact-fence': {},
+    './execution-recovery': { recoverExecutionReceipt: async (_bridge: unknown, _job: unknown, cancel: boolean) => { recovery.push(cancel); return null; } },
     '../hermes/create-draft-pr': {
       NonRetryableBridgeExecutionError: class extends Error {},
       resumeHermesDraftPrResult: () => ({ prUrl: job.pr_url, validation: {} }),
@@ -92,5 +105,5 @@ function executorFixture(status = 'verification_pending') {
   // credentials. All provider and bridge effects are local fakes.
   const filename = path.join(__dirname, 'create-draft-pr-executor.js');
   runInNewContext(readFileSync(filename, 'utf8'), { exports: {}, require: (name: string) => dependencies[name] ?? require(name) }, { filename });
-  return { tasks, job, acquired, claimed, observed, completed };
+  return { tasks, job, acquired, claimed, observed, completed, recovery };
 }

@@ -5,6 +5,8 @@ package driftward.factory.hermes.v1;
 service HermesFactoryGateway {
   rpc CheckIdentity(CheckIdentityRequest) returns (CheckIdentityResponse);
   rpc CreateDraftPullRequest(CreateDraftPullRequestRequest) returns (DraftPullRequestResult);
+  rpc InspectInvocation(CreateDraftPullRequestRequest) returns (InvocationStatus);
+  rpc CancelInvocation(CreateDraftPullRequestRequest) returns (InvocationStatus);
   rpc InspectDraftPullRequest(InspectDraftPullRequestRequest) returns (InspectDraftPullRequestResponse);
   rpc InspectPullRequestState(InspectPullRequestStateRequest) returns (InspectPullRequestStateResponse);
   rpc InspectGitHubHead(InspectGitHubHeadRequest) returns (InspectGitHubHeadResponse);
@@ -25,6 +27,7 @@ message CheckIdentityResponse {
   string git_author_name = 2;
   string git_author_email = 3;
   string accessible_repo = 4;
+  uint32 invocation_protocol_version = 5;
 }
 
 message CreateDraftPullRequestRequest {
@@ -36,6 +39,15 @@ message CreateDraftPullRequestRequest {
   string branch = 6;
   string job_json = 7;
   uint32 timeout_ms = 8;
+  string execution_lease_json = 9;
+}
+
+message InvocationStatus {
+  string state = 1;
+  bool cancellation_requested = 2;
+  bool cancellation_acknowledged = 3;
+  DraftPullRequestResult receipt = 4;
+  string execution_lease_json = 5;
 }
 
 message DraftPullRequestResult {

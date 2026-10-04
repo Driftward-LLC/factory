@@ -177,7 +177,11 @@ function IssueControlPanel({ issue, api, onChanged }) {
       {control?.status === 'factory' && <p>Factory may execute authorized work. Take over before making manual changes.</p>}
       {control?.status === 'factory' && control.automatic_intake_blocked && <p>Only explicit future attempts are allowed for this issue. Ordinary intake and old queued events remain fenced after handback.</p>}
       {control?.status === 'manual' && control.safe_to_edit !== true && <p>The issue is on hold. Safe handoff has not been confirmed.</p>}
-      {control?.pending_attempts?.length > 0 && <ul className="control-pending">{control.pending_attempts.map((attempt, index) => <li key={attempt.attempt_id || attempt.job_id || index}>{attempt.attempt_id || attempt.job_id || 'Unresolved execution'}: {attempt.kind}</li>)}</ul>}
+      {control?.pending_attempts?.length > 0 && <ul className="control-pending">{control.pending_attempts.map((attempt, index) => <li key={attempt.attempt_id || attempt.job_id || index}>
+        {attempt.attempt_id || attempt.job_id || 'Unresolved execution'}: {attempt.kind}
+        <p>{recoveryGuidance(attempt.recovery?.state)}</p>
+        {attempt.recovery?.observed_at && <small>Last recovery observation: {time(attempt.recovery.observed_at)}. This is recorded evidence, not a live execution check.</small>}
+      </li>)}</ul>}
     </div>
     <Notice>{error}</Notice>
     {checkedAt && <p className="muted">Control checked {time(checkedAt)}. Refresh before editing; other operators can change ownership.</p>}
@@ -229,4 +233,15 @@ function IssueControlPanel({ issue, api, onChanged }) {
       </details>
     </>}
   </section>;
+}
+
+function recoveryGuidance(state) {
+  switch (state) {
+    case 'running': return 'The executor reported that work was still running. Handoff waits for its result; cancellation does not undo changes already made.';
+    case 'completed': return 'An execution receipt was found. Factory must accept the original receipt before handoff is safe.';
+    case 'not_found': return 'No durable executor receipt was found. Older attempts require operator inspection of execution and PR evidence; starting another attempt is blocked.';
+    case 'outcome_unknown': return 'The executor reserved this work but has no settled result. Operator recovery is required; lease expiry does not prove it stopped.';
+    case 'unavailable': return 'The executor could not be reached. Factory will retry receipt lookup through reconciliation. Handoff remains blocked.';
+    default: return 'Awaiting execution evidence. Factory can recover a stored receipt without starting another implementation.';
+  }
 }

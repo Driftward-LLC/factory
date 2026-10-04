@@ -554,7 +554,7 @@ export async function preflightHermesCreateDraftPr(job: BridgeJob): Promise<void
   }
 }
 
-export async function runHermesCreateDraftPr(job: BridgeJob): Promise<HermesDraftPrResult> {
+export async function runHermesCreateDraftPr(job: BridgeJob, lease?: FactoryExecutionLease): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
   const command = process.env.DRIFTWARD_HERMES_COMMAND || 'driftward-hermes';
   const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000);
@@ -562,7 +562,7 @@ export async function runHermesCreateDraftPr(job: BridgeJob): Promise<HermesDraf
 
   if (hermesGrpcGatewayEnabled()) {
     await assertHermesIdentity(requiredPayloadString(job, 'repo'));
-    return runHermesCreateDraftPrViaGrpc(job, timeout);
+    return runHermesCreateDraftPrViaGrpc(job, timeout, lease);
   }
 
   return runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer);

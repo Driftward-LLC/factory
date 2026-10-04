@@ -28,6 +28,7 @@ import { hatchet } from '../hatchet-client';
 import { emitBestEffort } from './event-delivery';
 import { validateFactoryArtifactFence } from './factory-artifact-fence';
 import { recoverClaimedVerification } from './verification-recovery';
+import { recoverExecutionReceipt } from './execution-recovery';
 import { transitionToVerificationPending } from './verification-pending';
 import type { ExecutionFailureDomain, ExecutionFailureStage } from '../hermes/errors';
 
@@ -75,8 +76,14 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
     }
 
     const bridge = new BridgeClient();
-    const job = await bridge.getJob(ref);
-    const retryAttempt = await bridge.getFactoryAttemptForJob(job.job_id);
+    let job = await bridge.getJob(ref);
+    let retryAttempt = await bridge.getFactoryAttemptForJob(job.job_id);
+    if (job.state === 'running' && retryAttempt && ['effect_authorized', 'effect_outcome_unknown', 'cancellation_requested'].includes(retryAttempt.status)) {
+      const recovered = await recoverExecutionReceipt(bridge, job, retryAttempt.status === 'cancellation_requested');
+      if (!recovered) return { executed: false, blockedReason: 'factory_execution_recovery_required', job, dryRun: false, reused: true };
+      job = recovered;
+      retryAttempt = await bridge.getFactoryAttemptForJob(job.job_id);
+    }
     const blockedReason = blockedFactoryAttemptReason(retryAttempt?.status);
     if (blockedReason) {
       return { executed: false, blockedReason, job, dryRun: Boolean(job.payload.dry_run), reused: true };

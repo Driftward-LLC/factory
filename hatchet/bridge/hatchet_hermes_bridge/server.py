@@ -43,6 +43,8 @@ from .store import (
     execution_may_effect,
     settle_factory_execution,
     recover_factory_execution,
+    enqueue_execution_receipt_recovery,
+    record_execution_receipt_observation,
     record_factory_execution_analytics,
     record_factory_execution_route,
     list_factory_outbox,
@@ -274,6 +276,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "claim":
                 self._write_json(200, claim_factory_execution(self.conn, parts[1], owner=body.get("owner"), ttl_seconds=body.get("ttl_seconds", 900)))
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "resume":
+                if set(body) != {"stale_after_minutes"}:
+                    raise BridgeValidationError("execution resume requires only stale_after_minutes")
+                self._write_json(200, enqueue_execution_receipt_recovery(self.conn, parts[1], stale_after_minutes=body["stale_after_minutes"]))
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "observation":
+                record_execution_receipt_observation(self.conn, parts[1], body)
+                self._write_json(200, {"ok": True})
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "may-effect":
                 self._write_json(200, {"allowed": execution_may_effect(self.conn, parts[1], body)})

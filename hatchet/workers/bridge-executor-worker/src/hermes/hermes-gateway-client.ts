@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob, JsonValue } from '@driftward/hatchet-worker-shared';
@@ -83,6 +84,7 @@ export type GatewayGitHubHeadInspection = {
 };
 
 type CheckIdentityResponse = {
+  invocationProtocolVersion?: number;
   githubLogin?: string;
   gitAuthorName?: string;
   gitAuthorEmail?: string;
@@ -156,6 +158,8 @@ type InspectGitHubHeadResponse = {
 
 type UnaryCallback<T> = (error: grpc.ServiceError | null, response: T) => void;
 type GatewayClient = grpc.Client & {
+  inspectInvocation(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<unknown>): grpc.ClientUnaryCall;
+  cancelInvocation(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<unknown>): grpc.ClientUnaryCall;
   checkIdentity(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<CheckIdentityResponse>): grpc.ClientUnaryCall;
   createDraftPullRequest(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<DraftPullRequestResult>): grpc.ClientUnaryCall;
   inspectDraftPullRequest(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<InspectDraftPullRequestResponse>): grpc.ClientUnaryCall;
@@ -204,6 +208,12 @@ export async function checkHermesIdentityViaGrpc(request: {
     forbiddenGitAuthorEmails: request.forbiddenGitAuthorEmails
   }, request.timeoutMs, 'hermes_grpc_identity_check_failed');
 
+  if (response.invocationProtocolVersion !== 1) {
+    throw new NonRetryableBridgeExecutionError('hermes_grpc_invocation_protocol_unsupported',
+      'Gateway must support durable invocation protocol v1 before execution',
+      { failureDomain: 'gateway', failureStage: 'preflight', retryable: false });
+  }
+
   return {
     githubLogin: requiredResponseString(response.githubLogin, 'github_login'),
     gitAuthorName: requiredResponseString(response.gitAuthorName, 'git_author_name'),
@@ -212,8 +222,8 @@ export async function checkHermesIdentityViaGrpc(request: {
   };
 }
 
-export async function runHermesCreateDraftPrViaGrpc(job: BridgeJob, timeoutMs: number): Promise<GatewayDraftPrResult> {
-  const response = await callGateway<DraftPullRequestResult>('createDraftPullRequest', {
+function invocationRequest(job: BridgeJob) {
+  return {
     requestId: `create-draft-pr:${job.job_id}`,
     bridgeJobId: job.job_id,
     idempotencyKey: job.idempotency_key,
@@ -221,8 +231,45 @@ export async function runHermesCreateDraftPrViaGrpc(job: BridgeJob, timeoutMs: n
     repo: String(job.payload.repo || ''),
     branch: job.branch || '',
     jobJson: JSON.stringify(job),
-    timeoutMs
-  }, timeoutMs, 'hermes_grpc_create_draft_pr_failed');
+  };
+}
+
+export async function inspectHermesInvocation(job: BridgeJob, cancel = false): Promise<InvocationStatus> {
+  const response = await callGateway<{ state?: string; cancellationRequested?: boolean; cancellationAcknowledged?: boolean;
+    receipt?: DraftPullRequestResult; executionLeaseJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
+    invocationRequest(job), 15_000, 'hermes_grpc_invocation_inspection_failed');
+  if (!['not_found', 'running', 'outcome_unknown', 'completed'].includes(response.state || '')
+      || typeof response.cancellationRequested !== 'boolean' || typeof response.cancellationAcknowledged !== 'boolean'
+      || (response.cancellationAcknowledged && (response.state !== 'completed' || !response.cancellationRequested))) {
+    throw malformedGatewayResponse('Invalid invocation status');
+  }
+  return { state: response.state as InvocationStatus['state'], cancellationRequested: response.cancellationRequested,
+    cancellationAcknowledged: response.cancellationAcknowledged,
+    ...(response.state === 'completed' ? {
+      receipt: parseDraftPrResponse(job, response.receipt || {}),
+      lease: invocationLease(parseJsonValue(response.executionLeaseJson || '', 'execution_lease_json')),
+    } : {}) };
+}
+
+export async function runHermesCreateDraftPrViaGrpc(job: BridgeJob, timeoutMs: number, lease?: InvocationLease): Promise<GatewayDraftPrResult> {
+  const claim = invocationLease(lease);
+  try {
+    const response = await callGateway<DraftPullRequestResult>('createDraftPullRequest', {
+      ...invocationRequest(job), timeoutMs, executionLeaseJson: JSON.stringify(claim),
+    }, timeoutMs, 'hermes_grpc_create_draft_pr_failed');
+    return parseDraftPrResponse(job, response);
+  } catch (error) {
+    // A timeout can lose the reply after publication. Lookup never invokes Hermes.
+    try {
+      const status = await inspectHermesInvocation(job);
+      if (status.state === 'completed' && status.lease &&
+          (['lease_id', 'owner', 'epoch', 'fence_token'] as const).every((key) => status.lease![key] === claim[key])) return status.receipt!;
+    } catch { /* Preserve the original bounded failure if lookup is unavailable. */ }
+    throw error;
+  }
+}
+
+function parseDraftPrResponse(job: BridgeJob, response: DraftPullRequestResult): GatewayDraftPrResult {
 
   const status = response.status;
   if (status !== 'created' && status !== 'reused') {

@@ -36,6 +36,8 @@ export default {
 export const FactoryControlled = {};
 export const ManualControl = { args: { api: fixture({ control: { status: 'manual', safe_to_edit: true, available_actions: [{ action: 'return', intent: 'fresh_attempt', label: 'Return to Factory: fresh attempt' }] } }) } };
 export const HandoffPending = { args: { api: fixture({ control: { status: 'handoff_pending', available_actions: [], pending_attempts: [{ attempt_id: 'fictional-active-attempt', kind: 'cancellation_requested' }] } }) } };
+export const ReceiptUnavailable = { args: { api: fixture({ control: { status: 'handoff_pending', available_actions: [], pending_attempts: [{ attempt_id: 'fictional-active-attempt', kind: 'effect_in_flight', recovery: { state: 'unavailable', observed_at: '2026-10-01T10:00:00Z' } }] } }) } };
+export const LegacyReceiptMissing = { args: { api: fixture({ control: { status: 'handoff_pending', available_actions: [], pending_attempts: [{ attempt_id: 'fictional-active-attempt', kind: 'effect_in_flight', recovery: { state: 'not_found', observed_at: '2026-10-01T10:00:00Z' } }] } }) } };
 export const UnconfirmedManual = { args: { api: fixture({ control: { status: 'manual', safe_to_edit: false, available_actions: [] } }) } };
 export const ReadOnly = { args: { api: fixture({ control: { actions_enabled: false, available_actions: [] } }) } };
 export const BlockedPreview = { args: { api: fixture({ blocked: true }) } };

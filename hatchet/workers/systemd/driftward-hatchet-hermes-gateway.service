@@ -21,9 +21,11 @@ TimeoutStopSec=30
 CPUQuota=50%
 MemoryMax=384M
 UMask=0007
+StateDirectory=driftward-hermes-factory
+StateDirectoryMode=0700
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/run/driftward-hermes-factory /run/docker.sock /var/run/docker.sock
+ReadWritePaths=/run/driftward-hermes-factory /var/lib/driftward-hermes-factory /run/docker.sock /var/run/docker.sock
 
 [Install]
 WantedBy=multi-user.target
