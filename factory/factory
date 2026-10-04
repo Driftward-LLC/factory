@@ -59,6 +59,9 @@ Usage:
   factory attempts events ATTEMPT-ID [--json] [--limit N]
   factory attempts cancel ATTEMPT-ID --reason TEXT --yes
   factory attempts refresh-receipt ATTEMPT-ID --reason TEXT --yes
+  factory attempts resolve-interrupted ATTEMPT-ID inspect --yes
+  factory attempts resolve-interrupted ATTEMPT-ID preview --attestation FILE --reason TEXT
+  factory attempts resolve-interrupted ATTEMPT-ID confirm --attestation FILE --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory doctor hatchet [--profile PROFILE | --live-json PATH] [--json] [--fail-on-warning]
 
 Log targets:
@@ -723,7 +726,39 @@ attempts() {
       [[ -n "$reason" && "$yes" == "--yes" ]] || die "receipt refresh requires --reason and --yes; it performs one read-only PR inspection and never invokes the execution backend"
       operator_request POST "/v1/attempts/$id/receipt-recovery/refresh" "$(jq -cn --arg reason "$reason" '{reason:$reason}')"
       ;;
-    *) die "usage: factory attempts {active|list|show|events|evidence|cancel|refresh-receipt}" ;;
+    resolve-interrupted)
+      local id="${1:-}" phase="${2:-}"; shift 2 || die "resolve-interrupted requires ATTEMPT-ID and inspect, preview, or confirm"
+      local reason="" attestation="" request_id="" snapshot_digest="" yes=0 body
+      [[ "$id" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || die "resolve-interrupted requires a canonical attempt UUID"
+      [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "resolve-interrupted requires inspect, preview, or confirm"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
+          --attestation) [[ $# -ge 2 ]] || die "--attestation requires a file"; attestation="$2"; shift 2 ;;
+          --request-id) [[ $# -ge 2 ]] || die "--request-id requires an ID"; request_id="$2"; shift 2 ;;
+          --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the preview digest"; snapshot_digest="$2"; shift 2 ;;
+          --yes) yes=1; shift ;;
+          *) die "unknown interrupted resolution option: $1" ;;
+        esac
+      done
+      if [[ "$phase" == inspect ]]; then
+        [[ "$yes" == 1 && -z "$reason$attestation$request_id$snapshot_digest" ]] || die "inspect requires only --yes; it queues a read-only PR inspection"
+        body='{}'
+      else
+        [[ -n "$reason" && -n "$attestation" ]] || die "resolution requires --attestation and --reason"
+        [[ -f "$attestation" && ! -L "$attestation" ]] || die "attestation must be a regular file, not a symlink"
+        [[ $(stat -c '%u:%a' "$attestation") == 0:600 && $(stat -c '%s' "$attestation") -le 4096 ]] || die "attestation must be root-owned, mode 0600, at most 4096 bytes"
+        body="$(jq -cen --slurpfile evidence "$attestation" --arg reason "$reason" 'if ($evidence|length)==1 and ($evidence[0]|type)=="object" then {attestation:$evidence[0],reason:$reason} else error("expected one attestation object") end')"
+        if [[ "$phase" == confirm ]]; then
+          [[ "$yes" == 1 && -n "$request_id" && -n "$snapshot_digest" ]] || die "confirm requires --request-id, --snapshot-digest and --yes"
+          body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$snapshot_digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
+        else
+          [[ "$yes" == 0 && -z "$request_id$snapshot_digest" ]] || die "preview does not accept confirmation flags"
+        fi
+      fi
+      operator_request POST "/v1/attempts/$id/interrupted-resolution/$phase" "$body"
+      ;;
+    *) die "usage: factory attempts {active|list|show|events|evidence|cancel|refresh-receipt|resolve-interrupted}" ;;
   esac
 }
 

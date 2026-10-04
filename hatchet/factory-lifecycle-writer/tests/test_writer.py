@@ -50,6 +50,13 @@ class PagedWriter(LifecycleWriter):
 
 
 class LifecycleWriterTest(unittest.TestCase):
+    def test_interrupted_resolution_never_emits_a_linear_notification(self):
+        writer, _ = self.make()
+        for kind in ("bridge_event", "factory_attempt"):
+            value = event(state="failed", reason="operator_interrupted_outcome_unknown")
+            value.update(eventType="execution_interrupted_resolved", sourceKind=kind)
+            self.assertIsNone(writer._bridge_candidate(value))
+
     def make(self, pages=None):
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
         outbox = Outbox(str(Path(directory.name) / "outbox.db")); self.addCleanup(outbox.close)

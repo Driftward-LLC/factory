@@ -215,6 +215,9 @@ class LifecycleWriter:
         return item["outbox_key"]
 
     def _bridge_candidate(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        # Operator ownership resolution is not a workflow outcome notification.
+        if event.get("eventType") == "execution_interrupted_resolved":
+            return None
         if event.get("sourceKind") == "factory_attempt":
             return self._attempt_candidate(event)
         requested_action = event.get("requestedAction")

@@ -18,6 +18,44 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FactoryCliStaticTests(unittest.TestCase):
+    def test_interrupted_resolution_cli_requires_explicit_review_and_uses_operator(self) -> None:
+        if not hasattr(socket, "AF_UNIX") or shutil.which("jq") is None:
+            self.skipTest("Unix sockets and jq required")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"; fake_bin.mkdir()
+            env_file = root / "operator.env"
+            env_file.write_text("HATCHET_FACTORY_OPERATOR_TOKEN=fixture\n")
+            self._write_executable(fake_bin / "id", '#!/bin/sh\necho 0\n')
+            self._write_executable(fake_bin / "curl", '#!/usr/bin/env python3\nimport sys,json\na=sys.argv\nprint(json.dumps({"url":a[-1],"body":json.loads(a[a.index("--data")+1])}))\n')
+            # Simulate root-owned fixture metadata on unprivileged CI runners.
+            self._write_executable(fake_bin / "stat", '#!/bin/sh\nif [ "$2" = "%u:%a" ]; then echo 0:600; else echo 100; fi\n')
+            attestation = root / "attestation.json"
+            attestation.write_text('{"schema":"fixture"}')
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(sock.close)
+            sock.bind(str(root / "operator.sock"))
+            env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "FACTORY_OPERATOR_ENV": str(env_file),
+                   "FACTORY_OPERATOR_SOCKET": str(root / "operator.sock")}
+            prefix = [str(ROOT / "factory/factory"), "attempts", "resolve-interrupted", "11111111-2222-4333-8444-555555555555"]
+            def run(*args):
+                return subprocess.run(prefix + list(args), env=env, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(run("inspect").returncode, 0)
+            inspected = run("inspect", "--yes")
+            self.assertEqual(inspected.returncode, 0, inspected.stderr)
+            self.assertTrue(json.loads(inspected.stdout)["url"].endswith("/interrupted-resolution/inspect"))
+            review = ["--attestation", str(attestation), "--reason", "reviewed containment"]
+            preview = run("preview", *review)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(json.loads(preview.stdout)["body"]["attestation"], {"schema": "fixture"})
+            self.assertNotEqual(run("confirm", *review).returncode, 0)
+            confirm = run("confirm", *review, "--request-id", "fixture-request", "--snapshot-digest", "a" * 64, "--yes")
+            self.assertEqual(confirm.returncode, 0, confirm.stderr)
+            self.assertEqual(json.loads(confirm.stdout)["body"]["snapshot_digest"], "a" * 64)
+            self.assertNotEqual(run("preview", *review, "--yes").returncode, 0)
+            link = root / "link.json"; link.symlink_to(attestation)
+            self.assertNotEqual(run("preview", "--attestation", str(link), "--reason", "reviewed").returncode, 0)
+
     def test_analytics_uses_root_operator_and_bounded_window(self) -> None:
         source = (ROOT / "factory/factory").read_text(encoding="utf-8")
 
