@@ -106,8 +106,7 @@ def inside():
             safe = mcp._build_safe_env(loaded["env"])
             assert "OPENAI_API_KEY" not in safe and "GH_TOKEN" not in safe
             names = mcp.discover_mcp_tools()
-            assert {"mcp_capykit_" + name for name in TOOLS}.issubset(names), names
-            assert "mcp_capykit_run_action" not in names
+            assert {name for name in names if name.startswith("mcp_capykit_")} == {"mcp_capykit_" + name for name in TOOLS}, names
             assert "error" in call("list_connections")  # Untrusted TLS must fail.
             mcp.shutdown_mcp_servers()
             config["env"]["NODE_EXTRA_CA_CERTS"] = str(cert)  # Test CA, not TLS bypass.

@@ -23,7 +23,7 @@ It does not install Capykit's hosted gateway or connector engine. The published
    key in chat, argv, the public identity envelope, workers, logs or Git.
    The URL must be an HTTPS origin (no path, query or embedded credentials).
    Recreate only an idle, dry-run installation using its normal `up` command.
-3. Through `factory-portable.py --directory /srv/factory executor config edit`,
+3. Through `python3 deploy/factory-portable.py --directory /srv/factory executor config edit`,
    add the following **entry** to `mcp_servers` in native Hermes config. Preserve
    existing entries/settings. Environment references are literal strings;
    Hermes resolves them at runtime and filters unrelated provider credentials.
@@ -96,6 +96,7 @@ ambiguous write through this integration.
 
 Revoke the dedicated key/grants in Capykit first, then set this MCP entry's
 `enabled: false` (or remove only this entry) and restart the next executor
-session. Remove the two settings from private `executor.env` when idle. Do not
+session. Remove the two settings from private `executor.env` and recreate the
+idle, dry-run installation to discard them from its process environment. Do not
 delete executor sessions/data, replace unrelated MCP settings, or change live
 Hatchet workflows to disable tooling.
