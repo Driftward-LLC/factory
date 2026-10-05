@@ -49,7 +49,7 @@ dedicated key's read-only grants are the security boundary. Do not expand them
 as part of initial activation. Workspace connector tools remain unexposed.
 
 The Driftward public gateway origin is
-`https://srv1379035.tail5c6a78.ts.net:10000`. Verify DNS, TLS and reachability
+`https://srv1379035.tail410dca.ts.net:10000`. Verify DNS, TLS and reachability
 from this installation's executor, not just the host. A container does not
 inherit host Tailscale identity; never impersonate tailnet identity headers or
 disable certificate verification. Other installations use their own gateway.
