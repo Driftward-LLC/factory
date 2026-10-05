@@ -72,9 +72,9 @@ EVENT_INGRESS_ENV_FILE=/etc/driftward/hatchet-event-ingress.env
 WORKERS_ENV_FILE=/etc/driftward/hatchet-workers.env
 BRIDGE_EXECUTOR_ENV_FILE=/etc/driftward/hatchet-worker-bridge-executor.env
 LIFECYCLE_WRITER_ENV_FILE=/etc/driftward/factory-lifecycle-writer.env
-TAILSCALE_HOST=srv1379035.tail5c6a78.ts.net
-TAILSCALE_URL=https://srv1379035.tail5c6a78.ts.net:8888
-LINEAR_WEBHOOK_URL=https://srv1379035.tail5c6a78.ts.net/events/linear/issue
+TAILSCALE_HOST=srv1379035.tail410dca.ts.net
+TAILSCALE_URL=https://srv1379035.tail410dca.ts.net:8888
+LINEAR_WEBHOOK_URL=https://srv1379035.tail410dca.ts.net/events/linear/issue
 
 [[ -d "$ROOT" ]] || fail "runtime root is missing: $ROOT"
 [[ -f "$ROOT/docker-compose.yml" ]] || fail "compose file is missing"
@@ -889,7 +889,7 @@ result = subprocess.run(
 )
 status = json.loads(result.stdout)
 web = status.get("Web", {})
-handler = web.get("srv1379035.tail5c6a78.ts.net:8888", {}).get("Handlers", {}).get("/")
+handler = web.get("srv1379035.tail410dca.ts.net:8888", {}).get("Handlers", {}).get("/")
 if not handler or handler.get("Proxy") != "http://127.0.0.1:8888":
     raise SystemExit(1)
 tcp = status.get("TCP", {})
@@ -910,7 +910,7 @@ result = subprocess.run(
 )
 status = json.loads(result.stdout)
 web = status.get("Web", {})
-handler = web.get("srv1379035.tail5c6a78.ts.net:443", {}).get("Handlers", {}).get("/")
+handler = web.get("srv1379035.tail410dca.ts.net:443", {}).get("Handlers", {}).get("/")
 if not handler or handler.get("Proxy") != "http://127.0.0.1:19879":
     raise SystemExit(1)
 tcp = status.get("TCP", {})
