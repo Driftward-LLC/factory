@@ -68,6 +68,7 @@ Manual Hatchet dispatch
   -> Driftward Hermes creates draft artifact
   -> bridge effect_committed/verification_pending
   -> bounded Hermes-side verification
+  -> queued GitHub checks remain verification_pending and are durably re-enqueued by reconciliation
   -> bridge ready_for_human_review only when evidence is green
   -> Hatchet event
   -> pr-event-worker advances state
