@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from .telemetry import bridge_span, record_status, flush as flush_telemetry
 
 from .store import (
     BridgeConflict,
@@ -103,6 +104,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         return data
 
     def _write_json(self, status: int, payload: dict[str, Any] | list[Any]) -> None:
+        record_status(getattr(self, "_telemetry_span", None), status)
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -121,6 +123,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._require_auth():
             return
+        with bridge_span(self.headers.get("traceparent")) as span:
+            self._telemetry_span = span
+            try:
+                BridgeHandler._get(self)
+            finally:
+                self._telemetry_span = None
+
+    def _get(self) -> None:
 
         try:
             parsed = urlparse(self.path)
@@ -200,6 +210,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._require_auth():
             return
+        with bridge_span(self.headers.get("traceparent")) as span:
+            self._telemetry_span = span
+            try:
+                BridgeHandler._post(self)
+            finally:
+                self._telemetry_span = None
+
+    def _post(self) -> None:
 
         try:
             path = urlparse(self.path).path
@@ -455,3 +473,4 @@ def serve(db_path: str, host: str, port: int) -> None:
     finally:
         httpd.server_close()
         conn.close()
+        flush_telemetry()

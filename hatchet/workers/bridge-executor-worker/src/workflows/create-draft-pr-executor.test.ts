@@ -3,7 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { HATCHET_EVENTS, type BridgeJob } from '@driftward/hatchet-worker-shared';
+import { HATCHET_EVENTS, withExecutionSpan, type BridgeJob } from '@driftward/hatchet-worker-shared';
 import { emitBestEffort } from './event-delivery';
 
 test('event push failure cannot undo a durable bridge transition', async () => {
@@ -89,7 +89,7 @@ function executorFixture(status = 'verification_pending') {
   };
   const register = (definition: { name: string; fn: Handler }) => { tasks.set(definition.name, definition.fn); return {}; };
   const dependencies: Record<string, unknown> = {
-    '@driftward/hatchet-worker-shared': { HATCHET_EVENTS, BridgeClient: function () { return bridge; } },
+    '@driftward/hatchet-worker-shared': { HATCHET_EVENTS, withExecutionSpan, BridgeClient: function () { return bridge; } },
     '../hatchet-client': { hatchet: { workflow: () => ({ task: register, durableTask: register }), events: { push: async () => undefined } } },
     '@hatchet-dev/typescript-sdk/v1/conditions': {},
     './factory-artifact-fence': {},

@@ -2,6 +2,9 @@
 
 ## Execution observability
 
+See [optional OpenTelemetry execution tracing](factory-opentelemetry.md) for
+the disabled-by-default cross-process tracing slice and activation gates.
+
 PostHog export belongs to Driftward Hermes, not Hatchet workers. The command
 adapter supplies a metadata-only envelope per invocation: bridge job UUID,
 sealed Factory attempt UUID/generation, and bounded Linear issue identifier.

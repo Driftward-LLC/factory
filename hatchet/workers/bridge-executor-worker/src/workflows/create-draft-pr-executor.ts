@@ -1,6 +1,7 @@
 import { randomUUID, webcrypto } from 'node:crypto';
 import {
   BridgeClient,
+  withExecutionSpan,
   HATCHET_EVENTS,
   type BridgeJob,
   type JsonObject
@@ -77,6 +78,7 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
 
     const bridge = new BridgeClient();
     let job = await bridge.getJob(ref);
+    return withExecutionSpan('factory.execution.attempt', async () => {
     let retryAttempt = await bridge.getFactoryAttemptForJob(job.job_id);
     if (job.state === 'running' && retryAttempt && ['effect_authorized', 'effect_outcome_unknown', 'cancellation_requested'].includes(retryAttempt.status)) {
       const recovered = await recoverExecutionReceipt(bridge, job, retryAttempt.status === 'cancellation_requested');
@@ -307,6 +309,7 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
       if (error instanceof NonRetryableBridgeExecutionError) return { executed: false, blockedReason: error.reasonCode, job: running, dryRun: false, reused: true };
       throw error;
     }
+    }, { job });
   }
 });
 
