@@ -56,7 +56,20 @@ test('a legacy event with a reserved verification owner still claims that exact 
   assert.deepEqual(fixture.completed, [legacyOwner]);
 });
 
-type Handler = (input: { jobId: string; verificationAttemptId?: string }) => Promise<{ executed: boolean; blockedReason?: string }>;
+for (const taskName of ['execute-create-draft-pr', 'await-hermes-receipt']) {
+  test(`${taskName} leaves queued GitHub checks pending for durable recovery`, async () => {
+    const fixture = executorFixture('verification_pending', 'verification_github_checks_timeout');
+    const result = await fixture.tasks.get(taskName)!({ jobId: fixture.job.job_id });
+    assert.equal(result.executed, false);
+    assert.equal(result.blockedReason, 'verification_github_checks_timeout');
+    assert.equal(result.job?.state, 'verification_pending');
+    assert.deepEqual(fixture.failures, []);
+    assert.equal(fixture.acquired.length, 1);
+    assert.deepEqual(fixture.claimed, fixture.acquired);
+  });
+}
+
+type Handler = (input: { jobId: string; verificationAttemptId?: string }) => Promise<{ executed: boolean; blockedReason?: string; job?: BridgeJob }>;
 
 test('running authorized and canceled invocations route only to receipt recovery', async () => {
   for (const status of ['effect_authorized', 'effect_outcome_unknown', 'cancellation_requested']) {
@@ -69,9 +82,10 @@ test('running authorized and canceled invocations route only to receipt recovery
   }
 });
 
-function executorFixture(status = 'verification_pending') {
+function executorFixture(status = 'verification_pending', verificationReason?: string) {
   const tasks = new Map<string, Handler>();
   const acquired: string[] = []; const claimed: string[] = []; const observed: string[] = []; const completed: string[] = [];
+  const failures: string[] = [];
   const recovery: boolean[] = [];
   const job: BridgeJob = {
     job_id: 'same-job', idempotency_key: 'long-idempotency-key:'.repeat(25), state: 'verification_pending', requested_action: 'create_draft_pr',
@@ -86,7 +100,11 @@ function executorFixture(status = 'verification_pending') {
     claimVerificationLease: async (_jobId: string, owner: string) => { claimed.push(owner); return { claimed: true }; },
     recordVerificationObservation: async (_jobId: string, owner: string) => { observed.push(owner); },
     completeVerifiedReady: async (_jobId: string, owner: string) => { completed.push(owner); return { job: { ...job, state: 'ready_for_human_review' } }; },
+    completeVerificationFailure: async (_jobId: string, _owner: string, reason: string) => { failures.push(reason); return { job: { ...job, state: 'failed', reason_code: reason } }; },
   };
+  class VerificationError extends Error {
+    constructor(public reasonCode: string) { super(reasonCode); }
+  }
   const register = (definition: { name: string; fn: Handler }) => { tasks.set(definition.name, definition.fn); return {}; };
   const dependencies: Record<string, unknown> = {
     '@driftward/hatchet-worker-shared': { HATCHET_EVENTS, withExecutionSpan, BridgeClient: function () { return bridge; } },
@@ -95,9 +113,12 @@ function executorFixture(status = 'verification_pending') {
     './factory-artifact-fence': {},
     './execution-recovery': { recoverExecutionReceipt: async (_bridge: unknown, _job: unknown, cancel: boolean) => { recovery.push(cancel); return null; } },
     '../hermes/create-draft-pr': {
-      NonRetryableBridgeExecutionError: class extends Error {},
+      NonRetryableBridgeExecutionError: VerificationError,
       resumeHermesDraftPrResult: () => ({ prUrl: job.pr_url, validation: {} }),
-      waitForHermesDraftPrVerification: async () => ({}),
+      waitForHermesDraftPrVerification: async () => {
+        if (verificationReason) throw new VerificationError(verificationReason);
+        return {};
+      },
       verificationCompletionPlan: () => ({ recordObservation: true, receipt: {} }),
     },
   };
@@ -105,5 +126,5 @@ function executorFixture(status = 'verification_pending') {
   // credentials. All provider and bridge effects are local fakes.
   const filename = path.join(__dirname, 'create-draft-pr-executor.js');
   runInNewContext(readFileSync(filename, 'utf8'), { exports: {}, require: (name: string) => dependencies[name] ?? require(name) }, { filename });
-  return { tasks, job, acquired, claimed, observed, completed, recovery };
+  return { tasks, job, acquired, claimed, observed, completed, failures, recovery };
 }

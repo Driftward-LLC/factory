@@ -432,6 +432,10 @@ async function finishVerification(bridge: BridgeClient, pending: BridgeJob, resu
     return { executed: true, job: ready.job, prUrl: result.prUrl, dryRun: false, reused };
   } catch (error) {
     if (error instanceof NonRetryableBridgeExecutionError) {
+      // A queue delay is not failed evidence; reconciliation will re-enqueue this pending job.
+      if (error.reasonCode === 'verification_github_checks_timeout') {
+        return { executed: false, blockedReason: error.reasonCode, job: pending, prUrl: result.prUrl, dryRun: false, reused: true };
+      }
       const failed = await bridge.completeVerificationFailure(pending.job_id, attemptId, error.reasonCode, error.message);
       await emitBestEffort(() => emitVerificationFailed(failed.job));
       await emitBestEffort(() => emitFailed(failed.job, false));
