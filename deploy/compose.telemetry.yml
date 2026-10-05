@@ -1,0 +1,25 @@
+# Opt-in source-checkout rehearsal only. See docs/factory-opentelemetry.md.
+# Production/portable wrappers intentionally reject this unreviewed topology.
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1 # 0.161.0
+    command: ["--config=/etc/otelcol/factory.yaml"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: 0.5
+    env_file:
+      - ${FACTORY_OTEL_COLLECTOR_ENV_FILE:?Set a dedicated collector-only env file}
+    volumes:
+      - ${FACTORY_SOURCE_ROOT:?Set the reviewed source root}/deploy/otel-collector.yaml:/etc/otelcol/factory.yaml:ro
+    ports:
+      - "127.0.0.1:${FACTORY_OTEL_PORT:-4318}:4318"
+    networks: [factory]
+  bridge:
+    environment:
+      FACTORY_OTEL_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+  bridge-executor-worker:
+    environment:
+      FACTORY_OTEL_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces

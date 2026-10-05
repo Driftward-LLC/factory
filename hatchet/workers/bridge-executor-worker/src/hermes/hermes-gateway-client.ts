@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { executionTraceparent, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { SpanKind } from '@opentelemetry/api';
 import { invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
@@ -380,12 +382,18 @@ export async function inspectGitHubHeadViaGrpc(repository: string, headBranch: s
 }
 
 function callGateway<T>(method: keyof GatewayClient, request: Record<string, unknown>, timeoutMs: number, fallbackReasonCode: string): Promise<T> {
+  return withExecutionSpan('factory.gateway.call', () => sendGateway<T>(method, request, timeoutMs, fallbackReasonCode), { kind: SpanKind.CLIENT });
+}
+
+function sendGateway<T>(method: keyof GatewayClient, request: Record<string, unknown>, timeoutMs: number, fallbackReasonCode: string): Promise<T> {
   let client: GatewayClient;
   let metadata: grpc.Metadata;
   let options: grpc.CallOptions;
   try {
     client = getClient();
     metadata = new grpc.Metadata();
+    const parent = executionTraceparent();
+    if (parent) metadata.set('traceparent', parent);
     const token = (process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim();
     if (token) metadata.set('authorization', `Bearer ${token}`);
     options = {};

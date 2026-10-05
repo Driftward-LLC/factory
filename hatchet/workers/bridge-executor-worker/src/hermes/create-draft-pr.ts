@@ -2,6 +2,7 @@ import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { executionTraceparent, telemetryEndpoint, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import type { BridgeJob, FactoryAttempt, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 import type { Duration } from '@hatchet-dev/typescript-sdk/v1/client/duration';
 import {
@@ -339,6 +340,10 @@ export function hermesReceiptWaitDuration(): Duration {
 }
 
 export function dispatchHermesCreateDraftPrReceipt(job: BridgeJob, lease: FactoryExecutionLease): HermesReceiptDispatch {
+  return withExecutionSpan('factory.execution.dispatch', () => dispatchReceipt(job, lease), { job });
+}
+
+function dispatchReceipt(job: BridgeJob, lease: FactoryExecutionLease): HermesReceiptDispatch {
   if (!hermesReceiptRunnerEnabled()) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_async_receipts_disabled',
@@ -497,6 +502,9 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
     ['HATCHET_FACTORY_EXECUTION_LEASE', JSON.stringify(lease)],
     ['DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS', String(parsePositiveInt(process.env.DRIFTWARD_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS, 4 * 60 * 60 * 1000))]
   );
+  const parent = executionTraceparent();
+  const endpoint = telemetryEndpoint();
+  if (parent && endpoint) entries.push(['FACTORY_TRACEPARENT', parent], ['FACTORY_OTEL_TRACES_ENDPOINT', endpoint]);
   return entries;
 }
 

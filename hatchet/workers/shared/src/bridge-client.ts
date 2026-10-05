@@ -1,3 +1,4 @@
+import { executionTraceparent, withExecutionSpan } from './telemetry';
 import type {
   BridgeEventsResponse,
   BridgeJob,
@@ -244,7 +245,16 @@ export class BridgeClient {
   }
 
   private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
+    // Do not capture URL paths, request bodies, tokens or error messages.
+    const name = path.endsWith('/factory-execution/commit') ? 'factory.execution.commit'
+      : path.endsWith('/factory-execution/settle') ? 'factory.execution.settle' : 'factory.bridge.request';
+    return withExecutionSpan(name, () => this.sendJson<T>(path, init));
+  }
+
+  private async sendJson<T>(path: string, init: RequestInit): Promise<T> {
     const headers = new Headers(init.headers);
+    const parent = executionTraceparent();
+    if (parent) headers.set('traceparent', parent);
     headers.set('Content-Type', 'application/json');
     if (this.token) {
       headers.set('Authorization', `Bearer ${this.token}`);

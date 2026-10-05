@@ -1,6 +1,8 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
+import { withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { SpanKind } from '@opentelemetry/api';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
@@ -85,7 +87,9 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
     createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest) => {
       const job = parseBridgeJob(request);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
-      const result = await invocations().execute(job, lease, () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs)));
+      const result = await withExecutionSpan('factory.executor.invoke', () => invocations().execute(job, lease,
+        () => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs)), { job, service: 'factory-executor' })),
+      { job, service: 'factory-executor' });
       return draftPrResponse(result);
     }),
     inspectInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => inspectInvocation(request, false)),
@@ -136,7 +140,9 @@ function unary<TRequest, TResponse>(
     void (async () => {
       try {
         authorize(call.metadata, target);
-        callback(null, await handler(call.request));
+        callback(null, await withExecutionSpan('factory.gateway.handle', () => handler(call.request), {
+          parent: call.metadata.get('traceparent')[0], service: 'factory-executor', kind: SpanKind.SERVER,
+        }));
       } catch (error) {
         callback(toServiceError(error), null);
       }

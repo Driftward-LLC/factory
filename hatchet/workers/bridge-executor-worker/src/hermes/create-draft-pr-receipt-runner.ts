@@ -8,6 +8,7 @@ import {
   type FactoryExecutionLease
 } from './create-draft-pr';
 import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
+import { flushExecutionTelemetry, markExecutionTelemetryFailure, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 
 async function main(): Promise<void> {
   const jobId = process.argv[2];
@@ -35,6 +36,15 @@ async function main(): Promise<void> {
     return;
   }
   const { job, analytics } = prepared;
+  return withExecutionSpan('factory.execution.receipt', async () => {
+    await executePrepared(bridge, job, analytics, lease, invocationId);
+    if (process.exitCode) markExecutionTelemetryFailure();
+  }, {
+    job, parent: process.env.FACTORY_TRACEPARENT, service: 'factory-receipt-runner',
+  });
+}
+
+async function executePrepared(bridge: BridgeClient, job: BridgeJob, analytics: JsonObject, lease: FactoryExecutionLease, invocationId: string): Promise<void> {
 
   let invocationRecorded = false;
   let invocationRegistrationError: unknown = null;
@@ -346,8 +356,10 @@ function parseLease(raw: string | undefined): FactoryExecutionLease {
 }
 
 if (require.main === module) {
-  main().catch((error) => {
+  withExecutionSpan('factory.receipt.start', main, {
+    parent: process.env.FACTORY_TRACEPARENT, service: 'factory-receipt-runner',
+  }).catch((error) => {
     console.error(sanitizeText(error instanceof Error ? error.message : String(error)));
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  }).finally(flushExecutionTelemetry);
 }
