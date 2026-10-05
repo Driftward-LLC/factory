@@ -12,6 +12,7 @@ import {
   factoryExecutionRouteSelection,
   findAddedTempFileReference,
   hermesReceiptEventExpression,
+  hermesObservabilityEnvironment,
   hermesReceiptEventScope,
   hermesReceiptWaitDuration,
   jobMatchesHermesDraftPrReceipt,
@@ -34,6 +35,30 @@ import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+
+test('Hermes observability uses bounded sealed lineage, not issue content or ambient metadata', () => {
+  const job = greenJob();
+  job.job_id = '01234567-89ab-cdef-0123-456789abcdef';
+  job.payload.factory_retry = { attempt_id: 'abcdef01-2345-6789-abcd-ef0123456789', generation: 2, reason: 'SECRET' };
+  job.payload.implementation_prompt = 'SECRET';
+  assert.deepEqual(hermesObservabilityEnvironment(job), {
+    FACTORY_OBSERVABILITY_JOB_ID: job.job_id,
+    FACTORY_OBSERVABILITY_ATTEMPT_ID: 'abcdef01-2345-6789-abcd-ef0123456789',
+    FACTORY_OBSERVABILITY_LINEAR_ISSUE: 'ENG-61',
+    FACTORY_OBSERVABILITY_GENERATION: '2',
+  });
+  job.job_id = 'SECRET';
+  job.payload.factory_retry = { attempt_id: 'SECRET', generation: -1 };
+  job.payload.linear_issue = 'ENG-61 SECRET';
+  assert.deepEqual(Object.values(hermesObservabilityEnvironment(job)), ['', '', '', '']);
+  delete job.payload.factory_retry;
+  assert.equal(hermesObservabilityEnvironment(job).FACTORY_OBSERVABILITY_ATTEMPT_ID, '');
+  job.job_id = '01234567-89ab-cdef-0123-456789abcdef\n';
+  job.payload.linear_issue = 'ENG-61\n';
+  assert.deepEqual(Object.values(hermesObservabilityEnvironment(job)), ['', '', '', '']);
+  job.payload.factory_retry = { attempt_id: 'abcdef01-2345-6789-abcd-ef0123456789', generation: 9007199254740992 };
+  assert.equal(hermesObservabilityEnvironment(job).FACTORY_OBSERVABILITY_GENERATION, '');
+});
 
 test('execution analytics identity reports configured backend boundary without inferring auth', () => {
   const previous = {
