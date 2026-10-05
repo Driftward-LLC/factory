@@ -3,7 +3,7 @@ import os
 import tempfile
 import threading
 import unittest
-from http.server import HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -19,6 +19,36 @@ from test_support import connect_migrate
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_real_otlp_export_to_local_receiver(self):
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+        received = []
+
+        class Receiver(BaseHTTPRequestHandler):
+            def do_POST(self):
+                message = ExportTraceServiceRequest()
+                message.ParseFromString(self.rfile.read(int(self.headers["Content-Length"])))
+                received.append(message)
+                self.send_response(200)
+                self.end_headers()
+
+        server = HTTPServer(("127.0.0.1", 0), Receiver)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.dict(os.environ, {"FACTORY_OTEL_TRACES_ENDPOINT": f"http://127.0.0.1:{server.server_port}/v1/traces"}, clear=True), \
+                    patch.object(telemetry, "_provider", None), patch.object(telemetry, "_initialized", False):
+                with telemetry.bridge_span("00-fb9fa7e140655818af723e41a35fe39a-123456789abcdef0-01") as span:
+                    telemetry.record_status(span, 200)
+                telemetry.flush()
+                self.assertEqual(len(received), 1)
+                exported = received[0].resource_spans[0].scope_spans[0].spans[0]
+                self.assertEqual(exported.trace_id.hex(), "fb9fa7e140655818af723e41a35fe39a")
+                self.assertEqual(exported.parent_span_id.hex(), "123456789abcdef0")
+                self.assertEqual(exported.name, "factory.bridge.handle")
+                telemetry._provider.shutdown()
+        finally:
+            server.shutdown(); thread.join(); server.server_close()
+
     def test_bridge_http_propagation_auth_and_metadata_only(self):
         exporter = InMemorySpanExporter()
         provider = TracerProvider(resource=Resource({"service.name": "test"}))
