@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,11 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy"))
 import bootstrap  # noqa: E402
+import telemetry  # noqa: E402
+
+spec = importlib.util.spec_from_file_location("acceptance_portable", ROOT / "deploy/factory-portable.py")
+portable = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(portable)
 
 
 def run(command: list[str], *, label: str, env: dict[str, str] | None = None,
@@ -154,6 +160,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, help="existing local runtime image, e.g. factory:test")
     parser.add_argument("--port-offset", type=int, default=20000)
+    parser.add_argument("--telemetry", action="store_true", help="also test optional Collector packaging with synthetic credentials and exporters paused")
     args = parser.parse_args()
     project = "factory-acceptance-" + uuid.uuid4().hex[:16]
     issue = "ENG-" + str(int(uuid.uuid4().hex[:10], 16))
@@ -162,7 +169,7 @@ def main() -> int:
     print(f"Creating disposable project {project}; its containers and volumes will be deleted on exit.", flush=True)
     try:
         assert_unused(project)
-        for port in (8888, 19881, 9888, 20881):
+        for port in (8888, 19881, 9888, 20881, *((4318, 5318) if args.telemetry else ())):
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", port + args.port_offset))
         temporary = tempfile.mkdtemp(prefix="factory-portable-acceptance-")
@@ -188,6 +195,20 @@ def main() -> int:
                            "-f", str(ROOT / "deploy" / "compose.portable.yml")]
                 print("Starting empty installation and native bootstrap.", flush=True)
                 run([*wrapper, "up"], env=env, label="fresh startup")
+                if args.telemetry:
+                    print("Configuring optional Collector with synthetic credentials; exporters stay paused.", flush=True)
+                    secret = Path(temporary) / "collector.env"
+                    bootstrap._create_private(secret, bootstrap.env_text({
+                        "POSTHOG_TRACES_ENDPOINT": "https://us.i.posthog.com/i/v1/traces",
+                        "POSTHOG_PROJECT_TOKEN": "phc_synthetic_acceptance_not_a_real_key"}))
+                    before = Path(temporary) / "before-telemetry"
+                    run([*wrapper, "backup", str(before), "--apply"], env=env, label="pre-telemetry backup")
+                    run([*wrapper, "telemetry", "--snapshot", str(before), "--credentials", str(secret),
+                         "--port", str(4318 + args.port_offset), "--paused", "--apply"], env=env, label="Collector configuration")
+                    configured = portable.Installation(directory)
+                    compose, env = configured.args, configured.env
+                    run([*wrapper, "up"], env=env, label="Collector startup")
+                    run([*wrapper, "status"], env=env, label="Collector status")
                 def execute(service: str, source: str) -> str:
                     return run([*compose, "exec", "-T", service, "python3", "-", issue],
                                env=env, source=source, label=f"{service} acceptance assertion")
@@ -236,12 +257,18 @@ def main() -> int:
                                     "--project-directory", str(restored_directory), "--env-file", str(restored_directory / ".env"),
                                     "-f", str(ROOT / "deploy" / "docker-compose.yml"),
                                     "-f", str(ROOT / "deploy" / "compose.portable.yml")]
+                if args.telemetry:
+                    configured = portable.Installation(restored_directory)
+                    restored_compose, restored_env = configured.args, configured.env
+                    if telemetry.credentials(restored_directory / telemetry.ENV_FILE) != telemetry.credentials(directory / telemetry.ENV_FILE):
+                        raise RuntimeError("restore changed isolated Collector credentials")
                 restore_incomplete = False
                 if credential_snapshot(restored_directory) != credentials:
                     raise RuntimeError("restore replaced native keys or worker credentials")
                 if run(["docker", "ps", "--filter", f"label=com.docker.compose.project={restored_project}", "--format", "{{.ID}}"], label="restore stopped check").strip():
                     raise RuntimeError("restore started services without explicit up")
                 run([*restored_wrapper, "up"], env=restored_env, label="restored startup")
+                run([*restored_wrapper, "status"], env=restored_env, label="restored status")
                 def restored_execute(service: str, source: str) -> str:
                     return run([*restored_compose, "exec", "-T", service, "python3", "-", issue],
                                env=restored_env, source=source, label=f"restored {service} assertion")

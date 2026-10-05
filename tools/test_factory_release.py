@@ -14,6 +14,9 @@ FILES = (
     "deploy/docker-compose.yml",
     "deploy/compose.portable.yml",
     "deploy/compose.production.yml",
+    "deploy/compose.telemetry.yml",
+    "deploy/otel-collector.yaml",
+    "deploy/telemetry.py",
     "deploy/factory-portable.py",
     "deploy/factory-cutover.py",
     "deploy/factory-production.py",
@@ -144,6 +147,8 @@ class FactoryReleaseTests(unittest.TestCase):
         self.assertIn("--validation-only", workflow)
         self.assertLess(workflow.index("python3 tools/check_factory_portable.py --image driftward/factory:ci"), workflow.index("docker push"))
         self.assertIn("refusing to overwrite: $image_tag", workflow)
+        self.assertIn("--image driftward/factory:ci --telemetry", workflow)
+        self.assertIn("import telemetry; print(telemetry.IMAGE)", workflow)
         self.assertIn('"$RUNNER_TEMP/factory-release/SHA256SUMS"', workflow)
         self.assertNotIn("actions/upload-artifact", workflow)
 

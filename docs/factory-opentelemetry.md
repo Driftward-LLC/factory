@@ -1,7 +1,7 @@
 # Factory execution tracing (first slice)
 
-Status: implementation/rehearsal only; disabled by default and not activated in
-production. The operator has confirmed native canary readback in PostHog project
+Status: opt-in execution tracing; disabled by default. Deployment and dashboard
+acceptance are recorded separately from source availability. The operator has confirmed native canary readback in PostHog project
 632215; readback of the new OpenTelemetry path remains an activation gate.
 This is not an end-to-end intake/reconciliation/Linear-delivery trace yet.
 
@@ -78,27 +78,29 @@ than leaking exporter credentials from a worker. Invalid setup fails open.
 Configuration changes require restarting the affected process.
 
 `deploy/compose.telemetry.yml` and `deploy/otel-collector.yaml` are an opt-in
-source-checkout rehearsal overlay, with a pinned Collector image and bounded
+release-bundled overlay, with a pinned Collector image and bounded
 memory/queues. This is part of one Compose application, not a separately
 provisioned Hermes dependency. Only the Collector receives its dedicated
 root-owned 0600 env file, named by `FACTORY_OTEL_COLLECTOR_ENV_FILE`:
 
 ```dotenv
-POSTHOG_TRACES_ENDPOINT=https://us.i.posthog.com/i/v1/traces
-POSTHOG_PROJECT_TOKEN=<project ingestion token, provisioned privately>
+POSTHOG_TRACES_ENDPOINT='https://us.i.posthog.com/i/v1/traces'
+POSTHOG_PROJECT_TOKEN='<project ingestion token, provisioned privately>'
 ```
 
 Never put this env file in source control, worker env files or release assets.
 Do not automatically copy Hermes credentials. Do not use PostHog's AI-only
 `/i/v0/ai/otel` endpoint: it drops ordinary application spans.
 
-**The production/portable operations wrappers have fixed service inventories,
-backup configuration allowlists and deployment provenance. This overlay is not
-yet supported by those wrappers or included in release bundles. They must keep
-rejecting it, rather than be bypassed with ad-hoc live Compose commands.**
-An approved packaging follow-up must add optional Collector inventory, credential
-backup rules and install/restart/restore checks before live activation. This
-first slice does not silently mutate the active installation's topology.
+Use the `telemetry` command in the matching production or portable wrapper,
+never ad-hoc Compose overrides. See [the installation procedure](../deploy/PORTABLE.md#optional-execution-telemetry).
+The command requires a current cold backup and stopped services. It copies only
+the two approved values into `env/factory-otel-collector.env`, stores the
+Collector image ID and deployment hashes in the installation marker, and leaves
+everything stopped. Source container fencing and image-upgrade history stay
+unchanged. Configured installations include the optional service, secret file,
+and deployment hashes in status, startup, backup and restore. Old installations
+and snapshots remain unchanged. No extra durable volume is needed.
 
 At current low volume all instrumented spans are sampled. SDK queues are bounded
 to 256 spans, batches to 32, export timeout to about one second and runner flush
@@ -122,7 +124,7 @@ Before live activation:
 
 1. Read back the existing native canary in PostHog project 632215 (confirmed by
    the operator's screenshot; not an OpenTelemetry acceptance result).
-2. Complete the optional deployment-wrapper/package acceptance above.
+2. Run optional deployment-wrapper/package acceptance (including cold restore).
 3. Verify the Distributed Tracing product and ingestion token belong to that
    same project; query/read credentials are not needed in runtime services.
 4. Deploy the matching bridge, worker and gateway with tracing still off, then

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime, timezone
 from contextlib import nullcontext
 import importlib.util
 import json
@@ -16,6 +17,7 @@ import uuid
 
 import bootstrap
 import portable_state as state
+import telemetry
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("factory_production_portable", HERE / "factory-portable.py")
@@ -51,6 +53,20 @@ class Production(portable.Installation):
         if self.metadata.get("profile") != "same-host-production" or not re.fullmatch(bootstrap.PROJECT_PATTERN, self.project):
             raise ProductionRefusal("a prepared same-host production installation is required")
         self.provenance = state.read_provenance(self.directory / state.PROVENANCE)
+        self.release_images = [self.provenance.get("factory_image")]
+        releases = self.provenance.get("image_upgrades", [])
+        if not isinstance(releases, list):
+            raise ProductionRefusal("invalid image upgrade history")
+        for release in releases:
+            if (not isinstance(release, dict) or release.get("previous_image") != self.release_images[-1]
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(release.get("image", "")))
+                    or not re.fullmatch(r"[0-9a-f]{40}", str(release.get("commit", "")))
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(release.get("backup_manifest_sha256", "")))
+                    or not isinstance(release.get("backup"), str) or not release["backup"].startswith("/")):
+                raise ProductionRefusal("invalid image upgrade history")
+            self.release_images.append(release["image"])
+        if any(not re.fullmatch(r"sha256:[0-9a-f]{64}", str(image)) for image in self.release_images):
+            raise ProductionRefusal("invalid image upgrade history")
         self.tenant = str(uuid.UUID(self.values["HATCHET_DEFAULT_TENANT_ID"]))
         token = bootstrap.extract_client_token(bootstrap.read_env(self.directory / "env/hatchet-client.env")["HATCHET_CLIENT_TOKEN"])
         payload = token.split(".")[1]
@@ -60,13 +76,13 @@ class Production(portable.Installation):
         if (self.provenance.get("destination_project") != self.project
                 or self.provenance.get("profile_sha256") != state._hash(HERE / "compose.production.yml")
                 or self.provenance.get("deployment_sha256") != {name: state._hash(HERE / name) for name in state.deployment_files(state.PRODUCTION)}
-                or self.provenance.get("factory_image") != self.values["FACTORY_IMAGE"]):
+                or self.release_images[-1] != self.values["FACTORY_IMAGE"]):
             raise ProductionRefusal("cutover destination, image, or deployment bundle provenance differs")
         self.images = {name: self.values[key] for name, key in (
             ("postgres", "FACTORY_POSTGRES_IMAGE"), ("hatchet-lite", "FACTORY_HATCHET_IMAGE"), ("factory", "FACTORY_IMAGE"))}
         if any(not re.fullmatch(r"sha256:[0-9a-f]{64}", image) for image in self.images.values()):
             raise ProductionRefusal("production requires exact saved local image IDs")
-        expected = {name: self.images.get(name, self.images["factory"]) for name in SERVICES}
+        expected = {name: self.images.get(name, self.release_images[0]) for name in SERVICES}
         if self.provenance.get("source_images") != expected:
             raise ProductionRefusal("saved source images do not match production image pins")
         self.env = {key: value for key, value in os.environ.items() if not key.startswith(("COMPOSE_", "FACTORY_", "HATCHET_"))}
@@ -76,6 +92,7 @@ class Production(portable.Installation):
                      "--project-directory", str(self.directory), "--env-file", str(self.directory / ".env")]
         for name in ("docker-compose.yml", "compose.portable.yml", "compose.production.yml"):
             self.args.extend(("-f", str(HERE / name)))
+        telemetry.attach(self, SERVICES)
 
     def assert_storage(self) -> None:
         self.assert_owned_resources()
@@ -98,11 +115,12 @@ class Production(portable.Installation):
             for row in json.loads(state._docker(["container", "inspect", *ids], self.env)):
                 labels = row.get("Config", {}).get("Labels") or {}
                 service = labels.get("com.docker.compose.service")
-                if (service not in SERVICES or service in services
+                if (service not in self.services or service in services
                         or labels.get(state.IDENTITY_LABEL) != self.metadata["installation_id"]
                         or labels.get(TENANT_LABEL) != self.tenant
                         or labels.get("com.docker.compose.oneoff", "False").lower() != "false"
-                        or row["Image"] != self.provenance["source_images"].get(service)):
+                        or row["Image"] not in ([self.images[service]] if service in self.images else
+                            (self.release_images if row["State"]["Status"] in ("created", "exited") else [self.images["factory"]]))):
                     raise ProductionRefusal("candidate container inventory differs from reviewed service roles")
                 services.add(service)
         for suffix in state.VOLUMES:
@@ -152,7 +170,7 @@ class Production(portable.Installation):
                 labels = row.get("Config", {}).get("Labels") or {}
                 service = labels.get("com.docker.compose.service")
                 if (labels.get("com.docker.compose.project") != project or labels.get(state.IDENTITY_LABEL) != identity
-                        or service not in SERVICES or service in previous_services or labels.get("com.docker.compose.oneoff", "False").lower() != "false"
+                        or service not in (*SERVICES, telemetry.SERVICE) or service in previous_services or labels.get("com.docker.compose.oneoff", "False").lower() != "false"
                         or row["State"]["Status"] not in ("created", "exited")
                         or row.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no"):
                     raise ProductionRefusal("a predecessor is foreign, running, or restart-enabled")
@@ -169,7 +187,7 @@ class Production(portable.Installation):
             service = labels.get("com.docker.compose.service")
             if (not re.fullmatch(bootstrap.PROJECT_PATTERN, project) or str(uuid.UUID(identity)) != identity
                     or labels.get(TENANT_LABEL) != self.tenant or owners.setdefault(project, identity) != identity
-                    or service not in SERVICES or (project, service) in services
+                    or service not in (self.services if project == self.project else (*SERVICES, telemetry.SERVICE)) or (project, service) in services
                     or labels.get("com.docker.compose.oneoff", "False").lower() != "false"
                     or (project == self.project and identity != self.metadata["installation_id"])):
                 raise ProductionRefusal("tenant container ownership or service identity differs")
@@ -181,7 +199,7 @@ class Production(portable.Installation):
     def assert_config(self) -> None:
         config = json.loads(self.compose("config", "--format", "json", private=True))
         services = config["services"]
-        if set(services) != set(SERVICES):
+        if set(services) != set(self.services):
             raise ProductionRefusal("production Compose service set differs")
         label = self.metadata["installation_id"]
         for name, volume in config["volumes"].items():
@@ -193,6 +211,8 @@ class Production(portable.Installation):
         if set(config.get("networks", {})) != {"factory"} or network.get("name") != self.project or network.get("labels", {}).get(state.IDENTITY_LABEL) != label or network.get("external"):
             raise ProductionRefusal("Compose network boundary differs")
         ports = {"hatchet-lite": ("FACTORY_HATCHET_PORT", 8888), "linear-webhook-proxy": ("FACTORY_WEBHOOK_PORT", 19879), "factory-operator": ("FACTORY_CONSOLE_PORT", 19881)}
+        if telemetry.SERVICE in self.services:
+            ports[telemetry.SERVICE] = ("FACTORY_OTEL_PORT", 4318)
         for name, service in services.items():
             if service.get("image") != self.images.get(name, self.images["factory"]):
                 raise ProductionRefusal("resolved service image differs from its saved source")
@@ -202,6 +222,14 @@ class Production(portable.Installation):
             expected = {("volume", "factory-" + suffix, target, readonly) for suffix, target, readonly in MOUNTS.get(name, [])}
             if name == "hatchet-lite":
                 expected.add(("bind", str(self.directory / "keys/hatchet"), "/keys", True))
+            if name == telemetry.SERVICE:
+                expected.add(("bind", str(HERE / "otel-collector.yaml"), "/etc/otelcol/factory.yaml", True))
+                if (service.get("environment") != telemetry.credentials(self.directory / telemetry.ENV_FILE)
+                        or not service.get("read_only") or service.get("cap_drop") != ["ALL"]
+                        or any(mount.get("bind", {}).get("create_host_path", False) for mount in service.get("volumes", []))):
+                    raise ProductionRefusal("Collector credential or filesystem isolation differs")
+            elif any(key.startswith("POSTHOG_") for key in service.get("environment", {})):
+                raise ProductionRefusal("PostHog credentials belong only to the Collector")
             if name == "bridge-executor-worker":
                 expected.add(("bind", SOCKET, SOCKET, True))
                 if any(mount.get("bind", {}).get("create_host_path", False) for mount in service.get("volumes", [])):
@@ -212,7 +240,7 @@ class Production(portable.Installation):
             if len(mounts) != len(expected) or {(mount["type"], mount["source"], mount["target"], mount.get("read_only", False)) for mount in mounts} != expected:
                 raise ProductionRefusal("Compose mount boundary differs")
             published = service.get("ports", [])
-            wanted = [("127.0.0.1", self.values[ports[name][0]], ports[name][1])] if name in ports else []
+            wanted = [("127.0.0.1", self.env[ports[name][0]], ports[name][1])] if name in ports else []
             if [(port.get("host_ip"), str(port.get("published")), port["target"]) for port in published] != wanted:
                 raise ProductionRefusal("Compose listener boundary differs")
             if name.endswith("-worker") or name in ("factory-operator", "outbox-dispatcher", "event-ingress"):
@@ -231,12 +259,82 @@ class Production(portable.Installation):
             if not bootstrap._read_private(self.directory / "keys/hatchet" / name):
                 raise ProductionRefusal("saved Hatchet key material is incomplete")
 
+    def record_upgrade(self, image: str, snapshot: Path, *, apply: bool = False) -> None:
+        """Record an image-only upgrade after the operator's stopped migration.
+
+        Never rewrite historical source images: source fencing must continue to
+        validate the retired containers against their original cutover images.
+        """
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image) or image == self.images["factory"]:
+            raise ProductionRefusal("upgrade requires a different exact local Factory image ID")
+        self.preflight()
+        snapshot = state._path(snapshot)
+        if not snapshot.is_dir() or snapshot.stat().st_mode & 0o077:
+            raise ProductionRefusal("upgrade backup must be a private directory")
+        manifest_path = snapshot / "manifest.json"
+        manifest = json.loads(bootstrap._read_private(manifest_path))
+        if (manifest.get("format_version") != 1 or manifest.get("profile") != state.PRODUCTION
+                or manifest.get("project") != self.project
+                or manifest.get("installation_id") != self.metadata["installation_id"]
+                or manifest.get("factory_image") != self.images["factory"]
+                or manifest.get("images") != {value: value for value in self.images.values()}
+                or manifest.get("deployment_sha256") != {name: state._hash(HERE / name) for name in state.deployment_files(state.PRODUCTION, self.metadata)}
+                or set(manifest.get("volumes", [])) != set(state.VOLUMES)
+                or set(manifest.get("sha256", {})) != {
+                    *("config/" + name for name in state.config_files(state.PRODUCTION, self.metadata)),
+                    *("volumes/" + name + ".tar" for name in state.VOLUMES)}):
+            raise ProductionRefusal("upgrade requires this installation's complete current-image cold backup")
+        if state._private_files(snapshot) != {*manifest["sha256"], "manifest.json"}:
+            raise ProductionRefusal("upgrade backup contains unknown or unsafe files")
+        for name, digest in manifest["sha256"].items():
+            if state._hash(snapshot / name) != digest:
+                raise ProductionRefusal("upgrade backup checksum differs")
+        for name in state.config_files(state.PRODUCTION, self.metadata):
+            if bootstrap._read_private(snapshot / "config" / name) != bootstrap._read_private(self.directory / name):
+                raise ProductionRefusal("configuration changed since the upgrade backup")
+        metadata = json.loads(state._docker(["image", "inspect", image], self.env))[0]
+        labels = metadata.get("Config", {}).get("Labels") or {}
+        commit = labels.get("org.opencontainers.image.revision", "")
+        if (metadata.get("Id") != image or metadata.get("Architecture") != "amd64"
+                or labels.get("org.opencontainers.image.source") != "https://github.com/Driftward-LLC/factory"
+                or not re.fullmatch(r"[0-9a-f]{40}", commit)):
+            raise ProductionRefusal("upgrade image lacks exact Factory release provenance")
+        print(f"{'Record' if apply else 'Preview'} image-only upgrade {self.project}: {image}; backup {snapshot}")
+        if not apply:
+            return
+        state._no_writers([self.project + "-" + suffix for suffix in state.PROJECT_VOLUMES], self.env)
+        if any(row.get("State") == "running" for row in self.service_rows()):
+            raise ProductionRefusal("image upgrade requires every candidate service stopped")
+        self.assert_source_fenced()
+        provenance = {**self.provenance, "image_upgrades": [*self.provenance.get("image_upgrades", []), {
+            "previous_image": self.images["factory"], "image": image, "commit": commit,
+            "version": labels.get("org.opencontainers.image.version", ""),
+            "backup": str(snapshot), "backup_manifest_sha256": state._hash(manifest_path),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }]}
+        # Replacements are private and durable; a crash between them fails
+        # constructor validation closed. Recover from the retained cold config,
+        # never start against a mismatched pin/history pair.
+        for relative, content in ((state.PROVENANCE, json.dumps(provenance, sort_keys=True, indent=2) + "\n"),
+                                  (bootstrap.MARKER, json.dumps({**self.metadata, "image": image}, sort_keys=True, indent=2) + "\n"),
+                                  (".env", bootstrap.env_text({**self.values, "FACTORY_IMAGE": image}))):
+            target = self.directory / relative
+            pending = target.with_name(target.name + ".upgrade-pending")
+            bootstrap._create_private(pending, content)
+            os.replace(pending, target)
+        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        print("Upgrade recorded; services remain stopped. Resume only after reviewed schema migration.")
+
     def start(self, *, core: bool, apply: bool, approve_effects: bool = False) -> None:
         # Sibling restores share authority even when their directories/projects
         # differ. This same-host lock covers the scan through container creation.
         with portable.installation_lock(Path("/tmp") / ("factory-tenant-" + self.tenant)) if apply else nullcontext():
             self.preflight()
-            selected = CORE if core else SERVICES
+            selected = CORE if core else self.services
             print(f"{'Start' if apply else 'Preview'} {self.project}: " + ", ".join(selected))
             if not core and not approve_effects:
                 raise ProductionRefusal("activation requires --approve-effects; token refresh alone crosses the rollback boundary")
@@ -259,7 +357,7 @@ class Production(portable.Installation):
     def status(self) -> None:
         self.assert_owned_resources()
         found = {row.get("Service"): row for row in self.service_rows()}
-        for name in SERVICES:
+        for name in self.services:
             row = found.get(name, {})
             print(f"{name}: {row.get('State', 'missing')} ({row.get('Health') or 'no health result'})")
 
@@ -268,8 +366,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
+    telemetry.add_command(sub)
     sub.add_parser("preview", help="read-only startup boundary checks")
     sub.add_parser("status", help="read-only status of all production service roles")
+    upgrade = sub.add_parser("record-upgrade", help="record a reviewed, stopped image-only upgrade with a complete cold backup")
+    upgrade.add_argument("--image", required=True)
+    upgrade.add_argument("--snapshot", required=True, type=Path)
+    upgrade.add_argument("--apply", action="store_true")
     for name in ("core-start", "activate", "stop"):
         command = sub.add_parser(name)
         command.add_argument("--apply", action="store_true")
@@ -306,6 +409,12 @@ def dispatch(args: argparse.Namespace) -> None:
         print("Production boundaries checked; no services started or external effects authorized.")
     elif args.command == "status":
         install.status()
+    elif args.command == "record-upgrade":
+        with portable.installation_lock(Path("/tmp") / ("factory-tenant-" + install.tenant)) if args.apply else nullcontext():
+            install.record_upgrade(args.image, args.snapshot, apply=args.apply)
+    elif args.command == "telemetry":
+        with portable.installation_lock(Path("/tmp") / ("factory-tenant-" + install.tenant)) if args.apply else nullcontext():
+            telemetry.configure(install, args)
     elif args.command in ("core-start", "activate"):
         install.start(core=args.command == "core-start", apply=args.apply, approve_effects=getattr(args, "approve_effects", False))
     elif args.command == "stop":

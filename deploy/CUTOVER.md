@@ -214,6 +214,58 @@ socket do not match the candidate's private dotenv files and volume-backed
 operator socket. Use the scoped production wrapper for lifecycle operations and
 candidate-local operator diagnostics; do not silently use legacy retry commands.
 
+### Reviewed image-only upgrades
+
+After cutover, an explicitly approved Factory image upgrade can retain the
+production tenant, all seven durable volumes, infrastructure images, gateway,
+and the exact three-file Compose layout. Build/pull and schema migration remain
+separate operator actions; `record-upgrade` does neither. Do not rewrite
+`factory_image` or `source_images` in the original cutover provenance to make a
+new release pass: those fields continue to fence the retired source.
+
+Use a production wrapper containing `record-upgrade`, with deployment-file
+hashes identical to the installation's saved bundle. It refuses changes to
+the Compose layout or the Hatchet/Postgres pins. Run `preview`, take a complete
+private cold backup with `backup --apply`, and retain that backup and the old
+image. Rehearse migrations against isolated copies before touching live state.
+Stop every candidate service for the live migration; use the inherited FD-3
+maintenance capability for bridge `init`, never a runtime writer or browser.
+Compare preexisting attempts, jobs, receipts, leases, and outbox records after
+migration. An expired execution lease is not proof that its effect settled.
+
+After the reviewed migration, record the exact local release image ID:
+
+```bash
+python3 deploy/factory-production.py --directory /srv/factory-candidate \
+  record-upgrade --image sha256:<local-image-id> --snapshot /srv/factory-backups/<cold-snapshot>
+python3 deploy/factory-production.py --directory /srv/factory-candidate \
+  record-upgrade --image sha256:<local-image-id> --snapshot /srv/factory-backups/<cold-snapshot> --apply
+```
+
+The command checks the complete snapshot and current configuration, release
+image provenance, stopped candidate writers, and original source fencing. It
+updates the image pin and installation marker and appends `image_upgrades` to
+cutover provenance. Old approved images are accepted only for stopped candidate
+containers while Compose recreates them; running candidates must use the current
+pin. The historical source inventory remains unchanged. Services remain stopped
+until `activate --apply --approve-effects` under the existing activation authority.
+Verify health, image revisions, preserved state, and the private console afterward.
+
+Enable browser controls only in the operator env file with the exact HTTPS
+`FACTORY_CONSOLE_PUBLIC_ORIGIN` and an explicit
+`FACTORY_CONSOLE_OPERATOR_LOGINS` allowlist. Keep development authentication
+bypass disabled and the listener loopback-only behind Tailscale Serve; do not
+make the console public through Funnel. Verify authenticated previews and denial
+of missing identity/cross-origin requests without confirming commands against
+real issues just to test the deployment.
+
+If recording fails between the private metadata replacements, startup fails
+closed. Retain the cold backup and partial files; reconcile all three metadata
+files (`.env`, `.factory-install.json`, `.factory-cutover.json`) before any start.
+An image rollback alone is not a schema rollback: stop writers and review the
+matching cold-state recovery path. Once execution, lifecycle delivery, or token
+refresh resumes, reconcile new effects and token state before restoring a backup.
+
 ## Recovery boundary
 
 Before the candidate starts or makes external effects, the untouched source is

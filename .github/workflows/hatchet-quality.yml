@@ -133,7 +133,9 @@ jobs:
             --build-arg FACTORY_RELEASE_VERSION=ci \
             -f deploy/Dockerfile -t driftward/factory:ci .
       - name: Prove isolated fresh install, restart, and restore
-        run: python3 tools/check_factory_portable.py --image driftward/factory:ci
+        run: |
+          docker pull "$(PYTHONPATH=deploy python3 -c 'import telemetry; print(telemetry.IMAGE)')"
+          python3 tools/check_factory_portable.py --image driftward/factory:ci --telemetry
       - name: Rehearse stopped production-state relocation
         run: python3 tools/check_factory_cutover.py --image driftward/factory:ci
       - name: Check changed-file whitespace

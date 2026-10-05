@@ -1,5 +1,52 @@
 # Portable Factory: first Linux milestone
 
+## Optional execution telemetry
+
+Telemetry stays off unless configured explicitly. Both `factory-portable.py`
+and `factory-production.py` support the same `telemetry` command. Use the wrapper
+that owns the installation; enabling telemetry does not authorize real execution.
+The optional Collector is another service in the same Compose application, not
+another operator-managed deployment. It needs no durable volume.
+
+1. Pull the reviewed Collector image before maintenance:
+   `docker pull otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1`.
+2. Provision a private 0600 generated dotenv file outside the installation with
+   only `POSTHOG_TRACES_ENDPOINT='https://us.i.posthog.com/i/v1/traces'` (or EU)
+   and `POSTHOG_PROJECT_TOKEN='...'`. Never copy unrelated executor credentials.
+3. Take a new cold snapshot with the matching wrapper's `backup PATH --apply`.
+   This stops services. Check active execution before approving this outage.
+4. Preview, then apply:
+   `python3 deploy/factory-production.py --directory /srv/factory-candidate telemetry --snapshot /srv/NEW-SNAPSHOT --credentials /etc/driftward/factory-otel-collector.env --port 4318 [--apply]`.
+   The port is loopback-only. Configure `--paused` initially if dashboard or
+   matching gateway deployment acceptance is still pending.
+5. Run `preview` (production), then resume via `activate --approve-effects --apply`
+   (production) or `up` (portable). Deploy the matching host gateway separately;
+   it receives only `FACTORY_OTEL_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`,
+   never a PostHog key. Verify synthetic ingestion and dashboard readback before
+   claiming end-to-end coverage. See [tracing](../docs/factory-opentelemetry.md).
+
+For subsequent enable/pause operations omit `--credentials`, take another cold
+snapshot, and use the same command with/without `--paused` and the desired port.
+Pausing removes application exporters on recreation; it retains the Collector
+and its credential in backup inventory. Disable the independent gateway's
+endpoint too. Do not restore databases or replay attempts to turn tracing off.
+Credential rotation and uninstall are separate reviewed operations.
+
+Snapshots include the private Collector env, exact image ID, and both deployment
+file hashes. Restore uses the same bundle, leaves services stopped, and sets the
+Collector loopback port to `4318 + --port-offset`. Never resume a retired source
+after token refresh or other external effects without reconciliation. A crash
+between credential creation and marker replacement fails closed; retain the cold
+snapshot and review the pending marker/extra credential before retrying.
+
+Local acceptance (synthetic key; exporters paused, no PostHog calls):
+
+```bash
+python3 tools/check_factory_portable.py --image driftward/factory:local --telemetry
+```
+
+## Base installation
+
 This release installs the existing Factory control plane on a fresh Linux
 Docker host. It does not depend on this VPS's source checkout, `/etc/driftward`,
 host Node/npm, systemd, Hatchet CLI profile, or Hermes socket. It is deliberately
