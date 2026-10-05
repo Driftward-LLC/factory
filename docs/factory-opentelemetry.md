@@ -1,7 +1,8 @@
 # Factory execution tracing (first slice)
 
 Status: implementation/rehearsal only; disabled by default and not activated in
-production. PostHog project 632215 dashboard readback is still an activation gate.
+production. The operator has confirmed native canary readback in PostHog project
+632215; readback of the new OpenTelemetry path remains an activation gate.
 This is not an end-to-end intake/reconciliation/Linear-delivery trace yet.
 
 Factory remains the operator surface. Hermes is an internal executor, not an
@@ -101,7 +102,11 @@ first slice does not silently mutate the active installation's topology.
 
 At current low volume all instrumented spans are sampled. SDK queues are bounded
 to 256 spans, batches to 32, export timeout to about one second and runner flush
-to 1.6 seconds. Collector queues are also bounded. Outages can lose telemetry;
+to 1.6 seconds. After business work settles and that flush returns, the detached
+runner explicitly exits with its business exit code so a stalled exporter socket
+cannot keep it alive. This does not terminate in-progress business work or the
+long-lived gateway. Early setup failures mark the enclosing receipt span as an
+error. Collector queues are also bounded. Outages can lose telemetry;
 they must not retry business work or change its result. Disabling telemetry
 requires removing the endpoint and recreating affected processes, not restoring
 databases or replaying attempts.
@@ -115,7 +120,8 @@ exported spans. No real agent/model/GitHub effect is needed for these tests.
 
 Before live activation:
 
-1. Read back the existing native canary in PostHog project 632215.
+1. Read back the existing native canary in PostHog project 632215 (confirmed by
+   the operator's screenshot; not an OpenTelemetry acceptance result).
 2. Complete the optional deployment-wrapper/package acceptance above.
 3. Verify the Distributed Tracing product and ingestion token belong to that
    same project; query/read credentials are not needed in runtime services.

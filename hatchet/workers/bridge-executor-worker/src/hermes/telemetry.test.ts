@@ -30,6 +30,54 @@ test('canonical trace identity matches deployed observer canary; malformed conte
   delete process.env.FACTORY_OTEL_TRACES_ENDPOINT;
 });
 
+test('actual receipt setup failure marks its outer span and exits even if OTLP never finishes', async () => {
+  for (const stalled of [false, true]) {
+    const batches: any[] = [];
+    const receiver = createServer((req, res) => {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        if (req.url === '/v1/traces') {
+          batches.push(JSON.parse(body));
+          if (stalled) {
+            res.writeHead(200); res.write(' ');
+            const drip = setInterval(() => res.write(' '), 100);
+            res.on('close', () => clearInterval(drip));
+          } else res.end('{}');
+        } else if (req.method === 'GET') {
+          res.writeHead(404); res.end('{}');
+        } else res.end('{}'); // Synthetic durable failure settlement.
+      });
+    }).listen(0, '127.0.0.1');
+    await once(receiver, 'listening');
+    const base = `http://127.0.0.1:${(receiver.address() as any).port}`;
+    const child = spawn(process.execPath, [path.join(__dirname, 'create-draft-pr-receipt-runner.js'), job.job_id], {
+      env: {
+        PATH: process.env.PATH,
+        HATCHET_HERMES_BRIDGE_URL: base,
+        HATCHET_FACTORY_EXECUTION_LEASE: JSON.stringify({ lease_id: 'test', owner: 'test', epoch: 1, fence_token: 'SECRET_FENCE' }),
+        FACTORY_OTEL_TRACES_ENDPOINT: `${base}/v1/traces`,
+        FACTORY_TRACEPARENT: '00-fb9fa7e140655818af723e41a35fe39a-123456789abcdef0-01',
+      }, stdio: 'ignore',
+    });
+    // The fake bridge cannot authorize execution; no provider/Hatchet credentials
+    // or failure-event key are supplied to this real entrypoint.
+    const watchdog = setTimeout(() => child.kill('SIGKILL'), 4000);
+    try {
+      const [code, signal] = await once(child, 'exit');
+      assert.equal(signal, null, 'receipt exceeded the bounded export shutdown');
+      assert.equal(code, 1, 'preserve the original business failure exit code');
+      const spans = batches.flatMap(b => b.resourceSpans.flatMap((r: any) => r.scopeSpans.flatMap((s: any) => s.spans)));
+      assert.equal(spans.find(s => s.name === 'factory.receipt.start')?.status.code, 2);
+      assert(!JSON.stringify(batches).includes('SECRET_'));
+    } finally {
+      clearTimeout(watchdog);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      receiver.closeAllConnections(); receiver.close();
+    }
+  }
+});
+
 test('SDK exports bounded metadata across process and HTTP boundaries; concurrent attempts stay separate', async () => {
   const batches: any[] = [];
   const receiver = createServer((req, res) => {

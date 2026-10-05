@@ -356,10 +356,18 @@ function parseLease(raw: string | undefined): FactoryExecutionLease {
 }
 
 if (require.main === module) {
-  withExecutionSpan('factory.receipt.start', main, {
+  withExecutionSpan('factory.receipt.start', async () => {
+    await main();
+    if (process.exitCode) markExecutionTelemetryFailure();
+  }, {
     parent: process.env.FACTORY_TRACEPARENT, service: 'factory-receipt-runner',
   }).catch((error) => {
     console.error(sanitizeText(error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
-  }).finally(flushExecutionTelemetry);
+  }).finally(async () => {
+    await flushExecutionTelemetry();
+    // All business work has settled. A stalled exporter socket must not keep
+    // this detached process alive after its bounded best-effort flush.
+    process.exit(process.exitCode || 0);
+  });
 }
