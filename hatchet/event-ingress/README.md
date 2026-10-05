@@ -130,7 +130,7 @@ review activity.
 - Optional env: `/etc/driftward/hatchet-event-ingress.env`
 - Hatchet token: inherited from `/etc/driftward/hatchet-workers.env`
 - Public proxy Compose service: `linear-webhook-proxy`
-- Public Linear webhook URL: `https://srv1379035.tail5c6a78.ts.net/events/linear/issue`
+- Public Linear webhook URL: `https://srv1379035.tail410dca.ts.net/events/linear/issue`
 
 The full ingress service binds to `127.0.0.1` only. The public webhook URL is a
 Tailscale Funnel route to a narrow proxy on `127.0.0.1:19879`; that proxy only

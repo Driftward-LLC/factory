@@ -12,7 +12,7 @@ Compose application and remains intentionally local-only and low-volume. See
 - Systemd unit: `driftward-factory.service`
 - Compose project: `driftward-factory`
 - Local dashboard/API: `http://127.0.0.1:8888`
-- Private dashboard/API URL: `https://srv1379035.tail5c6a78.ts.net:8888/`
+- Private dashboard/API URL: `https://srv1379035.tail410dca.ts.net:8888/`
 - Local Factory Console: `http://127.0.0.1:19881`
 - Worker gRPC: `127.0.0.1:7077`
 - Health port: `127.0.0.1:8733`
@@ -80,7 +80,7 @@ Runtime:
 - Public Linear webhook proxy: `linear-webhook-proxy`
 - Database: `/var/lib/driftward-hatchet-event-ingress/ingress.db`
 - Local API: `http://127.0.0.1:19878`
-- Public Linear webhook URL: `https://srv1379035.tail5c6a78.ts.net/events/linear/issue`
+- Public Linear webhook URL: `https://srv1379035.tail410dca.ts.net/events/linear/issue`
 
 Supported events:
 
