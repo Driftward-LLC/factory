@@ -27,15 +27,24 @@ PRODUCTION = "same-host-production"
 PROVENANCE = ".factory-cutover.json"
 
 
-def deployment_files(profile: str) -> tuple[str, ...]:
+def deployment_files(profile: str, metadata: dict | None = None) -> tuple[str, ...]:
     if profile not in {"portable-dry-run", PRODUCTION}:
         raise ValueError("unsupported installation profile")
-    return (*DEPLOYMENT_FILES, "compose.production.yml") if profile == PRODUCTION else DEPLOYMENT_FILES
+    files = (*DEPLOYMENT_FILES, "compose.production.yml") if profile == PRODUCTION else DEPLOYMENT_FILES
+    if metadata and metadata.get("telemetry") is not None:
+        import telemetry
+        telemetry.validate(metadata)
+        files = (*files, *telemetry.FILES)
+    return files
 
 
-def config_files(profile: str) -> set[str]:
-    deployment_files(profile)  # Reject unknown profiles before selecting files.
-    return CONFIG_FILES | ({PROVENANCE} if profile == PRODUCTION else set())
+def config_files(profile: str, metadata: dict | None = None) -> set[str]:
+    deployment_files(profile, metadata)  # Reject unknown profiles before selecting files.
+    files = CONFIG_FILES | ({PROVENANCE} if profile == PRODUCTION else set())
+    if metadata and metadata.get("telemetry") is not None:
+        import telemetry
+        files = files | {telemetry.ENV_FILE}
+    return files
 
 
 def read_provenance(path: Path) -> dict:
@@ -117,7 +126,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     snapshot = _path(snapshot)
     metadata, values = bootstrap.validate_directory(source)
     profile = metadata.get("profile", "portable-dry-run")
-    expected_config = config_files(profile)
+    expected_config = config_files(profile, metadata)
     if profile == PRODUCTION:
         if read_provenance(source / PROVENANCE).get("destination_project") != metadata["project"]:
             raise ValueError("production provenance names a different installation")
@@ -163,7 +172,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
         "format_version": 1, "project": installation.project, "installation_id": metadata["installation_id"],
         "factory_image": values["FACTORY_IMAGE"], "images": image_ids, "volumes": volumes, "sha256": hashes,
         "profile": profile,
-        "deployment_sha256": {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile)},
+        "deployment_sha256": {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile, metadata)},
     }, sort_keys=True, indent=2) + "\n")
     print("Backup complete; installation remains stopped. Resume only through its matching operations wrapper after review.")
 
@@ -179,8 +188,9 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     profile = manifest.get("profile", "portable-dry-run")
     if (profile == PRODUCTION) != production:
         raise ValueError("snapshot profile requires its matching operations wrapper")
-    expected_config = config_files(profile)
-    if manifest.get("deployment_sha256") != {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile)}:
+    marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
+    expected_config = config_files(profile, marker)
+    if manifest.get("deployment_sha256") != {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile, marker)}:
         raise ValueError("restore requires the same deployment bundle; cross-version restore is unsupported")
     if directory.exists() or snapshot == directory or snapshot in directory.parents:
         raise ValueError("restore requires a new directory outside the snapshot")
@@ -224,10 +234,18 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         raise ValueError("snapshot does not identify its Factory image")
     if production:
         pins = {values[name] for name in ("FACTORY_IMAGE", "FACTORY_POSTGRES_IMAGE", "FACTORY_HATCHET_IMAGE")}
+        if marker.get("telemetry"):
+            pins.add(marker["telemetry"]["image"])
         if (any(not re.fullmatch(r"sha256:[0-9a-f]{64}", image) for image in pins)
                 or manifest["images"] != {image: image for image in pins}):
             raise ValueError("production restore requires exact saved local image IDs; never pull")
     print(f"Restore {len(volumes)} cold volumes into new project {project} at {directory}; leave stopped")
+    if marker.get("telemetry"):
+        import telemetry
+        telemetry.credentials(snapshot / "config" / telemetry.ENV_FILE)
+        # As with other listeners, restore offsets from the default, not source.
+        marker["telemetry"]["port"] = 4318 + port_offset
+        telemetry.validate(marker)
     if not apply:
         return
     for image, image_id in manifest["images"].items():

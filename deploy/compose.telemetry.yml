@@ -1,8 +1,10 @@
-# Opt-in source-checkout rehearsal only. See docs/factory-opentelemetry.md.
-# Production/portable wrappers intentionally reject this unreviewed topology.
+# Opt-in via the portable/production wrapper's telemetry command.
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1 # 0.161.0
+    image: ${FACTORY_OTEL_COLLECTOR_IMAGE:?Use the telemetry operations command}
+    labels:
+      io.driftward.factory.installation: ${FACTORY_INSTALLATION_ID:?}
+      io.driftward.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?}
     command: ["--config=/etc/otelcol/factory.yaml"]
     restart: unless-stopped
     read_only: true
@@ -13,13 +15,18 @@ services:
     env_file:
       - ${FACTORY_OTEL_COLLECTOR_ENV_FILE:?Set a dedicated collector-only env file}
     volumes:
-      - ${FACTORY_SOURCE_ROOT:?Set the reviewed source root}/deploy/otel-collector.yaml:/etc/otelcol/factory.yaml:ro
+      - type: bind
+        source: ${FACTORY_OTEL_COLLECTOR_CONFIG:?Use the telemetry operations command}
+        target: /etc/otelcol/factory.yaml
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
       - "127.0.0.1:${FACTORY_OTEL_PORT:-4318}:4318"
     networks: [factory]
   bridge:
     environment:
-      FACTORY_OTEL_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      FACTORY_OTEL_TRACES_ENDPOINT: ${FACTORY_OTEL_INTERNAL_ENDPOINT-}
   bridge-executor-worker:
     environment:
-      FACTORY_OTEL_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      FACTORY_OTEL_TRACES_ENDPOINT: ${FACTORY_OTEL_INTERNAL_ENDPOINT-}

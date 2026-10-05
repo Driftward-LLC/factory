@@ -15,6 +15,7 @@ import sys
 
 import bootstrap
 import portable_state
+import telemetry
 
 HERE = Path(__file__).resolve().parent
 SERVICES = (
@@ -103,6 +104,7 @@ class Installation:
         self.args = ["docker", "compose", "--project-name", self.project,
                      "--project-directory", str(self.directory), "--env-file", str(self.directory / ".env"),
                      "-f", str(HERE / "docker-compose.yml"), "-f", str(HERE / "compose.portable.yml")]
+        telemetry.attach(self, SERVICES)
 
     def compose(self, *args: str, private: bool = False) -> str:
         return run([*self.args, *args], env=self.env, private=private)
@@ -155,7 +157,7 @@ class Installation:
         self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "bridge",
                      "/app/hatchet/bridge/maintenance_lock_exec.py", "exec", "python3", "-m", "hatchet_hermes_bridge.cli", "init", private=True)
         self.compose("run", "--rm", "--no-deps", "--entrypoint", "python3", "event-ingress", "-m", "hatchet_event_ingress.cli", "init", private=True)
-        self.compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "180", *SERVICES)
+        self.compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "180", *self.services)
         self.status()
 
     def status(self) -> None:
@@ -163,7 +165,7 @@ class Installation:
         rows = json.loads(raw) if raw.strip().startswith("[") else [json.loads(line) for line in raw.splitlines() if line.strip()]
         found = {row["Service"]: row for row in rows if not row.get("Service") == "keygen"}
         failed = []
-        for service in SERVICES:
+        for service in self.services:
             row = found.get(service, {})
             state, health = row.get("State", "missing"), row.get("Health", "")
             print(f"{service}: {state}" + (f" ({health})" if health else ""))
@@ -179,6 +181,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, type=Path, help="private installation directory (not the source checkout)")
     sub = parser.add_subparsers(dest="command", required=True)
+    telemetry.add_command(sub)
     init = sub.add_parser("init", help="preview a fresh installation; --apply writes new private configuration")
     init.add_argument("--image", help="explicit release digest or local development image")
     init.add_argument("--project", required=True, help="unique factory or factory-NAME Compose namespace")
@@ -189,7 +192,7 @@ def main() -> int:
     sub.add_parser("status", help="inspect this installation only")
     sub.add_parser("stop", help="stop services; retain all volumes and credentials")
     logs = sub.add_parser("logs", help="view logs for one service")
-    logs.add_argument("service", choices=SERVICES)
+    logs.add_argument("service", choices=(*SERVICES, telemetry.SERVICE))
     backup = sub.add_parser("backup", help="preview a private cold snapshot; --apply stops this project")
     backup.add_argument("snapshot", type=Path)
     backup.add_argument("--apply", action="store_true")
@@ -226,7 +229,7 @@ def dispatch(args: argparse.Namespace) -> int:
     elif args.command == "status":
         install.status()
     elif args.command == "pull":
-        install.compose("pull", *SERVICES, "keygen")
+        install.compose("pull", *install.services, "keygen")
     elif args.command == "stop":
         install.assert_owned_resources()
         install.compose("stop")
@@ -234,6 +237,8 @@ def dispatch(args: argparse.Namespace) -> int:
         install.compose("logs", "--tail", "100", args.service)
     elif args.command == "backup":
         portable_state.backup(install, args.snapshot, apply=args.apply)
+    elif args.command == "telemetry":
+        telemetry.configure(install, args)
     return 0
 
 
