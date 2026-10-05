@@ -84,6 +84,13 @@ const consoleRoot = resolve(__dirname, '../factory/console');
       await visit(story.id);
       assert(await page.locator('#storybook-root > *').count(), `Empty story ${story.id}`);
     }
+    await visit('factory-agenttrace--configured');
+    assert.equal(await page.getByRole('link').getAttribute('target'), '_blank');
+    assert.match(await page.locator('.agent-trace').textContent(), /availability unverified/);
+    for (const state of ['historical', 'not-configured', 'dry-run', 'unsafe-url', 'wrong-attempt']) {
+      await visit('factory-agenttrace--' + state);
+      assert.equal(await page.locator('.agent-trace a').count(), 0, state + ' must not link');
+    }
     await visit('components-button--default');
     assert.equal(await page.getByRole('button').getAttribute('type'), 'button');
     await page.keyboard.press('Tab');

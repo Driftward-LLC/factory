@@ -76,6 +76,8 @@ td:last-child { color: var(--muted); font-size: .75rem; }
 .issue-link { color: #dedee6; font-size: .8125rem; font-weight: 500; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
 .issue-link:hover { color: var(--blue); }
 .artifact-link { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: #bebfc9; font-size: .75rem; }
+.agent-trace { margin-top: 6px; }
+.agent-trace small { display: block; white-space: normal; }
 .empty { padding: 36px 16px; color: var(--muted); text-align: center; font-size: .8125rem; }
 .overview-secondary { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 32px; margin-top: 28px; }
 .overview-secondary .panel { margin: 0; }
@@ -257,7 +259,7 @@ dd { margin: 3px 0 0; overflow-wrap: anywhere; font-family: ui-monospace, monosp
   .inspect-link { display: inline-flex; min-height: 44px; align-items: center; font-size: .8125rem; }
   .attempt-list details { margin-top: 2px; border: 0; border-radius: 0; background: transparent; padding: 0; }
   .attempt-list summary { color: var(--muted); font-size: .75rem; }
-  .attempt-list dd a { display: inline-flex; align-items: center; min-height: 44px; }
+  .attempt-list dd a, .attempt-list .agent-trace a { display: inline-flex; align-items: center; min-height: 44px; }
   .queue-label { font-size: .75rem; }
   .queue-label svg { width: 14px; height: 14px; }
   .queue-arrow { display: none; }

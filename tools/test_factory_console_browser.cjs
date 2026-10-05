@@ -25,11 +25,19 @@ const verified = record('ENG-102', 1, 'verified_ready');
 const simulated = record('ENG-103', 1, 'verified_ready', 'dry-run', 'Driftward-LLC/driftward-host');
 const unknown = record('ENG-104', 1, 'effect_outcome_unknown');
 const verifying = record('ENG-107', 1, 'verification_pending');
+const traceBase = 'https://us.posthog.com/project/12345/ai-observability/traces/';
+for (const [index, item] of [running, failed, verified].entries()) {
+  item.agent_trace = { attempt_id: item.attempt.attempt_id, status: 'unverified', url: traceBase + `fb9fa7e1-4065-5818-af72-3e41a35fe39${index}` };
+}
+simulated.agent_trace = { ...verified.agent_trace, attempt_id: simulated.attempt.attempt_id };
+unknown.agent_trace = { ...verified.agent_trace }; // Wrong-attempt projection must not link.
+verifying.agent_trace = { attempt_id: verifying.attempt.attempt_id, status: 'not_configured', url: null };
 const unrecognized = record('ENG-105', 1, 'constructor');
 unrecognized.job.pr_url = 'javascript:alert(1)';
 const malicious = record('ENG-106', 1, 'failed');
 malicious.job.payload.repo = '<img src=x onerror=alert(1)>';
 malicious.job.pr_url = 'https://github.com/attacker/repo/pull/1';
+malicious.agent_trace = { attempt_id: malicious.attempt.attempt_id, status: 'unverified', url: 'https://us.posthog.com.attacker.example/project/12345/ai-observability/traces/fb9fa7e1-4065-5818-af72-3e41a35fe39a' };
 const records = [running, failed, verified, simulated, unknown, unrecognized, malicious, verifying];
 function overview() {
   return {
@@ -240,6 +248,21 @@ async function main() {
     assert.equal(await page.locator('#work-attempts a[href^="javascript:"]').count(), 0);
     assert.equal(await page.locator('#work-attempts a[href*="attacker"]').count(), 0);
     assert.equal(await page.locator('#work-attempts img').count(), 0);
+    const traces = page.locator('#work-attempts .agent-trace a');
+    assert.equal(await traces.count(), 3);
+    assert.equal(await traces.first().getAttribute('target'), '_blank');
+    assert.equal(await traces.first().getAttribute('rel'), 'noopener noreferrer');
+    assert.equal(new Set(await traces.evaluateAll(links => links.map(link => link.href))).size, 3);
+    assert.match(await page.locator('#work-attempts').textContent(), /PostHog not configured/);
+    assert.match(await page.locator('#work-attempts').textContent(), /not applicable \(dry run\)/);
+    await page.context().route('https://us.posthog.com/**', route => route.fulfill({ body: 'Fictional trace destination' }));
+    await traces.first().focus();
+    const popupPromise = page.waitForEvent('popup');
+    await page.keyboard.press('Enter');
+    const popup = await popupPromise;
+    await popup.waitForLoadState();
+    assert(popup.url().startsWith(traceBase));
+    await popup.close();
     await page.locator('[data-work-scope="active"]').focus();
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('#status-filter').inputValue(), 'active');
@@ -269,6 +292,7 @@ async function main() {
     assert.equal(await page.locator('[data-view="work"]').isVisible(), false);
     assert.match(await page.locator('#next-step').textContent(), /confirm its current head/);
     assert.match(await page.locator('#artifact-note').textContent(), /not live GitHub state or review approval/);
+    assert.equal(await page.locator('#issue-attempts .agent-trace a').getAttribute('href'), verified.agent_trace.url);
     const evidencePanel = page.locator('.verification-evidence');
     assert.match(await evidencePanel.textContent(), /matches the verified SHA/);
     assert.match(await evidencePanel.textContent(), /Independent reviewUnavailable in this view/);
@@ -299,6 +323,12 @@ async function main() {
     for (const width of [320, 700, 1024, 1440]) {
       await page.setViewportSize({ width, height: 1080 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Evidence overflow at ' + width);
+      if (width === 320) {
+        const trace = page.locator('#issue-attempts-mobile .agent-trace a');
+        assert.equal(await trace.isVisible(), true);
+        assert.equal(await trace.getAttribute('href'), verified.agent_trace.url);
+        assert((await trace.boundingBox()).height >= 44, 'Mobile trace link touch target');
+      }
       if (width === 320) await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-evidence-mobile.png'), fullPage: true });
     }
     await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });

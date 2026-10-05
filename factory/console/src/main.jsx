@@ -20,6 +20,7 @@ import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMa
 import Analytics from './Analytics.jsx';
 import VerificationEvidence from './VerificationEvidence.jsx';
 import IssueControl from './IssueControl.jsx';
+import AgentTrace from './AgentTrace.jsx';
 import {
   activeStates,
   terminalStates,
@@ -199,7 +200,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
               <th>Stage</th>
               <th>Mode</th>
               {!detail && <th>Elapsed</th>}
-              <th>Pull request</th>
+              <th>Links</th>
               <th>Updated</th>
             </tr>
           </thead>
@@ -246,6 +247,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
                     )}
                     <td>
                       <Artifact record={record} />
+                      <AgentTrace record={record} />
                     </td>
                     <td>{time(attempt.updated_at)}</td>
                   </tr>
@@ -276,6 +278,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
                   <Pill status={attempt.status} />
                 </div>
                 <p className="attempt-action">{nextAction(record)}</p>
+                <AgentTrace record={record} />
                 {!detail && issuePattern.test(attempt.work_item_key) && (
                   <RouteLink
                     {...navigation}
