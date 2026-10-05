@@ -103,6 +103,21 @@ class CollectorProductionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "only a PostHog"):
                 production.Production(self.directory)
 
+    def test_portable_pull_uses_registry_digest_not_local_id(self):
+        # Reuse only the synthetic base config; no production mutation or pull.
+        marker = self.directory / bootstrap.MARKER
+        metadata = json.loads(marker.read_text())
+        metadata["profile"] = "portable-dry-run"
+        marker.write_text(json.dumps(metadata))
+        enable(self.directory)
+        portable = production.portable
+        with patch.object(portable.Installation, "compose") as compose, \
+                patch.object(portable, "run") as run, patch.object(state, "_docker", return_value=feature()["image"]):
+            portable.dispatch(argparse.Namespace(command="pull", directory=self.directory))
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0], ["docker", "pull", telemetry.IMAGE])
+            self.assertNotIn(telemetry.SERVICE, compose.call_args.args)
+
 
 class CollectorStateTests(unittest.TestCase):
     setUp = state_tests.PortableStateTests.setUp

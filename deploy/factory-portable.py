@@ -229,7 +229,13 @@ def dispatch(args: argparse.Namespace) -> int:
     elif args.command == "status":
         install.status()
     elif args.command == "pull":
-        install.compose("pull", *install.services, "keygen")
+        if telemetry.SERVICE in install.services:
+            # Compose cannot pull a local image ID. Fetch its reviewed digest,
+            # then verify it still resolves to the installation's saved ID.
+            run(["docker", "pull", telemetry.IMAGE], env=install.env, private=True)
+            if portable_state._docker(["image", "inspect", "--format", "{{.Id}}", telemetry.IMAGE], install.env) != install.metadata["telemetry"]["image"]:
+                raise ValueError("Collector image differs from its saved pin")
+        install.compose("pull", *(name for name in install.services if name != telemetry.SERVICE), "keygen")
     elif args.command == "stop":
         install.assert_owned_resources()
         install.compose("stop")
