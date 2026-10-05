@@ -6,6 +6,7 @@ import re
 import socket
 import sqlite3
 import threading
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,25 @@ def _mode() -> str:
     return "real" if os.environ.get("HATCHET_INTAKE_DRY_RUN", "true").strip().lower() == "false" else "dry-run"
 
 
+def _with_agent_trace(record: dict[str, Any]) -> dict[str, Any]:
+    """Navigation only, not proof of ingestion or execution completion."""
+    attempt = record["attempt"]
+    trace = {"attempt_id": attempt["attempt_id"], "status": "unavailable", "url": None}
+    project = os.environ.get("FACTORY_CONSOLE_POSTHOG_PROJECT_URL", "")
+    lineage = ((record.get("job") or {}).get("payload") or {}).get("factory_retry")
+    if attempt.get("mode") == "dry-run":
+        trace["status"] = "not_applicable"
+    elif not re.fullmatch(r"https://(?:us|eu|app)\.posthog\.com/project/[1-9][0-9]*/?", project):
+        trace["status"] = "not_configured"
+    elif (attempt.get("mode") == "real" and isinstance(lineage, dict)
+          and lineage.get("attempt_id") == attempt["attempt_id"]
+          and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt["attempt_id"])):
+        # Matches the Hermes observer's attempt-scoped UUIDv5 contract.
+        trace_id = uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:trace:attempt:{attempt['attempt_id']}")
+        trace.update(status="unverified", url=f"{project.rstrip('/')}/ai-observability/traces/{trace_id}")
+    return {**record, "agent_trace": trace}
+
+
 def _allow_unauthenticated() -> bool:
     return os.environ.get("FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED", "").strip().lower() in {"1", "true", "yes"}
 
@@ -120,8 +140,8 @@ def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None) ->
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "viewer": viewer,
             "mode": _mode(),
-            "active_attempts": list_active_factory_attempts(conn),
-            "recent_attempts": list_recent_factory_attempts(conn),
+            "active_attempts": [_with_agent_trace(row) for row in list_active_factory_attempts(conn)],
+            "recent_attempts": [_with_agent_trace(row) for row in list_recent_factory_attempts(conn)],
             "status_counts": _status_counts(conn),
             "reconciliation": reconciliation_findings_status(conn),
             "lifecycle_outbox": _lifecycle_status(lifecycle_db_path),
@@ -142,6 +162,7 @@ def lifecycle(db_path: str, issue: str) -> dict[str, Any]:
         with conn:
             conn.execute("BEGIN")
             report = get_factory_lifecycle(conn, issue)
+            report["attempts"] = [_with_agent_trace(row) for row in report["attempts"]]
             report["verification_evidence"] = attempt_evidence(conn, report["attempts"][0]) if report["attempts"] else None
             return report
     finally:

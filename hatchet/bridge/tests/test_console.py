@@ -115,6 +115,24 @@ class FactoryConsoleTests(unittest.TestCase):
         self.assertIn("/api/lifecycle/{issue}", schema["paths"])
         self.assertIn("/api/analytics", schema["paths"])
 
+    def test_agent_trace_on_both_read_only_endpoints(self):
+        from hatchet_hermes_bridge.store import reserve_factory_retry
+        from test_store import verifier_payload
+        conn = connect_runtime(self.db)
+        with patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "hatchet/workers/verifier-policy.json")}):
+            attempt, _, _ = reserve_factory_retry(conn, work_item_key="ENG-120", mode="real",
+                request_id="trace", reason="trace test", actor="test", payload=verifier_payload("Driftward-LLC/capykit"))
+        conn.close()
+        before = Path(self.db).read_bytes()
+        with patch.dict(os.environ, {"FACTORY_CONSOLE_POSTHOG_PROJECT_URL": "https://us.posthog.com/project/12345"}):
+            overview = json.loads(self.get("/api/overview")[2])
+            lifecycle = json.loads(self.get("/api/lifecycle/ENG-120")[2])
+        trace = next(row["agent_trace"] for row in overview["active_attempts"] if row["attempt"]["attempt_id"] == attempt["attempt_id"])
+        self.assertEqual(trace, next(row["agent_trace"] for row in overview["recent_attempts"] if row["attempt"]["attempt_id"] == attempt["attempt_id"]))
+        self.assertEqual(trace, lifecycle["attempts"][0]["agent_trace"])
+        self.assertEqual(trace["status"], "unverified")
+        self.assertEqual(Path(self.db).read_bytes(), before)
+
     def test_invalid_issue_is_rejected(self):
         with self.assertRaises(HTTPError) as raised:
             self.get("/api/lifecycle/not-an-issue")

@@ -2,6 +2,30 @@
 
 Main operator-facing CLI for Driftward factory operations.
 
+Factory is the operator surface. Hermes is an internal execution layer;
+operators do not need to chat with it. Use interactive development sessions for
+deeper investigation and PostHog for agent diagnostics.
+
+### Agent trace links
+
+Set `FACTORY_CONSOLE_POSTHOG_PROJECT_URL` in the active installation's
+`env/factory-operator.env` (legacy host: `/etc/driftward/factory-operator.env`)
+to your browser project URL, for example `https://us.posthog.com/project/12345`.
+This is public navigation configuration, not an API key. US, EU and legacy app
+PostHog Cloud hosts are supported; ingestion hosts and self-hosted URLs are not.
+Recreate the operator service through the reviewed deployment procedure to load
+configuration changes. No executor credentials or PostHog query key belong in
+Factory. The console makes no PostHog requests until the user follows the link.
+
+Overview, Work and issue history show **Open agent trace** for real attempts
+whose sealed job lineage matches the attempt. Each retry opens its own trace.
+Dry runs, missing lineage, and absent/invalid project configuration are explicit
+non-link states. Links use the Hermes observer's attempt UUIDv5 contract and
+PostHog's [trace route](https://github.com/PostHog/posthog/blob/master/products/ai_observability/manifest.tsx).
+Link availability does not confirm event ingestion. Older runs may predate
+correlation, events may be missing, and PostHog access/retention still apply.
+Telemetry cannot authorize manual editing or change Factory ownership.
+
 This sits beside `hatchet/` and `deploy/` because it is not the workflow engine,
 the deployment wrapper, or the execution runtime. It is the human control
 surface over those systems.

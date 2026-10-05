@@ -11,6 +11,11 @@ Use the actual product screens, rather than Linear's marketing page, as the
 reference for navigation, list density, status icons, and surface hierarchy.
 Factory retains its own identity, explicit operator approvals, and evidence semantics.
 
+Factory is the operator surface; Hermes is an internal execution layer, not a
+chat interface operators must use. Interactive development sessions support
+deeper investigation. Attempt links may open PostHog diagnostics, but telemetry
+never grants execution authority or confirms safe manual takeover.
+
 Shared components, theme tokens, and icons live in the `@driftward/ui` workspace
 at `factory/console/ui/`. Storybook renders the same implementations as the
 console. See [the design system guide](docs/design-system.md) for the catalog,
