@@ -98,7 +98,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       const repo = requiredString(request.repo, 'repo');
       const prNumber = requiredPositiveInt(request.prNumber, 'pr_number');
       const timeout = positiveInt(request.timeoutMs, 30_000);
-      const observation = await inspectDraftPullRequestViaCommand(repo, prNumber, timeout, 1024 * 1024);
+      const observation = await inspectDraftPullRequestViaCommand(repo, prNumber, timeout);
       return draftPrObservationResponse(observation);
     }),
     inspectPullRequestState: unary(target, async (request: InspectPullRequestStateRequest) => {

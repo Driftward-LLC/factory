@@ -6,7 +6,43 @@ import path from 'node:path';
 import test from 'node:test';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
-import { resolveHermesGatewayProtoPath } from './hermes-gateway-client';
+import { inspectDraftPullRequestViaGrpc, resolveHermesGatewayProtoPath } from './hermes-gateway-client';
+import { NonRetryableBridgeExecutionError } from './errors';
+
+test('real gateway uses the shared bounded PR inspection default', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'hermes-gateway-inspection-'));
+  const previousTarget = process.env.DRIFTWARD_HERMES_GRPC_TARGET;
+  try {
+    writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('view')) process.stdout.write('{"changedFiles":1}');
+else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'README.md'}) + '\\n');
+else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padEnd(Number(process.env.TEST_DIFF_BYTES), '+'));
+else process.exit(1);
+`, { mode: 0o700 });
+    for (const diffBytes of [1536 * 1024, 3 * 1024 * 1024]) {
+      await withGateway({ PATH: `${directory}${path.delimiter}${process.env.PATH || ''}`, DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', TEST_DIFF_BYTES: String(diffBytes) }, async (target) => {
+        process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+        if (diffBytes < 2 * 1024 * 1024) {
+          const observation = await inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 77, 5000);
+          assert.equal(Buffer.byteLength(observation.diffText), diffBytes);
+        } else {
+          await assert.rejects(inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 77, 5000), (error: unknown) => {
+            assert.ok(error instanceof NonRetryableBridgeExecutionError);
+            assert.equal(error.reasonCode, 'hermes_process_output_limit_exceeded');
+            assert.equal(error.bufferExceeded, true);
+            assert.doesNotMatch(error.message, /PRIVATE_DIFF_CONTENT/);
+            return true;
+          });
+        }
+      }, `unix://${path.join(directory, 'gateway.sock')}`);
+    }
+  } finally {
+    if (previousTarget === undefined) delete process.env.DRIFTWARD_HERMES_GRPC_TARGET;
+    else process.env.DRIFTWARD_HERMES_GRPC_TARGET = previousTarget;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('gateway transport authenticates TCP callers before handling requests', async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'hermes-gateway-auth-'));

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { BridgeClient, BridgeJob } from '@driftward/hatchet-worker-shared';
@@ -8,6 +9,7 @@ import {
   buildPrompt,
   boundedHermesDraftPrReceipt,
   classifyHermesCommandFailure,
+  DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES,
   factoryExecutionAnalyticsIdentity,
   factoryExecutionRouteSelection,
   findAddedTempFileReference,
@@ -16,6 +18,7 @@ import {
   hermesReceiptEventScope,
   hermesReceiptWaitDuration,
   jobMatchesHermesDraftPrReceipt,
+  inspectDraftPullRequestViaCommand,
   NonRetryableBridgeExecutionError,
   preflightHermesCreateDraftPr,
   resumeHermesDraftPrResult,
@@ -35,6 +38,78 @@ import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+
+test('PR inspection accepts a large bounded diff and classifies overflow without leaking output', async () => {
+  const commandDirectory = mkdtempSync(path.join(tmpdir(), 'factory-pr-inspection-'));
+  const previousPath = process.env.PATH;
+  const previousRuntimeUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+  const diffBytes = 1536 * 1024;
+  try {
+    writeFileSync(path.join(commandDirectory, 'docker'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 1 })))});
+else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'tests/cli.test.ts'}) + '\\n');
+else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padEnd(${diffBytes}, '+'));
+else process.exit(1);
+`, { mode: 0o700 });
+    process.env.PATH = `${commandDirectory}${path.delimiter}${previousPath || ''}`;
+    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
+    const observation = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 77, 5000);
+    assert.equal(Buffer.byteLength(observation.diffText), diffBytes);
+    assert.ok(diffBytes < DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES);
+    await assert.rejects(
+      inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 77, 5000, 1024 * 1024),
+      (error: unknown) => {
+        assert.ok(error instanceof NonRetryableBridgeExecutionError);
+        assert.equal(error.reasonCode, 'hermes_process_output_limit_exceeded');
+        assert.equal(error.bufferExceeded, true);
+        assert.ok(!error.message.includes('PRIVATE_DIFF_CONTENT'));
+        return true;
+      },
+    );
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousRuntimeUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+    else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousRuntimeUser;
+    rmSync(commandDirectory, { recursive: true, force: true });
+  }
+});
+
+test('PR inspection includes paths beyond file 100 and rejects incomplete or duplicate file evidence', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-pr-files-'));
+  const previous = { path: process.env.PATH, user: process.env.DRIFTWARD_HERMES_RUNTIME_USER, mode: process.env.TEST_FILE_MODE };
+  try {
+    writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 101 })))});
+else if (args.includes('api')) {
+  const files = Array.from({length:100}, (_,i)=>({path:'src/file-'+i+'.ts'}));
+  if (process.env.TEST_FILE_MODE !== 'incomplete') files.push({path:process.env.TEST_FILE_MODE === 'duplicate' ? files[0].path : '.github/workflows/hidden.yml'});
+  process.stdout.write(files.map(JSON.stringify).join('\\n')+'\\n');
+} else if (args.includes('diff')) process.stdout.write('diff --git a/README.md b/README.md');
+else process.exit(1);
+`, { mode: 0o700 });
+    process.env.PATH = `${directory}${path.delimiter}${previous.path || ''}`;
+    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
+    process.env.TEST_FILE_MODE = 'complete';
+    const observation = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 61, 5000);
+    assert.equal(observation.files?.length, 101);
+    assertFailure(() => verifyDraftPrEvidence(greenJob(), greenResult(), observation), 'verification_changed_file_forbidden');
+    for (const mode of ['incomplete', 'duplicate']) {
+      process.env.TEST_FILE_MODE = mode;
+      await assert.rejects(inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 61, 5000),
+        (error: unknown) => error instanceof NonRetryableBridgeExecutionError
+          && error.reasonCode === (mode === 'incomplete' ? 'verification_evidence_unavailable' : 'verification_changed_file_scope_invalid'));
+    }
+  } finally {
+    for (const [name, value] of [['PATH', previous.path], ['DRIFTWARD_HERMES_RUNTIME_USER', previous.user], ['TEST_FILE_MODE', previous.mode]]) {
+      if (value === undefined) delete process.env[name!];
+      else process.env[name!] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('Hermes observability uses bounded sealed lineage, not issue content or ambient metadata', () => {
   const job = greenJob();

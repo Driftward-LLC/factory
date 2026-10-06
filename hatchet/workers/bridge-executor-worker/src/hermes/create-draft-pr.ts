@@ -30,6 +30,8 @@ export { NonRetryableBridgeExecutionError } from './errors';
 export type HermesDraftPrResult = BoundedHermesDraftPrReceipt;
 export { boundedHermesDraftPrReceipt } from './bounded-evidence';
 
+export const DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+
 export function jobMatchesHermesDraftPrReceipt(job: BridgeJob, result: HermesDraftPrResult): boolean {
   return ['effect_committed', 'verification_pending', 'ready_for_human_review', 'failed'].includes(job.state)
     && job.pr_url === result.prUrl
@@ -716,7 +718,7 @@ export async function validateHermesDraftPrSideEffect(job: BridgeJob, result: He
   }
 
   const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VALIDATION_TIMEOUT_MS, 30_000);
-  const maxBuffer = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VALIDATION_MAX_BUFFER_BYTES, 1024 * 1024);
+  const maxBuffer = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VALIDATION_MAX_BUFFER_BYTES, DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES);
   const observation = await inspectDraftPullRequest(repo, result.prNumber, timeout, maxBuffer);
   const { diffText, ...view } = observation;
 
@@ -755,18 +757,33 @@ async function inspectDraftPullRequest(repo: string, prNumber: number, timeout: 
     : inspectDraftPullRequestViaCommand(repo, prNumber, timeout, maxBuffer);
 }
 
-export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: number, timeout: number, maxBuffer: number): Promise<GithubPrView & { diffText: string }> {
-  const view = await execHermesRuntimeJson<GithubPrView>(
-    ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,files,statusCheckRollup'],
+export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: number, timeout: number, maxBuffer = DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES): Promise<GithubPrView & { diffText: string }> {
+  const view = await execHermesRuntimeJson<GithubPrView & { changedFiles?: number }>(
+    ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,changedFiles,statusCheckRollup'],
     timeout,
     maxBuffer
   );
+  const fileResponse = await execHermesRuntimeCommand(
+    ['gh', 'api', `repos/${repo}/pulls/${prNumber}/files?per_page=100`, '--paginate', '--jq', '.[] | {path:.filename} | tojson'],
+    timeout,
+    maxBuffer,
+  );
+  let files: GithubPrView['files'];
+  try {
+    files = fileResponse.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    throw new NonRetryableBridgeExecutionError('hermes_runtime_json_parse_failed', 'GitHub PR file inspection did not return valid bounded JSON');
+  }
+  if (!Number.isSafeInteger(view.changedFiles) || files.length !== view.changedFiles) {
+    throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'GitHub PR file inspection did not return the complete changed-file set');
+  }
+  changedFileNames(files);
   const diff = await execHermesRuntimeCommand(
     ['gh', 'pr', 'diff', String(prNumber), '--repo', repo],
     timeout,
     maxBuffer
   );
-  return { ...view, diffText: diff.stdout };
+  return { ...view, files, diffText: diff.stdout };
 }
 
 /** A fixed, read-only Hermes action used only for retry artifact fencing. */
@@ -1113,8 +1130,10 @@ async function execHermesRuntimeCommand(args: string[], timeout: number, maxBuff
     }
     const classified = classifyHermesCommandFailure(error);
     throw new NonRetryableBridgeExecutionError(
-      'hermes_runtime_identity_check_failed',
-      'The Driftward Hermes runtime command failed before returning bounded evidence',
+      classified.bufferExceeded ? 'hermes_process_output_limit_exceeded' : 'hermes_runtime_identity_check_failed',
+      classified.bufferExceeded
+        ? 'The Driftward Hermes runtime command exceeded its bounded output limit'
+        : 'The Driftward Hermes runtime command failed before returning bounded evidence',
       {
         failureDomain: classified.failureDomain,
         failureStage: classified.failureStage,
