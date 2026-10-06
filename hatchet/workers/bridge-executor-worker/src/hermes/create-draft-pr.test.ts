@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { BridgeClient, BridgeJob } from '@driftward/hatchet-worker-shared';
@@ -8,6 +9,7 @@ import {
   buildPrompt,
   boundedHermesDraftPrReceipt,
   classifyHermesCommandFailure,
+  DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES,
   factoryExecutionAnalyticsIdentity,
   factoryExecutionRouteSelection,
   findAddedTempFileReference,
@@ -16,6 +18,7 @@ import {
   hermesReceiptEventScope,
   hermesReceiptWaitDuration,
   jobMatchesHermesDraftPrReceipt,
+  inspectDraftPullRequestViaCommand,
   NonRetryableBridgeExecutionError,
   preflightHermesCreateDraftPr,
   resumeHermesDraftPrResult,
@@ -35,6 +38,38 @@ import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+
+test('PR inspection accepts a large bounded diff and classifies overflow without leaking output', async () => {
+  const commandDirectory = mkdtempSync(path.join(tmpdir(), 'factory-pr-inspection-'));
+  const previousPath = process.env.PATH;
+  const diffBytes = 1536 * 1024;
+  try {
+    writeFileSync(path.join(commandDirectory, 'docker'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView()))});
+else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padEnd(${diffBytes}, '+'));
+else process.exit(1);
+`, { mode: 0o700 });
+    process.env.PATH = `${commandDirectory}${path.delimiter}${previousPath || ''}`;
+    const observation = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 77, 5000);
+    assert.equal(Buffer.byteLength(observation.diffText), diffBytes);
+    assert.ok(diffBytes < DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES);
+    await assert.rejects(
+      inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 77, 5000, 1024 * 1024),
+      (error: unknown) => {
+        assert.ok(error instanceof NonRetryableBridgeExecutionError);
+        assert.equal(error.reasonCode, 'hermes_process_output_limit_exceeded');
+        assert.equal(error.bufferExceeded, true);
+        assert.ok(!error.message.includes('PRIVATE_DIFF_CONTENT'));
+        return true;
+      },
+    );
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(commandDirectory, { recursive: true, force: true });
+  }
+});
 
 test('Hermes observability uses bounded sealed lineage, not issue content or ambient metadata', () => {
   const job = greenJob();
