@@ -758,17 +758,32 @@ async function inspectDraftPullRequest(repo: string, prNumber: number, timeout: 
 }
 
 export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: number, timeout: number, maxBuffer = DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES): Promise<GithubPrView & { diffText: string }> {
-  const view = await execHermesRuntimeJson<GithubPrView>(
-    ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,files,statusCheckRollup'],
+  const view = await execHermesRuntimeJson<GithubPrView & { changedFiles?: number }>(
+    ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,changedFiles,statusCheckRollup'],
     timeout,
     maxBuffer
   );
+  const fileResponse = await execHermesRuntimeCommand(
+    ['gh', 'api', `repos/${repo}/pulls/${prNumber}/files?per_page=100`, '--paginate', '--jq', '.[] | {path:.filename} | tojson'],
+    timeout,
+    maxBuffer,
+  );
+  let files: GithubPrView['files'];
+  try {
+    files = fileResponse.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    throw new NonRetryableBridgeExecutionError('hermes_runtime_json_parse_failed', 'GitHub PR file inspection did not return valid bounded JSON');
+  }
+  if (!Number.isSafeInteger(view.changedFiles) || files.length !== view.changedFiles) {
+    throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'GitHub PR file inspection did not return the complete changed-file set');
+  }
+  changedFileNames(files);
   const diff = await execHermesRuntimeCommand(
     ['gh', 'pr', 'diff', String(prNumber), '--repo', repo],
     timeout,
     maxBuffer
   );
-  return { ...view, diffText: diff.stdout };
+  return { ...view, files, diffText: diff.stdout };
 }
 
 /** A fixed, read-only Hermes action used only for retry artifact fencing. */

@@ -47,7 +47,8 @@ test('PR inspection accepts a large bounded diff and classifies overflow without
   try {
     writeFileSync(path.join(commandDirectory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView()))});
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 1 })))});
+else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'tests/cli.test.ts'}) + '\\n');
 else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padEnd(${diffBytes}, '+'));
 else process.exit(1);
 `, { mode: 0o700 });
@@ -72,6 +73,41 @@ else process.exit(1);
     if (previousRuntimeUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER;
     else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousRuntimeUser;
     rmSync(commandDirectory, { recursive: true, force: true });
+  }
+});
+
+test('PR inspection includes paths beyond file 100 and rejects incomplete or duplicate file evidence', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-pr-files-'));
+  const previous = { path: process.env.PATH, user: process.env.DRIFTWARD_HERMES_RUNTIME_USER, mode: process.env.TEST_FILE_MODE };
+  try {
+    writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 101 })))});
+else if (args.includes('api')) {
+  const files = Array.from({length:100}, (_,i)=>({path:'src/file-'+i+'.ts'}));
+  if (process.env.TEST_FILE_MODE !== 'incomplete') files.push({path:process.env.TEST_FILE_MODE === 'duplicate' ? files[0].path : '.github/workflows/hidden.yml'});
+  process.stdout.write(files.map(JSON.stringify).join('\\n')+'\\n');
+} else if (args.includes('diff')) process.stdout.write('diff --git a/README.md b/README.md');
+else process.exit(1);
+`, { mode: 0o700 });
+    process.env.PATH = `${directory}${path.delimiter}${previous.path || ''}`;
+    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
+    process.env.TEST_FILE_MODE = 'complete';
+    const observation = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 61, 5000);
+    assert.equal(observation.files?.length, 101);
+    assertFailure(() => verifyDraftPrEvidence(greenJob(), greenResult(), observation), 'verification_changed_file_forbidden');
+    for (const mode of ['incomplete', 'duplicate']) {
+      process.env.TEST_FILE_MODE = mode;
+      await assert.rejects(inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 61, 5000),
+        (error: unknown) => error instanceof NonRetryableBridgeExecutionError
+          && error.reasonCode === (mode === 'incomplete' ? 'verification_evidence_unavailable' : 'verification_changed_file_scope_invalid'));
+    }
+  } finally {
+    for (const [name, value] of [['PATH', previous.path], ['DRIFTWARD_HERMES_RUNTIME_USER', previous.user], ['TEST_FILE_MODE', previous.mode]]) {
+      if (value === undefined) delete process.env[name!];
+      else process.env[name!] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

@@ -15,7 +15,8 @@ test('real gateway uses the shared bounded PR inspection default', async () => {
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('view')) process.stdout.write('{}');
+if (args.includes('view')) process.stdout.write('{"changedFiles":1}');
+else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'README.md'}) + '\\n');
 else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padEnd(Number(process.env.TEST_DIFF_BYTES), '+'));
 else process.exit(1);
 `, { mode: 0o700 });
