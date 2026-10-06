@@ -70,7 +70,7 @@ import os, sys
 assert os.environ.get('HATCHET_INTAKE_DRY_RUN') == 'true'
 assert os.environ.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '0'
 assert os.environ.get('DRIFTWARD_HERMES_GRPC_TARGET') == ('unix:///run/factory-executor/hermes.sock' if sys.argv[2] == 'bundled' else None)
-assert not any(os.environ.get(key) for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'POSTHOG_API_KEY'))
+assert not any(os.environ.get(key) for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'POSTHOG_API_KEY', 'CAPYKIT_API_KEY', 'CAPYKIT_BASE_URL'))
 print('dry-run-only')
 """
 
@@ -82,6 +82,8 @@ assert not Path('/var/run/docker.sock').exists()
 assert not os.environ.get('HATCHET_CLIENT_TOKEN')
 assert not os.environ.get('HATCHET_HERMES_BRIDGE_TOKEN')
 assert os.environ['GH_TOKEN'] == 'executor-only-fixture'
+assert os.environ['CAPYKIT_API_KEY'] == 'ck_agent_' + 'f' * 43
+assert os.environ['CAPYKIT_BASE_URL'] == 'https://capykit.invalid'
 assert os.environ['DRIFTWARD_HERMES_RUNTIME_MODE'] == 'local-executor'
 assert Path('/opt/hermes/plugins/observability/posthog/plugin.yaml').is_file()
 subprocess.run(['hermes', 'plugins', 'enable', 'observability/posthog'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -224,6 +226,8 @@ def main() -> int:
                     }))
                     (directory / "env" / "executor.env").write_text(bootstrap.env_text({
                         "GH_TOKEN": "executor-only-fixture",
+                        "CAPYKIT_API_KEY": "ck_agent_" + "f" * 43,
+                        "CAPYKIT_BASE_URL": "https://capykit.invalid",
                         "DRIFTWARD_HERMES_REAL_GH": "/opt/data/gh-fixture",
                     }))
                 if config["FACTORY_PROJECT_NAME"] != project:

@@ -142,6 +142,7 @@ jobs:
             --build-arg FACTORY_RELEASE_VERSION=ci -t driftward/factory-executor:ci .
           python3 tools/check_factory_portable.py --image driftward/factory:ci \
             --executor-image driftward/factory-executor:ci
+          python3 tools/check_factory_capykit.py --executor-image driftward/factory-executor:ci
       - name: Rehearse stopped production-state relocation
         run: python3 tools/check_factory_cutover.py --image driftward/factory:ci
       - name: Check changed-file whitespace

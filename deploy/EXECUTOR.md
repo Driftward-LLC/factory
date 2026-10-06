@@ -13,6 +13,11 @@ spans correlate with Factory attempts; PostHog is optional and uses your own
 key, only in the executor. Existing external-executor installations remain
 unchanged; this profile does not migrate shared Driftward Hermes state.
 
+The image also packages a pinned Capykit remote stdio MCP client for optional
+connected-app tooling. See [Capykit setup and read-only acceptance](CAPYKIT.md).
+It is not automatically enabled and does not replace the executor or Factory's
+job lifecycle, effect fences, GitHub App authentication, or receipts.
+
 The default installation remains dry-run. Packaging a runtime is not approval
 to create PRs or process real issues. This milestone makes the executor
 installable and proves its private transport; portable real-execution
