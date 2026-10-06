@@ -20,7 +20,7 @@ else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padE
 else process.exit(1);
 `, { mode: 0o700 });
     for (const diffBytes of [1536 * 1024, 3 * 1024 * 1024]) {
-      await withGateway({ PATH: `${directory}${path.delimiter}${process.env.PATH || ''}`, TEST_DIFF_BYTES: String(diffBytes) }, async (target) => {
+      await withGateway({ PATH: `${directory}${path.delimiter}${process.env.PATH || ''}`, DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', TEST_DIFF_BYTES: String(diffBytes) }, async (target) => {
         process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
         if (diffBytes < 2 * 1024 * 1024) {
           const observation = await inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 77, 5000);

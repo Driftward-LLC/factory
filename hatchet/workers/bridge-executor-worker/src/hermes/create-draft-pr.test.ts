@@ -42,6 +42,7 @@ process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 've
 test('PR inspection accepts a large bounded diff and classifies overflow without leaking output', async () => {
   const commandDirectory = mkdtempSync(path.join(tmpdir(), 'factory-pr-inspection-'));
   const previousPath = process.env.PATH;
+  const previousRuntimeUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
   const diffBytes = 1536 * 1024;
   try {
     writeFileSync(path.join(commandDirectory, 'docker'), `#!${process.execPath}
@@ -51,6 +52,7 @@ else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padE
 else process.exit(1);
 `, { mode: 0o700 });
     process.env.PATH = `${commandDirectory}${path.delimiter}${previousPath || ''}`;
+    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
     const observation = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 77, 5000);
     assert.equal(Buffer.byteLength(observation.diffText), diffBytes);
     assert.ok(diffBytes < DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES);
@@ -67,6 +69,8 @@ else process.exit(1);
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
+    if (previousRuntimeUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+    else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousRuntimeUser;
     rmSync(commandDirectory, { recursive: true, force: true });
   }
 });
