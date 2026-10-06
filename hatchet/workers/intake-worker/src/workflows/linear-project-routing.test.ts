@@ -196,7 +196,7 @@ test('includes immutable project routing evidence in bridge payloads', () => {
   assert.equal(payload.expected_base, 'main');
   assert.equal(payload.body, 'Refs Linear ENG-7');
   assert.equal('required_github_checks' in payload, false);
-  assert.deepEqual(payload.allowed_changed_paths, ['src', 'tests', 'scripts', 'docs', 'README.md', 'package.json', 'package-lock.json', 'tsconfig.json']);
+  assert.deepEqual(payload.allowed_changed_paths, ['src', 'tests', 'scripts', 'docs', 'README.md', 'package.json', 'package-lock.json', 'tsconfig.json', '.dockerignore', '.markdownlint.json', 'Dockerfile.connector', 'Dockerfile.hosted', 'compose.yaml', 'deploy/connector-config/.gitkeep', 'deploy/init-postgres.sh']);
   assert.equal(payload.secret_check_command, 'npm run check:secrets');
   assert.deepEqual(payload.verification_policy, verifierPolicyPayload(resolveDraftPrVerifierPolicy('Driftward-LLC/capykit')));
 });
