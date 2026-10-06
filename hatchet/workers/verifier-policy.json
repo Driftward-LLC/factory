@@ -13,7 +13,14 @@
         "README.md",
         "package.json",
         "package-lock.json",
-        "tsconfig.json"
+        "tsconfig.json",
+        ".dockerignore",
+        ".markdownlint.json",
+        "Dockerfile.connector",
+        "Dockerfile.hosted",
+        "compose.yaml",
+        "deploy/connector-config/.gitkeep",
+        "deploy/init-postgres.sh"
       ],
       "forbidden_changed_paths": [
         ".github/workflows",
