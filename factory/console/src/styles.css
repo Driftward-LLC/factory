@@ -64,6 +64,13 @@ main { max-width: 1600px; margin: auto; padding: 30px 32px 48px; }
 .queue-count { font-size: 1.875rem; font-weight: 500; letter-spacing: -.04em; line-height: 1.2; margin: 12px 0 8px; font-variant-numeric: tabular-nums; }
 .review-queues small { display: block; color: var(--muted); font-size: .75rem; line-height: 1.6; max-width: 38ch; }
 .panel { margin-top: 28px; min-width: 0; }
+.intake-list { list-style: none; padding: 0; margin: 0; }
+.intake-list li { border-top: 1px solid var(--line); padding: 12px 0; overflow-wrap: anywhere; }
+.intake-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.intake-list a { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin-right: 12px; }
+.intake-list p, .before-execution > p { font-size: .8125rem; }
+.intake-scope { margin-bottom: 12px; }
+.intake-scope p { font-size: .8125rem; }
 .heading-count { display: inline-block; margin-left: 6px; font-size: .75rem; font-weight: 400; color: var(--muted); }
 .table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
 table { width: 100%; border-collapse: collapse; font-size: .8125rem; }

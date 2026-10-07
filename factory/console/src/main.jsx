@@ -20,6 +20,7 @@ import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMa
 import Analytics from './Analytics.jsx';
 import VerificationEvidence from './VerificationEvidence.jsx';
 import IssueControl from './IssueControl.jsx';
+import BeforeExecution from './BeforeExecution.jsx';
 import AgentTrace from './AgentTrace.jsx';
 import {
   activeStates,
@@ -347,7 +348,7 @@ function hatchetUrl(value) {
   }
   return undefined;
 }
-function Overview({ overview, error, ...navigation }) {
+function Overview({ overview, error, stale, ...navigation }) {
   const counts = overview?.status_counts;
   const reconciliation = overview?.reconciliation;
   const lifecycle = overview?.lifecycle_outbox;
@@ -454,6 +455,7 @@ function Overview({ overview, error, ...navigation }) {
           {...navigation}
         />
       </section>
+      <BeforeExecution intake={overview?.intake} stale={stale} onOpen={(issue) => navigation.navigate({ issue })} />
       <div className="overview-secondary">
         <section className="panel" aria-labelledby="recent-title">
           <div className="section-heading">
@@ -846,6 +848,8 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
       </Notice>
       {valid && <IssueControl issue={issue} onChanged={onControlChange} />}
       <div id="issue-content" hidden={!value}>
+        {!value?.attempts.length && <BeforeExecution intake={value?.intake} issue stale={Boolean(error)} />}
+        {Boolean(value?.attempts.length) && <>
         <div id="issue-summary" className="issue-summary">
           <SummaryItem title="Recorded stage">
             <Pill status={attempt.status} />
@@ -871,6 +875,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
           live GitHub state or review approval.
         </p>
         <VerificationEvidence evidence={value?.verification_evidence} attemptId={attempt.attempt_id} />
+        </>}
         <div className="detail-grid">
           <section>
             <h3>Attempt history</h3>
@@ -1153,7 +1158,7 @@ function App() {
               : 'No snapshot available yet.'}
           </p>
           <div data-view="overview" hidden={route.view !== 'overview' || Boolean(route.issue)}>
-            <Overview overview={overview} error={overviewError} {...navigation} />
+            <Overview overview={overview} error={overviewError} stale={stale} {...navigation} />
           </div>
           <div data-view="work" hidden={!work || Boolean(route.issue)}>
             <Work
@@ -1162,6 +1167,7 @@ function App() {
               error={overviewError}
               {...navigation}
             />
+            <BeforeExecution intake={overview?.intake} stale={stale} onOpen={(issue) => navigate({ issue })} />
           </div>
           <div data-view="analytics" hidden={!analytics}>
             <Analytics report={analyticsSnapshot.value} days={route.days}

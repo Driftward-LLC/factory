@@ -45,6 +45,15 @@ queues. System findings are a separate projection and need not match the queue
 counts. Do not imply an aggregate finding can be inspected in detail when the
 API only provides a count.
 
+Overview and Work also show a separate Before execution list: latest recorded
+Linear observations for non-terminal Engineering issues with no Factory attempt
+in any mode or generation. This is not a live Linear backlog or proof of queued
+execution. Preserve observation timestamps, unavailable/partial states, and the
+bounded source scope (up to 100 rows from the latest 500 observed issues).
+Attempt filters and queue counts do not include these issues. Exact issue lookup
+reads its observation even outside that list's limit. Refresh never dispatches
+work, and issues without received webhooks remain explicitly unobserved.
+
 Opening an issue shows its inspection view directly. Closing it restores the
 previous page and filters. Preserve URL sharing, browser history, keyboard
 focus and refresh behavior. Browsing remains read-only; only explicitly enabled,

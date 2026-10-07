@@ -39,9 +39,15 @@ malicious.job.payload.repo = '<img src=x onerror=alert(1)>';
 malicious.job.pr_url = 'https://github.com/attacker/repo/pull/1';
 malicious.agent_trace = { attempt_id: malicious.attempt.attempt_id, status: 'unverified', url: 'https://us.posthog.com.attacker.example/project/12345/ai-observability/traces/fb9fa7e1-4065-5818-af72-3e41a35fe39a' };
 const records = [running, failed, verified, simulated, unknown, unrecognized, malicious, verifying];
+let intakeState = 'blocked';
+function intake() {
+  return { available: intakeState !== 'unavailable', truncated: intakeState === 'partial', scan_limit: 500, limit: 100,
+    items: ['empty', 'unavailable'].includes(intakeState) ? [] : [{ issue: 'ENG-154', linear_status: 'Blocked', blocked_by: ['ENG-151'], blocked_by_count: 1, dispatch_eligible: false, observed_at: new Date(now - 60000).toISOString(), provider_updated_at: new Date(now - 120000).toISOString() }] };
+}
 function overview() {
   return {
     generated_at: new Date().toISOString(), mode: 'real',
+    intake: intake(),
     active_attempts: [running, unknown, verifying],
     recent_attempts: records,
     status_counts: { running: 1, failed: 2, verified_ready: 2, effect_outcome_unknown: 1, constructor: 1, verification_pending: 1 },
@@ -67,6 +73,7 @@ function verificationEvidence(issue) {
 function lifecycle(issue) {
   return {
     work_item_key: issue,
+    intake: issue === 'ENG-154' ? intake() : { ...intake(), items: [] },
     verification_evidence: verificationEvidence(issue),
     attempts: records.filter((r) => r.attempt.work_item_key === issue).sort((a, b) => b.attempt.generation - a.attempt.generation),
     timeline: [{
@@ -200,6 +207,35 @@ async function main() {
     assert.equal(await page.locator('.skip-link').evaluate((el) => el === document.activeElement), true);
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('#main').evaluate((el) => el === document.activeElement), true);
+    const intakePanel = page.locator('[data-view="overview"] .before-execution');
+    assert.match(await intakePanel.textContent(), /ENG-154/);
+    assert.match(await intakePanel.textContent(), /Linear: Blocked \(observed\)/);
+    assert.equal(await page.locator('#nav-work-count').textContent(), '8', 'Pre-execution issues do not inflate attempt counts');
+    await intakePanel.getByRole('button', { name: 'ENG-154', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('#issue-content').hidden);
+    assert.match(await page.locator('#issue-content').textContent(), /No attempt recorded for this issue/);
+    assert.equal(await page.locator('#issue-summary').count(), 0, 'No invented attempt stage');
+    await page.locator('#close-issue').click();
+    for (const [state, message] of [['unavailable', 'Linear observations unavailable'], ['empty', 'No pre-execution issues found'], ['partial', 'Partial list:']]) {
+      intakeState = state;
+      await page.locator('#refresh-button').click();
+      await page.waitForFunction((message) => document.querySelector('[data-view="overview"] .before-execution').textContent.includes(message), message);
+    }
+    intakeState = 'blocked';
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('[data-view="overview"] .intake-list') !== null);
+    failOverview = true;
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('[data-view="overview"] .before-execution').textContent.includes('Stale dashboard snapshot'));
+    failOverview = false;
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => !document.querySelector('#notice').textContent);
+    for (const width of [320, 768, 1440]) {
+      await page.setViewportSize({ width, height: 1080 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Intake layout fits viewport');
+      if (width === 320) await page.screenshot({ path: join(tmpdir(), 'factory-before-execution-mobile.png'), fullPage: true });
+    }
+    assert.deepEqual(await contrastFailures(page, '.before-execution .muted, .before-execution .pill'), []);
     assert.equal(await page.locator('#signal-dead-letters').textContent(), 'Unavailable');
     assert.equal(await page.locator('#signal-terminal').textContent(), '9');
     assert.equal(await page.locator('#hatchet-link').isVisible(), false);
