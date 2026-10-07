@@ -17,12 +17,20 @@ Recreate the operator service through the reviewed deployment procedure to load
 configuration changes. No executor credentials or PostHog query key belong in
 Factory. The console makes no PostHog requests until the user follows the link.
 
-Overview, Work and issue history show **Open agent trace** for real attempts
-whose sealed job lineage matches the attempt. Each retry opens its own trace.
+Overview, Work and issue history show **Capture unconfirmed** with **Find trace
+in PostHog** for real attempts whose sealed job lineage matches the attempt.
+This is a lookup, not a claim that a trace exists. Each retry has its own trace ID.
 Dry runs, missing lineage, and absent/invalid project configuration are explicit
 non-link states. Links use the Hermes observer's attempt UUIDv5 contract and
 PostHog's [trace route](https://github.com/PostHog/posthog/blob/master/products/ai_observability/manifest.tsx).
-Link availability does not confirm event ingestion. Older runs may predate
+Links include the first recorded backend invocation/start time, or the attempt
+creation time if execution timing is absent, so old runs are not restricted to
+PostHog's current date window. Missing or invalid timestamps produce no link.
+Navigation not configured, missing correlation/timing, and dry runs are distinct
+from a recorded `factory_receipt_analytics_setup_failed` telemetry setup failure.
+That reason does not establish a PostHog capture/upload failure. No current
+ledger field confirms ingestion, so missing evidence stays unknown, never
+"not captured" or "capture failed". Older runs may predate
 correlation, events may be missing, and PostHog access/retention still apply.
 Telemetry cannot authorize manual editing or change Factory ownership.
 

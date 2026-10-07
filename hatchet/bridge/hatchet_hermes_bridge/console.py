@@ -11,13 +11,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .analytics import factory_analytics
-from .console_evidence import attempt_evidence
+from .console_evidence import _time, attempt_evidence
 from .console_intake import observed_intake
 from .console_control import install_issue_control_routes
 from .store import (
@@ -77,7 +78,7 @@ def _mode() -> str:
     return "real" if os.environ.get("HATCHET_INTAKE_DRY_RUN", "true").strip().lower() == "false" else "dry-run"
 
 
-def _with_agent_trace(record: dict[str, Any]) -> dict[str, Any]:
+def _with_agent_trace(record: dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
     """Navigation only, not proof of ingestion or execution completion."""
     attempt = record["attempt"]
     trace = {"attempt_id": attempt["attempt_id"], "status": "unavailable", "url": None}
@@ -85,6 +86,9 @@ def _with_agent_trace(record: dict[str, Any]) -> dict[str, Any]:
     lineage = ((record.get("job") or {}).get("payload") or {}).get("factory_retry")
     if attempt.get("mode") == "dry-run":
         trace["status"] = "not_applicable"
+    elif (attempt.get("mode") == "real"
+          and (record.get("job") or {}).get("reason_code") == "factory_receipt_analytics_setup_failed"):
+        trace["status"] = "setup_failed"
     elif not re.fullmatch(r"https://(?:us|eu|app)\.posthog\.com/project/[1-9][0-9]*/?", project):
         trace["status"] = "not_configured"
     elif (attempt.get("mode") == "real" and isinstance(lineage, dict)
@@ -92,7 +96,20 @@ def _with_agent_trace(record: dict[str, Any]) -> dict[str, Any]:
           and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt["attempt_id"])):
         # Matches the Hermes observer's attempt-scoped UUIDv5 contract.
         trace_id = uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:trace:attempt:{attempt['attempt_id']}")
-        trace.update(status="unverified", url=f"{project.rstrip('/')}/ai-observability/traces/{trace_id}")
+        started = conn.execute(
+            "SELECT created_at FROM factory_attempt_events WHERE attempt_id=? "
+            "AND event_type IN ('execution_backend_invoked','attempt_started') "
+            "ORDER BY CASE event_type WHEN 'execution_backend_invoked' THEN 0 ELSE 1 END,created_at,event_id LIMIT 1",
+            (attempt["attempt_id"],),
+        ).fetchone()
+        anchor = _time(started[0] if started else attempt.get("created_at"))
+        if anchor:
+            try:
+                timestamp = anchor.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            except OverflowError:
+                pass  # An unrepresentable UTC timestamp cannot provide a safe lookup.
+            else:
+                trace.update(status="unverified", url=f"{project.rstrip('/')}/ai-observability/traces/{trace_id}?{urlencode({'timestamp': timestamp})}")
     return {**record, "agent_trace": trace}
 
 
@@ -144,8 +161,8 @@ def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None, in
             "viewer": viewer,
             "mode": _mode(),
             "intake": observed_intake(conn, ingress_db_path),
-            "active_attempts": [_with_agent_trace(row) for row in list_active_factory_attempts(conn)],
-            "recent_attempts": [_with_agent_trace(row) for row in list_recent_factory_attempts(conn)],
+            "active_attempts": [_with_agent_trace(row, conn) for row in list_active_factory_attempts(conn)],
+            "recent_attempts": [_with_agent_trace(row, conn) for row in list_recent_factory_attempts(conn)],
             "status_counts": _status_counts(conn),
             "reconciliation": reconciliation_findings_status(conn),
             "lifecycle_outbox": _lifecycle_status(lifecycle_db_path),
@@ -166,7 +183,7 @@ def lifecycle(db_path: str, issue: str, ingress_db_path: str | None = None) -> d
         with conn:
             conn.execute("BEGIN")
             report = get_factory_lifecycle(conn, issue)
-            report["attempts"] = [_with_agent_trace(row) for row in report["attempts"]]
+            report["attempts"] = [_with_agent_trace(row, conn) for row in report["attempts"]]
             report["verification_evidence"] = attempt_evidence(conn, report["attempts"][0]) if report["attempts"] else None
             report["intake"] = observed_intake(conn, ingress_db_path, issue)
             return report

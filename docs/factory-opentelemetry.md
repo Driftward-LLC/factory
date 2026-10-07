@@ -42,7 +42,7 @@ observer's job-ID fallback. SDK span IDs are new random IDs per operation.
 Incoming context that disagrees with the loaded job's trace ID is discarded
 at the execution scope. Trace headers never confer execution authority.
 
-Existing PostHog AI events and Factory's **Open agent trace** links retain their
+Existing PostHog AI events and Factory's **Find trace in PostHog** links retain their
 dashed UUIDs. This avoids rewriting historical telemetry or changing console
 destinations. Generation/tool events remain native PostHog events in this slice,
 not OTel GenAI spans; correlation is at trace level, not native span parentage.

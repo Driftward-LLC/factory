@@ -27,7 +27,7 @@ const unknown = record('ENG-104', 1, 'effect_outcome_unknown');
 const verifying = record('ENG-107', 1, 'verification_pending');
 const traceBase = 'https://us.posthog.com/project/12345/ai-observability/traces/';
 for (const [index, item] of [running, failed, verified].entries()) {
-  item.agent_trace = { attempt_id: item.attempt.attempt_id, status: 'unverified', url: traceBase + `fb9fa7e1-4065-5818-af72-3e41a35fe39${index}` };
+  item.agent_trace = { attempt_id: item.attempt.attempt_id, status: 'unverified', url: traceBase + `fb9fa7e1-4065-5818-af72-3e41a35fe39${index}?timestamp=${encodeURIComponent(item.attempt.created_at)}` };
 }
 simulated.agent_trace = { ...verified.agent_trace, attempt_id: simulated.attempt.attempt_id };
 unknown.agent_trace = { ...verified.agent_trace }; // Wrong-attempt projection must not link.
@@ -289,7 +289,11 @@ async function main() {
     assert.equal(await traces.first().getAttribute('target'), '_blank');
     assert.equal(await traces.first().getAttribute('rel'), 'noopener noreferrer');
     assert.equal(new Set(await traces.evaluateAll(links => links.map(link => link.href))).size, 3);
-    assert.match(await page.locator('#work-attempts').textContent(), /PostHog not configured/);
+    assert.match(await traces.first().textContent(), /Find trace in PostHog/);
+    assert.match(await page.locator('#work-attempts').textContent(), /Capture unconfirmed/);
+    assert.equal(await page.getByRole('link', { name: /Open agent trace/ }).count(), 0);
+    assert.equal(new URL(await traces.first().getAttribute('href')).searchParams.get('timestamp'), running.attempt.created_at);
+    assert.match(await page.locator('#work-attempts').textContent(), /Trace link not configured/);
     assert.match(await page.locator('#work-attempts').textContent(), /not applicable \(dry run\)/);
     await page.context().route('https://us.posthog.com/**', route => route.fulfill({ body: 'Fictional trace destination' }));
     await traces.first().focus();

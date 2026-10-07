@@ -94,8 +94,15 @@ const consoleRoot = resolve(__dirname, '../factory/console');
     assert.equal(await page.locator('.intake-scope').getAttribute('open'), '');
     await visit('factory-agenttrace--configured');
     assert.equal(await page.getByRole('link').getAttribute('target'), '_blank');
-    assert.match(await page.locator('.agent-trace').textContent(), /availability unverified/);
-    for (const state of ['historical', 'not-configured', 'dry-run', 'unsafe-url', 'wrong-attempt']) {
+    assert.match(await page.locator('.agent-trace').textContent(), /Capture unconfirmed/);
+    assert.match(await page.getByRole('link').textContent(), /Find trace in PostHog/);
+    assert.equal(new URL(await page.getByRole('link').getAttribute('href')).searchParams.get('timestamp'), '2026-09-30T05:53:34.202Z');
+    await visit('factory-agenttrace--historical');
+    assert.match(await page.locator('.agent-trace').textContent(), /capture status unknown/);
+    assert.doesNotMatch(await page.locator('.agent-trace').textContent(), /capture failed|not captured/i);
+    await visit('factory-agenttrace--setup-failed');
+    assert.match(await page.locator('.agent-trace').textContent(), /Telemetry setup failure recorded/);
+    for (const state of ['historical', 'setup-failed', 'not-configured', 'dry-run', 'unsafe-url', 'wrong-attempt', 'missing-timestamp', 'invalid-timestamp', 'extra-query', 'fragment']) {
       await visit('factory-agenttrace--' + state);
       assert.equal(await page.locator('.agent-trace a').count(), 0, state + ' must not link');
     }
