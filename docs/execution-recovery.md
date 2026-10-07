@@ -6,6 +6,20 @@ Repeated create requests cannot invoke Hermes again for that job. A completed
 request returns its original receipt only when its intent and execution fence
 match. A reservation without a receipt remains an unknown outcome after restart.
 
+New reservations store fingerprint version 2. Their identity includes the job,
+idempotency key, action, branch and complete payload **except** the four top-level
+bridge correlation fields: `source_event_key`, `source_delivery_id`,
+`source_event_keys`, and `source_delivery_ids`. Adding webhook references is not
+new execution intent. Instructions, repository, policy, attempt/repair lineage,
+nested fields and unknown payload fields remain bound. The original execution
+fence must still match before a completed receipt can be returned by create.
+
+Unversioned reservations retain the original version-one full-payload comparison.
+They are never rewritten or promoted during inspection or repeated create
+requests. A legacy record whose correlation fields already changed still fails
+closed; this fix cannot recover its receipt or authorize a retry. Unsupported
+fingerprint versions also fail closed before cancellation or receipt handling.
+
 ## Recovery and manual control
 
 The existing reconciliation workflow queues receipt lookup for stale authorized
@@ -52,6 +66,13 @@ the console, logs, artifacts, or Git. Keep the journal when restarting or
 upgrading the gateway. Back it up with the quiesced executor and Factory state;
 do not restore an older journal against newer bridge state or delete reservations
 as a way to retry. There is no automatic retention cleanup in this version.
+
+This fingerprint update is a gateway code change, not a journal migration or a
+new gRPC protocol. It needs a separately reviewed gateway rollout; upgrading only
+the Factory worker image does not update a separately installed host gateway.
+Older gateway code cannot read version-two hashes (the version is included in
+the hash). Retain compatible gateway code and all reservations when rolling back
+workers; never remove or rewrite journal entries to make a downgrade work.
 
 Deploy the gateway before enabling the updated worker. The identity preflight
 requires invocation protocol version 1, so an old gateway blocks new execution

@@ -5,6 +5,9 @@ import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { boundedHermesDraftPrReceipt, type BoundedHermesDraftPrReceipt } from './bounded-evidence';
 import { NonRetryableBridgeExecutionError } from './errors';
 
+// Match the bridge's CORRELATION_PAYLOAD_KEYS; all other intent remains immutable.
+const CORRELATION_PAYLOAD_KEYS = new Set(['source_event_key', 'source_delivery_id', 'source_event_keys', 'source_delivery_ids']);
+
 export type InvocationLease = { lease_id: string; owner: string; epoch: number; fence_token: string };
 export type InvocationStatus = {
   state: 'not_found' | 'running' | 'outcome_unknown' | 'completed';
@@ -49,9 +52,13 @@ export class InvocationJournal {
     return path.join(this.directory, job.job_id);
   }
 
-  private fingerprint(job: BridgeJob): string {
-    return createHash('sha256').update(canonical({ job_id: job.job_id, idempotency_key: job.idempotency_key,
-      requested_action: job.requested_action, branch: job.branch, payload: job.payload })).digest('hex');
+  private fingerprint(job: BridgeJob, version: 1 | 2): string {
+    const payload = version === 1 ? job.payload : Object.fromEntries(
+      Object.entries(job.payload).filter(([key]) => !CORRELATION_PAYLOAD_KEYS.has(key)));
+    const intent = { job_id: job.job_id, idempotency_key: job.idempotency_key,
+      requested_action: job.requested_action, branch: job.branch, payload };
+    // Bind the hash format too, so old code cannot mistake new records for legacy ones.
+    return createHash('sha256').update(canonical(version === 1 ? intent : { fingerprint_version: 2, ...intent })).digest('hex');
   }
 
   status(job: BridgeJob, cancel = false): InvocationStatus {
@@ -61,7 +68,9 @@ export class InvocationJournal {
     // A crash between reservation and intent persistence is unknown, never permission to execute again.
     if (!existsSync(path.join(directory, 'intent.json'))) return { state: 'outcome_unknown', cancellationRequested: false, cancellationAcknowledged: false };
     const intent = JSON.parse(readFileSync(path.join(directory, 'intent.json'), 'utf8'));
-    if (intent.fingerprint !== this.fingerprint(job)) throw invalid('Invocation intent differs from the reserved job');
+    const version = intent.fingerprint_version === undefined ? 1 : intent.fingerprint_version;
+    if (version !== 1 && version !== 2) throw invalid('Unsupported invocation fingerprint version');
+    if (intent.fingerprint !== this.fingerprint(job, version)) throw invalid('Invocation intent differs from the reserved job');
     const lease = invocationLease(intent.lease);
     const cancellation = path.join(directory, 'cancel');
     if (cancel && !existsSync(cancellation)) this.persist(cancellation, { requested_at: new Date().toISOString() });
@@ -87,7 +96,7 @@ export class InvocationJournal {
     // mkdir is the cross-process reservation; even incomplete reservations survive crashes.
     mkdirSync(directory, { mode: 0o700 });
     this.syncDirectory(this.directory);
-    this.persist(path.join(directory, 'intent.json'), { fingerprint: this.fingerprint(job), lease });
+    this.persist(path.join(directory, 'intent.json'), { fingerprint_version: 2, fingerprint: this.fingerprint(job, 2), lease });
     const pending = Promise.resolve().then(run).then((value) => {
       const receipt = value && typeof value === 'object' && !Array.isArray(value) ? boundedHermesDraftPrReceipt(job, value) : null;
       if (!receipt) throw invalid('Executor did not return a bounded invocation receipt');
