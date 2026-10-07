@@ -138,6 +138,23 @@ class FactoryConsoleTests(unittest.TestCase):
             self.get("/api/lifecycle/not-an-issue")
         self.assertEqual(raised.exception.code, 400)
 
+    def test_overview_and_lookup_include_observed_issue_without_attempt(self):
+        conn = sqlite3.connect(self.ingress_db)
+        conn.execute('CREATE TABLE ingress_events (event_id INTEGER PRIMARY KEY, source TEXT, subject TEXT, normalized_json TEXT, created_at TEXT, provider_updated_at_us INTEGER)')
+        conn.execute('INSERT INTO ingress_events VALUES (1,?,?,?,?,?)', ('linear', 'ENG-154', json.dumps({'status': 'Blocked', 'blockedBy': [{'id': 'ENG-151'}], 'description': 'PRIVATE-SENTINEL'}), '2026-10-06T18:00:00Z', 1))
+        conn.commit()
+        conn.close()
+        before = Path(self.ingress_db).read_bytes()
+        for route in ['/api/overview', '/api/lifecycle/ENG-154']:
+            _, _, raw = self.get(route)
+            value = json.loads(raw)
+            self.assertTrue(value['intake']['available'])
+            self.assertEqual(value['intake']['items'][0]['issue'], 'ENG-154')
+            self.assertNotIn(b'PRIVATE-SENTINEL', raw)
+            if 'attempts' in value:
+                self.assertEqual(value['attempts'], [])
+        self.assertEqual(before, Path(self.ingress_db).read_bytes())
+
     def test_analytics_is_authenticated_readonly_and_preserves_missing_evidence(self):
         with patch.dict(os.environ, {"FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED": ""}):
             with self.assertRaises(HTTPError) as raised:

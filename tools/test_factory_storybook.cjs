@@ -84,6 +84,14 @@ const consoleRoot = resolve(__dirname, '../factory/console');
       await visit(story.id);
       assert(await page.locator('#storybook-root > *').count(), `Empty story ${story.id}`);
     }
+    await visit('factory-beforeexecution--awaiting-intake');
+    assert.match(await page.locator('.before-execution').textContent(), /not confirmation that work is queued or running/);
+    await visit('factory-beforeexecution--unavailable');
+    assert.match(await page.locator('.before-execution').textContent(), /does not mean nothing is waiting/);
+    await visit('factory-beforeexecution--blocked');
+    await page.getByText('Source and refresh limits', { exact: true }).focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('.intake-scope').getAttribute('open'), '');
     await visit('factory-agenttrace--configured');
     assert.equal(await page.getByRole('link').getAttribute('target'), '_blank');
     assert.match(await page.locator('.agent-trace').textContent(), /availability unverified/);

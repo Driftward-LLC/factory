@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .analytics import factory_analytics
 from .console_evidence import attempt_evidence
+from .console_intake import observed_intake
 from .console_control import install_issue_control_routes
 from .store import (
     BridgeError,
@@ -133,13 +134,16 @@ def _lifecycle_status(path: str | None) -> dict[str, Any]:
         return unavailable
 
 
-def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None) -> dict[str, Any]:
+def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None, ingress_db_path: str | None = None) -> dict[str, Any]:
     conn = connect_readonly(db_path)
     try:
+        # Intake exclusion and attempt lists must agree on one ledger snapshot.
+        conn.execute("BEGIN")
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "viewer": viewer,
             "mode": _mode(),
+            "intake": observed_intake(conn, ingress_db_path),
             "active_attempts": [_with_agent_trace(row) for row in list_active_factory_attempts(conn)],
             "recent_attempts": [_with_agent_trace(row) for row in list_recent_factory_attempts(conn)],
             "status_counts": _status_counts(conn),
@@ -153,7 +157,7 @@ def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None) ->
         conn.close()
 
 
-def lifecycle(db_path: str, issue: str) -> dict[str, Any]:
+def lifecycle(db_path: str, issue: str, ingress_db_path: str | None = None) -> dict[str, Any]:
     if not ISSUE_RE.fullmatch(issue):
         raise BridgeValidationError("issue must be an ENG identifier")
     conn = connect_readonly(db_path)
@@ -164,6 +168,7 @@ def lifecycle(db_path: str, issue: str) -> dict[str, Any]:
             report = get_factory_lifecycle(conn, issue)
             report["attempts"] = [_with_agent_trace(row) for row in report["attempts"]]
             report["verification_evidence"] = attempt_evidence(conn, report["attempts"][0]) if report["attempts"] else None
+            report["intake"] = observed_intake(conn, ingress_db_path, issue)
             return report
     finally:
         conn.close()
@@ -306,13 +311,13 @@ def create_console_app(db_path: str, asset_root: str | Path | None = None, lifec
 
     @app.get("/api/overview")
     def api_overview(request: Request) -> dict[str, Any]:
-        return overview(db_path, request.state.viewer, lifecycle_db_path)
+        return overview(db_path, request.state.viewer, lifecycle_db_path, ingress_db_path)
 
     install_issue_control_routes(app, db_path, ingress_db_path)
 
     @app.get("/api/lifecycle/{issue}")
     def api_lifecycle(issue: str) -> dict[str, Any]:
-        return lifecycle(db_path, issue)
+        return lifecycle(db_path, issue, ingress_db_path)
 
     @app.get("/api/analytics")
     def api_analytics(request: Request) -> dict[str, Any]:
