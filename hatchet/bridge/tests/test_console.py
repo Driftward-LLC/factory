@@ -5,19 +5,86 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from hatchet_hermes_bridge.analytics import factory_analytics
 from hatchet_hermes_bridge.cli import main
-from hatchet_hermes_bridge.console import make_console_server
+from hatchet_hermes_bridge.console import _with_agent_trace, make_console_server
 from hatchet_hermes_bridge.store import connect_runtime, reserve_factory_attempt
 from factory_lifecycle_writer.outbox import Outbox
 from test_support import connect_migrate as connect
 
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+class AgentTraceProjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.conn.execute("CREATE TABLE factory_attempt_events (attempt_id TEXT,event_type TEXT,created_at TEXT,event_id TEXT)")
+        self.attempt_id = "53adb6c8-5b0a-42c9-b5dc-f2ac84db2aa6"
+        self.record = {
+            "attempt": {"attempt_id": self.attempt_id, "mode": "real", "created_at": "2026-09-30T05:53:34.202223Z"},
+            "job": {"payload": {"factory_retry": {"attempt_id": self.attempt_id}}},
+        }
+        env = patch.dict(os.environ, {"FACTORY_CONSOLE_POSTHOG_PROJECT_URL": "https://us.posthog.com/project/12345"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def trace(self):
+        return _with_agent_trace(self.record, self.conn)["agent_trace"]
+
+    def test_dated_lookup_is_not_ingestion_proof_and_does_not_write(self):
+        before = json.dumps(self.record, sort_keys=True)
+        self.conn.execute("PRAGMA query_only=ON")
+        trace = self.trace()
+        self.assertEqual(trace["status"], "unverified")
+        parsed = urlparse(trace["url"])
+        self.assertEqual(parsed.path, "/project/12345/ai-observability/traces/6f2539d8-3884-5813-b3d7-839a59bc54a0")
+        self.assertEqual(parse_qs(parsed.query), {"timestamp": ["2026-09-30T05:53:34.202Z"]})
+        self.assertEqual(json.dumps(self.record, sort_keys=True), before)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM factory_attempt_events").fetchone()[0], 0)
+
+    def test_anchor_prefers_first_backend_invocation_over_admission_or_later_observation(self):
+        for kind, time, key in [
+            ("attempt_started", "2026-10-01T01:00:00Z", "1"),
+            ("execution_backend_invoked", "2026-10-02T04:00:00+02:00", "2"),
+            ("execution_backend_invoked", "2026-10-03T04:00:00Z", "3"),
+        ]:
+            self.conn.execute("INSERT INTO factory_attempt_events VALUES (?,?,?,?)", (self.attempt_id, kind, time, key))
+        self.assertEqual(parse_qs(urlparse(self.trace()["url"]).query)["timestamp"], ["2026-10-02T02:00:00.000Z"])
+
+    def test_invalid_or_missing_time_does_not_create_a_link(self):
+        for value in [None, "not-a-time", "2026-02-30T00:00:00Z", "2026-09-30T00:00:00", "9999-01-01T00:00:00Z", "0001-01-01T00:00:00+01:00", 123]:
+            with self.subTest(value=value):
+                self.record["attempt"]["created_at"] = value
+                self.assertEqual(self.trace()["status"], "unavailable")
+                self.assertIsNone(self.trace()["url"])
+
+    def test_dry_run_and_navigation_configuration_are_not_capture_failures(self):
+        self.record["attempt"]["mode"] = "dry-run"
+        self.assertEqual(self.trace()["status"], "not_applicable")
+        self.record["attempt"]["mode"] = "real"
+        for project in ["", "https://us.posthog.com.attacker.example/project/12345", "https://us.posthog.com/project/12345?secret=sentinel"]:
+            with self.subTest(project=project), patch.dict(os.environ, {"FACTORY_CONSOLE_POSTHOG_PROJECT_URL": project}):
+                self.assertEqual(self.trace()["status"], "not_configured")
+                self.assertIsNone(self.trace()["url"])
+
+    def test_lineage_must_match_the_attempt(self):
+        self.record["job"]["payload"]["factory_retry"]["attempt_id"] = "different-attempt"
+        self.assertEqual(self.trace()["status"], "unavailable")
+        self.assertIsNone(self.trace()["url"])
+
+    def test_only_explicit_telemetry_setup_failure_is_labeled_failed(self):
+        self.record["job"]["reason_code"] = "verification_github_check_failed"
+        self.assertEqual(self.trace()["status"], "unverified")
+        self.record["job"]["reason_code"] = "factory_receipt_analytics_setup_failed"
+        self.assertEqual(self.trace()["status"], "setup_failed")
+        self.assertIsNone(self.trace()["url"])
 
 
 class FactoryConsoleTests(unittest.TestCase):
