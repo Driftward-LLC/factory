@@ -8,8 +8,9 @@
     },
     {
       "project_id": "c670f223-bcaf-4e48-9209-6cca65da4568",
-      "repo": "Driftward-LLC/driftward-host",
-      "execution_enabled": false
+      "repo": "Driftward-LLC/factory",
+      "execution_enabled": true
     }
-  ]
+  ],
+  "retired_repositories": ["Driftward-LLC/driftward-host"]
 }

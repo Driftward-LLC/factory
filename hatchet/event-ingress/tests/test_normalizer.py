@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -232,7 +233,13 @@ class NormalizeLinearIssueTest(unittest.TestCase):
             "name": "Driftward Software Factory",
         }
 
-        normalized = normalize_linear_issue(payload, delivery_id="linear-delivery-disabled-project")
+        registry = json.loads((Path(__file__).resolve().parents[2] / "workers/routing-registry.json").read_text())
+        next(route for route in registry["routes"] if route["project_id"] == payload["data"]["project"]["id"])["execution_enabled"] = False
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "routes.json"
+            path.write_text(json.dumps(registry))
+            with patch.dict(os.environ, {"HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(path)}):
+                normalized = normalize_linear_issue(payload, delivery_id="linear-delivery-disabled-project")
 
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["LINEAR_ISSUE_OBSERVED"])
         self.assertFalse(normalized["dispatchEligible"])

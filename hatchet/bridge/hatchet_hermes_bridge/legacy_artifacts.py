@@ -105,6 +105,14 @@ def routing_repositories(raw: Any) -> tuple[set[str], set[str]]:
         routed.add(repository)
         if route["execution_enabled"]:
             enabled.add(repository)
+    retired = registry.get("retired_repositories", [])
+    if not isinstance(retired, list) or len(retired) > 32:
+        raise ValueError("retired repositories are invalid")
+    for value in retired:
+        repository = canonical_repository(value)
+        if repository in routed:
+            raise ValueError("retired repository is duplicated or still routed")
+        routed.add(repository)
     if not routed or not enabled:
         raise ValueError("routing registry is invalid")
     return routed, enabled
