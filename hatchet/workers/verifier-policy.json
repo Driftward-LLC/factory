@@ -39,6 +39,35 @@
       "secret_check_command": "npm run check:secrets"
     },
     {
+      "id": "factory-operator-refresh-v1",
+      "repo": "Driftward-LLC/factory",
+      "expected_base": "main",
+      "allowed_changed_paths": [
+        "hatchet/bridge/hatchet_hermes_bridge/operator.py",
+        "hatchet/bridge/hatchet_hermes_bridge/store.py",
+        "hatchet/bridge/tests",
+        "factory/factory",
+        "tools/test_factory_cli_static.py",
+        "hatchet/bridge/README.md",
+        "factory/README.md"
+      ],
+      "forbidden_changed_paths": [
+        ".github/workflows",
+        ".env",
+        "deploy",
+        "hatchet/workers",
+        "hatchet/event-ingress",
+        "hatchet/contracts"
+      ],
+      "required_local_commands": [
+        "python3 tools/hatchet-contracts.py check",
+        "npm run build --prefix hatchet/workers",
+        "PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests",
+        "python3 -m unittest discover -s tools -p test_factory_cli_static.py"
+      ],
+      "secret_check_command": "gitleaks git --redact --verbose ."
+    },
+    {
       "id": "driftward-host-hatchet-v1",
       "repo": "Driftward-LLC/driftward-host",
       "expected_base": "main",

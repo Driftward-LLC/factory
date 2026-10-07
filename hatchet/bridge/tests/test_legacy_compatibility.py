@@ -146,14 +146,25 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.assertEqual((before, after), ((1, 1, 1), (1, 1, 1)))
         self.assertEqual(self.predeploy().returncode, 0)
 
-    def test_imported_real_disabled_route_reconciles_but_operator_route_is_ineligible(self):
+    def test_imported_retired_repository_reconciles_without_receiving_new_factory_work(self):
         pr_url = f"https://github.com/{HOST}/pull/7"
         row = legacy_row(issue="ENG-7", repository=HOST, job_id="eng-7", pr_url=pr_url)
         self.insert(row, event={"effect": {"pr_url": pr_url, "head_branch": row["branch"]}})
         self.insert_attempt(row)
         self.assertEqual(self.predeploy().returncode, 0)
-        with self.assertRaises(OperatorError):
-            _load_route(HOST_PROJECT, str(ROUTES))
+        self.assertIn(HOST, self.routed)
+        self.assertNotIn(HOST, self.enabled)
+        self.assertEqual(_load_route(HOST_PROJECT, str(ROUTES))[0], "Driftward-LLC/factory")
+
+    def test_retired_repositories_are_validated_and_never_enable_execution(self):
+        registry = json.loads(ROUTES.read_text())
+        routed, enabled = routing_repositories(registry)
+        self.assertIn("Driftward-LLC/factory", enabled)
+        self.assertIn(HOST, routed)
+        self.assertNotIn(HOST, enabled)
+        for retired in [HOST, [HOST, HOST], [CAPYKIT], ["not-canonical"]]:
+            with self.subTest(retired=retired), self.assertRaises(ValueError):
+                routing_repositories({**registry, "retired_repositories": retired})
 
     def test_eng8_generation_one_receipt_reconciles_and_preview_still_requires_operator_gates(self):
         pr_url = f"https://github.com/{CAPYKIT}/pull/20"

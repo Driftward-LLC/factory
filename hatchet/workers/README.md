@@ -19,6 +19,15 @@ ambiguous, or disabled policy fails before a bridge job is submitted. Names,
 titles, descriptions, and labels are never routing inputs. The intake and
 Hermes executor allowlists remain independent defense-in-depth checks.
 
+The Driftward Software Factory project routes to `Driftward-LLC/factory`.
+Its `factory-operator-refresh-v1` verification policy permits ENG-153's operator,
+ledger, CLI, tests and documentation paths only; it cannot edit deployment,
+worker policy, contracts or GitHub workflows. Retain the old host policy for
+immutable historical jobs. `retired_repositories` in the routing registry keeps
+old host receipts recognizable by legacy reconciliation without providing a
+project route or execution permission. Runtime intake and Hermes allowlists
+must include the standalone Factory repository before admitting ENG-153.
+
 ## Boundary
 
 ```text

@@ -737,7 +737,10 @@ def _routing_policy_digest(registry_path: Path) -> str:
     normalized.sort(key=lambda item: (item["repo"], item["project_id"], item["execution_enabled"]))
     # Keep routing_repositories as the authoritative syntax/duplicate validator.
     routing_repositories(registry_path.read_text())
-    return hashlib.sha256(canonical_json({"version": parsed["version"], "routes": normalized}).encode()).hexdigest()
+    semantics = {"version": parsed["version"], "routes": normalized}
+    if parsed.get("retired_repositories"):
+        semantics["retired_repositories"] = sorted(parsed["retired_repositories"])
+    return hashlib.sha256(canonical_json(semantics).encode()).hexdigest()
 
 
 def _resolver_attestation_contract() -> dict[str, str]:
