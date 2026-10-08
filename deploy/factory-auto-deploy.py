@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from auto_deploy_artifact import compatibility_entries
 
 REPO = 'Driftward-LLC/factory'
 CONFIG = Path('/etc/driftward/factory-auto-deploy.json')
@@ -109,6 +110,13 @@ def unpack(archive, directory):
 
 
 def get_image(run_id, commit, config, directory):
+    # Use the root-installed policy and GitHub's source tree, not the build's
+    # self-reported fingerprint: a changed CI script cannot approve itself.
+    tree = api(f'git/trees/{commit}?recursive=1')
+    require(tree.get('truncated') is False, 'incomplete_source_tree')
+    entries = [f"{item['mode']} {item['type']} {item['sha']}\t{item['path']}".encode()
+               for item in tree['tree'] if item['type'] != 'tree']
+    require(compatibility_entries(entries) == config['compatibility'], 'compatibility_review_required')
     artifacts = api(f'actions/runs/{run_id}/artifacts?per_page=100')
     matches = [item for item in artifacts['artifacts'] if item['name'] == 'factory-production-' + commit]
     require(len(matches) == 1 and artifacts['total_count'] <= 100, 'deployment_artifact_missing_or_ambiguous')
@@ -123,13 +131,19 @@ def get_image(run_id, commit, config, directory):
     require(archive.stat().st_size <= MAX_ARCHIVE and 'sha256:' + sha256(archive) == artifact['digest'], 'artifact_digest_mismatch')
     manifest = checked_manifest(unpack(archive, directory), commit, config['compatibility'])
     require(sha256(directory / 'factory-image.tar') == manifest['archive_sha256'], 'image_archive_digest_mismatch')
-    command('docker', 'image', 'load', '--input', str(directory / 'factory-image.tar'))
-    info = json.loads(command('docker', 'image', 'inspect', manifest['image']))[0]
+    # Classic Docker and containerd stores can assign different image IDs to
+    # the same archive. Bind inspection/pinning to this verified import result,
+    # never a tag or a search of preexisting images with matching labels.
+    loaded = re.fullmatch('Loaded image ID: (sha256:' + DIGEST + ')',
+                          command('docker', 'image', 'load', '--input', str(directory / 'factory-image.tar')))
+    require(loaded is not None, 'ambiguous_image_import')
+    image = loaded[1]
+    info = json.loads(command('docker', 'image', 'inspect', image))[0]
     labels = info['Config'].get('Labels') or {}
-    require(info['Id'] == manifest['image'] and info['Architecture'] == 'amd64' and info['Os'] == 'linux'
+    require(info['Id'] == image and info['Architecture'] == 'amd64' and info['Os'] == 'linux'
             and labels.get('org.opencontainers.image.revision') == commit
             and labels.get('org.opencontainers.image.source') == 'https://github.com/' + REPO, 'image_provenance_mismatch')
-    return manifest['image']
+    return image
 
 
 def assert_quiescent(conn):
