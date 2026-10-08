@@ -55,6 +55,37 @@ class FactoryCliStaticTests(unittest.TestCase):
             self.assertNotEqual(run("preview", *review, "--yes").returncode, 0)
             link = root / "link.json"; link.symlink_to(attestation)
             self.assertNotEqual(run("preview", "--attestation", str(link), "--reason", "reviewed").returncode, 0)
+            absence = root / "absence.json"
+            absence.write_text('{"kind":"github_branch_pr_absence_v1"}')
+            review += ["--absence-evidence", str(absence)]
+            preview = run("preview", *review)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(json.loads(preview.stdout)["body"]["absence_evidence"], {"kind": "github_branch_pr_absence_v1"})
+            confirm = run("confirm", *review, "--request-id", "fixture-request", "--snapshot-digest", "a" * 64, "--yes")
+            self.assertEqual(confirm.returncode, 0, confirm.stderr)
+            self.assertEqual(json.loads(confirm.stdout)["body"]["absence_evidence"], {"kind": "github_branch_pr_absence_v1"})
+            self.assertNotEqual(run("inspect", "--yes", "--absence-evidence", str(absence)).returncode, 0)
+            self.assertNotEqual(run("preview", *review[:-1], str(link)).returncode, 0)
+            absence.write_text('[]')
+            self.assertNotEqual(run("preview", *review).returncode, 0)
+
+            self._write_executable(fake_bin / "curl", '#!/bin/sh\necho \'{"created":false,"absence_evidence_target":{"repository":"owner/repo","head_branch":"codex/fixture"}}\'\n')
+            self._write_executable(fake_bin / "gh", '''#!/bin/sh
+if [ "$1" = "pr" ]; then echo '[]'; exit 0; fi
+test "$2" = "repos/owner/repo/branches/codex%2Ffixture" || exit 2
+echo 'HTTP 404' >&2
+exit 1
+''')
+            inspected = run("inspect", "--yes")
+            self.assertEqual(inspected.returncode, 0, inspected.stderr)
+            observed = json.loads(inspected.stdout)
+            self.assertEqual(observed["kind"], "github_branch_pr_absence_v1")
+            self.assertEqual(observed["repository"], "owner/repo")
+            self.assertEqual(observed["head_branch"], "codex/fixture")
+            self.assertIs(observed["branch_exists"], False)
+            self.assertEqual(observed["pull_requests"], [])
+            self._write_executable(fake_bin / "gh", '#!/bin/sh\necho "HTTP 403" >&2\nexit 1\n')
+            self.assertNotEqual(run("inspect", "--yes").returncode, 0)
 
     def test_analytics_uses_root_operator_and_bounded_window(self) -> None:
         source = (ROOT / "factory/factory").read_text(encoding="utf-8")

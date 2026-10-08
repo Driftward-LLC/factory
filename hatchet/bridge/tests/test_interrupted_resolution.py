@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ class InterruptedResolutionTests(unittest.TestCase):
             self.conn, work_item_key="ENG-600", mode="real", request_id="fixture", reason="fixture", actor="test",
             payload=verifier_payload("Driftward-LLC/capykit"))
         self.aid = self.attempt["attempt_id"]
+        self.absence = None
         store.transition_job(self.conn, self.job["job_id"], state="running")
         self.lease = store.claim_factory_execution(self.conn, self.job["job_id"], owner="executor")["lease"]
         store.authorize_factory_effect(self.conn, self.job["job_id"], self.lease)
@@ -56,11 +58,111 @@ class InterruptedResolutionTests(unittest.TestCase):
                  store.payload_hash(result), store.utc_now(), store.utc_now(), store.utc_now()))
 
     def preview(self, **changes):
-        return recovery.preview(self.conn, self.aid, **{"attestation": self.evidence, "reason": "reviewed containment", "actor": ACTOR, **changes})
+        return recovery.preview(self.conn, self.aid, **{"attestation": self.evidence, "reason": "reviewed containment", "actor": ACTOR,
+                                                       "absence_evidence": self.absence, **changes})
 
     def command(self):
         return {"attestation": self.evidence, "reason": "reviewed containment", "actor": ACTOR,
+                **({"absence_evidence": self.absence} if self.absence is not None else {}),
                 "request_id": "resolve-fixture", "snapshot_digest": self.preview()["snapshot_digest"]}
+
+    def no_prior_pr(self):
+        with self.conn:
+            self.conn.execute("UPDATE factory_attempts SET prior_pr_url=NULL WHERE attempt_id=?", (self.aid,))
+            self.conn.execute("DELETE FROM factory_inspection_requests")
+        self.absence = {"kind": "github_branch_pr_absence_v1", "repository": "Driftward-LLC/capykit",
+                        "head_branch": self.job["branch"], "branch_exists": False, "pull_requests": [], "observed_at": store.utc_now()}
+
+    def test_no_pr_inspect_uses_ledger_identity_and_does_not_queue_work(self):
+        self.no_prior_pr()
+        before = self.conn.total_changes
+        result = recovery.inspect(self.conn, self.aid, actor=ACTOR)
+        self.assertEqual(result, {"created": False, "absence_evidence_target": {
+            "repository": "Driftward-LLC/capykit", "head_branch": self.job["branch"]}})
+        self.assertEqual(self.conn.total_changes, before)
+
+    def test_no_pr_requires_fresh_bound_absence_after_containment(self):
+        self.no_prior_pr()
+        invalid = [None, {}, dict(self.absence, repository="other/repo"), dict(self.absence, head_branch="wrong"),
+                   dict(self.absence, branch_exists=True), dict(self.absence, branch_exists=0),
+                   dict(self.absence, pull_requests=[{"state": "closed"}]), dict(self.absence, extra="field"),
+                   dict(self.absence, observed_at="2000-01-01T00:00:00Z"),
+                   dict(self.absence, observed_at="2999-01-01T00:00:00Z"),
+                   dict(self.absence, observed_at="2026-10-08T00:00:00")]
+        for absence in invalid:
+            with self.subTest(absence=absence), self.assertRaises((store.BridgeConflict, store.BridgeValidationError)):
+                self.preview(absence_evidence=absence)
+        with self.assertRaises(store.BridgeConflict):
+            self.preview(attestation={**self.evidence, "observed_at": store.utc_now()})
+        before = self.conn.total_changes
+        result = self.preview()
+        self.assertEqual(self.conn.total_changes, before)
+        self.assertEqual(result["context"]["inspection"]["result"], self.absence)
+        self.assertEqual(result["context"]["inspection"]["source"], "trusted_root_absence_attestation")
+
+    def test_absence_cannot_bypass_known_pr_or_repair_target(self):
+        absence = {"kind": "github_branch_pr_absence_v1", "repository": "Driftward-LLC/capykit",
+                   "head_branch": self.job["branch"], "branch_exists": False, "pull_requests": [], "observed_at": store.utc_now()}
+        with self.assertRaises(store.BridgeValidationError): self.preview(absence_evidence=absence)
+        self.no_prior_pr()
+        with self.conn:
+            self.conn.execute("UPDATE bridge_jobs SET requested_action='repair_draft_pr' WHERE job_id=?", (self.job["job_id"],))
+        with self.assertRaises(store.BridgeConflict): self.preview()
+
+    def test_no_pr_absence_expires_before_the_attestation(self):
+        self.no_prior_pr()
+        now = datetime.now(timezone.utc)
+        with self.conn:
+            self.conn.execute("UPDATE factory_execution_leases SET cancel_requested_at=?", ((now - timedelta(seconds=200)).isoformat(),))
+        self.evidence["observed_at"] = (now - timedelta(seconds=150)).isoformat()
+        self.absence["observed_at"] = (now - timedelta(seconds=130)).isoformat()
+        with self.assertRaisesRegex(store.BridgeConflict, "fresh branch and PR absence"):
+            self.preview()
+
+    def test_no_pr_resolution_keeps_unknown_failure_hold_and_no_retry(self):
+        self.no_prior_pr()
+        result = recovery.resolve(self.conn, self.aid, **self.command())
+        self.assertEqual(result["control"]["mode"], "manual")
+        self.assertEqual(result["effect_outcome"], "unknown")
+        job = store.get_job(self.conn, self.job["job_id"])
+        self.assertEqual((job["state"], job["reason_code"]), ("failed", "operator_interrupted_outcome_unknown"))
+        self.assertIsNone(job["pr_url"])
+        self.assertIsNone(job["verification_receipt"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_attempts").fetchone()[0], 1)
+        row = self.conn.execute("SELECT * FROM factory_recovery_requests").fetchone()
+        evidence = json.loads(row["evidence_json"])
+        self.assertEqual(evidence["intent"]["absence_evidence"], self.absence)
+        self.assertEqual(row["evidence_digest"], store.payload_hash(evidence))
+
+    def test_no_pr_absence_changes_require_new_preview_and_bind_idempotency(self):
+        self.no_prior_pr()
+        command = self.command()
+        newer = {**self.absence, "observed_at": store.utc_now()}
+        with self.assertRaisesRegex(store.BridgeConflict, "preview changed"):
+            recovery.resolve(self.conn, self.aid, **{**command, "absence_evidence": newer})
+        self.test_repeated_command_survives_restart_and_stale_evidence_but_not_changed_intent()
+        with self.assertRaises(store.BridgeConflict):
+            recovery.resolve(self.conn, self.aid, **{**command, "absence_evidence": newer})
+
+    def test_no_pr_late_commits_and_replay_remain_fenced(self):
+        self.no_prior_pr()
+        self.test_late_commit_heartbeat_replay_and_intake_remain_fenced()
+
+    def test_no_pr_audit_failure_is_atomic(self):
+        self.no_prior_pr()
+        self.test_audit_failure_rolls_back_every_state_and_outbox_change()
+
+    def test_no_pr_receipt_resolution_race_has_one_winner(self):
+        self.no_prior_pr()
+        self.test_receipt_and_resolution_race_has_one_winner()
+
+    def test_no_pr_cannot_override_receipt_or_live_lease(self):
+        self.no_prior_pr()
+        self.test_known_receipt_or_live_lease_cannot_be_overridden()
+
+    def test_no_pr_http_guards_and_confirm(self):
+        self.no_prior_pr()
+        self.test_root_http_preview_confirm_and_spoofed_actor_rejection()
 
     def test_preview_readonly_and_resolution_preserves_unknown_outcome(self):
         before = self.conn.total_changes
@@ -225,6 +327,10 @@ class InterruptedResolutionTests(unittest.TestCase):
         h = Handler(); h.actor = ACTOR
         h.path = f"/v1/attempts/{self.aid}/interrupted-resolution/preview"
         h.body = {"attestation": self.evidence, "reason": "reviewed containment"}
+        if self.absence is not None:
+            h.body["absence_evidence"] = None
+            h.do_POST(); self.assertEqual(h.response[0], 400)
+            h.body["absence_evidence"] = self.absence
         h.do_POST(); self.assertEqual(h.response[0], 200)
         digest = h.response[1]["snapshot_digest"]
         h.body["actor"] = ACTOR
