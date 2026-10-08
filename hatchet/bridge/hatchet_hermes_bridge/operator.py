@@ -638,6 +638,10 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 attempt_id, action = resolution_path.groups()
                 fields = set() if action == "inspect" else {"attestation", "reason"}
                 if action == "confirm": fields |= {"request_id", "snapshot_digest"}
+                if action != "inspect" and "absence_evidence" in body:
+                    fields.add("absence_evidence")
+                    if not isinstance(body["absence_evidence"], dict):
+                        raise OperatorError("absence evidence must be an object")
                 if set(body) != fields:
                     raise OperatorError("unsupported interrupted resolution fields")
                 actor = self._actor()

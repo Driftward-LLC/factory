@@ -7,8 +7,9 @@ transfer, not an executor receipt, rollback, retry, or force-unlock.
 
 Use automatic receipt recovery first. This exception is for held real attempts
 in `cancellation_requested`, with an expired authorized lease, a running job,
-no observed completion receipt, and a known prior PR. Other cases remain
-blocked. In particular, unknown/no-PR cases are not covered by this operation.
+no observed completion receipt, and either a known prior PR or a create-PR job
+with freshly inspected branch/PR absence. Other cases remain blocked. Absence
+is not proof that no external effect ever happened or that execution stopped.
 
 ## Trust and safety contract
 
@@ -88,13 +89,42 @@ factory attempts resolve-interrupted ATTEMPT-ID preview \
   --attestation /root/recovery/attestation.json --reason "Reviewed containment and workspace snapshot"
 ```
 
-`inspect` queues only the existing `inspect_draft_pr_state` action, never agent
-execution. Wait for its completion, then preview. Preview reads a single SQLite
+For a known prior PR, `inspect` queues only the existing `inspect_draft_pr_state`
+action, never agent execution. Wait for its completion, then preview. Preview reads a single SQLite
 snapshot without writing. The attestation must be no more than five minutes
 old, after cancellation, and the inspection must be fresh (two minutes) and
 recorded **after** containment review. Missing or stale inspection blocks.
 The exact repository, prior PR, branch and observed head are bound into the
 preview digest, together with ownership revision and execution lease identity.
+
+For a create-PR job with **no prior PR**, `inspect` instead returns the attempt's
+repository and job branch to the CLI, which uses the host's existing GitHub CLI
+identity to inspect that branch and PRs in **all states**. It queues no work and
+does not pass GitHub credentials to Factory. After containment review, save the
+output in a new root-owned `0600` file in a protected directory:
+
+```bash
+umask 077
+factory attempts resolve-interrupted ATTEMPT-ID inspect --yes > /root/recovery/absence.json
+factory attempts resolve-interrupted ATTEMPT-ID preview \
+  --attestation /root/recovery/attestation.json --absence-evidence /root/recovery/absence.json \
+  --reason "Reviewed containment and workspace snapshot"
+```
+
+The file must contain one `github_branch_pr_absence_v1` object, no more than
+4096 bytes: exact `repository`, `head_branch`, `branch_exists: false`,
+`pull_requests: []`, and `observed_at`. The Unix operator trusts this root-supplied
+observation; it does not independently query GitHub. The preview explicitly
+labels its inspection source `trusted_root_absence_attestation`. Evidence must
+be at most two minutes old and recorded after containment review. An existing
+branch, any PR (including closed/merged), wrong identity, or stale observation
+blocks retirement. A known prior PR cannot use this absence path, and a repair
+job without its prior PR remains blocked. If GitHub access is denied or the
+repository cannot be inspected, stop; do not interpret that as absence.
+
+For this path, add the **same** `--absence-evidence /root/recovery/absence.json`
+to confirmation below. Do not regenerate it between preview and confirmation;
+changed evidence requires a new preview. Reinspect and preview if it expires.
 
 Review the preview and confirm the identical reason and evidence:
 

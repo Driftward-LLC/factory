@@ -60,8 +60,8 @@ Usage:
   factory attempts cancel ATTEMPT-ID --reason TEXT --yes
   factory attempts refresh-receipt ATTEMPT-ID --reason TEXT --yes
   factory attempts resolve-interrupted ATTEMPT-ID inspect --yes
-  factory attempts resolve-interrupted ATTEMPT-ID preview --attestation FILE --reason TEXT
-  factory attempts resolve-interrupted ATTEMPT-ID confirm --attestation FILE --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+  factory attempts resolve-interrupted ATTEMPT-ID preview --attestation FILE [--absence-evidence FILE] --reason TEXT
+  factory attempts resolve-interrupted ATTEMPT-ID confirm --attestation FILE [--absence-evidence FILE] --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory doctor hatchet [--profile PROFILE | --live-json PATH] [--json] [--fail-on-warning]
 
 Log targets:
@@ -457,7 +457,7 @@ format_lifecycle_dead_letters() {
 
 github_absence_evidence() {
   local repo="$1" branch="$2" encoded_branch pr_json branch_exists api_error observed
-  command -v gh >/dev/null 2>&1 || die "GitHub CLI gh is required for force-absence evidence"
+  command -v gh >/dev/null 2>&1 || die "GitHub CLI gh is required for branch and PR absence evidence"
   encoded_branch="$(jq -rn --arg branch "$branch" '$branch|@uri')"
   pr_json="$(gh pr list --repo "$repo" --head "$branch" --state all --json number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,closedAt,title)"
   if api_error="$(gh api "repos/$repo/branches/$encoded_branch" 2>&1 >/dev/null)"; then
@@ -470,7 +470,7 @@ github_absence_evidence() {
       die "GitHub branch absence check failed"
     fi
   fi
-  observed="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  observed="$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")"
   jq -cn --arg kind "github_branch_pr_absence_v1" --arg repo "$repo" --arg branch "$branch" --arg observed "$observed" --argjson branch_exists "$branch_exists" --argjson prs "$pr_json" '{kind:$kind,repository:$repo,head_branch:$branch,branch_exists:$branch_exists,pull_requests:$prs,observed_at:$observed}'
 }
 
@@ -728,13 +728,14 @@ attempts() {
       ;;
     resolve-interrupted)
       local id="${1:-}" phase="${2:-}"; shift 2 || die "resolve-interrupted requires ATTEMPT-ID and inspect, preview, or confirm"
-      local reason="" attestation="" request_id="" snapshot_digest="" yes=0 body
+      local reason="" attestation="" absence_evidence="" request_id="" snapshot_digest="" yes=0 body result
       [[ "$id" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || die "resolve-interrupted requires a canonical attempt UUID"
       [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "resolve-interrupted requires inspect, preview, or confirm"
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
           --attestation) [[ $# -ge 2 ]] || die "--attestation requires a file"; attestation="$2"; shift 2 ;;
+          --absence-evidence) [[ $# -ge 2 ]] || die "--absence-evidence requires a file"; absence_evidence="$2"; shift 2 ;;
           --request-id) [[ $# -ge 2 ]] || die "--request-id requires an ID"; request_id="$2"; shift 2 ;;
           --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the preview digest"; snapshot_digest="$2"; shift 2 ;;
           --yes) yes=1; shift ;;
@@ -742,13 +743,18 @@ attempts() {
         esac
       done
       if [[ "$phase" == inspect ]]; then
-        [[ "$yes" == 1 && -z "$reason$attestation$request_id$snapshot_digest" ]] || die "inspect requires only --yes; it queues a read-only PR inspection"
+        [[ "$yes" == 1 && -z "$reason$attestation$absence_evidence$request_id$snapshot_digest" ]] || die "inspect requires only --yes; it performs a read-only artifact inspection"
         body='{}'
       else
         [[ -n "$reason" && -n "$attestation" ]] || die "resolution requires --attestation and --reason"
         [[ -f "$attestation" && ! -L "$attestation" ]] || die "attestation must be a regular file, not a symlink"
         [[ $(stat -c '%u:%a' "$attestation") == 0:600 && $(stat -c '%s' "$attestation") -le 4096 ]] || die "attestation must be root-owned, mode 0600, at most 4096 bytes"
         body="$(jq -cen --slurpfile evidence "$attestation" --arg reason "$reason" 'if ($evidence|length)==1 and ($evidence[0]|type)=="object" then {attestation:$evidence[0],reason:$reason} else error("expected one attestation object") end')"
+        if [[ -n "$absence_evidence" ]]; then
+          [[ -f "$absence_evidence" && ! -L "$absence_evidence" ]] || die "absence evidence must be a regular file, not a symlink"
+          [[ $(stat -c '%u:%a' "$absence_evidence") == 0:600 && $(stat -c '%s' "$absence_evidence") -le 4096 ]] || die "absence evidence must be root-owned, mode 0600, at most 4096 bytes"
+          body="$(jq -ce --slurpfile evidence "$absence_evidence" 'if ($evidence|length)==1 and ($evidence[0]|type)=="object" then . + {absence_evidence:$evidence[0]} else error("expected one absence evidence object") end' <<<"$body")"
+        fi
         if [[ "$phase" == confirm ]]; then
           [[ "$yes" == 1 && -n "$request_id" && -n "$snapshot_digest" ]] || die "confirm requires --request-id, --snapshot-digest and --yes"
           body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$snapshot_digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
@@ -756,7 +762,12 @@ attempts() {
           [[ "$yes" == 0 && -z "$request_id$snapshot_digest" ]] || die "preview does not accept confirmation flags"
         fi
       fi
-      operator_request POST "/v1/attempts/$id/interrupted-resolution/$phase" "$body"
+      result="$(operator_request POST "/v1/attempts/$id/interrupted-resolution/$phase" "$body")"
+      if [[ "$phase" == inspect ]] && jq -e '.absence_evidence_target' >/dev/null <<<"$result"; then
+        github_absence_evidence "$(jq -er '.absence_evidence_target.repository' <<<"$result")" "$(jq -er '.absence_evidence_target.head_branch' <<<"$result")"
+      else
+        printf '%s\n' "$result"
+      fi
       ;;
     *) die "usage: factory attempts {active|list|show|events|evidence|cancel|refresh-receipt|resolve-interrupted}" ;;
   esac
