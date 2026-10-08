@@ -122,12 +122,17 @@ class DeploymentTests(unittest.TestCase):
                 'size_in_bytes': source.stat().st_size, 'digest': 'sha256:' + auto.sha256(source),
                 'workflow_run': {'id': 34, 'head_sha': COMMIT}}
         loaded = []
+        # CI uses classic Docker; the production containerd store returns a
+        # different content-addressed ID for that exact imported archive.
+        imported_image = 'sha256:' + 'c' * 64
+        load_result = 'Loaded image ID: ' + imported_image
         def command(*args, output=None):
             if args[0] == 'gh':
                 output.write(source.read_bytes()); return ''
             if args[:3] == ('docker', 'image', 'load'):
-                loaded.append(args); return ''
-            return json.dumps([{'Id': IMAGE, 'Architecture': 'amd64', 'Os': 'linux', 'Config': {'Labels': {
+                loaded.append(args); return load_result
+            self.assertEqual(args, ('docker', 'image', 'inspect', imported_image))
+            return json.dumps([{'Id': imported_image, 'Architecture': 'amd64', 'Os': 'linux', 'Config': {'Labels': {
                 'org.opencontainers.image.revision': COMMIT, 'org.opencontainers.image.source': 'https://github.com/' + auto.REPO}}}])
         for corrupted in [True, False]:
             metadata = {**item, 'digest': 'sha256:' + '0' * 64} if corrupted else item
@@ -137,8 +142,14 @@ class DeploymentTests(unittest.TestCase):
                         auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output))
                     self.assertEqual(loaded, [])
                 else:
-                    self.assertEqual(auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output)), IMAGE)
+                    self.assertEqual(auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output)), imported_image)
                     self.assertEqual(len(loaded), 1)
+
+        for load_result in ['', 'Loaded image: factory:latest',
+                            'Loaded image ID: ' + IMAGE + '\nLoaded image ID: ' + imported_image]:
+            with tempfile.TemporaryDirectory(dir=self.directory) as output, patch.object(auto, 'api', side_effect=[tree, {'total_count': 1, 'artifacts': [item]}]), patch.object(auto, 'command', side_effect=command):
+                with self.assertRaisesRegex(auto.Refusal, 'ambiguous_image_import'):
+                    auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output))
 
         # Even an artifact claiming the approved fingerprint cannot approve a
         # changed protected source file; reject before downloading/loading it.

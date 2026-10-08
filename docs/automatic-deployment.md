@@ -15,6 +15,10 @@ and the existing installation/tenant locks serialize deployments with operators.
 The protected-tree fingerprint is independently computed from GitHub's complete
 source tree using the root-installed policy, before downloading the artifact.
 Changing the CI packager cannot approve its own policy changes.
+The pinned image ID is the single immutable ID returned by the verified archive
+import. Classic Docker and containerd stores can assign different IDs to the
+same archive; the CI-side ID is metadata, not a portable lookup key. Tagged or
+multiple-image import results are rejected, and labels/platform are rechecked.
 
 ## What runs automatically
 
