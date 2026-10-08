@@ -18,10 +18,15 @@ def routine_path(name):
             or name.startswith('hatchet/workers/bridge-executor-worker/src/workflows/'))
 
 
+def compatibility_entries(entries):
+    protected = sorted((entry for entry in entries if entry and not routine_path(entry.split(b'\t', 1)[1].decode())),
+                       key=lambda entry: entry.split(b'\t', 1)[1])
+    return hashlib.sha256(b'\0'.join(protected)).hexdigest()
+
+
 def compatibility(root):
     entries = subprocess.check_output(['git', '-C', str(root), 'ls-tree', '-rz', 'HEAD'])
-    protected = [entry for entry in entries.split(b'\0') if entry and not routine_path(entry.split(b'\t', 1)[1].decode())]
-    return hashlib.sha256(b'\0'.join(protected)).hexdigest()
+    return compatibility_entries(entries.split(b'\0'))
 
 
 def sha256(path):

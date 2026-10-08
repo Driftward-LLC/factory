@@ -24,8 +24,9 @@ def load(name, path):
     return module
 
 
-auto = load('auto_deploy', ROOT / 'deploy/factory-auto-deploy.py')
 artifact = load('auto_deploy_artifact', ROOT / 'deploy/auto_deploy_artifact.py')
+with patch.dict(sys.modules, {'auto_deploy_artifact': artifact}):
+    auto = load('auto_deploy', ROOT / 'deploy/factory-auto-deploy.py')
 COMMIT = 'a' * 40
 IMAGE = 'sha256:' + 'b' * 64
 
@@ -108,7 +109,11 @@ class DeploymentTests(unittest.TestCase):
     def test_download_digest_and_image_provenance_checked_before_rollout(self):
         source = self.directory / 'source.zip'
         image_bytes = b'synthetic image archive'
-        manifest = {'format': 1, 'commit': COMMIT, 'image': IMAGE, 'compatibility': 'd' * 64,
+        tree = {'truncated': False, 'tree': [
+            {'mode': '040000', 'type': 'tree', 'sha': 'c' * 40, 'path': 'deploy'},
+            {'mode': '100644', 'type': 'blob', 'sha': 'd' * 40, 'path': 'deploy/Dockerfile'}]}
+        compatibility = artifact.compatibility_entries([b'100644 blob ' + b'd' * 40 + b'\tdeploy/Dockerfile'])
+        manifest = {'format': 1, 'commit': COMMIT, 'image': IMAGE, 'compatibility': compatibility,
                     'archive_sha256': hashlib.sha256(image_bytes).hexdigest()}
         with zipfile.ZipFile(source, 'w') as bundle:
             bundle.writestr('factory-image.tar', image_bytes)
@@ -126,14 +131,25 @@ class DeploymentTests(unittest.TestCase):
                 'org.opencontainers.image.revision': COMMIT, 'org.opencontainers.image.source': 'https://github.com/' + auto.REPO}}}])
         for corrupted in [True, False]:
             metadata = {**item, 'digest': 'sha256:' + '0' * 64} if corrupted else item
-            with tempfile.TemporaryDirectory(dir=self.directory) as output, patch.object(auto, 'api', return_value={'total_count': 1, 'artifacts': [metadata]}), patch.object(auto, 'command', side_effect=command):
+            with tempfile.TemporaryDirectory(dir=self.directory) as output, patch.object(auto, 'api', side_effect=[tree, {'total_count': 1, 'artifacts': [metadata]}]), patch.object(auto, 'command', side_effect=command):
                 if corrupted:
                     with self.assertRaisesRegex(auto.Refusal, 'artifact_digest_mismatch'):
-                        auto.get_image(34, COMMIT, {'compatibility': 'd' * 64}, Path(output))
+                        auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output))
                     self.assertEqual(loaded, [])
                 else:
-                    self.assertEqual(auto.get_image(34, COMMIT, {'compatibility': 'd' * 64}, Path(output)), IMAGE)
+                    self.assertEqual(auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output)), IMAGE)
                     self.assertEqual(len(loaded), 1)
+
+        # Even an artifact claiming the approved fingerprint cannot approve a
+        # changed protected source file; reject before downloading/loading it.
+        changed = {'truncated': False, 'tree': [dict(tree['tree'][1], sha='e' * 40)]}
+        for rejected, reason in [(changed, 'compatibility_review_required'),
+                                 ({**tree, 'truncated': True}, 'incomplete_source_tree')]:
+            with patch.object(auto, 'api', return_value=rejected) as api, patch.object(auto, 'command') as run:
+                with self.assertRaisesRegex(auto.Refusal, reason):
+                    auto.get_image(34, COMMIT, {'compatibility': compatibility}, self.directory)
+                api.assert_called_once_with(f'git/trees/{COMMIT}?recursive=1')
+                run.assert_not_called()
 
     def test_expired_or_unknown_execution_is_not_quiescence(self):
         self.database()

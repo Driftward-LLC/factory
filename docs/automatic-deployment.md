@@ -12,6 +12,9 @@ push event, branch, current `main` SHA, immutable artifact digest, image archive
 checksum, OCI revision and platform. It loads an image saved by ID, not a mutable
 production tag. Old/superseded revisions cannot be deployed. GitHub concurrency
 and the existing installation/tenant locks serialize deployments with operators.
+The protected-tree fingerprint is independently computed from GitHub's complete
+source tree using the root-installed policy, before downloading the artifact.
+Changing the CI packager cannot approve its own policy changes.
 
 ## What runs automatically
 
@@ -49,6 +52,9 @@ Install the reviewed scripts `deploy/factory-auto-deploy.py` and
 `/usr/local/libexec/factory-deploy-ssh`. Python 3.11+, Docker Compose and an
 authenticated host `gh` CLI with read access to this repository's Actions
 artifacts are required. The SSH caller never receives that host credential.
+Install the shared policy module `deploy/auto_deploy_artifact.py` alongside them
+at `/usr/local/libexec/auto_deploy_artifact.py`, root-owned mode 0644. It is part
+of the reviewed host installation, not imported from a downloaded artifact.
 
 Create a locked-password `factory-deploy` account with no Docker group membership
 and a root-owned home/authorized-keys file. Generate a dedicated Ed25519 key; its

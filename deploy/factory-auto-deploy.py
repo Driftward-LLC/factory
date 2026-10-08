@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from auto_deploy_artifact import compatibility_entries
 
 REPO = 'Driftward-LLC/factory'
 CONFIG = Path('/etc/driftward/factory-auto-deploy.json')
@@ -109,6 +110,13 @@ def unpack(archive, directory):
 
 
 def get_image(run_id, commit, config, directory):
+    # Use the root-installed policy and GitHub's source tree, not the build's
+    # self-reported fingerprint: a changed CI script cannot approve itself.
+    tree = api(f'git/trees/{commit}?recursive=1')
+    require(tree.get('truncated') is False, 'incomplete_source_tree')
+    entries = [f"{item['mode']} {item['type']} {item['sha']}\t{item['path']}".encode()
+               for item in tree['tree'] if item['type'] != 'tree']
+    require(compatibility_entries(entries) == config['compatibility'], 'compatibility_review_required')
     artifacts = api(f'actions/runs/{run_id}/artifacts?per_page=100')
     matches = [item for item in artifacts['artifacts'] if item['name'] == 'factory-production-' + commit]
     require(len(matches) == 1 and artifacts['total_count'] <= 100, 'deployment_artifact_missing_or_ambiguous')
