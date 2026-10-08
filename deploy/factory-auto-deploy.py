@@ -58,6 +58,11 @@ def record(path, value):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def sha256(path):
@@ -202,6 +207,8 @@ def deploy(config, run_id, commit):
             require(shutil.disk_usage(work).free >= 12 * 1024**3, 'insufficient_backup_space')
             with tempfile.TemporaryDirectory(prefix='artifact-', dir=work) as temporary:
                 image = get_image(run_id, commit, config, Path(temporary))
+                # A rerun must not replace the successful check while downloading.
+                validate_run(api(f'actions/runs/{run_id}'), api('actions/workflows/hatchet-quality.yml'), run_id, commit)
                 rollout(production, install, image, commit, run_id, work)
 
 

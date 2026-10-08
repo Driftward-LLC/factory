@@ -1,6 +1,7 @@
 """Deployment trust, compatibility, archive and execution-stop boundaries."""
 from contextlib import contextmanager
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -96,6 +97,36 @@ class DeploymentTests(unittest.TestCase):
         conn = sqlite3.connect(self.directory / 'bridge.db')
         conn.executescript('CREATE TABLE factory_attempts(status TEXT); CREATE TABLE factory_execution_leases(released_at TEXT); CREATE TABLE bridge_jobs(state TEXT);')
         conn.commit(); conn.close()
+
+    def test_download_digest_and_image_provenance_checked_before_rollout(self):
+        source = self.directory / 'source.zip'
+        image_bytes = b'synthetic image archive'
+        manifest = {'format': 1, 'commit': COMMIT, 'image': IMAGE, 'compatibility': 'd' * 64,
+                    'archive_sha256': hashlib.sha256(image_bytes).hexdigest()}
+        with zipfile.ZipFile(source, 'w') as bundle:
+            bundle.writestr('factory-image.tar', image_bytes)
+            bundle.writestr('deployment.json', json.dumps(manifest))
+        item = {'id': 56, 'name': 'factory-production-' + COMMIT, 'expired': False,
+                'size_in_bytes': source.stat().st_size, 'digest': 'sha256:' + auto.sha256(source),
+                'workflow_run': {'id': 34, 'head_sha': COMMIT}}
+        loaded = []
+        def command(*args, output=None):
+            if args[0] == 'gh':
+                output.write(source.read_bytes()); return ''
+            if args[:3] == ('docker', 'image', 'load'):
+                loaded.append(args); return ''
+            return json.dumps([{'Id': IMAGE, 'Architecture': 'amd64', 'Os': 'linux', 'Config': {'Labels': {
+                'org.opencontainers.image.revision': COMMIT, 'org.opencontainers.image.source': 'https://github.com/' + auto.REPO}}}])
+        for corrupted in [True, False]:
+            metadata = {**item, 'digest': 'sha256:' + '0' * 64} if corrupted else item
+            with tempfile.TemporaryDirectory(dir=self.directory) as output, patch.object(auto, 'api', return_value={'total_count': 1, 'artifacts': [metadata]}), patch.object(auto, 'command', side_effect=command):
+                if corrupted:
+                    with self.assertRaisesRegex(auto.Refusal, 'artifact_digest_mismatch'):
+                        auto.get_image(34, COMMIT, {'compatibility': 'd' * 64}, Path(output))
+                    self.assertEqual(loaded, [])
+                else:
+                    self.assertEqual(auto.get_image(34, COMMIT, {'compatibility': 'd' * 64}, Path(output)), IMAGE)
+                    self.assertEqual(len(loaded), 1)
 
     def test_expired_or_unknown_execution_is_not_quiescence(self):
         self.database()
