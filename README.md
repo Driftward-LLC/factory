@@ -87,6 +87,12 @@ git pull --ff-only
 See [docs/factory-release-runbook.md](docs/factory-release-runbook.md) for the
 full release, deploy, verification, and rollback procedure.
 
+For the configured production candidate, see
+[automatic deployment after successful main CI](docs/automatic-deployment.md).
+This image-only path preserves the existing deployment wrapper and stops for
+compatibility changes or active/unresolved execution; it never uses the retired
+host installer to update the production candidate.
+
 See [docs/factory-analytics.md](docs/factory-analytics.md) for the analytics
 cohort, event definitions, coverage rules, privacy boundary, and known evidence
 gaps.
