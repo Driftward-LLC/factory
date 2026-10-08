@@ -31,6 +31,13 @@ IMAGE = 'sha256:' + 'b' * 64
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_every_main_push_gets_checks_even_when_only_docs_change(self):
+        workflow = (ROOT / '.github/workflows/hatchet-quality.yml').read_text()
+        push = workflow.split('\n  push:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertIn('branches: [main]', push)
+        self.assertNotIn('paths:', push)
+        self.assertNotIn('paths-ignore:', push)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -15,17 +15,8 @@ on:
       - '.github/workflows/factory-deploy.yml'
   push:
     branches: [main]
-    paths:
-      - 'factory/**'
-      - 'hatchet/**'
-      - 'deploy/**'
-      - 'tools/**'
-      - 'README.md'
-      - 'AGENTS.md'
-      - '.dockerignore'
-      - '.github/workflows/factory-release.yml'
-      - '.github/workflows/hatchet-quality.yml'
-      - '.github/workflows/factory-deploy.yml'
+    # Deployment accepts only the current main SHA. A path-filtered push could
+    # supersede a tested runtime change without producing its own deployable run.
 
 permissions:
   contents: read
