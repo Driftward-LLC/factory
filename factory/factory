@@ -335,6 +335,12 @@ format_analytics() {
       "  Lineage route pairs \(.routes.lineage.route_pair_coverage | cov)  identity crossovers \(.routes.lineage.identity_crossovers)  variant crossovers \(.routes.lineage.variant_crossovers)"
      else empty end),
     "",
+    "Executor-selected models (configuration, not provider usage)",
+    (if .models then
+      "  Selection coverage \(.models.coverage | cov)  unknown \(.models.unknown_attempts)  before invocation \(.models.attempts_before_invocation)",
+      (.models.groups[] | "  \(.selected_provider)/\(.selected_model)  attempts=\(.attempts)")
+     else "  Unavailable in this report version." end),
+    "",
     "Current active backlog",
     (if .activity.current_active_backlog then
       "  Attempts \(.activity.current_active_backlog.attempts)  work items \(.activity.current_active_backlog.work_items)  age p50 \(.activity.current_active_backlog.age_ms.p50 | duration)  p95 \(.activity.current_active_backlog.age_ms.p95 | duration)  max \(.activity.current_active_backlog.age_ms.max | duration)",

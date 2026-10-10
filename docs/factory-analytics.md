@@ -87,6 +87,7 @@ The top-level JSON sections are:
 | `recovery`, `safety`, `human` | Retry/repair performance, effect safety, and review readiness |
 | `backends`, `backend_summary` | Observed invocation outcomes by backend/transport/repository/attempt kind |
 | `routes` | Preflight intent-to-treat cohorts and their downstream outcomes |
+| `models` | Executor-selected startup configuration, coverage, and attempt outcomes; not provider-call usage |
 | `activity` | Events observed in the window plus current active-backlog age |
 | `time_series` | Daily UTC activity with explicit boundary days and timestamp coverage |
 | `delivery` | Ingress, attempt, inspection, and lifecycle outbox health |
@@ -274,6 +275,7 @@ that producer is connected.
 | `spec_used_for_implementation` | intake worker | audit; spec-use counter | `spec_id`, `revision`, `attempt_id`, `job_id`, immutable spec digest | reserved |
 | `attempt_started` | bridge executor transition | audit; execution counter and duration start | attempt/job identity, event timestamp | produced |
 | `execution_route_selected` | bridge executor before preflight | audit; intent-to-treat cohort | assignment/experiment/variant, intended route, configured labels, release and policy identity, `fallback_allowed=false` | produced |
+| `execution_model_selected` | executor after identity checks, before Hermes invocation | audit; observed configuration | invocation identity, `model_source=executor_config`, bounded selected model/provider | produced |
 | `execution_backend_invoked` / `execution_backend_completed` / `execution_backend_failed` | fenced bridge executor | audit; invocation counters and durations | execution identity plus the fields defined below | produced |
 | `execution_dispatch_failed` / `execution_effect_commit_failed` | fenced bridge settlement | audit; boundary-failure counters | execution identity, failure classification, effect outcome | produced |
 | `attempt_effect_committed` | fenced bridge commit | audit; effect counter and duration end | attempt/job identity, event timestamp | produced |
@@ -405,6 +407,35 @@ the attempt outcome unknown for operator intervention, and neither commits the
 receipt nor starts an inspection for its untrusted URL.
 
 ### Execution-boundary telemetry
+
+The model/provider environment labels are retired. New preflight route records
+keep `configured_model` and `configured_provider` as `unknown` for schema
+compatibility; historical records are not rewritten. They are never interpreted
+as runtime model observations.
+
+The executor reads Hermes's native model/provider configuration (including the
+native model environment override), pins those CLI arguments for the invocation,
+and reports `execution_model_selected` via a bounded gRPC response header bound
+to the requested job. The receipt runner records it under the already-authorized
+lease and registered invocation. Identical delivery deduplicates; a changed
+selection for the same invocation is rejected. This event does not advance
+attempt state or authorize effects. No prompts, credentials, or session content
+cross this boundary. Unresolved automatic provider selection and malformed,
+missing, or unavailable metadata remain unobserved; execution still follows
+Hermes's ordinary defaults. It does not fall back to a static label.
+
+The `models` report groups this selected configuration and current attempt
+outcomes. Its coverage denominator is attempts with a registered backend
+invocation; attempts before that boundary are counted separately. Unknown model
+selection is not a zero, a failure, or evidence that no model call happened.
+The event is startup selection, not proof of successful inference or of all
+models used in a multi-model run. PostHog's native observer continues recording
+per-call request/response model metadata with the same attempt/job identifiers
+and deterministic trace identity. Neither Factory execution nor analytics needs
+PostHog to be available. Lost headers/ledger writes and old gateways produce a
+coverage gap; receipt recovery never reconstructs a past model from today's
+configuration. Roll out the bridge/worker and host gateway to enable reporting;
+older peers remain compatible, with explicit missing coverage.
 
 Before feature-enablement and executor preflight, every new real draft-PR
 attempt records one immutable `execution_route_selected` event. Its assignment

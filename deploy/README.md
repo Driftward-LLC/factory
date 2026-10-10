@@ -68,8 +68,6 @@ seeds `DRIFTWARD_HERMES_GRPC_TARGET` in
 ```text
 DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
 DRIFTWARD_HERMES_AUTH_MODE=unknown
-DRIFTWARD_HERMES_PROVIDER=unknown
-DRIFTWARD_HERMES_MODEL=unknown
 ```
 
 The gateway may bind TCP later by setting `DRIFTWARD_HERMES_GRPC_TARGET` or
@@ -88,10 +86,13 @@ Set the non-secret `DRIFTWARD_HERMES_AUTH_MODE` deployment label to
 configured. It defaults to `unknown`; the label supports analytics and never
 copies provider credentials into Factory.
 
-Set `DRIFTWARD_HERMES_PROVIDER`, `DRIFTWARD_HERMES_MODEL`, and optional
-`DRIFTWARD_HERMES_VERSION` from reviewed deployment configuration when known.
-All are non-secret labels; Factory never discovers them by reading Hermes
-credentials or session state. The current worker always records the truthful
+Set optional `DRIFTWARD_HERMES_VERSION` from reviewed deployment configuration
+when known. Do not configure provider/model labels in Factory: the executor
+reads Hermes's native configuration and pins the selected model/provider on
+the invocation. It reports only those bounded identifiers to the worker, not
+credentials or session state. The retired `DRIFTWARD_HERMES_MODEL` and
+`DRIFTWARD_HERMES_PROVIDER` variables are ignored and removed by the installers.
+The current worker always records the truthful
 route `factory-default-v1` / `hermes` / `static`. It deliberately ignores
 experiment-label environment variables: a future comparison must first add a
 real, reviewed router with stable assignment and lineage stickiness.

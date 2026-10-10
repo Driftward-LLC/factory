@@ -216,6 +216,11 @@ exit 1
                 },
                 "human": {"work_items_ready_for_review": 0, "exception_intervention_attempts": 0},
                 "backends": [],
+                "models": {
+                    "coverage": {"observed": 1, "eligible": 2, "rate": 0.5, "complete": False},
+                    "unknown_attempts": 1, "attempts_before_invocation": 0,
+                    "groups": [{"selected_provider": "openai-codex", "selected_model": "gpt-6.1-sol", "attempts": 1}],
+                },
                 "lifecycle": {
                     "available": True,
                     "cohort_records": 1,
@@ -255,6 +260,9 @@ exit 1
                     capture_output=True,
                     timeout=5,
                 )
+                self.assertIn("Executor-selected models (configuration, not provider usage)", result.stdout)
+                self.assertIn("openai-codex/gpt-6.1-sol", result.stdout)
+                analytics_payload.pop("models")  # Older operators remain compatible.
                 analytics_payload["intake"]["correlation"] = {"available": False}
                 fixture.write_text(
                     json.dumps(analytics_payload, sort_keys=True), encoding="utf-8"
@@ -581,12 +589,12 @@ exit 1
                 self.assertIn("remove_env \"$file\" \"$key\"", source)
                 for key in (
                     "DRIFTWARD_HERMES_AUTH_MODE",
-                    "DRIFTWARD_HERMES_PROVIDER",
-                    "DRIFTWARD_HERMES_MODEL",
                     "DRIFTWARD_HERMES_VERSION",
                 ):
                     self.assertIn(f'normalize_analytics_label "$bridge_executor_env', source)
                     self.assertIn(key, source)
+                for key in ("DRIFTWARD_HERMES_MODEL", "DRIFTWARD_HERMES_PROVIDER"):
+                    self.assertRegex(source, rf'remove_env "\$bridge_executor_env(?:_file)?" {key}')
 
                 # Exercise the real shell helpers with a harmless install
                 # shim. A valid first definition followed by a secret-shaped
@@ -614,7 +622,7 @@ install() {
   cp -- "${args[$((count - 2))]}" "${args[$((count - 1))]}"
 }
 eval "$(awk '/^upsert_env\(\)/ { capture=1 } /^ensure_env_secret\(\)/ { capture=0 } capture { print }' "$INSTALLER")"
-normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_MODEL dimension ""
+remove_env "$TARGET" DRIFTWARD_HERMES_MODEL
 normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
 ''',
                         ],
@@ -630,7 +638,7 @@ normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
                     lines = target.read_text(encoding="utf-8").splitlines()
                     self.assertEqual(
                         [line for line in lines if line.startswith("DRIFTWARD_HERMES_MODEL=")],
-                        ["DRIFTWARD_HERMES_MODEL=gpt-5.5"],
+                        [],
                     )
                     self.assertIn("KEEP=this", lines)
                     self.assertFalse(any("sk-proj-" in line for line in lines))

@@ -85,6 +85,15 @@ class BridgeServerTests(unittest.TestCase):
                 (attempt["attempt_id"],),
             ).fetchone()[0], 1)
 
+            selected = {**body, "event_type": "execution_model_selected", "details": {
+                **details, "model_source": "executor_config", "selected_model": "gpt-6.1-sol",
+                "selected_provider": "openai-codex",
+            }}
+            selected_handler = _PostHandler(conn, selected, path); selected_handler.do_POST()
+            self.assertEqual(selected_handler.response, (201, {"recorded": True}))
+            selected_replay = _PostHandler(conn, selected, path); selected_replay.do_POST()
+            self.assertEqual(selected_replay.response, (200, {"recorded": False}))
+
             completed = {
                 **body,
                 "event_type": "execution_backend_completed",

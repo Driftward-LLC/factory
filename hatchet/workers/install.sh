@@ -212,8 +212,8 @@ done
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED "${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED:-1}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
 normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_AUTH_MODE auth "${DRIFTWARD_HERMES_AUTH_MODE:-}"
-normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_PROVIDER dimension "${DRIFTWARD_HERMES_PROVIDER:-}"
-normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_MODEL dimension "${DRIFTWARD_HERMES_MODEL:-}"
+remove_env "$bridge_executor_env" DRIFTWARD_HERMES_PROVIDER
+remove_env "$bridge_executor_env" DRIFTWARD_HERMES_MODEL
 normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_VERSION version "${DRIFTWARD_HERMES_VERSION:-}"
 normalize_analytics_label "$bridge_executor_env" FACTORY_RELEASE_VERSION version "${FACTORY_RELEASE_VERSION:-}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_COMMAND "${DRIFTWARD_HERMES_COMMAND:-driftward-hermes}"

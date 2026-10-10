@@ -397,8 +397,8 @@ upsert_env "$bridge_executor_env_file" HATCHET_HERMES_INSPECTION_TOKEN "$(env_fi
 upsert_env "$reconciliation_env_file" HATCHET_HERMES_RECOVERY_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN)"
 ensure_env_default "$bridge_executor_env_file" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
 normalize_analytics_label "$bridge_executor_env_file" DRIFTWARD_HERMES_AUTH_MODE auth "${DRIFTWARD_HERMES_AUTH_MODE:-}"
-normalize_analytics_label "$bridge_executor_env_file" DRIFTWARD_HERMES_PROVIDER dimension "${DRIFTWARD_HERMES_PROVIDER:-}"
-normalize_analytics_label "$bridge_executor_env_file" DRIFTWARD_HERMES_MODEL dimension "${DRIFTWARD_HERMES_MODEL:-}"
+remove_env "$bridge_executor_env_file" DRIFTWARD_HERMES_PROVIDER
+remove_env "$bridge_executor_env_file" DRIFTWARD_HERMES_MODEL
 normalize_analytics_label "$bridge_executor_env_file" DRIFTWARD_HERMES_VERSION version "${DRIFTWARD_HERMES_VERSION:-}"
 # The image supplies this label. Remove any stale env-file override, especially
 # secret-shaped legacy content, so the checked image metadata remains authoritative.
