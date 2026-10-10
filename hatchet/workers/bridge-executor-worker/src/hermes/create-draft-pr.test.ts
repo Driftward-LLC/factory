@@ -22,6 +22,7 @@ import {
   NonRetryableBridgeExecutionError,
   preflightHermesCreateDraftPr,
   resumeHermesDraftPrResult,
+  runHermesCreateDraftPrViaCommand,
   sanitizeText,
   selectedReceiptEnvironment,
   systemdReceiptEnvironment,
@@ -38,6 +39,64 @@ import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+
+test('executor uses its runtime model snapshot, preserves correlation, and tolerates missing telemetry', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-runtime-model-'));
+  const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS',
+    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
+    'FACTORY_MODEL_FIXTURE', 'FACTORY_MODEL_ARGS'] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' };
+  const job = greenJob();
+  job.job_id = '01234567-89ab-cdef-0123-456789abcdef';
+  job.payload.factory_retry = { attempt_id: '11111111-2222-4333-8444-555555555555', generation: 2 };
+  try {
+    writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('python3')) process.stdout.write(process.env.FACTORY_MODEL_FIXTURE);
+else if (args.includes('user.name')) process.stdout.write('factory-hermes[bot]');
+else if (args.includes('user.email')) process.stdout.write('123+factory-hermes[bot]@users.noreply.github.com');
+else if (args.includes('gh')) process.stdout.write('Driftward-LLC/capykit');
+else process.exit(1);
+`, { mode: 0o700 });
+    const command = path.join(directory, 'hermes');
+    writeFileSync(command, `#!${process.execPath}
+require('node:fs').writeFileSync(process.env.FACTORY_MODEL_ARGS, JSON.stringify({args:process.argv.slice(2),attempt:process.env.FACTORY_OBSERVABILITY_ATTEMPT_ID,job:process.env.FACTORY_OBSERVABILITY_JOB_ID}));
+process.stdout.write(${JSON.stringify(JSON.stringify({ status: 'created', pr_url: greenResult().prUrl,
+  branch: greenResult().branch, commit_sha: greenResult().commitSha, validation: greenResult().validation }))});
+`, { mode: 0o700 });
+    Object.assign(process.env, { PATH: `${directory}${path.delimiter}${previous.PATH || ''}`,
+      DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', DRIFTWARD_HERMES_ALLOWED_REPOS: 'Driftward-LLC/capykit',
+      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
+      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '123+factory-hermes[bot]@users.noreply.github.com',
+      FACTORY_MODEL_ARGS: path.join(directory, 'args.json') });
+    for (const fixture of [JSON.stringify(selection), 'not json', JSON.stringify({ ...selection, selected_model: 'sk-proj-FAKE_SECRET' })]) {
+      process.env.FACTORY_MODEL_FIXTURE = fixture;
+      const observed: unknown[] = [];
+      const result = await runHermesCreateDraftPrViaCommand(job, command, 5000, 4096, (value) => {
+        observed.push(value);
+        throw new Error('PostHog or ledger offline');
+      });
+      assert.equal(result.status, 'created');
+      const actual = JSON.parse(readFileSync(process.env.FACTORY_MODEL_ARGS!, 'utf8'));
+      assert.equal(actual.attempt, '11111111-2222-4333-8444-555555555555');
+      assert.equal(actual.job, job.job_id);
+      if (fixture === JSON.stringify(selection)) {
+        assert.deepEqual(observed, [selection]);
+        assert.deepEqual(actual.args.slice(0, 4), ['--model', 'gpt-6.1-sol', '--provider', 'openai-codex']);
+      } else {
+        assert.deepEqual(observed, []);
+        assert.ok(!actual.args.includes('--model'));
+      }
+      assert.doesNotMatch(JSON.stringify(actual), /FAKE_SECRET/);
+    }
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name];
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('PR inspection accepts a large bounded diff and classifies overflow without leaking output', async () => {
   const commandDirectory = mkdtempSync(path.join(tmpdir(), 'factory-pr-inspection-'));
@@ -248,7 +307,7 @@ test('receipt analytics-construction failures use bounded fallback identity and 
   assert.equal(JSON.stringify(settlements).includes('untrusted analytics'), false);
 });
 
-test('execution route selection records explicit intent without credential introspection', () => {
+test('execution route selection ignores stale model/provider labels without credential introspection', () => {
   const names = [
     'DRIFTWARD_HERMES_GRPC_TARGET',
     'DRIFTWARD_HERMES_AUTH_MODE',
@@ -287,8 +346,8 @@ test('execution route selection records explicit intent without credential intro
       assignment_method: 'static',
       intended_backend: 'hermes',
       intended_transport: 'grpc_uds',
-      configured_provider: 'openai_codex',
-      configured_model: 'gpt-5.5',
+      configured_provider: 'unknown',
+      configured_model: 'unknown',
       configured_auth_mode: 'chatgpt_codex_oauth',
       backend_version: '0.17.0',
       factory_release_sha: 'a'.repeat(40),
@@ -489,7 +548,7 @@ test('receipt runner requires a unique durable invocation fence before Hermes', 
   const setup = source.indexOf('await prepareReceiptRunnerInvocation');
   const fence = source.indexOf('invocationRecorded = await bridge.recordFactoryExecutionAnalytics');
   const rejection = source.indexOf('if (!invocationRecorded)');
-  const invoke = source.indexOf('result = await runHermesCreateDraftPr(job, lease)');
+  const invoke = source.indexOf('result = await runHermesCreateDraftPr(job, lease,');
   assert.ok(setup >= 0 && fence > setup && rejection > fence && invoke > rejection);
 });
 

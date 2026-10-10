@@ -5,6 +5,7 @@ import { SpanKind } from '@opentelemetry/api';
 import { invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
+import { boundedModelSelection, MODEL_SELECTION_HEADER, reportModelSelection, type ModelSelectionObserver } from './model-selection';
 import type { BridgeJob, JsonValue } from '@driftward/hatchet-worker-shared';
 import {
   boundedHermesDraftPrReceipt,
@@ -253,12 +254,20 @@ export async function inspectHermesInvocation(job: BridgeJob, cancel = false): P
     } : {}) };
 }
 
-export async function runHermesCreateDraftPrViaGrpc(job: BridgeJob, timeoutMs: number, lease?: InvocationLease): Promise<GatewayDraftPrResult> {
+export async function runHermesCreateDraftPrViaGrpc(job: BridgeJob, timeoutMs: number, lease?: InvocationLease, onModelSelected?: ModelSelectionObserver): Promise<GatewayDraftPrResult> {
   const claim = invocationLease(lease);
   try {
     const response = await callGateway<DraftPullRequestResult>('createDraftPullRequest', {
       ...invocationRequest(job), timeoutMs, executionLeaseJson: JSON.stringify(claim),
-    }, timeoutMs, 'hermes_grpc_create_draft_pr_failed');
+    }, timeoutMs, 'hermes_grpc_create_draft_pr_failed', async (metadata) => {
+      const values = metadata.get(MODEL_SELECTION_HEADER);
+      if (values.length !== 1 || !Buffer.isBuffer(values[0]) || values[0].length > 1024) return;
+      let envelope;
+      try { envelope = JSON.parse(values[0].toString('utf8')); } catch { return; }
+      if (!envelope || Object.keys(envelope).sort().join(',') !== 'job_id,selection' || envelope.job_id !== job.job_id) return;
+      const selection = boundedModelSelection(envelope.selection);
+      if (selection) await reportModelSelection(onModelSelected, selection);
+    });
     return parseDraftPrResponse(job, response);
   } catch (error) {
     // A timeout can lose the reply after publication. Lookup never invokes Hermes.
@@ -381,11 +390,11 @@ export async function inspectGitHubHeadViaGrpc(repository: string, headBranch: s
   };
 }
 
-function callGateway<T>(method: keyof GatewayClient, request: Record<string, unknown>, timeoutMs: number, fallbackReasonCode: string): Promise<T> {
-  return withExecutionSpan('factory.gateway.call', () => sendGateway<T>(method, request, timeoutMs, fallbackReasonCode), { kind: SpanKind.CLIENT });
+function callGateway<T>(method: keyof GatewayClient, request: Record<string, unknown>, timeoutMs: number, fallbackReasonCode: string, onMetadata?: (metadata: grpc.Metadata) => Promise<void>): Promise<T> {
+  return withExecutionSpan('factory.gateway.call', () => sendGateway<T>(method, request, timeoutMs, fallbackReasonCode, onMetadata), { kind: SpanKind.CLIENT });
 }
 
-function sendGateway<T>(method: keyof GatewayClient, request: Record<string, unknown>, timeoutMs: number, fallbackReasonCode: string): Promise<T> {
+function sendGateway<T>(method: keyof GatewayClient, request: Record<string, unknown>, timeoutMs: number, fallbackReasonCode: string, onMetadata?: (metadata: grpc.Metadata) => Promise<void>): Promise<T> {
   let client: GatewayClient;
   let metadata: grpc.Metadata;
   let options: grpc.CallOptions;
@@ -403,14 +412,15 @@ function sendGateway<T>(method: keyof GatewayClient, request: Record<string, unk
   }
 
   return new Promise<T>((resolve, reject) => {
+    let observed = Promise.resolve();
     const fn = client[method] as unknown as (request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<T>) => grpc.ClientUnaryCall;
     try {
-      fn.call(client, request, metadata, options, (error, response) => {
-        if (error) {
-          reject(toBridgeError(error, fallbackReasonCode));
-          return;
-        }
-        resolve(response);
+      const call = fn.call(client, request, metadata, options, (error, response) => {
+        // Finish the bounded ledger write before receipt settlement releases the fence.
+        void observed.then(() => error ? reject(toBridgeError(error, fallbackReasonCode)) : resolve(response));
+      });
+      if (onMetadata) call.once('metadata', (headers: grpc.Metadata) => {
+        observed = Promise.resolve().then(() => onMetadata(headers)).catch(() => undefined);
       });
     } catch (error) {
       reject(gatewayClientSetupError(error));

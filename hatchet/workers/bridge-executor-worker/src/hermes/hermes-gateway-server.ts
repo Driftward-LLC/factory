@@ -21,6 +21,7 @@ import {
 } from './create-draft-pr';
 import { NonRetryableBridgeExecutionError } from './errors';
 import { InvocationJournal, invocationLease } from './invocation-journal';
+import { MODEL_SELECTION_HEADER } from './model-selection';
 import {
   DEFAULT_HERMES_GRPC_TARGET,
   isHermesGrpcUnixTarget,
@@ -84,11 +85,15 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       const identity = await assertHermesIdentityViaCommand(requiredString(request.repo, 'repo'));
       return identityResponse(identity);
     }),
-    createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest) => {
+    createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest, call) => {
       const job = parseBridgeJob(request);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const result = await withExecutionSpan('factory.executor.invoke', () => invocations().execute(job, lease,
-        () => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs)), { job, service: 'factory-executor' })),
+        () => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined, (selection) => {
+          const metadata = new grpc.Metadata();
+          metadata.set(MODEL_SELECTION_HEADER, Buffer.from(JSON.stringify({ job_id: job.job_id, selection })));
+          call.sendMetadata(metadata);
+        }), { job, service: 'factory-executor' })),
       { job, service: 'factory-executor' });
       return draftPrResponse(result);
     }),
@@ -134,13 +139,13 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
 
 function unary<TRequest, TResponse>(
   target: string,
-  handler: (request: TRequest) => Promise<TResponse>
+  handler: (request: TRequest, call: UnaryCall<TRequest>) => Promise<TResponse>
 ): (call: UnaryCall<TRequest>, callback: SendUnary<TResponse>) => void {
   return (call, callback) => {
     void (async () => {
       try {
         authorize(call.metadata, target);
-        callback(null, await withExecutionSpan('factory.gateway.handle', () => handler(call.request), {
+        callback(null, await withExecutionSpan('factory.gateway.handle', () => handler(call.request, call), {
           parent: call.metadata.get('traceparent')[0], service: 'factory-executor', kind: SpanKind.SERVER,
         }));
       } catch (error) {

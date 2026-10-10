@@ -143,6 +143,56 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ))
         return identity
 
+    def test_executor_model_selection_is_fenced_immutable_and_not_a_route_label(self):
+        from hatchet_hermes_bridge.store import record_factory_execution_route
+        attempt, job, _ = self._reserve("ENG-601")
+        record_factory_execution_route(self.conn, job["job_id"], {
+            **route_identity(attempt["attempt_id"]), "assignment_id": f"route.{attempt['attempt_id']}",
+        })
+        transition_job(self.conn, job["job_id"], state="running")
+        lease = claim_factory_execution(self.conn, job["job_id"], owner="model-test")["lease"]
+        identity = analytics_identity("model-invocation")
+        details = {**identity, "model_source": "executor_config", "selected_model": "gpt-6.1-sol", "selected_provider": "openai-codex"}
+
+        def record(value=details, claim=lease):
+            return record_factory_execution_analytics(self.conn, job["job_id"], claim,
+                                                      event_type="execution_model_selected", details=value)
+
+        with self.assertRaises(BridgeConflict):
+            record()  # No effect authorization.
+        authorize_factory_effect(self.conn, job["job_id"], lease)
+        with self.assertRaises(BridgeConflict):
+            record()  # No registered invocation.
+        self._register_invocation(job, lease, "model-invocation")
+        self.assertTrue(record())
+        self.assertFalse(record())
+        with self.assertRaises(BridgeConflict):
+            record({**details, "selected_model": "gpt-6-astra"})
+        with self.assertRaises(BridgeConflict):
+            record(claim={**lease, "fence_token": "stale"})
+        for field, value in [("selected_model", "sk-proj-FAKE_SECRET"), ("selected_model", "gpt-6.1-sol\n"),
+                             ("selected_provider", "https://private/credentials"), ("selected_provider", "auto"),
+                             ("model_source", "agent_output"), ("prompt", "private"), ("selected_model", "a" * 121)]:
+            with self.subTest(field=field, value=value), self.assertRaises(BridgeValidationError):
+                record({**details, field: value})
+
+        # Older executors and preflight failures remain explicitly unattributed.
+        _, legacy_job, _ = self._reserve("ENG-602")
+        transition_job(self.conn, legacy_job["job_id"], state="running")
+        legacy_lease = claim_factory_execution(self.conn, legacy_job["job_id"], owner="legacy")["lease"]
+        authorize_factory_effect(self.conn, legacy_job["job_id"], legacy_lease)
+        self._register_invocation(legacy_job, legacy_lease, "legacy-invocation")
+        self._reserve("ENG-603")
+        report = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db,
+                                   days=30, now=datetime(2026, 9, 13, tzinfo=timezone.utc))
+        self.assertEqual(report["models"]["coverage"]["observed"], 1)
+        self.assertEqual(report["models"]["coverage"]["eligible"], 2)
+        self.assertEqual(report["models"]["unknown_attempts"], 1)
+        self.assertEqual(report["models"]["attempts_before_invocation"], 1)
+        self.assertEqual(report["models"]["groups"][0]["selected_model"], "gpt-6.1-sol")
+        self.assertEqual(report["routes"]["groups"][0]["configured_model"], "gpt-5.5")
+        self.assertEqual(get_job(self.conn, job["job_id"])["state"], "running")
+
     def _init_optional_ledgers(self) -> None:
         conn = sqlite3.connect(self.ingress_db)
         conn.execute(

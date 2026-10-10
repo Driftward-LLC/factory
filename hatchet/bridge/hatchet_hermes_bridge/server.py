@@ -336,8 +336,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     raise BridgeValidationError("factory execution analytics body is invalid")
                 claim = {key: body.get(key) for key in ("lease_id", "owner", "epoch", "fence_token")}
                 event_type = body.get("event_type")
-                if event_type not in {"execution_backend_invoked", "execution_backend_completed"}:
-                    raise BridgeValidationError("factory execution analytics endpoint accepts invocation and completion only")
+                if event_type not in {"execution_backend_invoked", "execution_backend_completed", "execution_model_selected"}:
+                    raise BridgeValidationError("factory execution analytics endpoint accepts invocation, model selection, and completion only")
                 recorded = record_factory_execution_analytics(
                     self.conn,
                     parts[1],

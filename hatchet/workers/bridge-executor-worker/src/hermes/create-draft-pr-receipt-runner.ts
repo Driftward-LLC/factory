@@ -81,7 +81,9 @@ async function executePrepared(bridge: BridgeClient, job: BridgeJob, analytics: 
   const started = process.hrtime.bigint();
   let result: Awaited<ReturnType<typeof runHermesCreateDraftPr>>;
   try {
-    result = await runHermesCreateDraftPr(job, lease);
+    result = await runHermesCreateDraftPr(job, lease, (selection) => bridge.recordFactoryExecutionAnalytics(
+      job.job_id, lease, 'execution_model_selected', { ...analytics, ...selection },
+    ));
   } catch (error) {
     const classified = error instanceof NonRetryableBridgeExecutionError ? error : null;
     const reasonCode = classified?.reasonCode || 'factory_execution_recovery_required';

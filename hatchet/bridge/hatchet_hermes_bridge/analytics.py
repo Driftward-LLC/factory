@@ -402,6 +402,7 @@ def factory_analytics(
             ),
         },
         "routes": routes,
+        "models": _model_selection_report(cohort, events_by_attempt),
         "lifecycle": lifecycle,
         "activity": activity,
         "time_series": time_series,
@@ -2453,6 +2454,35 @@ def _bridge_source_health(
         "lag_ms": _elapsed_ms(latest, ended),
         "invalid_timestamp_rows": invalid,
         "future_timestamp_rows": future,
+    }
+
+
+def _model_selection_report(
+    attempts: list[dict[str, Any]],
+    events_by_attempt: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    groups: dict[tuple[str, str], Counter] = {}
+    eligible = observed = 0
+    for attempt in attempts:
+        events = events_by_attempt[attempt["attempt_id"]]
+        if not any(event["event_type"] == "execution_backend_invoked" for event in events):
+            continue
+        eligible += 1
+        selected = next((event["details"] for event in events
+                         if event["event_type"] == "execution_model_selected"), None)
+        if selected is None:
+            continue
+        observed += 1
+        key = (selected["selected_provider"], selected["selected_model"])
+        groups.setdefault(key, Counter())[attempt["status"]] += 1
+    return {
+        "basis": "executor_selected_configuration_not_provider_usage",
+        "coverage": _coverage(observed, eligible),
+        "attempts_before_invocation": len(attempts) - eligible,
+        "unknown_attempts": eligible - observed,
+        "groups": [{"selected_provider": provider, "selected_model": model,
+                    "attempts": sum(statuses.values()), "current_status": _counter(statuses)}
+                   for (provider, model), statuses in sorted(groups.items())],
     }
 
 

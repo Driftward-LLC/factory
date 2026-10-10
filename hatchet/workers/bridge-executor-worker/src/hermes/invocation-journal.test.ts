@@ -179,8 +179,15 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
   delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
   let server: grpc.Server;
+  const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' } as const;
+  const observed: unknown[] = [];
   const start = async () => {
-    server = createServer(target, async () => { calls++; await new Promise((resolve) => setTimeout(resolve, 150)); return receipt; });
+    server = createServer(target, async (_job, _command, _timeout, _buffer, onModelSelected) => {
+      calls++;
+      await onModelSelected?.(selection);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return receipt;
+    });
     await new Promise<void>((resolve, reject) => server.bindAsync(target, grpc.ServerCredentials.createInsecure(), (error) => error ? reject(error) : resolve()));
   };
   let calls = 0;
@@ -192,7 +199,8 @@ test('lost gRPC response is recovered after gateway restart without executing ag
     rmSync(directory, { recursive: true, force: true });
   });
   await start();
-  await assert.rejects(runHermesCreateDraftPrViaGrpc(correlatedJob, 60, lease));
+  await assert.rejects(runHermesCreateDraftPrViaGrpc(correlatedJob, 60, lease, (value) => { observed.push(value); }));
+  assert.deepEqual([...observed], [selection]);
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal((await inspectHermesInvocation(job)).state, 'completed');
   await new Promise<void>((resolve) => server.tryShutdown(() => resolve()));
@@ -201,7 +209,8 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   assert.deepEqual(recovered.receipt, receipt);
   assert.deepEqual(recovered.lease, lease);
   assert.equal(recovered.cancellationAcknowledged, true);
-  assert.deepEqual(await runHermesCreateDraftPrViaGrpc(updatedJob, 1000, lease), receipt);
+  assert.deepEqual(await runHermesCreateDraftPrViaGrpc(updatedJob, 1000, lease, (value) => { observed.push(value); }), receipt);
+  assert.deepEqual([...observed], [selection]); // Reused receipts never claim today's config was used earlier.
   await assert.rejects(runHermesCreateDraftPrViaGrpc(updatedJob, 1000, { ...lease, epoch: 2 }));
   await assert.rejects(inspectHermesInvocation({ ...updatedJob, payload: { ...updatedJob.payload, instructions: 'different' } }));
   assert.equal(calls, 1);

@@ -3719,6 +3719,7 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
     }
     additions = {
         "execution_backend_invoked": set(),
+        "execution_model_selected": {"model_source", "selected_model", "selected_provider"},
         "execution_backend_completed": {"backend_outcome", "elapsed_ms"},
         "execution_backend_failed": failure_fields,
         "execution_dispatch_failed": failure_fields,
@@ -3751,6 +3752,15 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
         raise BridgeValidationError("factory execution analytics backend_version is invalid")
     if details.get("configured_auth_mode") not in {"chatgpt_codex_oauth", "api_key", "unknown"}:
         raise BridgeValidationError("factory execution analytics configured_auth_mode is invalid")
+    if event_type == "execution_model_selected":
+        if details.get("model_source") != "executor_config":
+            raise BridgeValidationError("factory model selection source is invalid")
+        for field in ("selected_model", "selected_provider"):
+            value = details.get(field)
+            if (not isinstance(value, str) or len(value) > 120
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/-]*", value)
+                    or "://" in value or _secret_shaped(value) or value in {"auto", "unknown"}):
+                raise BridgeValidationError(f"factory model selection {field} is invalid")
     if event_type == "execution_backend_completed" and details.get("backend_outcome") not in {"created", "reused", "unknown"}:
         raise BridgeValidationError("factory execution analytics backend_outcome is invalid")
     if event_type in {"execution_backend_failed", "execution_dispatch_failed", "execution_effect_commit_failed"}:
@@ -3806,7 +3816,7 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
                 details = {**details, "verification_context": _validate_verification_context(context)}
             except BridgeValidationError:
                 details = {**details, "verification_context": None}
-    if event_type != "execution_backend_invoked":
+    if event_type not in {"execution_backend_invoked", "execution_model_selected"}:
         elapsed = details.get("elapsed_ms")
         if not isinstance(elapsed, int) or isinstance(elapsed, bool) or not 0 <= elapsed <= 604_800_000:
             raise BridgeValidationError("factory execution analytics elapsed_ms is invalid")
@@ -3851,7 +3861,7 @@ def _append_factory_execution_analytics_event(
     invocation_registered = False
     duplicate = False
     for row in conn.execute(
-        "SELECT event_type,details_json FROM factory_attempt_events WHERE attempt_id=? AND event_type IN ('execution_backend_invoked','execution_backend_completed','execution_backend_failed','execution_dispatch_failed','execution_effect_commit_failed')",
+        "SELECT event_type,details_json FROM factory_attempt_events WHERE attempt_id=? AND event_type IN ('execution_backend_invoked','execution_model_selected','execution_backend_completed','execution_backend_failed','execution_dispatch_failed','execution_effect_commit_failed')",
         (attempt_id,),
     ):
         existing = json.loads(row["details_json"])
@@ -3874,6 +3884,7 @@ def _append_factory_execution_analytics_event(
         if event_type == "execution_backend_invoked" and row["event_type"] in backend_terminal:
             raise BridgeConflict("factory execution analytics invocation is already terminal")
     if event_type in {
+        "execution_model_selected",
         "execution_backend_completed",
         "execution_backend_failed",
         "execution_effect_commit_failed",

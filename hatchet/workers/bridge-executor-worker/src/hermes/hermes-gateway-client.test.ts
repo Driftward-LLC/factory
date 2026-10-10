@@ -7,6 +7,7 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { NonRetryableBridgeExecutionError } from './errors';
+import { MODEL_SELECTION_HEADER } from './model-selection';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcTarget,
@@ -20,6 +21,52 @@ import {
 type MockCall = grpc.ServerUnaryCall<Record<string, unknown>, Record<string, unknown>>;
 type MockCallback = grpc.sendUnaryData<Record<string, unknown>>;
 const testLease = { lease_id: '00000000-0000-4000-8000-000000000001', owner: 'test-executor', epoch: 1, fence_token: 'test-fence' };
+
+test('runtime model metadata is job-bound and arrives even if the executor later fails', async () => {
+  const job = greenJob();
+  const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' };
+  const gateway = mockGateway();
+  gateway.createDraftPullRequest = (call: MockCall, callback: MockCallback) => {
+    const metadata = new grpc.Metadata();
+    metadata.set(MODEL_SELECTION_HEADER, Buffer.from(JSON.stringify({ job_id: job.job_id, selection })));
+    call.sendMetadata(metadata);
+    callback(Object.assign(new Error('executor exited'), { code: grpc.status.FAILED_PRECONDITION }), null);
+  };
+  await withGateway(async (target) => {
+    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+    const observed: unknown[] = [];
+    await assert.rejects(runHermesCreateDraftPrViaGrpc(job, 5000, testLease, async (value) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      observed.push(value);
+    }));
+    assert.deepEqual(observed, [selection]);
+  }, gateway);
+});
+
+test('missing, mismatched, malformed, and secret-shaped model metadata never changes a valid receipt', async () => {
+  const job = greenJob();
+  const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' };
+  for (const raw of [undefined, '{', 'x'.repeat(1025), JSON.stringify({ job_id: 'another-job', selection }),
+    JSON.stringify({ job_id: job.job_id, selection: { ...selection, selected_model: 'sk-proj-FAKE_SECRET' } })]) {
+    const gateway = mockGateway();
+    const finish = gateway.createDraftPullRequest as (call: MockCall, callback: MockCallback) => void;
+    gateway.createDraftPullRequest = (call: MockCall, callback: MockCallback) => {
+      if (raw !== undefined) {
+        const metadata = new grpc.Metadata();
+        metadata.set(MODEL_SELECTION_HEADER, Buffer.from(raw));
+        call.sendMetadata(metadata);
+      }
+      finish(call, callback);
+    };
+    await withGateway(async (target) => {
+      process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+      const observed: unknown[] = [];
+      const result = await runHermesCreateDraftPrViaGrpc(job, 5000, testLease, (value) => { observed.push(value); });
+      assert.equal(result.status, 'created');
+      assert.deepEqual(observed, []);
+    }, gateway);
+  }
+});
 
 test('Hermes gRPC client speaks over a Unix domain socket', async () => {
   await withGateway(async (target) => {

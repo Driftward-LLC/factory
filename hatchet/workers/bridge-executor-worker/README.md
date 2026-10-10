@@ -75,8 +75,6 @@ Optional environment:
 ```bash
 DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
 DRIFTWARD_HERMES_AUTH_MODE=unknown
-DRIFTWARD_HERMES_PROVIDER=unknown
-DRIFTWARD_HERMES_MODEL=unknown
 DRIFTWARD_HERMES_VERSION=
 DRIFTWARD_HERMES_COMMAND=driftward-hermes
 DRIFTWARD_HERMES_ALLOWED_REPOS=Driftward-LLC/driftward-host
@@ -100,15 +98,22 @@ otherwise leave the default `unknown`. It does not inspect or expose an OAuth
 token and cannot identify whether Hermes, OAuth, or the provider caused an
 execution failure.
 
-The provider, model, and backend version values are also non-secret route
-labels. They are recorded before preflight so dispatch and policy failures
-remain in the selected cohort. Unknown values stay explicit; the worker never
-reads Hermes authentication or runtime state to fill them in. Labels must use
-bounded lowercase identifiers (`a-z`, digits, `.`, `_`, or `-`). The current
-installers remove secret-shaped values (including common `sk-` and provider-key
-prefixes) from these fields; version labels are omitted and provider/model
-labels become `unknown`. Existing unsafe env-file values are neutralized on
-install.
+The backend version is a non-secret deployment label; secret-shaped values are
+removed by the installers. Provider/model env labels are retired and ignored.
+New route records retain their legacy provider/model fields as `unknown`.
+After identity checks, the executor reads Hermes's native configuration and
+pins that model/provider on the CLI invocation. A bounded, job-bound gRPC
+header reports `execution_model_selected` through the existing fenced ledger
+endpoint, including when the invocation subsequently fails. Workers never read
+Hermes configuration or credentials themselves. Missing, invalid, or unavailable
+metadata remains unknown and cannot block execution or receipt settlement.
+
+This is startup selection, not evidence that a provider call succeeded or that
+every later call used that model. Hermes's native PostHog observer reports
+individual calls, using the same Factory attempt/job correlation. PostHog is
+not queried by execution or recovery. See the `models` section of
+`factory analytics --json` for selection coverage; historical route labels
+are preserved but never substituted for missing runtime evidence.
 
 The current executor truthfully emits the fixed route `factory-default-v1` /
 `hermes` / `static`; setting arbitrary experiment labels cannot manufacture an

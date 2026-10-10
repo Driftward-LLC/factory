@@ -206,7 +206,7 @@ export class BridgeClient {
     });
     return result.recorded === true;
   }
-  async recordFactoryExecutionAnalytics(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, eventType: 'execution_backend_invoked' | 'execution_backend_completed', details: JsonObject): Promise<boolean> {
+  async recordFactoryExecutionAnalytics(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, eventType: 'execution_backend_invoked' | 'execution_backend_completed' | 'execution_model_selected', details: JsonObject): Promise<boolean> {
     const result = await this.requestJson<{ recorded: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/analytics`, {
       method: 'POST',
       body: JSON.stringify({

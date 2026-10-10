@@ -13,6 +13,7 @@ import {
   type BoundedHermesDraftPrReceipt,
 } from './bounded-evidence';
 import { NonRetryableBridgeExecutionError } from './errors';
+import { boundedModelSelection, HERMES_MODEL_SELECTION_QUERY, reportModelSelection, type ModelSelectionObserver } from './model-selection';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
@@ -93,11 +94,6 @@ function executionTransport(): FactoryExecutionAnalyticsIdentity['execution_tran
   return isHermesGrpcUnixTarget(target) ? 'grpc_uds' : 'grpc_tcp';
 }
 
-function configuredDimension(name: string, fallback: string): string {
-  const value = (process.env[name] || '').trim();
-  return /^[a-z][a-z0-9_.-]{0,79}$/.test(value) && !isSecretShaped(value) ? value : fallback;
-}
-
 function configuredVersion(name: string): string | null {
   const value = (process.env[name] || '').trim();
   return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,119}$/.test(value) && !isSecretShaped(value) ? value : null;
@@ -140,8 +136,10 @@ export function factoryExecutionRouteSelection(
     assignment_method: 'static',
     intended_backend: 'hermes',
     intended_transport: executionTransport(),
-    configured_provider: configuredDimension('DRIFTWARD_HERMES_PROVIDER', 'unknown'),
-    configured_model: configuredDimension('DRIFTWARD_HERMES_MODEL', 'unknown'),
+    // Keep the legacy route schema readable; workers do not select a model.
+    // Runtime selection arrives separately from the executor, never an env label.
+    configured_provider: 'unknown',
+    configured_model: 'unknown',
     configured_auth_mode: configuredAuthMode(),
     backend_version: configuredVersion('DRIFTWARD_HERMES_VERSION'),
     factory_release_sha: /^[0-9a-f]{40}$/.test(releaseSha) ? releaseSha : null,
@@ -564,7 +562,7 @@ export async function preflightHermesCreateDraftPr(job: BridgeJob): Promise<void
   }
 }
 
-export async function runHermesCreateDraftPr(job: BridgeJob, lease?: FactoryExecutionLease): Promise<HermesDraftPrResult> {
+export async function runHermesCreateDraftPr(job: BridgeJob, lease?: FactoryExecutionLease, onModelSelected?: ModelSelectionObserver): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
   const command = process.env.DRIFTWARD_HERMES_COMMAND || 'driftward-hermes';
   const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000);
@@ -572,10 +570,10 @@ export async function runHermesCreateDraftPr(job: BridgeJob, lease?: FactoryExec
 
   if (hermesGrpcGatewayEnabled()) {
     await assertHermesIdentity(requiredPayloadString(job, 'repo'));
-    return runHermesCreateDraftPrViaGrpc(job, timeout, lease);
+    return runHermesCreateDraftPrViaGrpc(job, timeout, lease, onModelSelected);
   }
 
-  return runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer);
+  return runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer, onModelSelected);
 }
 
 /** Metadata only: never derive analytics identifiers from issue prose or prompts. */
@@ -600,15 +598,25 @@ export async function runHermesCreateDraftPrViaCommand(
   job: BridgeJob,
   command: string = process.env.DRIFTWARD_HERMES_COMMAND || 'driftward-hermes',
   timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000),
-  maxBuffer: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024)
+  maxBuffer: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024),
+  onModelSelected?: ModelSelectionObserver,
 ): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
   await assertHermesIdentityViaCommand(requiredPayloadString(job, 'repo'));
   const prompt = buildPrompt(job);
+  let selection = null;
+  try {
+    const snapshot = await execHermesRuntimeCommand(['python3', '-c', HERMES_MODEL_SELECTION_QUERY], 5_000, 4096);
+    selection = boundedModelSelection(JSON.parse(snapshot.stdout));
+  } catch {
+    // Missing metadata never changes execution authority or creates a retry.
+  }
+  const modelArgs = selection ? ['--model', selection.selected_model, '--provider', selection.selected_provider] : [];
+  if (selection) await reportModelSelection(onModelSelected, selection);
 
   let result: ExecResult;
   try {
-    result = await execFileAsync(command, ['--accept-hooks', '--pass-session-id', '-z', prompt], {
+    result = await execFileAsync(command, [...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], {
       timeout,
       maxBuffer,
       env: {
