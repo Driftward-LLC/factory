@@ -188,8 +188,13 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           image_tag="$IMAGE_REPOSITORY:$RELEASE_TAG"
+          verifier_tag="$UI_VERIFIER_REPOSITORY:$RELEASE_TAG"
           if docker manifest inspect "$image_tag" >/dev/null 2>&1; then
             echo "image tag already exists; refusing to overwrite: $image_tag" >&2
+            exit 64
+          fi
+          if docker manifest inspect "$verifier_tag" >/dev/null 2>&1; then
+            echo 'verifier image tag already exists; refusing to overwrite' >&2
             exit 64
           fi
           docker tag driftward/factory:ci "$image_tag"
@@ -197,11 +202,6 @@ jobs:
           image_ref="$(docker image inspect "$image_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$IMAGE_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
           [[ "$image_ref" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]]
           echo "reference=$image_ref" >> "$GITHUB_OUTPUT"
-          verifier_tag="$UI_VERIFIER_REPOSITORY:$RELEASE_TAG"
-          if docker manifest inspect "$verifier_tag" >/dev/null 2>&1; then
-            echo 'verifier image tag already exists; refusing to overwrite' >&2
-            exit 64
-          fi
           docker tag factory-ui-verifier:ci "$verifier_tag"
           docker push "$verifier_tag"
           verifier_ref="$(docker image inspect "$verifier_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$UI_VERIFIER_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"

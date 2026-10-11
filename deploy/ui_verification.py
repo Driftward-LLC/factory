@@ -23,6 +23,10 @@ SHA = r"[a-f0-9]{40}"
 IMAGE = r"(?:sha256:|[a-z0-9][a-z0-9._/:\-]*@sha256:)[a-f0-9]{64}"
 
 
+class Cancelled(Exception):
+    """Do not use InterruptedError: subprocess selectors may swallow EINTR."""
+
+
 def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -62,10 +66,22 @@ def validate_request(value: dict) -> dict:
 
 
 def command(args: list[str], *, env: dict | None = None, timeout: int = 60) -> str:
-    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=timeout)
-    if result.returncode:
+    # Docker invokes Compose as a child process. Stop the whole local process
+    # group before container cleanup so a surviving plugin cannot keep launching.
+    with subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, start_new_session=True) as process:
+        try:
+            stdout, _ = process.communicate(timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=5)
+            raise
+    if process.returncode:
         raise RuntimeError("verification command failed; private output withheld")
-    return result.stdout.strip()
+    return stdout.strip()
 
 
 def instructions(plugin: Path) -> tuple[bytes, dict]:
@@ -224,7 +240,7 @@ class Pilot:
             bootstrap._create_private(self.root / "report.json", json.dumps(report) + "\n")
             previous = {}
             def cancelled(signum, frame):
-                raise InterruptedError("verification cancelled")
+                raise Cancelled("verification cancelled")
             for sig in (signal.SIGTERM, signal.SIGINT):
                 previous[sig] = signal.signal(sig, cancelled)
             try:
@@ -249,7 +265,7 @@ class Pilot:
                 report["status"] = outcome(checks, agent, fixture=self.fixture, steps=len(self.request["steps"]))
                 report["reason"] = "evidence_collected"
                 report["phase"] = "complete"
-            except InterruptedError:
+            except Cancelled:
                 report["reason"] = "cancelled"
             except subprocess.TimeoutExpired:
                 report["reason"] = "timeout"
@@ -261,10 +277,11 @@ class Pilot:
                     signal.signal(sig, signal.SIG_IGN)
                 try:
                     self.assert_ownership()
-                    self.compose("down", "--timeout", "10", timeout=45)
+                    self.compose("down", "--remove-orphans", "--timeout", "10", timeout=45)
                     remaining = command(["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=" + self.project], env=self.env)
-                    if remaining:
-                        raise RuntimeError("verification containers remain")
+                    networks = command(["docker", "network", "ls", "-q", "--filter", "label=com.docker.compose.project=" + self.project], env=self.env)
+                    if remaining or networks:
+                        raise RuntimeError("verification containers or networks remain")
                     report["cleanup_complete"] = True
                 except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
                     report["status"], report["reason"] = "blocked", "containment_unconfirmed"

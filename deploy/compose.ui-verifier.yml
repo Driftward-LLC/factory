@@ -44,6 +44,9 @@ services:
     mem_limit: 2g
     tmpfs: ["/tmp:size=512m"]
     shm_size: 256m
+    environment:
+      XDG_CONFIG_HOME: /tmp/browser-config
+      XDG_CACHE_HOME: /tmp/browser-cache
     volumes:
       - ${FACTORY_UI_CONTROL_SECRET:?}:/run/secrets/browser-token:ro
   codex-verifier:

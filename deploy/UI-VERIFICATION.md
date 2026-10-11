@@ -152,7 +152,7 @@ python3 -m unittest discover -s tools -p test_factory_ui_verifier.py
 
 Acceptance drives a real synthetic form and backend, tests private MCP transport,
 retains desktop/mobile screenshots and traces, rejects an intentionally failing
-assertion, and confirms cleanup. It does **not** prove model quality, live API
+assertion, cancels a running check, and confirms cleanup. It does **not** prove model quality, live API
 authentication, provider OAuth, Capykit behavior, or automatic dispatch.
 
 Before real use: independent review, dedicated credential provisioning, an

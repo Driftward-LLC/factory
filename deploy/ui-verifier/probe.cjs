@@ -26,14 +26,16 @@ async function main() {
     try { await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'factory-acceptance', version: '1' } }); break; }
     catch (error) { if (n >= 15) throw error; await new Promise(r => setTimeout(r, 500)); }
   }
-  const navigation = await rpc('tools/call', { name: 'browser_navigate', arguments: { url: 'http://preview:3000' + JSON.parse(raw).path } });
-  assert.ok(navigation.content.some(c => c.type === 'text' && c.text.includes('Create agent')));
+  await rpc('tools/call', { name: 'browser_navigate', arguments: { url: 'http://preview:3000' + JSON.parse(raw).path } });
+  // Navigation may return a snapshot file link; explicitly request inline content.
+  const snapshot = await rpc('tools/call', { name: 'browser_snapshot', arguments: {} });
+  assert.ok(snapshot.content.some(c => c.type === 'text' && c.text.includes('Create agent')));
   await rpc('tools/call', { name: 'browser_resize', arguments: { width: 390, height: 844 } });
   await rpc('tools/call', { name: 'browser_press_key', arguments: { key: 'Tab' } });
   await rpc('tools/call', { name: 'browser_close', arguments: {} });
   fs.writeFileSync('/evidence/agent.json', JSON.stringify({ schema: 1,
     request_sha256: crypto.createHash('sha256').update(raw).digest('hex'),
-    status: 'completed', reason: 'fixture_browser_transport', browser_calls: 4,
+    status: 'completed', reason: 'fixture_browser_transport', browser_calls: 5,
     assessment: 'not_a_model_assessment' }) + '\n', { mode: 0o600 });
 }
 main().catch(error => {

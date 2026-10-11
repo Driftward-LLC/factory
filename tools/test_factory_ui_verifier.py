@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import importlib.util
 import json
 import os
@@ -9,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy"))
@@ -120,8 +121,21 @@ class VerificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ui.safe_json(link, "a")
 
+    def test_cancellation_stops_local_command_group_before_cleanup(self):
+        process = MagicMock()
+        process.__enter__.return_value = process
+        process.pid = 12345
+        process.communicate.side_effect = [ui.Cancelled(), ("", "")]
+        with patch.object(ui.subprocess, "Popen", return_value=process) as start, \
+             patch.object(ui.os, "killpg") as kill:
+            with self.assertRaises(ui.Cancelled):
+                ui.command(["docker", "compose"])
+        self.assertTrue(start.call_args.kwargs["start_new_session"])
+        kill.assert_called_once_with(12345, ui.signal.SIGKILL)
+        self.assertEqual(process.communicate.call_count, 2)
+
     def test_failure_timeout_cancellation_and_cleanup_failure_never_pass(self):
-        for error in (RuntimeError("secret output"), subprocess.TimeoutExpired("private command", 1), InterruptedError()):
+        for error in (RuntimeError("secret output"), subprocess.TimeoutExpired("private command", 1), ui.Cancelled()):
             for cleanup_ok in (True, False):
                 with self.subTest(error=type(error).__name__, cleanup_ok=cleanup_ok):
                     pilot = self.pilot()
@@ -131,7 +145,10 @@ class VerificationTests(unittest.TestCase):
                                 return ""
                             raise RuntimeError("cleanup failed")
                         raise error
-                    with patch.object(ui.os, "geteuid", return_value=0), patch.object(ui.os, "chown"), \
+                    # Lock ownership is tested separately with the real user; do not
+                    # compare an unprivileged CI user's files to the mocked root UID.
+                    with patch.object(ui, "lock", return_value=nullcontext()), \
+                         patch.object(ui.os, "geteuid", return_value=0), patch.object(ui.os, "chown"), \
                          patch.object(ui, "command", return_value=""), patch.object(pilot, "compose", side_effect=compose):
                         report = pilot.run(b"synthetic-key")
                     self.assertFalse(report["factory_verified"])
@@ -144,7 +161,8 @@ class VerificationTests(unittest.TestCase):
 
     def test_unresolved_previous_run_blocks_before_creating_new_state(self):
         pilot = self.pilot()
-        with patch.object(ui.os, "geteuid", return_value=0), patch.object(ui, "command", return_value="old-container"):
+        with patch.object(ui, "lock", return_value=nullcontext()), \
+             patch.object(ui.os, "geteuid", return_value=0), patch.object(ui, "command", return_value="old-container"):
             with self.assertRaisesRegex(ValueError, "prior UI run"):
                 pilot.run(b"")
         self.assertFalse(pilot.root.exists())
