@@ -67,7 +67,17 @@ def main():
                                  "label=io.driftward.factory.installation=" + report["installation_id"],
                                  "--filter", "label=com.docker.compose.service=checks"])
             if active:
-                break
+                try:
+                    rows = json.loads(ui.command(["docker", "inspect", *active.splitlines()]))
+                    # Readiness also uses the checks service with a different entrypoint.
+                    # Wait for Chromium in the real checker, not merely a container.
+                    checker = next((row for row in rows if row["State"]["Running"] and
+                                    row["Config"]["Entrypoint"] == ["node", "/opt/verifier/checks.cjs"]), None)
+                    if checker and "chrome" in ui.command(["docker", "top", checker["Id"], "-eo", "pid,comm"]):
+                        break
+                except RuntimeError:
+                    # A short-lived readiness container can disappear after docker ps.
+                    pass
             if running.poll() is not None:
                 raise RuntimeError("cancellation probe ended before its browser started")
             time.sleep(0.2)
