@@ -7,7 +7,7 @@ transfer, not an executor receipt, rollback, retry, or force-unlock.
 
 Use automatic receipt recovery first. This exception is for held real attempts
 in `cancellation_requested`, with an expired authorized lease, a running job,
-no observed completion receipt, and either a known prior PR or a create-PR job
+no observed completion receipt, and either a known prior/observed partial PR or a create-PR job
 with freshly inspected branch/PR absence. Other cases remain blocked. Absence
 is not proof that no external effect ever happened or that execution stopped.
 
@@ -97,7 +97,16 @@ recorded **after** containment review. Missing or stale inspection blocks.
 The exact repository, prior PR, branch and observed head are bound into the
 preview digest, together with ownership revision and execution lease identity.
 
-For a create-PR job with **no prior PR**, `inspect` instead returns the attempt's
+A bounded partial PR recorded in `execution_receipt_observed.outcome.artifact`
+uses the same inspection path, even for an initial create attempt with no prior
+PR. This observation does not populate successful job artifact fields or release
+the execution lease. Recovery requires a fresh inspection of the exact recorded
+repository, URL, branch and full commit SHA after containment review. Conflicting
+artifact observations or a different inspected head block resolution; investigate
+rather than overwriting evidence. The target is bound into the preview digest.
+Absence evidence cannot substitute for an already observed partial PR.
+
+For a create-PR job with **no prior or observed partial PR**, `inspect` instead returns the attempt's
 repository and job branch to the CLI, which uses the host's existing GitHub CLI
 identity to inspect that branch and PRs in **all states**. It queues no work and
 does not pass GitHub credentials to Factory. After containment review, save the

@@ -241,7 +241,7 @@ function invocationRequest(job: BridgeJob) {
 export async function inspectHermesInvocation(job: BridgeJob, cancel = false): Promise<InvocationStatus> {
   const response = await callGateway<{ state?: string; cancellationRequested?: boolean; cancellationAcknowledged?: boolean;
     receipt?: DraftPullRequestResult; executionLeaseJson?: string; outcomeJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
-    invocationRequest(job), 15_000, 'hermes_grpc_invocation_inspection_failed');
+    invocationRequest(job), 45_000, 'hermes_grpc_invocation_inspection_failed');
   if (!['not_found', 'running', 'outcome_unknown', 'completed', 'incomplete', 'failed'].includes(response.state || '')
       || typeof response.cancellationRequested !== 'boolean' || typeof response.cancellationAcknowledged !== 'boolean'
       || (response.cancellationAcknowledged && (response.state !== 'completed' || !response.cancellationRequested))) {

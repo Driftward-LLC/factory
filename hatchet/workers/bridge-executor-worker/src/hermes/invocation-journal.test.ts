@@ -8,7 +8,8 @@ import test from 'node:test';
 import * as grpc from '@grpc/grpc-js';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { InvocationJournal } from './invocation-journal';
-import { NonRetryableBridgeExecutionError } from './errors';
+import { ArtifactObservationUnavailable, NonRetryableBridgeExecutionError } from './errors';
+import { boundedArtifactObservationContext, type ArtifactObservationContext } from './artifact-observation';
 import { boundedExecutionOutcome } from './execution-outcome';
 import { createServer } from './hermes-gateway-server';
 import { inspectHermesInvocation, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
@@ -27,6 +28,105 @@ const correlatedJob = { ...job, payload: { ...job.payload,
 const updatedJob = { ...correlatedJob, payload: { ...correlatedJob.payload,
   source_event_keys: ['event-1', 'event-2'], source_delivery_ids: ['delivery-1', 'delivery-2'],
 } };
+
+const observation: ArtifactObservationContext = {
+  schema: 'factory-artifact-observation-v1', finished_at: '2026-10-11T00:00:00.000Z',
+  before: { repository: 'example/project', head_branch: job.branch!, reason: 'ok', pull_requests: [] }, report: null,
+};
+
+test('saved observation retries after restart with the original fence, never replaying execution', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-observation-retry-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let executions = 0;
+  await assert.rejects(new InvocationJournal(directory).execute(job, lease, async (checkpoint) => {
+    executions++;
+    checkpoint(observation);
+    throw new ArtifactObservationUnavailable();
+  }), ArtifactObservationUnavailable);
+  const restarted = new InvocationJournal(directory);
+  assert.equal(restarted.status(job).state, 'outcome_unknown');
+  assert.deepEqual(JSON.parse(readFileSync(path.join(directory, job.job_id, 'intent.json'), 'utf8')).lease, lease);
+  await assert.rejects(restarted.inspect(updatedJob, true, async () => { throw new ArtifactObservationUnavailable(); }));
+  assert.equal(restarted.status(job).cancellationAcknowledged, false);
+  await assert.rejects(restarted.execute(job, lease, async () => { executions++; return receipt; }), /already reserved/);
+  await assert.rejects(restarted.inspect({ ...job, branch: 'codex/wrong' }, false, async () => assert.fail('wrong intent')), /intent differs/);
+  let reads = 0;
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const inspect = async (_job: BridgeJob, context: ArtifactObservationContext) => {
+    reads++;
+    assert.deepEqual(context, observation);
+    await wait;
+    return receipt;
+  };
+  const first = restarted.inspect(job, false, inspect);
+  const second = restarted.inspect(updatedJob, true, inspect);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(reads, 1);
+  assert.equal(executions, 1);
+  assert.deepEqual(a, b);
+  assert.equal(a.state, 'completed');
+  assert.deepEqual(a.lease, lease);
+  assert.deepEqual(a.receipt, receipt);
+  assert.equal((await restarted.inspect(job, false, async () => assert.fail('already settled'))).state, 'completed');
+  assert.equal(statSync(path.join(directory, job.job_id, 'observation.json')).mode & 0o777, 0o600);
+});
+
+test('post-checkpoint crash permits only inspection, while missing or invalid checkpoints stay fenced', async (t) => {
+  for (const checkpointed of [true, false]) {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-observation-crash-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const child = spawnSync(process.execPath, ['-e', `
+      const { InvocationJournal } = require(${JSON.stringify(require.resolve('./invocation-journal'))});
+      new InvocationJournal(${JSON.stringify(directory)}).execute(${JSON.stringify(job)}, ${JSON.stringify(lease)}, async (checkpoint) => {
+        if (${checkpointed}) checkpoint(${JSON.stringify(observation)});
+        process.kill(process.pid, 'SIGKILL');
+      });`]);
+    assert.equal(child.signal, 'SIGKILL');
+    const restarted = new InvocationJournal(directory);
+    assert.equal(restarted.status(job).state, 'outcome_unknown');
+    await assert.rejects(restarted.execute(job, lease, async () => assert.fail('must not replay')), /already reserved/);
+    if (!checkpointed) {
+      assert.equal((await restarted.inspect(job, true, async () => assert.fail('no saved exit'))).state, 'outcome_unknown');
+    } else {
+      const file = path.join(directory, job.job_id, 'observation.json');
+      writeFileSync(file, JSON.stringify({ ...observation, before: { ...observation.before, head_branch: 'wrong' } }));
+      await assert.rejects(restarted.inspect(job, true, async () => assert.fail('invalid checkpoint')), /checkpoint does not match/);
+      writeFileSync(file, JSON.stringify(observation));
+      const status = await restarted.inspect(job, true, async () => {
+        throw new NonRetryableBridgeExecutionError('hermes_execution_incomplete', 'no validation', {
+          processExitCode: 0, observedArtifact: { branch: job.branch!, pr_url: receipt.prUrl, commit_sha: receipt.commitSha },
+        });
+      });
+      assert.equal(status.state, 'incomplete');
+      assert.equal(status.cancellationAcknowledged, false);
+      assert.equal(status.outcome?.finished_at, observation.finished_at);
+      assert.equal(status.outcome?.containment, 'unconfirmed');
+      assert.deepEqual(status.lease, lease);
+    }
+  }
+});
+
+test('observation checkpoint strips raw output and binds validation claims to policy and artifact', () => {
+  const boundJob = { ...job, payload: { ...job.payload, verification_policy: {
+    required_local_commands: ['npm test'], secret_check_command: 'secret-check',
+  } } };
+  const report = { pr_url: receipt.prUrl, branch: job.branch, commit_sha: receipt.commitSha,
+    summary: 'PRIVATE_OUTPUT', stdout: 'PRIVATE_OUTPUT', validation: {
+      local_commands: [{ command: 'npm test', exit_code: 0, output: 'PRIVATE_OUTPUT' }],
+      secret_check: { command: 'secret-check', exit_code: 0, stdout: 'PRIVATE_OUTPUT' },
+    } };
+  const context = boundedArtifactObservationContext(boundJob, { ...observation, report, raw_output: 'PRIVATE_OUTPUT',
+    before: { ...observation.before, pull_requests: [{ url: receipt.prUrl, body: 'PRIVATE_OUTPUT' }] } });
+  assert.ok(context?.report?.validation);
+  assert.doesNotMatch(JSON.stringify(context), /PRIVATE_OUTPUT|stdout|summary|body/);
+  for (const change of [{ branch: 'wrong' }, { commit_sha: 'short' }, { pr_url: 'https://github.com/other/repo/pull/1' },
+    { validation: { local_commands: [], secret_check: {} } }]) {
+    assert.equal(boundedArtifactObservationContext(boundJob, { ...observation, report: { ...report, ...change } })?.report, null);
+  }
+  assert.equal(boundedArtifactObservationContext(job, { ...observation, before: { ...observation.before, repository: 'other/repo' } }), null);
+});
 
 test('incomplete and failed invocations persist bounded outcomes across restart, without replay or containment claims', async (t) => {
   for (const error of [
@@ -278,5 +378,46 @@ test('gateway exposes a durable partial receipt without acknowledging cancellati
   assert.deepEqual(partial.lease, lease);
   assert.doesNotMatch(JSON.stringify(partial.outcome), /PRIVATE_OUTPUT|fence_token/);
   await assert.rejects(runHermesCreateDraftPrViaGrpc(job, 2000, lease));
+  assert.equal(calls, 1);
+});
+
+test('gateway inspection resumes a checkpoint after restart without calling the agent again', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-gateway-observation-'));
+  const target = `unix://${path.join(directory, 'gateway.sock')}`;
+  const names = ['DRIFTWARD_HERMES_GRPC_TARGET', 'DRIFTWARD_HERMES_INVOCATION_DIRECTORY', 'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN'] as const;
+  const previous = names.map((name) => process.env[name]);
+  process.env[names[0]] = target;
+  process.env[names[1]] = path.join(directory, 'journal');
+  delete process.env[names[2]];
+  let calls = 0;
+  let available = false;
+  let server: grpc.Server;
+  const start = async () => {
+    server = createServer(target, async (_job, _command, _timeout, _buffer, _model, checkpoint) => {
+      calls++;
+      checkpoint!(observation);
+      throw new ArtifactObservationUnavailable();
+    }, async (observedJob, context) => {
+      assert.equal(observedJob.job_id, job.job_id);
+      assert.deepEqual(context, observation);
+      if (!available) throw new ArtifactObservationUnavailable();
+      return receipt;
+    });
+    await new Promise<void>((resolve, reject) => server.bindAsync(target, grpc.ServerCredentials.createInsecure(), (error) => error ? reject(error) : resolve()));
+  };
+  t.after(() => {
+    server?.forceShutdown();
+    names.forEach((name, i) => { if (previous[i] === undefined) delete process.env[name]; else process.env[name] = previous[i]; });
+    rmSync(directory, { recursive: true, force: true });
+  });
+  await start();
+  await assert.rejects(runHermesCreateDraftPrViaGrpc(job, 2000, lease));
+  await new Promise<void>((resolve) => server.tryShutdown(() => resolve()));
+  await start();
+  available = true;
+  const recovered = await inspectHermesInvocation(updatedJob);
+  assert.equal(recovered.state, 'completed');
+  assert.deepEqual(recovered.receipt, receipt);
+  assert.deepEqual(recovered.lease, lease);
   assert.equal(calls, 1);
 });

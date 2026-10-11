@@ -23,6 +23,7 @@ import {
   preflightHermesCreateDraftPr,
   resumeHermesDraftPrResult,
   receiptFromGitHubObservation,
+  observeExecutorDraftPr,
   runHermesCreateDraftPrViaCommand,
   sanitizeText,
   selectedReceiptEnvironment,
@@ -37,6 +38,8 @@ import {
   type HermesDraftPrResult
 } from './create-draft-pr';
 import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
+import { InvocationJournal } from './invocation-journal';
+import { ArtifactObservationUnavailable } from './errors';
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
@@ -45,7 +48,7 @@ test('executor uses its runtime model snapshot, preserves correlation, and toler
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-runtime-model-'));
   const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS',
     'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
-    'FACTORY_MODEL_FIXTURE', 'FACTORY_MODEL_ARGS', 'FACTORY_RESULT_FIXTURE'] as const;
+    'FACTORY_MODEL_FIXTURE', 'FACTORY_MODEL_ARGS', 'FACTORY_RESULT_FIXTURE', 'FACTORY_OBSERVATION_DOWN'] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' };
   const job = greenJob();
@@ -54,6 +57,7 @@ test('executor uses its runtime model snapshot, preserves correlation, and toler
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
+if (args.includes('factory-inspect-github-head') && process.env.FACTORY_OBSERVATION_DOWN === '1' && require('node:fs').existsSync(process.env.FACTORY_MODEL_ARGS)) process.exit(1);
 if (args.includes('factory-inspect-github-head')) process.stdout.write(JSON.stringify({...${JSON.stringify(headObservation())},pull_requests:require('node:fs').existsSync(process.env.FACTORY_MODEL_ARGS)?${JSON.stringify(headObservation().pull_requests)}:[]}));
 else if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(receiptView(job)))});
 else if (args.includes('python3')) process.stdout.write(process.env.FACTORY_MODEL_FIXTURE);
@@ -64,7 +68,9 @@ else process.exit(1);
 `, { mode: 0o700 });
     const command = path.join(directory, 'hermes');
     writeFileSync(command, `#!${process.execPath}
-require('node:fs').writeFileSync(process.env.FACTORY_MODEL_ARGS, JSON.stringify({args:process.argv.slice(2),attempt:process.env.FACTORY_OBSERVABILITY_ATTEMPT_ID,job:process.env.FACTORY_OBSERVABILITY_JOB_ID}));
+const fs = require('node:fs');
+const calls = fs.existsSync(process.env.FACTORY_MODEL_ARGS) ? JSON.parse(fs.readFileSync(process.env.FACTORY_MODEL_ARGS)).calls : 0;
+fs.writeFileSync(process.env.FACTORY_MODEL_ARGS, JSON.stringify({calls:calls+1,args:process.argv.slice(2),attempt:process.env.FACTORY_OBSERVABILITY_ATTEMPT_ID,job:process.env.FACTORY_OBSERVABILITY_JOB_ID}));
 process.stdout.write(process.env.FACTORY_RESULT_FIXTURE);
 `, { mode: 0o700 });
     Object.assign(process.env, { PATH: `${directory}${path.delimiter}${previous.PATH || ''}`,
@@ -108,6 +114,27 @@ process.stdout.write(process.env.FACTORY_RESULT_FIXTURE);
       }
       assert.doesNotMatch(JSON.stringify(actual), /FAKE_SECRET/);
     }
+    process.env.FACTORY_MODEL_FIXTURE = JSON.stringify(selection);
+    process.env.FACTORY_RESULT_FIXTURE = JSON.stringify({ pr_url: greenResult().prUrl, branch: job.branch,
+      commit_sha: 'a'.repeat(40), validation: greenResult().validation, stdout: 'PRIVATE_RAW_OUTPUT' });
+    process.env.FACTORY_OBSERVATION_DOWN = '1';
+    rmSync(process.env.FACTORY_MODEL_ARGS!, { force: true });
+    const lease = { lease_id: '00000000-0000-4000-8000-000000000011', owner: 'executor', epoch: 1, fence_token: 'fixture' };
+    const journalPath = path.join(directory, 'journal');
+    await assert.rejects(new InvocationJournal(journalPath).execute(job, lease,
+      (checkpoint) => runHermesCreateDraftPrViaCommand(job, command, 5000, 4096, undefined, checkpoint)), ArtifactObservationUnavailable);
+    const restarted = new InvocationJournal(journalPath);
+    assert.equal(restarted.status(job).state, 'outcome_unknown');
+    const saved = readFileSync(path.join(journalPath, job.job_id, 'observation.json'), 'utf8');
+    assert.doesNotMatch(saved, /PRIVATE_RAW_OUTPUT|implementation_prompt|fence_token/);
+    await assert.rejects(restarted.inspect(job, false, observeExecutorDraftPr), ArtifactObservationUnavailable);
+    delete process.env.FACTORY_OBSERVATION_DOWN;
+    const recovered = await restarted.inspect(job, false, observeExecutorDraftPr);
+    assert.equal(recovered.state, 'completed');
+    assert.equal(recovered.receipt?.prUrl, greenResult().prUrl);
+    assert.deepEqual(recovered.receipt?.validation, greenResult().validation);
+    assert.deepEqual(recovered.lease, lease);
+    assert.equal(JSON.parse(readFileSync(process.env.FACTORY_MODEL_ARGS!, 'utf8')).calls, 1);
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name];

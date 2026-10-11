@@ -89,6 +89,25 @@ class ExecutionReceiptRecoveryTests(unittest.TestCase):
             self.assertEqual(store.get_factory_issue_control(self.conn, "ENG-600")["mode"], "handoff_pending")
         self.assertIsNone(self.conn.execute("SELECT released_at FROM factory_execution_leases").fetchone()[0])
 
+    def test_unavailable_observation_keeps_recovery_polling_until_original_receipt_arrives(self):
+        store.settle_factory_execution(self.conn, self.job["job_id"], self.lease, effect_observed=False)
+        for state in ("unavailable", "outcome_unknown", "unavailable"):
+            store.record_execution_receipt_observation(self.conn, self.job["job_id"], {
+                "state": state, "cancellation_requested": False, "cancellation_acknowledged": False})
+            with self.conn:
+                self.conn.execute("UPDATE bridge_jobs SET updated_at='2000-01-01T00:00:00Z'")
+                self.conn.execute("UPDATE factory_attempt_outbox SET state='acknowledged',acknowledged_at='2000-01-01T00:00:00Z'")
+            self.assertTrue(store.enqueue_execution_receipt_recovery(self.conn, self.job["job_id"], stale_after_minutes=1)["enqueued"])
+            self.assertFalse(store.claim_factory_execution(self.conn, self.job["job_id"], owner="another")["claimed"])
+            self.assertIsNone(self.conn.execute("SELECT released_at FROM factory_execution_leases").fetchone()[0])
+        store.record_execution_receipt_observation(self.conn, self.job["job_id"], {
+            "state": "completed", "cancellation_requested": False, "cancellation_acknowledged": False})
+        result = store.commit_factory_execution(self.conn, self.job["job_id"], self.lease, {
+            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/600", "branch": self.job["branch"],
+            "commit_sha": "a" * 40, "verification_context": original_context(self.job)})
+        self.assertEqual(result["state"], "verification_pending")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_attempts").fetchone()[0], 1)
+
     def test_receipt_commit_persists_validation_atomically_and_rolls_back_invalid_context(self):
         details = {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/600", "branch": self.job["branch"], "commit_sha": "a" * 40}
         with self.assertRaises(store.BridgeValidationError):

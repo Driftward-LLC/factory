@@ -13,7 +13,8 @@ import {
   redactSecretShapes,
   type BoundedHermesDraftPrReceipt,
 } from './bounded-evidence';
-import { NonRetryableBridgeExecutionError } from './errors';
+import { ArtifactObservationUnavailable, NonRetryableBridgeExecutionError } from './errors';
+import { boundedArtifactObservationContext, type ArtifactObservationContext } from './artifact-observation';
 import { boundedModelSelection, HERMES_MODEL_SELECTION_QUERY, reportModelSelection, type ModelSelectionObserver } from './model-selection';
 import {
   checkHermesIdentityViaGrpc,
@@ -601,10 +602,12 @@ export async function runHermesCreateDraftPrViaCommand(
   timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000),
   maxBuffer: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024),
   onModelSelected?: ModelSelectionObserver,
+  checkpoint?: (context: ArtifactObservationContext) => void,
 ): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
   await assertHermesIdentityViaCommand(requiredPayloadString(job, 'repo'));
   const before = await inspectGitHubHeadViaCommand(requiredPayloadString(job, 'repo'), job.branch!);
+  if (before.reason !== 'ok') throw artifactObservationFailed();
   const prompt = buildPrompt(job);
   let selection = null;
   try {
@@ -633,7 +636,14 @@ export async function runHermesCreateDraftPrViaCommand(
     throw classifyHermesCommandFailure(error);
   }
 
-  return observeExecutorDraftPr(job, before, result.stdout);
+  let report: JsonObject | null = null;
+  try { report = extractJsonObject(result.stdout); } catch { /* no validation evidence */ }
+  const context = boundedArtifactObservationContext(job, {
+    schema: 'factory-artifact-observation-v1', finished_at: new Date().toISOString(), before, report,
+  });
+  if (!context) throw artifactObservationFailed();
+  checkpoint?.(context);
+  return observeExecutorDraftPr(job, context);
 }
 
 type ReceiptPrObservation = Pick<GithubPrView, 'url' | 'headRefName' | 'headRefOid' | 'baseRefName' | 'isDraft' | 'author' | 'body'>
@@ -646,7 +656,7 @@ function artifactObservationFailed(): NonRetryableBridgeExecutionError {
 }
 
 /** Artifact identity comes from GitHub, never from the model's final text. */
-async function observeExecutorDraftPr(job: BridgeJob, before: GitHubHeadInspection, stdout: string): Promise<HermesDraftPrResult> {
+export async function observeExecutorDraftPr(job: BridgeJob, context: ArtifactObservationContext): Promise<HermesDraftPrResult> {
   let after: GitHubHeadInspection;
   let view: ReceiptPrObservation | null = null;
   try {
@@ -657,12 +667,8 @@ async function observeExecutorDraftPr(job: BridgeJob, before: GitHubHeadInspecti
         '--json', 'url,headRefName,headRefOid,baseRefName,isDraft,author,body,state,isCrossRepository',
       ], 15_000, 256 * 1024);
     }
-  } catch { throw artifactObservationFailed(); }
-  let report: JsonObject | null = null;
-  // Compatibility input only: absent/malformed claims never hide a real PR,
-  // and must still pass the existing verification policy before readiness.
-  try { report = extractJsonObject(stdout); } catch { /* no validation evidence */ }
-  const receipt = receiptFromGitHubObservation(job, before, after, view, report);
+  } catch { throw new ArtifactObservationUnavailable(); }
+  const receipt = receiptFromGitHubObservation(job, context.before, after, view, context.report);
   if (!receipt.validation) {
     // A published artifact without a complete validation report is partial
     // delivery, not completion or evidence that manual takeover is safe.
@@ -676,7 +682,7 @@ async function observeExecutorDraftPr(job: BridgeJob, before: GitHubHeadInspecti
 }
 
 export function receiptFromGitHubObservation(
-  job: BridgeJob, before: GitHubHeadInspection, after: GitHubHeadInspection,
+  job: BridgeJob, before: Pick<GitHubHeadInspection, 'repository' | 'head_branch' | 'reason'> & { pull_requests: { url: string }[] }, after: GitHubHeadInspection,
   view: ReceiptPrObservation | null, report: JsonObject | null = null,
 ): HermesDraftPrResult {
   const repo = requiredPayloadString(job, 'repo');

@@ -89,14 +89,37 @@ def inspect(conn, attempt_id: str, *, actor: str) -> dict[str, Any]:
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         attempt, job, _, _ = _target(conn, attempt_id)
-        if not attempt["prior_pr_url"]:
+        artifact = _artifact_target(conn, attempt, job)
+        if not artifact:
             return {"created": False, "absence_evidence_target": {
                 "repository": job["payload"]["repo"], "head_branch": job["branch"]}}
-        created = store._queue_pr_inspection(conn, attempt["work_item_key"], attempt["prior_pr_url"], attempt_id, force_refresh=True)
-        observed = store.get_pr_inspection(conn, job["payload"]["repo"], attempt["prior_pr_url"], prior_attempt_id=attempt_id)
+        created = store._queue_pr_inspection(conn, attempt["work_item_key"], artifact["pr_url"], attempt_id, force_refresh=True)
+        observed = store.get_pr_inspection(conn, job["payload"]["repo"], artifact["pr_url"], prior_attempt_id=attempt_id)
         if created:
             store._append_factory_attempt_event(conn, attempt_id, "interrupted_resolution_inspection_requested", {"actor": actor})
         return {"created": created, "inspection_request_key": observed["request_key"], "state": observed["state"]}
+
+
+def _artifact_target(conn, attempt: dict[str, Any], job: dict[str, Any]) -> dict[str, Any] | None:
+    # Partial receipts are inspection targets, never successful effect commits.
+    target = None
+    for row in conn.execute(
+        "SELECT details_json FROM factory_attempt_events WHERE attempt_id=? AND event_type='execution_receipt_observed'",
+        (attempt["attempt_id"],),
+    ):
+        observation = json.loads(row[0])
+        artifact = observation.get("outcome", {}).get("artifact")
+        if observation.get("state") not in {"incomplete", "failed"} or not artifact or not artifact.get("pr_url"):
+            continue
+        if (artifact.get("branch") != job["branch"]
+                or not re.fullmatch(r"https://github\.com/" + re.escape(job["payload"]["repo"]) + r"/pull/[1-9][0-9]*", artifact["pr_url"])
+                or not store.RELEASE_SHA_RE.fullmatch(artifact.get("commit_sha") or "")
+                or (attempt["prior_pr_url"] and artifact["pr_url"] != attempt["prior_pr_url"])
+                or (target and target != artifact)):
+            raise store.BridgeConflict("partial artifact observations conflict; independent investigation required")
+        target = artifact
+    return target or ({"pr_url": attempt["prior_pr_url"], "branch": job["branch"], "commit_sha": None}
+                      if attempt["prior_pr_url"] else None)
 
 
 def preview(conn, attempt_id: str, *, attestation: dict[str, Any], reason: str, actor: str,
@@ -117,15 +140,18 @@ def preview(conn, attempt_id: str, *, attestation: dict[str, Any], reason: str, 
         age = _age(evidence["observed_at"], now=now)
         if not 0 <= age <= 300 or age > _age(lease["cancel_requested_at"], now=now):
             raise store.BridgeConflict("containment attestation is stale or predates cancellation")
-        if attempt["prior_pr_url"]:
+        artifact = _artifact_target(conn, attempt, job)
+        if artifact:
             if absence_evidence is not None:
                 raise store.BridgeValidationError("a known prior PR requires artifact inspection, not absence evidence")
-            observed = store.get_pr_inspection(conn, job["payload"]["repo"], attempt["prior_pr_url"], prior_attempt_id=attempt_id)
+            observed = store.get_pr_inspection(conn, job["payload"]["repo"], artifact["pr_url"], prior_attempt_id=attempt_id)
             if not observed or not observed["fresh"] or observed["state"] != "completed" or _age(observed["observed_at"], now=now) > age:
                 raise store.BridgeConflict("a fresh artifact inspection after containment attestation is required")
             result = observed["result"]
             if (result.get("reason") != "ok" or result.get("state") not in {"open", "closed"}
-                    or result.get("head_branch") != job["branch"] or not store.RELEASE_SHA_RE.fullmatch(result.get("head_sha") or "")):
+                    or result.get("repository") != job["payload"]["repo"] or result.get("url") != artifact["pr_url"]
+                    or result.get("head_branch") != job["branch"] or not store.RELEASE_SHA_RE.fullmatch(result.get("head_sha") or "")
+                    or (artifact["commit_sha"] and result.get("head_sha") != artifact["commit_sha"])):
                 raise store.BridgeConflict("artifact inspection does not identify this execution's branch and head")
             inspection = {key: observed[key] for key in ("request_key", "result_digest", "observed_at", "result")}
         else:
@@ -136,7 +162,7 @@ def preview(conn, attempt_id: str, *, attestation: dict[str, Any], reason: str, 
                           "observed_at": absence["observed_at"], "result": absence}
         context = {"schema": SCHEMA, "principal": principal, "reason": reason, "attestation": evidence,
                    "control_digest": control["snapshot_digest"], "revision": control["revision"],
-                   "inspection": inspection}
+                   "inspection": inspection, "artifact_target": artifact}
         return {"eligible": True, "snapshot_digest": store.payload_hash(context), "context": context,
                 "effect_summary": "Retire this execution as failed with unknown effect outcome; retain manual hold. No success, retry, PR mutation or Linear update.",
                 "containment_basis": "trusted_root_attestation_not_machine_verified"}

@@ -13,6 +13,7 @@ import {
   inspectDraftPrStateViaCommand,
   inspectDraftPullRequestViaCommand,
   runHermesCreateDraftPrViaCommand,
+  observeExecutorDraftPr,
   sanitizeText,
   type DraftPrStateInspection,
   type GitHubHeadInspection,
@@ -66,15 +67,16 @@ type GatewayService = grpc.ServiceClientConstructor & { service: grpc.ServiceDef
 type UnaryCall<T> = grpc.ServerUnaryCall<T, unknown>;
 type SendUnary<T> = grpc.sendUnaryData<T>;
 
-export function createServer(target: string, runDraftPr = runHermesCreateDraftPrViaCommand): grpc.Server {
+export function createServer(target: string, runDraftPr = runHermesCreateDraftPrViaCommand,
+  observeDraftPr = observeExecutorDraftPr): grpc.Server {
   // Open lazily so read-only identity/inspection remains available during a storage fault.
   let journal: InvocationJournal | undefined;
   const invocations = () => journal ||= new InvocationJournal(process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY ||
     (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor'
       ? path.join(process.env.HERMES_HOME || '/opt/data', 'factory-invocations')
       : '/var/lib/driftward-hermes-factory/invocations'));
-  const inspectInvocation = (request: CreateDraftPullRequestRequest, cancel: boolean) => {
-    const status = invocations().status(parseBridgeJob(request), cancel);
+  const inspectInvocation = async (request: CreateDraftPullRequestRequest, cancel: boolean) => {
+    const status = await invocations().inspect(parseBridgeJob(request), cancel, observeDraftPr);
     return { ...status, receipt: status.receipt ? draftPrResponse(status.receipt) : undefined,
       outcomeJson: status.outcome ? JSON.stringify(status.outcome) : '',
       executionLeaseJson: status.lease ? JSON.stringify(status.lease) : '' };
@@ -90,11 +92,11 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       const job = parseBridgeJob(request);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const result = await withExecutionSpan('factory.executor.invoke', () => invocations().execute(job, lease,
-        () => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined, (selection) => {
+        (checkpoint) => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined, (selection) => {
           const metadata = new grpc.Metadata();
           metadata.set(MODEL_SELECTION_HEADER, Buffer.from(JSON.stringify({ job_id: job.job_id, selection })));
           call.sendMetadata(metadata);
-        }), { job, service: 'factory-executor' })),
+        }, checkpoint), { job, service: 'factory-executor' })),
       { job, service: 'factory-executor' });
       return draftPrResponse(result);
     }),

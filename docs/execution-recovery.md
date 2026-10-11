@@ -15,6 +15,17 @@ is still **executor-reported**, not independent test evidence: it must bind to
 the observed URL, branch and full head SHA, and the existing verification policy
 still gates readiness. Missing validation is partial delivery, not success.
 
+After a normal command exit, the gateway saves an executor-private
+`factory-artifact-observation-v1` checkpoint before querying GitHub. It contains
+the exit time, bounded pre-execution PR identities and the policy-bounded
+validation claim, not raw output. If GitHub inspection is unavailable, the
+invocation remains unknown and reconciliation can retry **only the fixed,
+read-only inspection**, including after gateway restart. It never reruns Hermes.
+The recovered observation must pass the same repository, branch, full SHA,
+author, base and issue binding checks; a saved claim is not an artifact receipt.
+Concurrent lookups share one inspection in the gateway. A missing or invalid
+checkpoint grants no inspection recovery or execution authority.
+
 If execution throws, exits without a PR, or publishes without complete validation,
 the gateway durably writes a bounded `factory-executor-outcome-v1` receipt before
 replying. It records `incomplete` or `failed`, the job identity, finish time,
@@ -29,8 +40,9 @@ Terminal failure receipts always retain `effect_outcome=unknown` and
 stopped or that every external write settled. Cancellation remains unacknowledged,
 the original effect fence remains held, and retry/manual editing remain guarded.
 Reconciliation records the terminal receipt once and stops repeatedly polling
-for a success receipt. An abrupt gateway kill before either receipt is written
-still leaves `outcome_unknown`. No old receipt is manufactured retroactively.
+for a success receipt. An abrupt gateway kill before a receipt still leaves
+`outcome_unknown`; only a saved observation checkpoint permits read-only
+recovery. No old checkpoint or receipt is manufactured retroactively.
 
 New reservations store fingerprint version 2. Their identity includes the job,
 idempotency key, action, branch and complete payload **except** the four top-level
@@ -71,7 +83,8 @@ an expired lease remain blocked. Old attempts such as ENG-134 cannot acquire
 receipts retroactively: their executor and GitHub evidence still need reviewed
 operator recovery. This release does not clear them or authorize new attempts.
 
-For held interrupted executions without receipts, with a known prior PR or
+For held interrupted executions without completion receipts, with a known prior
+PR, a bounded partial PR observation, or
 fresh evidence that the create-PR branch and PR are absent,
 see the separate [root-attested resolution procedure](interrupted-execution.md).
 It requires reviewed external containment, not merely an expired lease or an
@@ -121,6 +134,8 @@ Tests use disposable journals, SQLite databases, gRPC sockets and browser data:
 - Held work settles to manual control without entering verification.
 - Prose output and missing validation produce durable partial outcomes, not fabricated success.
 - Failure receipts survive restart, carry bounded artifact observations, and stop success polling without releasing fences.
+- GitHub outages and post-checkpoint crashes recover through inspection with the original fence and one agent invocation.
+- Partial PR observations feed root-attested recovery; fresh matching heads and containment remain mandatory.
 
 Run the worker, bridge, console, and catalog checks documented in `AGENTS.md`.
 Gateway/process loss after an external write but before receipt persistence is

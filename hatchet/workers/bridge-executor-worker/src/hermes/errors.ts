@@ -87,3 +87,11 @@ export class NonRetryableBridgeExecutionError extends Error {
       : null;
   }
 }
+
+/** Retry only GitHub observation; never grant permission to repeat execution. */
+export class ArtifactObservationUnavailable extends NonRetryableBridgeExecutionError {
+  constructor() {
+    super('hermes_artifact_observation_failed', 'GitHub observation is unavailable; inspect the saved invocation again',
+      { failureDomain: 'github', failureStage: 'result_parse', retryable: false, processExitCode: 0 });
+  }
+}
