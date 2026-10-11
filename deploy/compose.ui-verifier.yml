@@ -1,0 +1,71 @@
+# Operator-invoked pilot. Never included in the production Compose startup.
+x-isolation: &isolation
+  profiles: [ui-verification]
+  init: true
+  restart: "no"
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 256
+  cpus: "1.0"
+  mem_limit: 1g
+  logging:
+    driver: none
+  labels:
+    io.driftward.factory.installation: ${FACTORY_UI_INSTALLATION:?}
+    io.driftward.factory.ui-run: ${FACTORY_UI_RUN:?}
+
+services:
+  preview:
+    <<: *isolation
+    image: ${FACTORY_UI_PREVIEW_IMAGE:?}
+    networks: [preview]
+    tmpfs: ["/tmp:size=256m", "/data:uid=1000,gid=1000,mode=0700,size=256m"]
+    environment:
+      FACTORY_UI_TEST_MODE: synthetic
+      PORT: "3000"
+  checks:
+    <<: *isolation
+    image: ${FACTORY_UI_RUNNER_IMAGE:?}
+    entrypoint: [node, /opt/verifier/checks.cjs]
+    networks: [preview]
+    mem_limit: 2g
+    tmpfs: ["/tmp:size=512m"]
+    shm_size: 256m
+    volumes:
+      - ${FACTORY_UI_REQUEST:?}:/request.json:ro
+      - ${FACTORY_UI_CHECKS:?}:/evidence
+  browser:
+    <<: *isolation
+    image: ${FACTORY_UI_RUNNER_IMAGE:?}
+    entrypoint: [node, /opt/verifier/browser.cjs]
+    networks: [preview, browser-control]
+    mem_limit: 2g
+    tmpfs: ["/tmp:size=512m"]
+    shm_size: 256m
+    volumes:
+      - ${FACTORY_UI_CONTROL_SECRET:?}:/run/secrets/browser-token:ro
+  codex-verifier:
+    <<: *isolation
+    image: ${FACTORY_UI_RUNNER_IMAGE:?}
+    networks: [browser-control, provider]
+    tmpfs: ["/tmp:size=256m", "/home/node/.codex:uid=1000,gid=1000,mode=0700,size=64m"]
+    volumes:
+      - ${FACTORY_UI_REQUEST:?}:/request.json:ro
+      - ${FACTORY_UI_INSTRUCTIONS:?}:/instructions.md:ro
+      - ${FACTORY_UI_CONTROL_SECRET:?}:/run/secrets/browser-token:ro
+      - ${FACTORY_UI_API_KEY:?}:/run/secrets/openai-api-key:ro
+      - ${FACTORY_UI_AGENT:?}:/evidence
+
+networks:
+  preview:
+    internal: true
+    labels: &network-labels
+      io.driftward.factory.installation: ${FACTORY_UI_INSTALLATION:?}
+      io.driftward.factory.ui-run: ${FACTORY_UI_RUN:?}
+  browser-control:
+    internal: true
+    labels: *network-labels
+  provider:
+    labels: *network-labels

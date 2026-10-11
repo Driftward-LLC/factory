@@ -24,6 +24,10 @@ FILES = (
     "deploy/portable_state.py",
     "deploy/PORTABLE.md",
     "deploy/CUTOVER.md",
+    "deploy/compose.ui-verifier.yml",
+    "deploy/factory-ui-verify.py",
+    "deploy/ui_verification.py",
+    "deploy/UI-VERIFICATION.md",
 )
 IMAGE = "ghcr.io/driftward-llc/factory@sha256:" + "a" * 64
 
@@ -84,6 +88,7 @@ class FactoryReleaseTests(unittest.TestCase):
             ("--image", IMAGE + "\nSECRET=value"),
             ("--source-commit", "main"),
             ("--source-commit", "f" * 40),
+            ("--ui-verifier-image", "ghcr.io/driftward-llc/factory-ui-verifier:latest"),
         ):
             with self.subTest(arguments=arguments):
                 self.assertNotEqual(self.package(*arguments).returncode, 0)
@@ -126,7 +131,7 @@ class FactoryReleaseTests(unittest.TestCase):
             ["tar", "-xzf", str(output / f"{self.bundle}-validation-only.tar.gz"), "-C", str(output)],
             check=True, capture_output=True,
         )
-        for tool in ("factory-portable.py", "factory-cutover.py", "factory-production.py"):
+        for tool in ("factory-portable.py", "factory-cutover.py", "factory-production.py", "factory-ui-verify.py"):
             with self.subTest(tool=tool):
                 help_result = subprocess.run(
                     ["python3", "-E", "-s", str(output / self.bundle / "deploy" / tool), "--help"],

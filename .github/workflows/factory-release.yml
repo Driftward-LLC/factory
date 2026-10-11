@@ -37,6 +37,7 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run }}
       GH_TOKEN: ${{ github.token }}
       IMAGE_REPOSITORY: ghcr.io/driftward-llc/factory
+      UI_VERIFIER_REPOSITORY: ghcr.io/driftward-llc/factory-ui-verifier
     steps:
       - uses: actions/checkout@v4
         with:
@@ -143,6 +144,12 @@ jobs:
       - name: Check changed-file whitespace
         run: git diff --check HEAD
 
+      - name: Validate isolated UI verifier pilot
+        run: |
+          docker build --platform linux/amd64 --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" -f deploy/ui-verifier/Dockerfile -t factory-ui-verifier:ci .
+          docker build --platform linux/amd64 --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" -f tools/fixtures/ui-verifier/Dockerfile -t factory-ui-preview:ci .
+          sudo python3 tools/check_factory_ui_verifier.py --runner-image factory-ui-verifier:ci --preview-image factory-ui-preview:ci
+
       - name: Ensure checkout remains clean
         run: |
           set -euo pipefail
@@ -168,6 +175,7 @@ jobs:
           local_image_id="$(docker image inspect driftward/factory:ci --format '{{.Id}}')"
           bash deploy/package-release.sh --version "$RELEASE_TAG" \
             --image "$IMAGE_REPOSITORY@$local_image_id" \
+            --ui-verifier-image "$UI_VERIFIER_REPOSITORY@$(docker image inspect factory-ui-verifier:ci --format '{{.Id}}')" \
             --source-commit "$(git rev-parse HEAD)" \
             --output-dir "$RUNNER_TEMP/factory-release-preview" --validation-only
           (cd "$RUNNER_TEMP/factory-release-preview" && sha256sum --check SHA256SUMS)
@@ -189,15 +197,26 @@ jobs:
           image_ref="$(docker image inspect "$image_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$IMAGE_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
           [[ "$image_ref" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]]
           echo "reference=$image_ref" >> "$GITHUB_OUTPUT"
+          verifier_tag="$UI_VERIFIER_REPOSITORY:$RELEASE_TAG"
+          if docker manifest inspect "$verifier_tag" >/dev/null 2>&1; then
+            echo 'verifier image tag already exists; refusing to overwrite' >&2
+            exit 64
+          fi
+          docker tag factory-ui-verifier:ci "$verifier_tag"
+          docker push "$verifier_tag"
+          verifier_ref="$(docker image inspect "$verifier_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$UI_VERIFIER_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
+          [[ "$verifier_ref" =~ ^ghcr\.io/driftward-llc/factory-ui-verifier@sha256:[a-f0-9]{64}$ ]]
+          echo "verifier_reference=$verifier_ref" >> "$GITHUB_OUTPUT"
 
       - name: Package digest-pinned portable release
         if: env.DRY_RUN != 'true'
         env:
           PUBLISHED_IMAGE: ${{ steps.image.outputs.reference }}
+          PUBLISHED_UI_VERIFIER: ${{ steps.image.outputs.verifier_reference }}
         run: |
           set -euo pipefail
           bash deploy/package-release.sh --version "$RELEASE_TAG" \
-            --image "$PUBLISHED_IMAGE" --source-commit "$(git rev-parse HEAD)" \
+            --image "$PUBLISHED_IMAGE" --ui-verifier-image "$PUBLISHED_UI_VERIFIER" --source-commit "$(git rev-parse HEAD)" \
             --output-dir "$RUNNER_TEMP/factory-release"
           (cd "$RUNNER_TEMP/factory-release" && sha256sum --check SHA256SUMS)
 

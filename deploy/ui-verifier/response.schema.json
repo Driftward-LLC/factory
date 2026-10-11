@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "assessment": {"type": "string", "enum": ["no_findings", "findings", "blocked"]},
+    "summary": {"type": "string"}
+  },
+  "required": ["assessment", "summary"]
+}
