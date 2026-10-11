@@ -4,17 +4,19 @@ import path from 'node:path';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { boundedHermesDraftPrReceipt, type BoundedHermesDraftPrReceipt } from './bounded-evidence';
 import { NonRetryableBridgeExecutionError } from './errors';
+import { boundedExecutionOutcome, executionOutcome, type ExecutionOutcome } from './execution-outcome';
 
 // Match the bridge's CORRELATION_PAYLOAD_KEYS; all other intent remains immutable.
 const CORRELATION_PAYLOAD_KEYS = new Set(['source_event_key', 'source_delivery_id', 'source_event_keys', 'source_delivery_ids']);
 
 export type InvocationLease = { lease_id: string; owner: string; epoch: number; fence_token: string };
 export type InvocationStatus = {
-  state: 'not_found' | 'running' | 'outcome_unknown' | 'completed';
+  state: 'not_found' | 'running' | 'outcome_unknown' | 'completed' | 'incomplete' | 'failed';
   cancellationRequested: boolean;
   cancellationAcknowledged: boolean;
   receipt?: BoundedHermesDraftPrReceipt;
   lease?: InvocationLease;
+  outcome?: ExecutionOutcome;
 };
 
 export function invocationLease(value: unknown): InvocationLease {
@@ -81,6 +83,12 @@ export class InvocationJournal {
       if (!receipt) throw invalid('Invocation receipt does not match its job');
       return { state: 'completed', cancellationRequested, cancellationAcknowledged: cancellationRequested, receipt, lease };
     }
+    const outcomePath = path.join(directory, 'outcome.json');
+    if (existsSync(outcomePath)) {
+      const outcome = boundedExecutionOutcome(job, JSON.parse(readFileSync(outcomePath, 'utf8')));
+      if (!outcome) throw invalid('Invocation outcome does not match its job');
+      return { state: outcome.state, cancellationRequested, cancellationAcknowledged: false, outcome, lease };
+    }
     return { state: this.active.has(job.job_id) ? 'running' : 'outcome_unknown', cancellationRequested, cancellationAcknowledged: false };
   }
 
@@ -102,6 +110,13 @@ export class InvocationJournal {
       if (!receipt) throw invalid('Executor did not return a bounded invocation receipt');
       this.persist(path.join(directory, 'result.json'), receipt);
       return receipt;
+    }).catch((error) => {
+      // Record code-owned exit evidence even when agent output is prose or missing.
+      // Never retain raw output/errors, and never turn an uncertain effect into a safe retry.
+      if (!existsSync(path.join(directory, 'result.json'))) {
+        this.persist(path.join(directory, 'outcome.json'), executionOutcome(job, error));
+      }
+      throw error;
     });
     this.active.set(job.job_id, pending);
     try { return await pending; }

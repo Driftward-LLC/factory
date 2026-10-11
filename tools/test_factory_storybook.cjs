@@ -84,6 +84,15 @@ const consoleRoot = resolve(__dirname, '../factory/console');
       await visit(story.id);
       assert(await page.locator('#storybook-root > *').count(), `Empty story ${story.id}`);
     }
+    for (const [state, guidance] of [['incomplete', /recorded incomplete work/], ['failed', /recorded a failure/]]) {
+      await visit('factory-issuecontrol--execution-' + state);
+      await page.getByText('Handoff pending', { exact: true }).waitFor();
+      const control = await page.locator('.issue-control').textContent();
+      assert.match(control, guidance);
+      assert.match(control, /Do not edit yet/);
+      assert.doesNotMatch(control, /safe to edit|Awaiting execution evidence|will retry receipt lookup/);
+      await page.screenshot({ path: `/tmp/factory-receipt-${state}.png` });
+    }
     await visit('factory-beforeexecution--awaiting-intake');
     assert.match(await page.locator('.before-execution').textContent(), /not confirmation that work is queued or running/);
     await visit('factory-beforeexecution--unavailable');

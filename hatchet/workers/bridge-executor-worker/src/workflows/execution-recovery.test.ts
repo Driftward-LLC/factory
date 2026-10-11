@@ -2,11 +2,27 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BridgeJob, FactoryAttempt } from '@driftward/hatchet-worker-shared';
 import { recoverExecutionReceipt } from './execution-recovery';
+import { executionOutcome } from '../hermes/execution-outcome';
+import { NonRetryableBridgeExecutionError } from '../hermes/errors';
 
 const job = { job_id: 'test-job', state: 'running', branch: 'codex/test', payload: { repo: 'example/project' } } as unknown as BridgeJob;
 const lease = { lease_id: 'original-lease', epoch: 1, owner: 'original-owner', fence_token: 'original-fence' };
 const receipt = { status: 'created' as const, prUrl: 'https://github.com/example/project/pull/1', prNumber: 1,
   branch: 'codex/test', commitSha: 'a'.repeat(40), hermesSessionId: null, summary: 'draft_pr_created' as const, validation: null };
+
+test('a durable incomplete receipt is observed without committing success or releasing the effect fence', async () => {
+  const outcome = executionOutcome(job, new NonRetryableBridgeExecutionError('hermes_execution_incomplete', 'not published'));
+  const observed: unknown[] = [];
+  const bridge = {
+    recordExecutionReceiptObservation: async (_id: string, value: unknown) => { observed.push(value); },
+    commitFactoryExecution: async () => { throw new Error('must not commit'); },
+    getJob: async () => job,
+  };
+  assert.equal(await recoverExecutionReceipt(bridge, job, true, async () => ({
+    state: 'incomplete', outcome, lease, cancellationRequested: true, cancellationAcknowledged: false,
+  })), null);
+  assert.deepEqual(observed, [{ state: 'incomplete', outcome, cancellation_requested: true, cancellation_acknowledged: false }]);
+});
 
 test('receipt recovery commits the original fence and preserves manual takeover', async () => {
   let commits = 0;

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { executionTraceparent, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
 import { invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
+import { boundedExecutionOutcome } from './execution-outcome';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { boundedModelSelection, MODEL_SELECTION_HEADER, reportModelSelection, type ModelSelectionObserver } from './model-selection';
@@ -211,9 +212,9 @@ export async function checkHermesIdentityViaGrpc(request: {
     forbiddenGitAuthorEmails: request.forbiddenGitAuthorEmails
   }, request.timeoutMs, 'hermes_grpc_identity_check_failed');
 
-  if (response.invocationProtocolVersion !== 1) {
+  if (response.invocationProtocolVersion !== 2) {
     throw new NonRetryableBridgeExecutionError('hermes_grpc_invocation_protocol_unsupported',
-      'Gateway must support durable invocation protocol v1 before execution',
+      'Gateway must support executor-owned receipt protocol v2 before execution',
       { failureDomain: 'gateway', failureStage: 'preflight', retryable: false });
   }
 
@@ -239,15 +240,19 @@ function invocationRequest(job: BridgeJob) {
 
 export async function inspectHermesInvocation(job: BridgeJob, cancel = false): Promise<InvocationStatus> {
   const response = await callGateway<{ state?: string; cancellationRequested?: boolean; cancellationAcknowledged?: boolean;
-    receipt?: DraftPullRequestResult; executionLeaseJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
+    receipt?: DraftPullRequestResult; executionLeaseJson?: string; outcomeJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
     invocationRequest(job), 15_000, 'hermes_grpc_invocation_inspection_failed');
-  if (!['not_found', 'running', 'outcome_unknown', 'completed'].includes(response.state || '')
+  if (!['not_found', 'running', 'outcome_unknown', 'completed', 'incomplete', 'failed'].includes(response.state || '')
       || typeof response.cancellationRequested !== 'boolean' || typeof response.cancellationAcknowledged !== 'boolean'
       || (response.cancellationAcknowledged && (response.state !== 'completed' || !response.cancellationRequested))) {
     throw malformedGatewayResponse('Invalid invocation status');
   }
+  const terminal = response.state === 'incomplete' || response.state === 'failed';
+  const outcome = terminal ? boundedExecutionOutcome(job, parseJsonValue(response.outcomeJson || '', 'outcome_json')) : null;
+  if (terminal && (!outcome || outcome.state !== response.state)) throw malformedGatewayResponse('Invalid invocation outcome');
   return { state: response.state as InvocationStatus['state'], cancellationRequested: response.cancellationRequested,
     cancellationAcknowledged: response.cancellationAcknowledged,
+    ...(outcome ? { outcome, lease: invocationLease(parseJsonValue(response.executionLeaseJson || '', 'execution_lease_json')) } : {}),
     ...(response.state === 'completed' ? {
       receipt: parseDraftPrResponse(job, response.receipt || {}),
       lease: invocationLease(parseJsonValue(response.executionLeaseJson || '', 'execution_lease_json')),

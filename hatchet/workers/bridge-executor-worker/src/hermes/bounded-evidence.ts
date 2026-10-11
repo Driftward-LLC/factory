@@ -21,6 +21,8 @@ type UntrustedReceipt = {
 };
 
 const GATEWAY_REASON_CODES = new Set([
+  'hermes_execution_incomplete',
+  'hermes_artifact_observation_failed',
   'hermes_invocation_conflict',
   'hermes_grpc_invocation_inspection_failed',
   'hermes_grpc_invocation_protocol_unsupported',

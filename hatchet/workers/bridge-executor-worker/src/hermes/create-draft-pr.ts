@@ -7,6 +7,7 @@ import type { BridgeJob, FactoryAttempt, JsonObject, JsonValue } from '@driftwar
 import type { Duration } from '@hatchet-dev/typescript-sdk/v1/client/duration';
 import {
   boundedHermesDraftPrReceipt,
+  boundedVerificationContext,
   isSecretShaped,
   processSignal,
   redactSecretShapes,
@@ -603,6 +604,7 @@ export async function runHermesCreateDraftPrViaCommand(
 ): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
   await assertHermesIdentityViaCommand(requiredPayloadString(job, 'repo'));
+  const before = await inspectGitHubHeadViaCommand(requiredPayloadString(job, 'repo'), job.branch!);
   const prompt = buildPrompt(job);
   let selection = null;
   try {
@@ -631,20 +633,83 @@ export async function runHermesCreateDraftPrViaCommand(
     throw classifyHermesCommandFailure(error);
   }
 
+  return observeExecutorDraftPr(job, before, result.stdout);
+}
+
+type ReceiptPrObservation = Pick<GithubPrView, 'url' | 'headRefName' | 'headRefOid' | 'baseRefName' | 'isDraft' | 'author' | 'body'>
+  & { state: string; isCrossRepository: boolean };
+
+function artifactObservationFailed(): NonRetryableBridgeExecutionError {
+  return new NonRetryableBridgeExecutionError('hermes_artifact_observation_failed',
+    'The executor could not identify one matching draft PR; external effects remain unresolved',
+    { failureDomain: 'github', failureStage: 'result_parse', retryable: false, processExitCode: 0 });
+}
+
+/** Artifact identity comes from GitHub, never from the model's final text. */
+async function observeExecutorDraftPr(job: BridgeJob, before: GitHubHeadInspection, stdout: string): Promise<HermesDraftPrResult> {
+  let after: GitHubHeadInspection;
+  let view: ReceiptPrObservation | null = null;
   try {
-    return normalizeHermesResult(job, result.stdout);
-  } catch (error) {
-    if (error instanceof NonRetryableBridgeExecutionError) throw error;
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_protocol_result_invalid',
-      'Hermes completed but did not return a valid Factory receipt',
-      {
-        failureDomain: 'hermes_protocol',
-        failureStage: 'result_parse',
-        retryable: false,
-      },
-    );
+    after = await inspectGitHubHeadViaCommand(requiredPayloadString(job, 'repo'), job.branch!);
+    if (after.pull_requests.length === 1) {
+      view = await execHermesRuntimeJson<ReceiptPrObservation>([
+        'gh', 'pr', 'view', String(after.pull_requests[0].number), '--repo', requiredPayloadString(job, 'repo'),
+        '--json', 'url,headRefName,headRefOid,baseRefName,isDraft,author,body,state,isCrossRepository',
+      ], 15_000, 256 * 1024);
+    }
+  } catch { throw artifactObservationFailed(); }
+  let report: JsonObject | null = null;
+  // Compatibility input only: absent/malformed claims never hide a real PR,
+  // and must still pass the existing verification policy before readiness.
+  try { report = extractJsonObject(stdout); } catch { /* no validation evidence */ }
+  const receipt = receiptFromGitHubObservation(job, before, after, view, report);
+  if (!receipt.validation) {
+    // A published artifact without a complete validation report is partial
+    // delivery, not completion or evidence that manual takeover is safe.
+    throw new NonRetryableBridgeExecutionError('hermes_execution_incomplete',
+      'A draft PR was observed but its validation report is unavailable; inspection is required',
+      { failureDomain: 'executor', failureStage: 'backend_execution', retryable: false, processExitCode: 0,
+        timedOut: false, bufferExceeded: false,
+        observedArtifact: { branch: receipt.branch, pr_url: receipt.prUrl, commit_sha: receipt.commitSha } });
   }
+  return receipt;
+}
+
+export function receiptFromGitHubObservation(
+  job: BridgeJob, before: GitHubHeadInspection, after: GitHubHeadInspection,
+  view: ReceiptPrObservation | null, report: JsonObject | null = null,
+): HermesDraftPrResult {
+  const repo = requiredPayloadString(job, 'repo');
+  if ([before, after].some((item) => item.reason !== 'ok' || item.repository !== repo || item.head_branch !== job.branch)) {
+    throw artifactObservationFailed();
+  }
+  if (after.pull_requests.length === 0) {
+    throw new NonRetryableBridgeExecutionError('hermes_execution_incomplete',
+      'Hermes exited without a published draft PR; local work and external effects require inspection',
+      { failureDomain: 'executor', failureStage: 'backend_execution', retryable: false,
+        processExitCode: 0, timedOut: false, bufferExceeded: false,
+        observedArtifact: after.branch_exists ? { branch: job.branch!, pr_url: null, commit_sha: null } : null });
+  }
+  const pr = after.pull_requests[0];
+  const repair = factoryRepairContext(job);
+  if (after.pull_requests.length !== 1 || !after.branch_exists || !view || view.isCrossRepository !== false
+    || !Number.isSafeInteger(pr.number) || pr.number < 1 || pr.url !== `https://github.com/${repo}/pull/${pr.number}`
+    || view.url !== pr.url || view.state !== 'OPEN' || view.isDraft !== true
+    || pr.headRefName !== job.branch || view.headRefName !== job.branch
+    || typeof view.headRefOid !== 'string' || !/^[0-9a-f]{40}$/.test(view.headRefOid) || pr.headRefOid !== view.headRefOid
+    || view.baseRefName !== verificationPolicy(job).expectedBase
+    || !githubAppAuthorAliases(requiredEnv('DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN', 'hermes_github_identity_not_configured')).includes(view.author?.login || '')
+    || typeof view.body !== 'string' || !hasExactLinearReference(view.body, requiredPayloadString(job, 'linear_issue'))
+    || (!repair && !view.body.includes(bridgeMarker(job))) || (repair && pr.url !== repair.prUrl)) {
+    throw artifactObservationFailed();
+  }
+  const status = repair || before.pull_requests.some((item) => item.url === pr.url) ? 'reused' : 'created';
+  const validation = report?.branch === job.branch && report?.pr_url === view.url && report?.commit_sha === view.headRefOid
+    ? boundedVerificationContext(job, report.validation) : null;
+  return boundedHermesDraftPrReceipt(job, {
+    status, prUrl: view.url, branch: job.branch, commitSha: view.headRefOid,
+    validation,
+  })!;
 }
 
 export function classifyHermesCommandFailure(error: unknown): NonRetryableBridgeExecutionError {
@@ -1452,7 +1517,10 @@ ${marker}
   any other local temp-file path as repository file content.
 - Before committing, inspect every changed file and verify the file content is
   the intended final content, not a temp-file path or command argument.
-- Return only a JSON object. No markdown, no prose, no code fences.
+- Factory's executor observes GitHub and creates the execution receipt. Your
+  final text is not an authoritative completion or artifact receipt.
+- Return the validation report below when available. Missing or malformed
+  validation remains unavailable; it is never inferred from a prose summary.
 - Report validation.local_commands as exactly one successful entry for each
   verifier_policy.required_local_commands item, using exact command text, and
   report the secret check once. Keep extra ad hoc checks out of
@@ -1462,7 +1530,7 @@ ${marker}
 Context JSON:
 ${JSON.stringify(context, null, 2)}
 
-Required JSON response:
+Validation report (executor-observed artifact identity takes precedence):
 {
   "status": "created or reused",
   "pr_url": "https://github.com/OWNER/REPO/pull/NUMBER",
@@ -1473,44 +1541,6 @@ Required JSON response:
     "secret_check": {"command": "exact secret-check command", "exit_code": 0}
   }
 }`;
-}
-
-function normalizeHermesResult(job: BridgeJob, stdout: string): HermesDraftPrResult {
-  const payload = extractJsonObject(stdout);
-  const prUrl = stringField(payload, 'pr_url');
-  if (!prUrl || !/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(prUrl)) {
-    throw new Error('Hermes output did not include a valid GitHub PR URL');
-  }
-
-  const branch = stringField(payload, 'branch') || job.branch;
-  if (!branch) {
-    throw new Error('bridge job branch is missing');
-  }
-  if (branch !== job.branch) {
-    throw new Error(`Hermes output branch ${branch} did not match bridge branch ${job.branch}`);
-  }
-
-  const status = stringField(payload, 'status');
-  if (status !== 'created' && status !== 'reused') {
-    throw new Error('Hermes output status must be created or reused');
-  }
-  const repair = factoryRepairContext(job);
-  if (repair && prUrl !== repair.prUrl) {
-    throw new Error(`Hermes repair output PR URL ${prUrl} did not match ${repair.prUrl}`);
-  }
-  if (repair && status !== 'reused') {
-    throw new Error('Hermes repair output status must be reused');
-  }
-
-  const result = boundedHermesDraftPrReceipt(job, {
-    status,
-    prUrl,
-    commitSha: nullableStringField(payload, 'commit_sha'),
-    branch,
-    validation: payload.validation,
-  });
-  if (!result) throw new Error('Hermes output did not match the bounded Factory receipt schema');
-  return result;
 }
 
 function extractJsonObject(stdout: string): JsonObject {
@@ -1571,17 +1601,6 @@ function requiredPayloadString(job: BridgeJob, key: string): string {
 
 function optionalPayloadString(job: BridgeJob, key: string): string | null {
   return jsonValueToString(job.payload[key]);
-}
-
-function stringField(payload: JsonObject, key: string): string | null {
-  return jsonValueToString(payload[key]);
-}
-
-function nullableStringField(payload: JsonObject, key: string): string | null {
-  if (payload[key] === null || payload[key] === undefined) {
-    return null;
-  }
-  return stringField(payload, key);
 }
 
 function jsonValueToString(value: JsonValue | undefined): string | null {

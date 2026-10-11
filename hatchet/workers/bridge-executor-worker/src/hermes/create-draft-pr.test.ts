@@ -22,6 +22,7 @@ import {
   NonRetryableBridgeExecutionError,
   preflightHermesCreateDraftPr,
   resumeHermesDraftPrResult,
+  receiptFromGitHubObservation,
   runHermesCreateDraftPrViaCommand,
   sanitizeText,
   selectedReceiptEnvironment,
@@ -44,7 +45,7 @@ test('executor uses its runtime model snapshot, preserves correlation, and toler
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-runtime-model-'));
   const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS',
     'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
-    'FACTORY_MODEL_FIXTURE', 'FACTORY_MODEL_ARGS'] as const;
+    'FACTORY_MODEL_FIXTURE', 'FACTORY_MODEL_ARGS', 'FACTORY_RESULT_FIXTURE'] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' };
   const job = greenJob();
@@ -53,7 +54,9 @@ test('executor uses its runtime model snapshot, preserves correlation, and toler
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('python3')) process.stdout.write(process.env.FACTORY_MODEL_FIXTURE);
+if (args.includes('factory-inspect-github-head')) process.stdout.write(JSON.stringify({...${JSON.stringify(headObservation())},pull_requests:require('node:fs').existsSync(process.env.FACTORY_MODEL_ARGS)?${JSON.stringify(headObservation().pull_requests)}:[]}));
+else if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(receiptView(job)))});
+else if (args.includes('python3')) process.stdout.write(process.env.FACTORY_MODEL_FIXTURE);
 else if (args.includes('user.name')) process.stdout.write('factory-hermes[bot]');
 else if (args.includes('user.email')) process.stdout.write('123+factory-hermes[bot]@users.noreply.github.com');
 else if (args.includes('gh')) process.stdout.write('Driftward-LLC/capykit');
@@ -62,8 +65,7 @@ else process.exit(1);
     const command = path.join(directory, 'hermes');
     writeFileSync(command, `#!${process.execPath}
 require('node:fs').writeFileSync(process.env.FACTORY_MODEL_ARGS, JSON.stringify({args:process.argv.slice(2),attempt:process.env.FACTORY_OBSERVABILITY_ATTEMPT_ID,job:process.env.FACTORY_OBSERVABILITY_JOB_ID}));
-process.stdout.write(${JSON.stringify(JSON.stringify({ status: 'created', pr_url: greenResult().prUrl,
-  branch: greenResult().branch, commit_sha: greenResult().commitSha, validation: greenResult().validation }))});
+process.stdout.write(process.env.FACTORY_RESULT_FIXTURE);
 `, { mode: 0o700 });
     Object.assign(process.env, { PATH: `${directory}${path.delimiter}${previous.PATH || ''}`,
       DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', DRIFTWARD_HERMES_ALLOWED_REPOS: 'Driftward-LLC/capykit',
@@ -72,12 +74,28 @@ process.stdout.write(${JSON.stringify(JSON.stringify({ status: 'created', pr_url
       FACTORY_MODEL_ARGS: path.join(directory, 'args.json') });
     for (const fixture of [JSON.stringify(selection), 'not json', JSON.stringify({ ...selection, selected_model: 'sk-proj-FAKE_SECRET' })]) {
       process.env.FACTORY_MODEL_FIXTURE = fixture;
+      process.env.FACTORY_RESULT_FIXTURE = fixture === JSON.stringify(selection)
+        ? JSON.stringify({ status: 'created', pr_url: greenResult().prUrl, branch: greenResult().branch,
+          commit_sha: 'a'.repeat(40), validation: greenResult().validation })
+        : 'Reached the iteration limit. Work was published; here is a prose summary.';
+      rmSync(process.env.FACTORY_MODEL_ARGS!, { force: true });
       const observed: unknown[] = [];
-      const result = await runHermesCreateDraftPrViaCommand(job, command, 5000, 4096, (value) => {
+      const pending = runHermesCreateDraftPrViaCommand(job, command, 5000, 4096, (value) => {
         observed.push(value);
         throw new Error('PostHog or ledger offline');
       });
-      assert.equal(result.status, 'created');
+      if (fixture === JSON.stringify(selection)) {
+        const result = await pending;
+        assert.equal(result.status, 'created');
+        assert.equal(result.prUrl, greenResult().prUrl);
+      } else {
+        await assert.rejects(pending, (error: unknown) => {
+          assert.ok(error instanceof NonRetryableBridgeExecutionError);
+          assert.equal(error.reasonCode, 'hermes_execution_incomplete');
+          assert.equal(error.observedArtifact?.pr_url, greenResult().prUrl);
+          return true;
+        });
+      }
       const actual = JSON.parse(readFileSync(process.env.FACTORY_MODEL_ARGS!, 'utf8'));
       assert.equal(actual.attempt, '11111111-2222-4333-8444-555555555555');
       assert.equal(actual.job, job.job_id);
@@ -886,6 +904,56 @@ function greenResult(): HermesDraftPrResult {
 function greenView(overrides: Record<string, unknown> = {}) {
   return { url: 'https://github.com/Driftward-LLC/capykit/pull/61', headRefName: 'codex/eng-61-draft-pr-verification-gate', headRefOid: 'abc1234', baseRefName: 'main', isDraft: true, author: { login: 'factory-hermes[bot]' }, body: 'Refs Linear ENG-61', labels: [{ name: 'codex-authored' }, { name: 'bug' }], files: [{ path: 'tests/cli.test.ts' }], statusCheckRollup: githubChecks(['quality (ubuntu-latest)', 'factory-verification']), ...overrides };
 }
+
+function receiptView(job = greenJob()) {
+  return { ...greenView(), headRefOid: 'a'.repeat(40), state: 'OPEN', isCrossRepository: false,
+    body: `Refs Linear ENG-61\n<!-- driftward-hatchet-bridge\nbridge_job_id: ${job.job_id}\nidempotency_key: ${job.idempotency_key}\nbranch: ${job.branch}\n-->` };
+}
+
+function headObservation() {
+  const view = receiptView();
+  return { kind: 'github_branch_pr_absence_v1' as const, repository: 'Driftward-LLC/capykit', head_branch: view.headRefName,
+    branch_exists: true, pull_requests: [{ number: 61, url: view.url, headRefName: view.headRefName,
+      headRefOid: view.headRefOid, baseRefName: 'main', isDraft: true, state: 'OPEN', mergedAt: null, closedAt: null, title: null }],
+    observed_at: '2026-10-10T00:00:00Z', reason: 'ok' as const };
+}
+
+test('artifact receipts are code-owned and missing model validation never implies verification', () => {
+  const job = greenJob();
+  const after = headObservation();
+  const before = { ...after, branch_exists: false, pull_requests: [] };
+  const result = receiptFromGitHubObservation(job, before, after, receiptView());
+  assert.equal(result.status, 'created');
+  assert.equal(result.commitSha, 'a'.repeat(40));
+  assert.equal(result.validation, null);
+  assert.throws(() => verifyDraftPrEvidence(job, result, receiptView()), /local validation evidence/i);
+  assert.equal(receiptFromGitHubObservation(job, after, after, receiptView()).status, 'reused');
+  const report = { pr_url: result.prUrl, branch: result.branch, commit_sha: result.commitSha, validation: greenResult().validation };
+  assert.deepEqual(receiptFromGitHubObservation(job, before, after, receiptView(), report).validation, greenResult().validation);
+  for (const change of [{ pr_url: 'https://github.com/other/repo/pull/1' }, { branch: 'wrong' }, { commit_sha: 'b'.repeat(40) }]) {
+    assert.equal(receiptFromGitHubObservation(job, before, after, receiptView(), { ...report, ...change }).validation, null);
+  }
+});
+
+test('absence, partial publication, ambiguous artifacts, and mismatched observations cannot become success', () => {
+  const job = greenJob(), after = headObservation(), view = receiptView();
+  for (const branch_exists of [false, true]) {
+    assert.throws(() => receiptFromGitHubObservation(job, after, { ...after, branch_exists, pull_requests: [] }, null),
+      (e: unknown) => e instanceof NonRetryableBridgeExecutionError && e.reasonCode === 'hermes_execution_incomplete');
+  }
+  for (const change of [
+    { body: 'Refs Linear ENG-61' }, { body: view.body.replace('ENG-61', 'ENG-610') },
+    { url: 'https://github.com/other/repo/pull/61' }, { headRefName: 'another-branch' },
+    { headRefOid: 'b'.repeat(40) }, { state: 'CLOSED' }, { isDraft: false }, { isCrossRepository: true },
+    { baseRefName: 'release' }, { author: { login: 'unrelated-user' } },
+  ]) assert.throws(() => receiptFromGitHubObservation(job, after, after, { ...view, ...change }), /could not identify/);
+  assert.throws(() => receiptFromGitHubObservation(job, after, { ...after, pull_requests: [...after.pull_requests, ...after.pull_requests] }, view), /could not identify/);
+  assert.throws(() => receiptFromGitHubObservation(job, after, { ...after, reason: 'inspect_unavailable' }, view), /could not identify/);
+  const repair = repairJob();
+  assert.equal(receiptFromGitHubObservation(repair, after, after, view).status, 'reused');
+  repair.payload.factory_repair = { ...(repair.payload.factory_repair as object), pr_url: 'https://github.com/Driftward-LLC/capykit/pull/62' };
+  assert.throws(() => receiptFromGitHubObservation(repair, after, after, view), /could not identify/);
+});
 
 function githubChecks(names: string[]) {
   return names.map((name) => ({ name, conclusion: 'SUCCESS' }));

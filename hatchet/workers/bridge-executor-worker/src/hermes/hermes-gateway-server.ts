@@ -76,6 +76,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
   const inspectInvocation = (request: CreateDraftPullRequestRequest, cancel: boolean) => {
     const status = invocations().status(parseBridgeJob(request), cancel);
     return { ...status, receipt: status.receipt ? draftPrResponse(status.receipt) : undefined,
+      outcomeJson: status.outcome ? JSON.stringify(status.outcome) : '',
       executionLeaseJson: status.lease ? JSON.stringify(status.lease) : '' };
   };
   const server = new grpc.Server();
@@ -295,7 +296,7 @@ function parsePrReference(repository: string, reference: string): { number: numb
 
 function identityResponse(identity: HermesIdentityCheck): Record<string, unknown> {
   return {
-    invocationProtocolVersion: 1,
+    invocationProtocolVersion: 2,
     githubLogin: identity.githubLogin,
     gitAuthorName: identity.gitAuthorName,
     gitAuthorEmail: identity.gitAuthorEmail,

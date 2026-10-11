@@ -109,19 +109,21 @@ test('Hermes gRPC client speaks over a Unix domain socket', async () => {
   });
 });
 
-test('identity preflight rejects a gateway without durable invocation support', async () => {
-  const gateway = mockGateway();
-  gateway.checkIdentity = (_call: MockCall, callback: MockCallback) => callback(null, {
-    githubLogin: 'factory-hermes[bot]', gitAuthorName: 'factory-hermes[bot]',
-    gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com', accessibleRepo: 'Driftward-LLC/capykit',
-  });
-  await withGateway(async (target) => {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-    await assert.rejects(checkHermesIdentityViaGrpc({ repo: 'Driftward-LLC/capykit', expectedGithubLogin: 'factory-hermes[bot]',
-      expectedGitAuthorName: 'factory-hermes[bot]', expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
-      forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeoutMs: 5000 }),
-    (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'hermes_grpc_invocation_protocol_unsupported' && error.failureStage === 'preflight');
-  }, gateway);
+test('identity preflight rejects missing and legacy invocation protocols before execution', async () => {
+  for (const invocationProtocolVersion of [undefined, 1]) {
+    const gateway = mockGateway();
+    gateway.checkIdentity = (_call: MockCall, callback: MockCallback) => callback(null, {
+      invocationProtocolVersion, githubLogin: 'factory-hermes[bot]', gitAuthorName: 'factory-hermes[bot]',
+      gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com', accessibleRepo: 'Driftward-LLC/capykit',
+    });
+    await withGateway(async (target) => {
+      process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+      await assert.rejects(checkHermesIdentityViaGrpc({ repo: 'Driftward-LLC/capykit', expectedGithubLogin: 'factory-hermes[bot]',
+        expectedGitAuthorName: 'factory-hermes[bot]', expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
+        forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeoutMs: 5000 }),
+      (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'hermes_grpc_invocation_protocol_unsupported' && error.failureStage === 'preflight');
+    }, gateway);
+  }
 });
 
 test('Hermes gRPC TCP targets fail closed until explicitly authorized', () => {
@@ -390,7 +392,7 @@ function mockGateway(): grpc.UntypedServiceImplementation {
     checkIdentity: (call: MockCall, callback: MockCallback) => {
       assert.equal(call.request.repo, 'Driftward-LLC/capykit');
       callback(null, {
-        invocationProtocolVersion: 1,
+        invocationProtocolVersion: 2,
         githubLogin: 'factory-hermes[bot]',
         gitAuthorName: 'factory-hermes[bot]',
         gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',

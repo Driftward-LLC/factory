@@ -239,6 +239,8 @@ function recoveryGuidance(state) {
   switch (state) {
     case 'running': return 'The executor reported that work was still running. Handoff waits for its result; cancellation does not undo changes already made.';
     case 'completed': return 'An execution receipt was found. Factory must accept the original receipt before handoff is safe.';
+    case 'incomplete': return 'The executor recorded incomplete work. Inspect any saved work and external effects before recovery; manual editing and another attempt remain blocked.';
+    case 'failed': return 'The executor recorded a failure. This does not confirm that child processes stopped or external writes settled; operator inspection is required before handoff.';
     case 'not_found': return 'No durable executor receipt was found. Older attempts require operator inspection of execution and PR evidence; starting another attempt is blocked.';
     case 'outcome_unknown': return 'The executor reserved this work but has no settled result. Operator recovery is required; lease expiry does not prove it stopped.';
     case 'unavailable': return 'The executor could not be reached. Factory will retry receipt lookup through reconciliation. Handoff remains blocked.';

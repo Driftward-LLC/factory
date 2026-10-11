@@ -48,6 +48,7 @@ message InvocationStatus {
   bool cancellation_acknowledged = 3;
   DraftPullRequestResult receipt = 4;
   string execution_lease_json = 5;
+  string outcome_json = 6;
 }
 
 message DraftPullRequestResult {

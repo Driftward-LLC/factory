@@ -19,6 +19,7 @@ export async function recoverExecutionReceipt(
   }
   await bridge.recordExecutionReceiptObservation(job.job_id, {
     state: status.state, cancellation_requested: status.cancellationRequested, cancellation_acknowledged: status.cancellationAcknowledged,
+    ...(status.outcome ? { outcome: status.outcome } : {}),
   });
   if (status.state !== 'completed' || !status.receipt || !status.lease) return null;
   const receipt = status.receipt;

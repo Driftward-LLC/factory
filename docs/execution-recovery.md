@@ -6,6 +6,32 @@ Repeated create requests cannot invoke Hermes again for that job. A completed
 request returns its original receipt only when its intent and execution fence
 match. A reservation without a receipt remains an unknown outcome after restart.
 
+The executor now creates receipts independently of the agent's final wording.
+After a normal command exit it observes the exact repository/branch in GitHub
+and binds one open draft PR to its head SHA, base, bot author, Linear reference,
+and bridge marker (or the exact prior PR for repairs). A prose response cannot
+invent an artifact or hide a published one. The optional agent validation report
+is still **executor-reported**, not independent test evidence: it must bind to
+the observed URL, branch and full head SHA, and the existing verification policy
+still gates readiness. Missing validation is partial delivery, not success.
+
+If execution throws, exits without a PR, or publishes without complete validation,
+the gateway durably writes a bounded `factory-executor-outcome-v1` receipt before
+replying. It records `incomplete` or `failed`, the job identity, finish time,
+allowlisted reason, observed process exit/signal/timeout fields, and any bounded
+artifact observed by the adapter. It never stores model prose, raw errors,
+credentials or transcript data. Unknown process details stay null. In particular,
+this CLI adapter cannot mechanically distinguish a turn-budget stop from other
+normal exits without a deliverable; it does not infer that from prose.
+
+Terminal failure receipts always retain `effect_outcome=unknown` and
+`containment=unconfirmed`. A stopped wrapper does not prove its remote descendants
+stopped or that every external write settled. Cancellation remains unacknowledged,
+the original effect fence remains held, and retry/manual editing remain guarded.
+Reconciliation records the terminal receipt once and stops repeatedly polling
+for a success receipt. An abrupt gateway kill before either receipt is written
+still leaves `outcome_unknown`. No old receipt is manufactured retroactively.
+
 New reservations store fingerprint version 2. Their identity includes the job,
 idempotency key, action, branch and complete payload **except** the four top-level
 bridge correlation fields: `source_event_key`, `source_delivery_id`,
@@ -68,15 +94,15 @@ upgrading the gateway. Back it up with the quiesced executor and Factory state;
 do not restore an older journal against newer bridge state or delete reservations
 as a way to retry. There is no automatic retention cleanup in this version.
 
-This fingerprint update is a gateway code change, not a journal migration or a
-new gRPC protocol. It needs a separately reviewed gateway rollout; upgrading only
+This receipt update requires a coordinated gateway/worker/bridge rollout, not a
+journal migration. It needs a separately reviewed gateway rollout; upgrading only
 the Factory worker image does not update a separately installed host gateway.
 Older gateway code cannot read version-two hashes (the version is included in
 the hash). Retain compatible gateway code and all reservations when rolling back
 workers; never remove or rewrite journal entries to make a downgrade work.
 
 Deploy the gateway before enabling the updated worker. The identity preflight
-requires invocation protocol version 1, so an old gateway blocks new execution
+requires invocation protocol version 2, so an old gateway blocks new execution
 before the authorization boundary. Upgrade bridge and workers together for
 the recovery endpoints. Use the existing reviewed release/deployment procedure;
 this source change does not deploy or activate execution. Rollbacks must retain
@@ -93,6 +119,8 @@ Tests use disposable journals, SQLite databases, gRPC sockets and browser data:
 - Receipt observations cannot release leases; wrong fences fail settlement.
 - Recovery wakes coalesce, survive delivery retries, and do not create attempts.
 - Held work settles to manual control without entering verification.
+- Prose output and missing validation produce durable partial outcomes, not fabricated success.
+- Failure receipts survive restart, carry bounded artifact observations, and stop success polling without releasing fences.
 
 Run the worker, bridge, console, and catalog checks documented in `AGENTS.md`.
 Gateway/process loss after an external write but before receipt persistence is

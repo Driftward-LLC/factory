@@ -39,6 +39,7 @@ export type ExecutionFailureStage =
   | 'verification_recovery';
 
 export type ExecutionFailureEvidence = {
+  observedArtifact?: { branch: string; pr_url: string | null; commit_sha: string | null } | null;
   failureDomain?: ExecutionFailureDomain;
   failureStage?: ExecutionFailureStage;
   retryable?: boolean | null;
@@ -50,6 +51,7 @@ export type ExecutionFailureEvidence = {
 };
 
 export class NonRetryableBridgeExecutionError extends Error {
+  readonly observedArtifact: ExecutionFailureEvidence['observedArtifact'];
   readonly reasonCode: string;
   readonly failureDomain: ExecutionFailureDomain;
   readonly failureStage: ExecutionFailureStage;
@@ -63,6 +65,7 @@ export class NonRetryableBridgeExecutionError extends Error {
   constructor(reasonCode: string, message: string, evidence: ExecutionFailureEvidence = {}) {
     super(message);
     this.name = 'NonRetryableBridgeExecutionError';
+    this.observedArtifact = evidence.observedArtifact ?? null;
     this.reasonCode = reasonCode;
     this.failureDomain = evidence.failureDomain || 'unknown';
     this.failureStage = evidence.failureStage || 'unknown';
