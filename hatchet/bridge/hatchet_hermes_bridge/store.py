@@ -1745,6 +1745,13 @@ def _execution_receipt_recovery_eligible(conn: sqlite3.Connection, attempt: dict
 def _enqueue_execution_receipt_recovery(conn: sqlite3.Connection, attempt: dict[str, Any], job: dict[str, Any]) -> bool:
     if not _execution_receipt_recovery_eligible(conn, attempt) or job["state"] != "running":
         return False
+    if conn.execute(
+        "SELECT 1 FROM factory_attempt_events WHERE attempt_id=? AND event_type='execution_receipt_observed' "
+        "AND json_extract(details_json,'$.state') IN ('incomplete','failed')", (attempt["attempt_id"],),
+    ).fetchone():
+        # The executor durably finished without a deliverable. Keep the effect
+        # fence, but stop polling for a success receipt that cannot appear.
+        return False
     return _enqueue_factory_attempt_resume(conn, attempt, job, preserve_pending=True,
         event_type="execution_receipt_recovery_queued", receipt_recovery=True)
 
@@ -1766,15 +1773,53 @@ def enqueue_execution_receipt_recovery(conn: sqlite3.Connection, ref: str, *, st
 
 
 def record_execution_receipt_observation(conn: sqlite3.Connection, ref: str, observation: Any) -> None:
-    if (not isinstance(observation, dict) or set(observation) != {"state", "cancellation_requested", "cancellation_acknowledged"}
-        or not isinstance(observation["state"], str) or observation["state"] not in {"not_found", "running", "outcome_unknown", "completed", "unavailable"}
+    terminal = isinstance(observation, dict) and observation.get("state") in ("incomplete", "failed")
+    fields = {"state", "cancellation_requested", "cancellation_acknowledged"} | ({"outcome"} if terminal else set())
+    if (not isinstance(observation, dict) or set(observation) != fields
+        or not isinstance(observation["state"], str) or observation["state"] not in {"not_found", "running", "outcome_unknown", "completed", "unavailable", "incomplete", "failed"}
         or any(type(observation[key]) is not bool for key in ("cancellation_requested", "cancellation_acknowledged"))
         or (observation["cancellation_acknowledged"] and (observation["state"] != "completed" or not observation["cancellation_requested"]))):
         raise BridgeValidationError("invalid execution receipt observation")
     with conn:
         job = get_job(conn, ref)
         attempt = get_factory_attempt_for_job(conn, job["job_id"])
+        if terminal:
+            outcome = observation["outcome"]
+            outcome_fields = {"schema", "job_id", "state", "reason_code", "finished_at", "process_exit_code",
+                              "process_signal", "timed_out", "buffer_exceeded", "effect_outcome", "containment", "artifact"}
+            if (not isinstance(outcome, dict) or set(outcome) != outcome_fields
+                or outcome["schema"] != "factory-executor-outcome-v1" or outcome["job_id"] != job["job_id"]
+                or outcome["state"] != observation["state"] or not isinstance(outcome["reason_code"], str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,119}", outcome["reason_code"])
+                or (outcome["state"] == "incomplete") != (outcome["reason_code"] == "hermes_execution_incomplete")
+                or outcome["effect_outcome"] != "unknown" or outcome["containment"] != "unconfirmed"
+                or not isinstance(outcome["finished_at"], str)
+                or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", outcome["finished_at"])
+                or sanitize_detail(outcome) != outcome):
+                raise BridgeValidationError("invalid executor outcome receipt")
+            try:
+                _canonical_time(outcome["finished_at"])
+            except ValueError as exc:
+                raise BridgeValidationError("invalid executor outcome timestamp") from exc
+            _validate_execution_failure_boundary_fields(outcome)
+            artifact = outcome["artifact"]
+            if artifact is not None:
+                if (not isinstance(artifact, dict) or set(artifact) != {"branch", "pr_url", "commit_sha"}
+                    or artifact["branch"] != job["branch"]
+                    or (artifact["pr_url"] is not None and (not isinstance(artifact["pr_url"], str)
+                        or not re.fullmatch(r"https://github\.com/" + re.escape(job["payload"]["repo"]) + r"/pull/[1-9][0-9]*", artifact["pr_url"])))
+                    or (artifact["commit_sha"] is not None and (not isinstance(artifact["commit_sha"], str)
+                        or not re.fullmatch(r"[0-9a-f]{40}", artifact["commit_sha"])))):
+                    raise BridgeValidationError("invalid executor artifact observation")
         if not attempt or not _execution_receipt_recovery_eligible(conn, attempt):
+            return
+        prior = conn.execute(
+            "SELECT details_json FROM factory_attempt_events WHERE attempt_id=? AND event_type='execution_receipt_observed' "
+            "ORDER BY created_at DESC,event_id DESC LIMIT 1", (attempt["attempt_id"],),
+        ).fetchone()
+        if prior and (json.loads(prior[0]) == observation
+                      or (not terminal and json.loads(prior[0]).get("state") in ("incomplete", "failed")
+                          and observation["state"] != "completed")):
             return
         # Observation alone never releases a fence or marks manual editing safe.
         _append_factory_attempt_event(conn, attempt["attempt_id"], "execution_receipt_observed", observation)

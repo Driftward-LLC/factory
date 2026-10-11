@@ -73,6 +73,70 @@ class InterruptedResolutionTests(unittest.TestCase):
         self.absence = {"kind": "github_branch_pr_absence_v1", "repository": "Driftward-LLC/capykit",
                         "head_branch": self.job["branch"], "branch_exists": False, "pull_requests": [], "observed_at": store.utc_now()}
 
+    def partial_pr(self, **artifact_changes):
+        artifact = {"branch": self.job["branch"], "pr_url": self.url, "commit_sha": "a" * 40, **artifact_changes}
+        store.record_execution_receipt_observation(self.conn, self.job["job_id"], {
+            "state": "incomplete", "cancellation_requested": True, "cancellation_acknowledged": False,
+            "outcome": {"schema": "factory-executor-outcome-v1", "job_id": self.job["job_id"], "state": "incomplete",
+                "reason_code": "hermes_execution_incomplete", "finished_at": "2026-10-10T00:00:00.000Z",
+                "process_exit_code": 0, "process_signal": None, "timed_out": False, "buffer_exceeded": False,
+                "effect_outcome": "unknown", "containment": "unconfirmed", "artifact": artifact}})
+        return artifact
+
+    def test_partial_create_pr_can_be_inspected_and_resolved_without_claiming_success(self):
+        self.no_prior_pr()
+        self.absence = None
+        artifact = self.partial_pr()
+        self.assertTrue(recovery.inspect(self.conn, self.aid, actor=ACTOR)["created"])
+        self.assertEqual([row[0] for row in self.conn.execute("SELECT requested_action FROM bridge_jobs WHERE job_id!=?",
+                         (self.job["job_id"],))], ["inspect_draft_pr_state"])
+        with self.assertRaises(store.BridgeConflict): self.preview()
+        self.inspection()
+        self.assertEqual(self.preview()["context"]["artifact_target"], artifact)
+        self.assertIsNone(store.get_factory_attempt(self.conn, self.aid)["prior_pr_url"])
+        self.assertEqual(store.get_factory_issue_control(self.conn, "ENG-600")["mode"], "handoff_pending")
+        self.test_preview_readonly_and_resolution_preserves_unknown_outcome()
+        record = json.loads(self.conn.execute("SELECT evidence_json FROM factory_recovery_requests").fetchone()[0])
+        self.assertEqual(record["inspection"]["result"]["url"], self.url)
+
+    def test_partial_pr_still_requires_containment_freshness_and_exact_head(self):
+        self.no_prior_pr()
+        absence = self.absence
+        self.absence = None
+        self.partial_pr()
+        self.inspection()
+        with self.assertRaises(store.BridgeValidationError): self.preview(absence_evidence=absence)
+        self.test_incomplete_stale_unbound_and_nonroot_evidence_rejected()
+        self.test_inspection_must_be_fresh_after_containment_and_match_branch()
+        self.inspection(head_sha="d" * 40)
+        with self.assertRaisesRegex(store.BridgeConflict, "branch and head"): self.preview()
+        self.inspection()
+        command = self.command()
+        self.partial_pr(commit_sha="d" * 40)
+        with self.assertRaisesRegex(store.BridgeConflict, "observations conflict"):
+            recovery.resolve(self.conn, self.aid, **command)
+
+    def test_partial_pr_rejects_conflicting_prior_pr_and_fences_late_writes(self):
+        self.partial_pr(pr_url="https://github.com/Driftward-LLC/capykit/pull/601")
+        with self.assertRaisesRegex(store.BridgeConflict, "observations conflict"):
+            recovery.inspect(self.conn, self.aid, actor=ACTOR)
+
+    def test_partial_pr_late_commits_and_replay_remain_fenced(self):
+        self.no_prior_pr()
+        self.absence = None
+        self.partial_pr()
+        self.inspection()
+        self.test_late_commit_heartbeat_replay_and_intake_remain_fenced()
+
+    def test_partial_pr_cannot_override_a_completed_receipt(self):
+        self.no_prior_pr()
+        self.absence = None
+        self.partial_pr()
+        self.inspection()
+        store.record_execution_receipt_observation(self.conn, self.job["job_id"], {
+            "state": "completed", "cancellation_requested": True, "cancellation_acknowledged": True})
+        with self.assertRaisesRegex(store.BridgeConflict, "receipt recovery"): self.preview()
+
     def test_no_pr_inspect_uses_ledger_identity_and_does_not_queue_work(self):
         self.no_prior_pr()
         before = self.conn.total_changes

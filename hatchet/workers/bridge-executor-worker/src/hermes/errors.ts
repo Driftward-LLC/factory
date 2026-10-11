@@ -39,6 +39,7 @@ export type ExecutionFailureStage =
   | 'verification_recovery';
 
 export type ExecutionFailureEvidence = {
+  observedArtifact?: { branch: string; pr_url: string | null; commit_sha: string | null } | null;
   failureDomain?: ExecutionFailureDomain;
   failureStage?: ExecutionFailureStage;
   retryable?: boolean | null;
@@ -50,6 +51,7 @@ export type ExecutionFailureEvidence = {
 };
 
 export class NonRetryableBridgeExecutionError extends Error {
+  readonly observedArtifact: ExecutionFailureEvidence['observedArtifact'];
   readonly reasonCode: string;
   readonly failureDomain: ExecutionFailureDomain;
   readonly failureStage: ExecutionFailureStage;
@@ -63,6 +65,7 @@ export class NonRetryableBridgeExecutionError extends Error {
   constructor(reasonCode: string, message: string, evidence: ExecutionFailureEvidence = {}) {
     super(message);
     this.name = 'NonRetryableBridgeExecutionError';
+    this.observedArtifact = evidence.observedArtifact ?? null;
     this.reasonCode = reasonCode;
     this.failureDomain = evidence.failureDomain || 'unknown';
     this.failureStage = evidence.failureStage || 'unknown';
@@ -82,5 +85,13 @@ export class NonRetryableBridgeExecutionError extends Error {
     this.bufferExceeded = evidence.bufferExceeded === null || typeof evidence.bufferExceeded === 'boolean'
       ? evidence.bufferExceeded
       : null;
+  }
+}
+
+/** Retry only GitHub observation; never grant permission to repeat execution. */
+export class ArtifactObservationUnavailable extends NonRetryableBridgeExecutionError {
+  constructor() {
+    super('hermes_artifact_observation_failed', 'GitHub observation is unavailable; inspect the saved invocation again',
+      { failureDomain: 'github', failureStage: 'result_parse', retryable: false, processExitCode: 0 });
   }
 }
