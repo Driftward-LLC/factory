@@ -98,16 +98,16 @@ export default function Analytics({ report, days, onDaysChange, error }) {
             </dl>
           </section>
           <section className="panel" aria-labelledby="analytics-recovery-title">
-            <h2 id="analytics-recovery-title">Attempts and repairs</h2>
+            <h2 id="analytics-recovery-title">Attempt outcomes</h2>
             <p className="muted">One work item can have several attempts.</p>
             <div className="table-wrap" role="region" aria-label="Attempt outcomes by kind" tabIndex={0}>
               <table><thead><tr><th scope="col">Attempt kind</th><th scope="col">Attempts</th><th scope="col">Verified (recorded)</th></tr></thead>
                 <tbody>{[
-                  ['initial', 'Initial'], ['repair', 'Repair'], ['retry', 'Retry'], ['absence_retry', 'Absence retry'], ['unknown', 'Unknown'],
+                  ['initial', 'Initial'], ['repair', 'Repair'], ['revision', 'Revision'], ['retry', 'Retry'], ['absence_retry', 'Absence retry'], ['unknown', 'Unknown'],
                 ].map(([key, title]) => <tr key={key}><td>{title}</td><td>{count(recovery.by_attempt_kind?.[key]?.attempts)}</td><td>{count(recovery.by_attempt_kind?.[key]?.verified)}</td></tr>)}</tbody>
               </table>
             </div>
-            <p className="muted">Repair budgets exhausted: {count(recovery.repair_budgets_exhausted)}. Human rework effort is not measured yet.</p>
+            <p className="muted">Revision attempts follow operator feedback on an existing PR; repair attempts respond to verification failure. Repair budgets exhausted: {count(recovery.repair_budgets_exhausted)}. Human rework effort is not measured yet.</p>
           </section>
           <section className="panel" aria-labelledby="analytics-evidence-title">
             <h2 id="analytics-evidence-title">Evidence coverage</h2>

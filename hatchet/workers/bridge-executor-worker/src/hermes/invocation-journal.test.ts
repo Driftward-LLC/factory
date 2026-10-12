@@ -26,6 +26,17 @@ const updatedJob = { ...correlatedJob, payload: { ...correlatedJob.payload,
   source_event_keys: ['event-1', 'event-2'], source_delivery_ids: ['delivery-1', 'delivery-2'],
 } };
 
+test('completed revision receipt replays without rechecking its former approved head or invoking again', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-revision-replay-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const revision: BridgeJob = { ...job, requested_action: 'repair_draft_pr', payload: { ...job.payload,
+    factory_repair: { pr_url: receipt.prUrl },
+    factory_revision: { reviewed_head_sha: 'a'.repeat(40), feedback: 'Fix duplicate grants' } } };
+  const result = { ...receipt, status: 'reused' as const, summary: 'draft_pr_reused' as const, commitSha: 'b'.repeat(40) };
+  await new InvocationJournal(directory).execute(revision, lease, async () => result);
+  assert.deepEqual(await new InvocationJournal(directory).execute(revision, lease, async () => assert.fail('must not inspect changed head or run agent')), result);
+});
+
 test('correlation updates preserve running, interrupted and completed invocation identity without replay', async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-invocation-correlation-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

@@ -8,10 +8,13 @@ const { join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { chromium } = require('playwright');
 const root = resolve(__dirname, '..');
+const evidenceRoot = process.env.FACTORY_UI_EVIDENCE_DIR || tmpdir();
 const stamp = new Date().toISOString();
 const controls = new Map();
 const confirms = [];
 const previews = [];
+const inspections = [];
+let revisionBlocked = false;
 let conflict = false;
 let ambiguous = false;
 let expirePreview = false;
@@ -25,7 +28,7 @@ function control(issue) {
     schema: 'factory-console-issue-control-v1', work_item_key: issue, status: 'factory',
     version: 0, safe_to_edit: false, updated_at: stamp, actor: null, reason: null,
     pending_attempts: [], history: [], actions_enabled: true,
-    available_actions: [{ action: 'takeover', label: 'Take over manually' }],
+    available_actions: [{ action: issue === 'ENG-906' ? 'revision' : 'takeover', label: issue === 'ENG-906' ? 'Revise existing draft PR' : 'Take over manually' }],
   });
   return { ...controls.get(issue), actions_enabled: !readOnly };
 }
@@ -47,7 +50,10 @@ const server = createServer(async (req, res) => {
   }
   const match = path.match(/^\/api\/issues\/(ENG-\d+)\/control(?:\/(preview|confirm))?$/);
   let value;
-  if (match) {
+  if (path.endsWith('/revision/inspect')) {
+    inspections.push(path); revisionBlocked = false;
+    value = { created: true, reason: 'inspection_queued', attempt_id: 'fixture-source-attempt' };
+  } else if (match) {
     const [, issue, action] = match;
     if (!action && failControl) { res.statusCode = 503; res.end('{}'); return; }
     value = control(issue);
@@ -55,11 +61,13 @@ const server = createServer(async (req, res) => {
       previews.push(body);
       if (previewError) { res.statusCode = 400; res.end(JSON.stringify({ error: previewError })); return; }
       if (delayPreview) { delayPreview(); delayPreview = null; await new Promise((done) => { releasePreview = done; }); }
-      value = { eligible: true, work_item_key: issue, action: body.action, intent: body.intent, control: value,
+      value = { eligible: body.action !== 'revision' || !revisionBlocked, work_item_key: issue, action: body.action, intent: body.intent, control: value,
         snapshot_digest: String(value.version).padStart(64, 'a'), preview_token: 'test-preview-token',
         expires_at: (Date.now() + (expirePreview ? 500 : 300000)) / 1000,
-        effect_summary: 'Test data: fence future execution and request cancellation; do not edit until confirmed safe.',
-        artifact: { pr_url: 'javascript:alert(1)', branch: 'factory/fixture', head_sha: 'a'.repeat(40) } };
+        effect_summary: body.action === 'revision' ? 'Test data: reserve one new immutable revision attempt on the same draft PR and branch at this commit. Earlier attempt history is preserved.' : 'Test data: fence future execution and request cancellation; do not edit until confirmed safe.',
+        artifact: { pr_url: body.action === 'revision' ? 'https://github.com/example/project/pull/12' : 'javascript:alert(1)', repository: 'example/project', branch: 'factory/fixture', head_sha: 'a'.repeat(40) },
+        revision: body.revision && { ...body.revision, reviewed_head_sha: 'a'.repeat(40), source_attempt_id: 'fixture-source-attempt', source_job_id: 'fixture-source-job' },
+        blockers: body.action === 'revision' && revisionBlocked ? ['A fresh PR inspection is required. Request a PR observation, then preview again.'] : [] };
     } else if (action === 'confirm') {
       confirms.push(body);
       assert.equal(body.preview_token, 'test-preview-token');
@@ -75,7 +83,16 @@ const server = createServer(async (req, res) => {
   } else if (path === '/api/overview') {
     value = { generated_at: stamp, active_attempts: [], recent_attempts: [], status_counts: {} };
   } else if (path.startsWith('/api/lifecycle/')) {
-    value = { work_item_key: path.split('/').pop(), attempts: [], timeline: [] };
+    const issue = path.split('/').pop();
+    value = { work_item_key: issue, attempts: issue === 'ENG-906' ? [
+      ...(!control(issue).available_actions.length ? [
+      { attempt: { work_item_key: issue, attempt_id: 'fixture-revision-attempt', prior_attempt_id: 'fixture-source-attempt', generation: 2, status: 'accepted', mode: 'real' }, attempt_kind: 'revision',
+        job: { job_id: 'fixture-revision-job', branch: 'factory/fixture', pr_url: 'https://github.com/example/project/pull/12', payload: { repo: 'example/project' } },
+        revision: { ...confirms.filter((body) => body.action === 'revision').at(-1).revision, source_attempt_id: 'fixture-source-attempt', reviewed_head_sha: 'a'.repeat(40), approved_by: 'authenticated-operator@example.test' } },
+      ] : []),
+      { attempt: { work_item_key: issue, attempt_id: 'fixture-source-attempt', generation: 1, status: 'verified_ready', mode: 'real', created_at: stamp, updated_at: stamp }, attempt_kind: 'initial',
+        job: { job_id: 'fixture-source-job', branch: 'factory/fixture', commit_sha: 'a'.repeat(40), pr_url: 'https://github.com/example/project/pull/12', payload: { repo: 'example/project' } } },
+    ] : [], timeline: [] };
   } else { res.statusCode = 404; value = {}; }
   res.end(JSON.stringify(value));
 });
@@ -207,11 +224,79 @@ async function main() {
     await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+
+    // Revision uses the same approval fencing and keeps optional attestations separate from proof.
+    await open('ENG-906');
+    const feedback = panel.getByLabel('Revision feedback');
+    const revisionPreview = panel.getByRole('button', { name: 'Preview revision', exact: true });
+    const revisionConfirm = panel.getByRole('button', { name: 'Confirm revision attempt' });
+    assert.equal(await revisionPreview.isDisabled(), true);
+    await feedback.fill('Apply review and approved design feedback. <script>plain text</script>');
+    revisionBlocked = true;
+    await revisionPreview.click();
+    await panel.getByText('This action is blocked. No control change has been made.').waitFor();
+    assert.equal(await revisionConfirm.count(), 0);
+    const inspectionCount = inspections.length;
+    await panel.getByRole('button', { name: 'Refresh control' }).click();
+    assert.equal(inspections.length, inspectionCount, 'ordinary refresh does not request a PR observation');
+    await panel.getByRole('button', { name: 'Refresh PR observation' }).click();
+    await panel.getByText(/PR observation requested/).waitFor();
+    assert.equal(inspections.length, inspectionCount + 1);
+    previewError = 'revision_draft_pr_inspection_pending'; await revisionPreview.click();
+    await panel.getByText(/A fresh PR inspection is required/).first().waitFor();
+    assert.equal(await panel.getByRole('button', { name: 'Refresh PR observation' }).isEnabled(), true);
+    previewError = ''; await panel.getByRole('button', { name: 'Refresh PR observation' }).click();
+    await panel.getByText(/PR observation requested/).waitFor();
+    await revisionPreview.focus(); await page.keyboard.press('Enter'); await revisionConfirm.waitFor();
+    assert.equal(await panel.locator('h4').evaluate((el) => el === document.activeElement), true);
+    assert.equal(previews.at(-1).revision.reviewed_head_sha, undefined, 'operator does not supply a trusted commit');
+    assert.match(await panel.locator('.control-preview').textContent(), /fixture-source-attempt/);
+    assert.match(await panel.locator('.control-preview').textContent(), /operator attestation/);
+    await panel.getByLabel('Review reference (optional)').fill('https://github.com/example/project/pull/12#discussion_r1');
+    assert.equal(await revisionConfirm.count(), 0, 'editing reference revokes approval');
+    await revisionPreview.click(); await revisionConfirm.waitFor();
+    for (const width of [320, 390, 700, 850, 1280]) {
+      await page.setViewportSize({ width, height: 1080 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Revision overflow at ' + width);
+    }
+    await page.setViewportSize({ width: 1280, height: 960 });
+    await page.screenshot({ path: join(evidenceRoot, 'factory-revision-preview-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(evidenceRoot, 'factory-revision-preview-mobile.png'), fullPage: true });
+    await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+    conflict = true; await revisionConfirm.click();
+    await panel.getByText(/The issue changed/).waitFor();
+    assert.equal(await revisionConfirm.count(), 0);
+    conflict = false; await panel.getByRole('button', { name: 'Refresh control' }).click();
+    await revisionPreview.click(); await revisionConfirm.waitFor();
+    expirePreview = true;
+    await panel.getByRole('button', { name: 'Dismiss preview' }).click();
+    await revisionPreview.click(); await panel.getByText(/The preview expired/).waitFor();
+    expirePreview = false;
+    await revisionPreview.click(); await revisionConfirm.waitFor();
+    ambiguous = true; await revisionConfirm.evaluate((el) => { el.click(); el.click(); });
+    await panel.getByRole('button', { name: 'Check previous request' }).waitFor();
+    const previousRevision = confirms.at(-1);
+    await page.locator('#close-issue').click();
+    await page.goBack();
+    await panel.getByRole('button', { name: 'Check previous request' }).waitFor();
+    await page.reload();
+    await panel.getByRole('button', { name: 'Check previous request' }).click();
+    await panel.getByText(/Revision attempt recorded/).waitFor();
+    assert.deepEqual(confirms.at(-1), previousRevision, 'revision replay reuses the same approval/request');
+    await page.locator('#issue-attempts-mobile li').filter({ hasText: 'Revision' }).waitFor();
+    assert.match(await page.locator('#issue-attempts-mobile').textContent(), /fixture-source-attempt/);
+    assert.match(await page.getByRole('region', { name: 'Revision lineage' }).textContent(), /operator attestations/);
+    assert.equal(await page.locator('script:not([src])').count(), 0);
+    await page.screenshot({ path: join(evidenceRoot, 'factory-revision-history-mobile.png'), fullPage: true });
+
     readOnly = true; await page.reload();
     await panel.getByText(/Read-only access/).waitFor();
     assert.equal(await preview.count(), 0);
     assert.deepEqual(errors, []);
-    console.log('Issue control browser checks passed: preview/confirm, fencing, idempotency, authorization states, responsive layout.');
+    console.log('Issue control browser checks passed: takeover/return/revision preview and confirmation, explicit PR observation, blocked/stale/expired previews, ambiguous replay across navigation/reload, lineage, keyboard and responsive layout.');
   } finally { await browser.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => server.close());

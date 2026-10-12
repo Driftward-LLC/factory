@@ -40,6 +40,59 @@ import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
 
+test('revision prompt reuses the draft and distinguishes approved feedback from verifier failure', () => {
+  const job = greenJob();
+  job.requested_action = 'repair_draft_pr';
+  job.payload.expected_head_sha = 'a'.repeat(40);
+  job.payload.factory_repair = { source_job_id: 'prior-job', source_attempt_id: 'prior-attempt', source_generation: 1, trigger: 'review_feedback',
+    pr_url: greenResult().prUrl, branch: job.branch!, commit_sha: 'a'.repeat(40) };
+  job.payload.factory_revision = { feedback: 'Prevent duplicate grants', source_job_id: 'prior-job', source_attempt_id: 'prior-attempt', reviewed_head_sha: 'a'.repeat(40) };
+  const prompt = buildPrompt(job);
+  assert.match(prompt, /operator-approved revision/);
+  assert.match(prompt, /Prevent duplicate grants/);
+  assert.match(prompt, /not evidence that a review passed/);
+  assert.match(prompt, /never force-push/);
+  assert.doesNotMatch(prompt, /sanitized verifier failure/);
+  const previous = process.env.DRIFTWARD_HERMES_ALLOWED_REPOS;
+  try {
+    process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = 'Driftward-LLC/capykit';
+    validateRealCreateDraftPrJob(job);
+    job.payload.factory_repair.trigger = 'unsupported_future_trigger';
+    assert.throws(() => validateRealCreateDraftPrJob(job), /bounded factory_repair context/);
+  } finally {
+    if (previous === undefined) delete process.env.DRIFTWARD_HERMES_ALLOWED_REPOS; else process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = previous;
+  }
+});
+
+test('revision gateway command rejects changed heads before invoking an agent', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-revision-head-'));
+  const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL'] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const job = greenJob();
+  job.requested_action = 'repair_draft_pr';
+  job.payload.expected_head_sha = 'a'.repeat(40);
+  job.payload.factory_repair = { source_job_id: 'prior-job', source_attempt_id: 'prior-attempt', source_generation: 1, trigger: 'review_feedback', pr_url: greenResult().prUrl, branch: job.branch!, commit_sha: 'a'.repeat(40) };
+  job.payload.factory_revision = { feedback: 'Fix duplicate grant', source_job_id: 'prior-job', source_attempt_id: 'prior-attempt', reviewed_head_sha: 'a'.repeat(40) };
+  try {
+    writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify({number:61,url:greenResult().prUrl,state:'OPEN',mergedAt:null,isDraft:true,headRefName:job.branch,headRefOid:'b'.repeat(40),baseRefName:'main'}))});
+else if (args.includes('user.name')) process.stdout.write('factory-hermes[bot]');
+else if (args.includes('user.email')) process.stdout.write('123+factory-hermes[bot]@users.noreply.github.com');
+else if (args.includes('gh')) process.stdout.write('Driftward-LLC/capykit');
+else process.exit(1);
+`, { mode: 0o700 });
+    Object.assign(process.env, { PATH: `${directory}${path.delimiter}${previous.PATH || ''}`, DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000',
+      DRIFTWARD_HERMES_ALLOWED_REPOS: 'Driftward-LLC/capykit', DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
+      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '123+factory-hermes[bot]@users.noreply.github.com' });
+    await assert.rejects(runHermesCreateDraftPrViaCommand(job, '/does-not-exist-must-not-run', 5000, 4096),
+      (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'revision_head_changed');
+  } finally {
+    for (const name of names) { if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name]; }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('executor uses its runtime model snapshot, preserves correlation, and tolerates missing telemetry', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-runtime-model-'));
   const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS',

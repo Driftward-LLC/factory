@@ -115,6 +115,16 @@ export function routeUrl(next) {
 export function repository(record) {
   return record.job?.payload?.repo || record.attempt?.repository || '';
 }
+export function attemptKind(record) {
+  const kinds = { initial: 'Initial', retry: 'Retry', absence_retry: 'Absence retry', repair: 'Repair', revision: 'Revision' };
+  return Object.hasOwn(kinds, record.attempt_kind) ? kinds[record.attempt_kind] : 'Kind unavailable';
+}
+export function referenceUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
 export function prUrl(record) {
   const value = record.job?.pr_url || record.attempt?.prior_pr_url;
   try {

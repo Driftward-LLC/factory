@@ -58,6 +58,15 @@ def admission_manifest(attempt: dict[str, Any], job: dict[str, Any]) -> dict[str
         "environment_image_digest": None,
         "input_artifact_ref": None,
         "route": None,
+        "revision": {
+            "source_attempt_id": payload["factory_revision"].get("source_attempt_id"),
+            "feedback_digest": payload["factory_revision"].get("feedback_digest"),
+            "reviewed_head_sha": payload["factory_revision"].get("reviewed_head_sha"),
+            "review_url": payload["factory_revision"].get("review_url"),
+            "design_url": payload["factory_revision"].get("design_url"),
+            "approval_kind": "operator_attestation",
+            "independent_review_result": "unknown",
+        } if isinstance(payload.get("factory_revision"), dict) else None,
     }
 
 
@@ -73,6 +82,7 @@ def specification_snapshot(manifest: dict[str, Any]) -> dict[str, Any]:
         "requirements_digest": manifest["requirements_digest"],
         "requirements_source": manifest["requirements_source"],
         "approval": "unknown",
+        "revision": manifest.get("revision"),
     }
 
 

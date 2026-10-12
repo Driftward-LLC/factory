@@ -86,6 +86,8 @@ const GATEWAY_REASON_CODES = new Set([
   'missing_secret_check_command',
   'repair_branch_mismatch',
   'repair_context_missing',
+  'revision_context_invalid',
+  'revision_head_changed',
   'repo_not_allowlisted',
   'verification_changed_file_forbidden',
   'verification_changed_file_scope_invalid',

@@ -17,7 +17,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from .analytics import factory_analytics
+from .analytics import RESERVATION_KINDS, factory_analytics
 from .console_evidence import _time, attempt_evidence
 from .console_intake import observed_intake
 from .console_control import install_issue_control_routes
@@ -110,7 +110,25 @@ def _with_agent_trace(record: dict[str, Any], conn: sqlite3.Connection) -> dict[
                 pass  # An unrepresentable UTC timestamp cannot provide a safe lookup.
             else:
                 trace.update(status="unverified", url=f"{project.rstrip('/')}/ai-observability/traces/{trace_id}?{urlencode({'timestamp': timestamp})}")
-    return {**record, "agent_trace": trace}
+    events = conn.execute(
+        "SELECT event_type FROM factory_attempt_events WHERE attempt_id=? ORDER BY created_at,event_id",
+        (attempt["attempt_id"],),
+    ).fetchall()
+    kind = next((RESERVATION_KINDS[row[0]] for row in events if row[0] in RESERVATION_KINDS), "unknown")
+    revision = ((record.get("job") or {}).get("payload") or {}).get("factory_revision")
+    if (kind != "revision" or not isinstance(revision, dict)
+            or not isinstance(revision.get("source_attempt_id"), str) or not revision["source_attempt_id"]
+            or revision.get("source_attempt_id") != attempt.get("prior_attempt_id")
+            or revision.get("approval_kind") != "operator_attestation"):
+        revision = None
+    else:
+        revision = _fields(revision, "feedback", "review_url", "reviewer", "review_model",
+                           "reviewed_head_sha", "design_url", "source_attempt_id", "source_job_id",
+                           "approved_by", "approval_kind", "feedback_digest")
+        artifact = ((record.get("job") or {}).get("payload") or {}).get("factory_repair")
+        artifact = artifact if isinstance(artifact, dict) else {}
+        revision.update(branch=artifact.get("branch"), pr_url=artifact.get("pr_url"))
+    return {**record, "agent_trace": trace, "attempt_kind": kind, "revision": revision}
 
 
 def _allow_unauthenticated() -> bool:
@@ -248,7 +266,7 @@ def analytics(db_path: str, ingress_db_path: str | None, lifecycle_db_path: str 
         "recovery": {
             "by_attempt_kind": {
                 kind: _fields(report["recovery"]["by_attempt_kind"][kind], "attempts", "verified")
-                for kind in ("initial", "retry", "absence_retry", "repair", "unknown")
+                for kind in ("initial", "retry", "absence_retry", "repair", "revision", "unknown")
             },
             "repair_budgets_exhausted": report["recovery"]["repair_budgets_exhausted"],
         },

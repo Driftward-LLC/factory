@@ -46,6 +46,9 @@ Usage:
   factory mode real --yes
   factory retry ENG-X preview [--supersede-pr URL] [--supersede-job JOB-ID]
   factory retry ENG-X --reason TEXT --request-id ID --snapshot-digest DIGEST [--supersede-pr URL] [--supersede-job JOB-ID] --yes
+  factory revise ENG-X inspect --yes
+  factory revise ENG-X preview --feedback TEXT [--review-url URL] [--design-url URL]
+  factory revise ENG-X --feedback TEXT --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
   factory retry ENG-X force-absence --attempt-id ATTEMPT-ID --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory lifecycle ENG-X [--json] [--limit N]
@@ -194,7 +197,7 @@ format_active_attempts() {
         "  attempt: \($a.attempt_id)",
         "  job: \((($j // {}).job_id)|dash)  \((($j // {}).requested_action)|dash)/\((($j // {}).state)|dash)",
         "  repo: \((($j // {}).payload.repo)|dash)",
-        "  branch: \($a.branch|dash)",
+        "  branch: \((($j // {}).branch // $a.branch)|dash)",
         "  pr: \($pr)",
         "  lease: \(if $l == null then "none" else "\($l.status) expires=\($l.expires_at|dash)" end)"
       )
@@ -426,7 +429,7 @@ format_lifecycle() {
         ((($j // {}).pr_url // $a.prior_pr_url) | dash) as $pr |
         "  generation \($a.generation)  \($a.status)  attempt=\($a.attempt_id)",
         "    job=\((($j // {}).job_id)|dash)  \((($j // {}).requested_action)|dash)/\((($j // {}).state)|dash)",
-        "    repo=\((($j // {}).payload.repo)|dash) branch=\($a.branch|dash)",
+        "    repo=\((($j // {}).payload.repo)|dash) branch=\((($j // {}).branch // $a.branch)|dash)",
         "    pr=\($pr)",
         "    lease=\(if $l == null then "none" else "\($l.status) expires=\($l.expires_at|dash)" end)"
       )
@@ -636,6 +639,41 @@ retry_issue() {
   local body
   body="$(jq -cn --arg issue "$issue" --arg mode "$mode" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,mode:$mode,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
   operator_request POST /v1/retry/reserve "$body"
+}
+
+revise_issue() {
+  local issue="$1"; shift
+  local phase="reserve" feedback="" review_url="" design_url="" reviewer="" review_model="" reason="" request_id="" snapshot_digest="" yes="" body
+  if [[ "${1:-}" == "preview" || "${1:-}" == "inspect" ]]; then phase="$1"; shift; fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --feedback) [[ $# -ge 2 ]] || die "--feedback requires text"; feedback="$2"; shift 2 ;;
+      --review-url) [[ $# -ge 2 ]] || die "--review-url requires an HTTPS reference"; review_url="$2"; shift 2 ;;
+      --design-url) [[ $# -ge 2 ]] || die "--design-url requires an HTTPS reference"; design_url="$2"; shift 2 ;;
+      --reviewer) [[ $# -ge 2 ]] || die "--reviewer requires text"; reviewer="$2"; shift 2 ;;
+      --review-model) [[ $# -ge 2 ]] || die "--review-model requires text"; review_model="$2"; shift 2 ;;
+      --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
+      --request-id) [[ $# -ge 2 ]] || die "--request-id requires an ID"; request_id="$2"; shift 2 ;;
+      --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the preview digest"; snapshot_digest="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
+      *) die "unknown revision option: $1" ;;
+    esac
+  done
+  if [[ "$phase" == inspect ]]; then
+    [[ "$yes" == 1 && -z "$feedback$review_url$design_url$reviewer$review_model$reason$request_id$snapshot_digest" ]] || die "revision inspect requires only --yes; it queues a read-only PR observation"
+    operator_request POST /v1/revision/inspect "$(jq -cn --arg issue "$issue" '{issue:$issue}')"
+    return
+  fi
+  [[ -n "$feedback" ]] || die "revision requires --feedback"
+  body="$(jq -cn --arg issue "$issue" --arg feedback "$feedback" --arg review_url "$review_url" --arg design_url "$design_url" --arg reviewer "$reviewer" --arg review_model "$review_model" '{issue:$issue,revision:{feedback:$feedback,review_url:(if $review_url=="" then null else $review_url end),design_url:(if $design_url=="" then null else $design_url end),reviewer:(if $reviewer=="" then null else $reviewer end),review_model:(if $review_model=="" then null else $review_model end)}}')"
+  if [[ "$phase" == preview ]]; then
+    [[ -z "$yes$reason$request_id$snapshot_digest" ]] || die "revision preview does not accept confirmation flags"
+    operator_request POST /v1/revision/preview "$body"
+    return
+  fi
+  [[ "$yes" == 1 && -n "$reason" && -n "$request_id" && -n "$snapshot_digest" ]] || die "revision requires --reason, --request-id, --snapshot-digest and --yes"
+  body="$(jq -c --arg reason "$reason" --arg request_id "$request_id" --arg snapshot_digest "$snapshot_digest" '. + {reason:$reason,request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
+  operator_request POST /v1/revision/reserve "$body"
 }
 
 attempts() {
@@ -1496,6 +1534,11 @@ main() {
       shift
       [[ $# -ge 1 ]] || die "usage: factory retry ENG-X --reason TEXT --yes"
       retry_issue "$@"
+      ;;
+    revise)
+      shift
+      [[ $# -ge 1 ]] || die "usage: factory revise ENG-X {inspect|preview|--feedback TEXT}"
+      revise_issue "$@"
       ;;
     lifecycle)
       shift

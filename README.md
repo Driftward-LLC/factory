@@ -104,6 +104,10 @@ for the Hermes-versus-direct-Codex measurement and canary design.
 See [docs/factory-work-evidence.md](docs/factory-work-evidence.md) for immutable
 execution manifests, checkpoint receipts, and explicit replay-data gaps.
 
+See [docs/factory-revision-loop.md](docs/factory-revision-loop.md) for approved
+feedback on an existing draft PR, immutable revision attempts, and current
+design/review evidence limits.
+
 See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboard-plan.md)
 for the proposed capability roadmap and first operator-dashboard implementation slice.
 

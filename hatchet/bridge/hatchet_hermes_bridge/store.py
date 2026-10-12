@@ -12,6 +12,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from .legacy_artifacts import (
     LEGACY_IMPORT_CONFLICT_REASONS,
@@ -1305,6 +1306,7 @@ def _job_lifecycle_summary(job: dict[str, Any] | None) -> dict[str, Any] | None:
         "dry_run",
         "factory_retry",
         "factory_repair",
+        "factory_revision",
         "factory_artifact_fence",
         "factory_absence_retry",
         "superseded_bridge_job",
@@ -1506,9 +1508,47 @@ def _canonical_enabled_repo(repository: str) -> bool:
         return False
 
 
+def validate_factory_revision(value: Any, *, head_sha: str | None = None) -> dict[str, Any]:
+    """Bound operator attestations; references do not prove review execution."""
+    fields = {"feedback", "review_url", "reviewer", "review_model", "reviewed_head_sha", "design_url"}
+    if not isinstance(value, dict) or set(value) - fields:
+        raise BridgeValidationError("revision feedback fields are invalid")
+    result = {key: None if value.get(key) in (None, "") else value[key] for key in fields}
+    for key, limit in (("feedback", 6000), ("reviewer", 160), ("review_model", 160)):
+        text = result[key]
+        if text is None and key != "feedback":
+            continue
+        if not isinstance(text, str) or not text.strip() or len(text) > limit or any(ord(char) < 32 and char not in "\n\t" for char in text):
+            raise BridgeValidationError(f"revision {key} is invalid")
+        result[key] = sanitize_detail(text.strip(), limit)
+    for key in ("review_url", "design_url"):
+        url = result[key]
+        if url is None:
+            continue
+        if not isinstance(url, str) or len(url) > 1000 or any(char.isspace() for char in url):
+            raise BridgeValidationError(f"revision {key} is invalid")
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.port == 0:
+                raise ValueError
+        except ValueError as exc:
+            raise BridgeValidationError(f"revision {key} must be an HTTPS reference") from exc
+    sha = result["reviewed_head_sha"]
+    if sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)):
+        raise BridgeValidationError("revision reviewed head must be a full commit SHA")
+    if head_sha is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", head_sha) or sha not in (None, head_sha):
+            raise BridgeConflict("revision reviewed head changed; preview again")
+        result["reviewed_head_sha"] = head_sha
+    return result
+
+
 def _validate_repair_payload(payload: dict[str, Any]) -> None:
     repair = payload.get("factory_repair")
     required = {"source_job_id", "source_attempt_id", "source_generation", "reason_code", "error", "pr_url", "branch", "commit_sha", "verification_attempt_id"}
+    revision_trigger = isinstance(repair, dict) and repair.get("trigger") == "review_feedback"
+    if revision_trigger:
+        required = {"source_job_id", "source_attempt_id", "source_generation", "trigger", "pr_url", "branch", "commit_sha"}
     if not isinstance(repair, dict) or set(repair) != required:
         raise BridgeValidationError("repair action payload is invalid")
     repo = payload.get("repo")
@@ -1517,7 +1557,7 @@ def _validate_repair_payload(payload: dict[str, Any]) -> None:
     _parse_pr_reference(repo, repair.get("pr_url"))
     if payload.get("dry_run") is not False:
         raise BridgeValidationError("repair action payload is invalid")
-    if repair.get("reason_code") not in REPAIRABLE_VERIFICATION_REASONS:
+    if not revision_trigger and repair.get("reason_code") not in REPAIRABLE_VERIFICATION_REASONS:
         raise BridgeValidationError("repair reason is not supported")
     if not isinstance(repair.get("source_job_id"), str) or not repair["source_job_id"]:
         raise BridgeValidationError("repair action payload is invalid")
@@ -1527,12 +1567,22 @@ def _validate_repair_payload(payload: dict[str, Any]) -> None:
         raise BridgeValidationError("repair action payload is invalid")
     if not isinstance(repair.get("branch"), str) or not repair["branch"].strip() or len(repair["branch"]) > 200:
         raise BridgeValidationError("repair action payload is invalid")
-    if not isinstance(repair.get("error"), str) or len(repair["error"]) > 320:
+    if not revision_trigger and (not isinstance(repair.get("error"), str) or len(repair["error"]) > 320):
         raise BridgeValidationError("repair action payload is invalid")
     if repair.get("commit_sha") is not None and not isinstance(repair.get("commit_sha"), str):
         raise BridgeValidationError("repair action payload is invalid")
     if repair.get("verification_attempt_id") is not None and not isinstance(repair.get("verification_attempt_id"), str):
         raise BridgeValidationError("repair action payload is invalid")
+    if revision_trigger:
+        revision = payload.get("factory_revision")
+        revision_fields = {"feedback", "review_url", "reviewer", "review_model", "reviewed_head_sha", "design_url", "source_attempt_id", "source_job_id", "approved_by", "approval_kind", "feedback_digest", "command_digest"}
+        if not isinstance(revision, dict) or set(revision) != revision_fields or not isinstance(repair.get("commit_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", repair["commit_sha"]):
+            raise BridgeValidationError("revision context is missing")
+        inputs = {key: revision.get(key) for key in ("feedback", "review_url", "reviewer", "review_model", "reviewed_head_sha", "design_url")}
+        normalized = validate_factory_revision(inputs, head_sha=repair.get("commit_sha"))
+        if (revision.get("source_attempt_id") != repair["source_attempt_id"] or revision.get("source_job_id") != repair["source_job_id"]
+            or revision.get("approval_kind") != "operator_attestation" or revision.get("feedback_digest") != work_evidence.digest(normalized)):
+            raise BridgeValidationError("revision context does not match its approved target")
 
 
 def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = False, internal_repair: bool = False) -> tuple[str, str, dict[str, Any]]:
@@ -3067,6 +3117,87 @@ def reserve_factory_attempt(conn: sqlite3.Connection, **kwargs: Any) -> tuple[di
         return _reserve_factory_attempt_locked(conn, **kwargs)
 
 
+def factory_revision_source(conn: sqlite3.Connection, work_item_key: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    control = get_factory_issue_control(conn, work_item_key)
+    if control["mode"] != "factory" or control["blockers"]:
+        raise BridgeConflict("revision requires settled Factory control")
+    attempts = list_factory_attempts(conn, work_item_key)
+    if list_factory_import_conflicts(conn, work_item_key) or any(item["status"] in FACTORY_ATTEMPT_ACTIVE for item in attempts):
+        raise BridgeConflict("revision is blocked by active or unresolved work")
+    source = next((item for item in attempts if item["mode"] == "real"), None)
+    if not source or source["status"] not in {"verified_ready", "completed", "failed"} or source["actor"] == "legacy-import" or not source.get("job_id"):
+        raise BridgeConflict("revision requires a latest terminal real attempt")
+    job = get_job(conn, source["job_id"])
+    if job["requested_action"] not in DRAFT_PR_EFFECT_ACTIONS or not job.get("pr_url") or not job.get("branch") or not isinstance(job.get("commit_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", job["commit_sha"]):
+        raise BridgeConflict("revision requires a recorded draft PR and full commit SHA")
+    _parse_pr_reference(job["payload"].get("repo"), job["pr_url"])
+    return source, job, control
+
+
+def get_factory_revision_replay(conn: sqlite3.Connection, *, work_item_key: str, request_id: str, reason: str, actor: str, command_digest: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM factory_attempts WHERE work_item_key=? AND mode='real' AND request_id=?", (work_item_key, request_id)).fetchone()
+    if not row:
+        return None
+    attempt = _row_to_factory_attempt(row)
+    job = get_job(conn, attempt["job_id"]) if attempt.get("job_id") else None
+    revision = (job or {}).get("payload", {}).get("factory_revision", {})
+    if row["reason"] != sanitize_detail(reason.strip(), 320) or row["actor"] != actor or revision.get("command_digest") != command_digest:
+        raise BridgeConflict("revision request_id conflicts with existing intent")
+    return {"created": False, "attempt": attempt, "job": job, "reason": "deduplicated"}
+
+
+def reserve_factory_revision(conn: sqlite3.Connection, *, work_item_key: str, request_id: str, reason: str, actor: str, payload: dict[str, Any], source_attempt_id: str, expected_control_digest: str, command_digest: str) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Reserve an immutable execution on the existing artifact in one transaction."""
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        replay = get_factory_revision_replay(conn, work_item_key=work_item_key, request_id=request_id, reason=reason, actor=actor, command_digest=command_digest)
+        if replay:
+            return replay["attempt"], replay["job"], False
+        source, prior_job, control = factory_revision_source(conn, work_item_key)
+        if source["attempt_id"] != source_attempt_id or control["snapshot_digest"] != expected_control_digest:
+            raise BridgeConflict("revision source or control changed; preview again")
+        fence = payload.get("factory_artifact_fence")
+        if not isinstance(fence, dict) or fence.get("kind") != "github_open_draft_continuation_v1":
+            raise BridgeValidationError("revision artifact fence is missing")
+        recorded = get_pr_inspection(conn, prior_job["payload"]["repo"], prior_job["pr_url"], prior_attempt_id=source_attempt_id)
+        if not recorded or recorded["state"] != "completed" or recorded["result_digest"] != fence.get("result_digest") or recorded["request_key"] != fence.get("inspection_request_id") or not _inspection_result_is_fresh(conn.execute("SELECT * FROM factory_inspection_requests WHERE request_key=?", (recorded["request_key"],)).fetchone()):
+            raise BridgeConflict("revision PR observation changed; preview again")
+        observed = recorded["result"]
+        if (observed.get("reason") != "ok" or observed.get("state") != "open" or observed.get("merged") is not False or observed.get("draft") is not True
+            or observed.get("url") != prior_job["pr_url"] or observed.get("repository") != prior_job["payload"]["repo"] or observed.get("head_branch") != prior_job["branch"]
+            or observed.get("head_sha") != prior_job["commit_sha"] or observed.get("base_ref") != payload.get("expected_base")):
+            raise BridgeConflict("revision draft PR identity changed; preview again")
+        revision = validate_factory_revision(payload.get("factory_revision"), head_sha=prior_job["commit_sha"])
+        attempt, created = _reserve_factory_attempt_locked(conn, work_item_key=work_item_key, mode="real", request_id=request_id, reason=reason, actor=actor,
+            artifact_fence=fence, trusted_snapshot_digest=payload.get("trusted_snapshot_digest"), reserved_event_type="revision_reserved")
+        if not created:
+            raise BridgeConflict("revision attempt already exists outside this command")
+        branch, pr_url = prior_job["branch"], prior_job["pr_url"]
+        # A revision reserves new history and authority, while its artifact stays put.
+        conn.execute("UPDATE factory_attempts SET prior_attempt_id=?,prior_pr_url=? WHERE attempt_id=?", (source_attempt_id, pr_url, attempt["attempt_id"]))
+        sealed = copy.deepcopy(payload)
+        sealed["factory_revision"] = {**revision, "source_attempt_id": source_attempt_id, "source_job_id": prior_job["job_id"], "approved_by": actor,
+            "approval_kind": "operator_attestation", "feedback_digest": work_evidence.digest(revision), "command_digest": command_digest}
+        sealed["factory_repair"] = {"source_job_id": prior_job["job_id"], "source_attempt_id": source_attempt_id, "source_generation": source["generation"],
+            "trigger": "review_feedback", "pr_url": pr_url, "branch": branch, "commit_sha": prior_job["commit_sha"]}
+        sealed["factory_retry"] = {"attempt_id": attempt["attempt_id"], "generation": attempt["generation"], "request_id": request_id,
+            "reason": reason, "actor": actor, "prior_attempt_id": source_attempt_id, "supersede_pr_url": None}
+        sealed.update(work_item_id=work_item_key, linear_issue=work_item_key, dry_run=False, expected_head_sha=prior_job["commit_sha"])
+        job, job_created = submit_job(conn, {"idempotency_key": attempt["idempotency_key"], "requested_action": "repair_draft_pr", "branch": branch, "payload": sealed}, internal_repair=True)
+        if not job_created:
+            raise BridgeConflict("revision bridge job already exists")
+        now = utc_now()
+        conn.execute("UPDATE factory_attempts SET status='accepted',job_id=?,updated_at=? WHERE attempt_id=?", (job["job_id"], now, attempt["attempt_id"]))
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "revision_requested", {"source_attempt_id": source_attempt_id, "source_job_id": prior_job["job_id"], "job_id": job["job_id"], "feedback_digest": sealed["factory_revision"]["feedback_digest"]})
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "attempt_accepted", {"job_id": job["job_id"]})
+        _record_factory_admission_evidence(conn, attempt["attempt_id"])
+        outbox_key = f"factory:accepted:{attempt['attempt_id']}"
+        conn.execute("INSERT INTO factory_attempt_outbox(outbox_key,attempt_id,job_id,event_type,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (outbox_key, attempt["attempt_id"], job["job_id"], "hermes_job_accepted", canonical_json({"job_id": job["job_id"], "idempotency_key": job["idempotency_key"]}), "pending", now, now))
+        _append_factory_attempt_event(conn, attempt["attempt_id"], "accepted_event_enqueued", {"outbox_key": outbox_key})
+        return get_factory_attempt(conn, attempt["attempt_id"]), job, True
+
+
 def reserve_factory_retry(
     conn: sqlite3.Connection, *, work_item_key: str, mode: str, request_id: str,
     reason: str, actor: str, payload: dict[str, Any], supersede_pr_url: str | None = None,
@@ -3305,6 +3436,12 @@ def _reserve_factory_verification_repair(
         "verification_attempt_id": details.get("verification_attempt_id") if isinstance(details.get("verification_attempt_id"), str) else None,
     }
     repair_payload = copy.deepcopy(payload)
+    repair_payload.pop("factory_revision", None)
+    if isinstance(payload.get("factory_artifact_fence"), dict) and payload["factory_artifact_fence"].get("kind") == "github_open_draft_continuation_v1":
+        repair_payload["factory_artifact_fence"] = {
+            "kind": "github_open_draft_continuation_v1", "prior_attempt_id": factory_attempt["attempt_id"], "prior_job_id": failed_job["job_id"],
+            "prior_pr_url": pr_url, "repository": repo, "head_branch": branch, "head_sha": failed_job.get("commit_sha"), "base_ref": payload.get("expected_base"),
+        }
     repair_payload["factory_repair"] = repair_context
     repair_payload["expected_head_sha"] = failed_job.get("commit_sha")
     repair_payload["instructions"] = (

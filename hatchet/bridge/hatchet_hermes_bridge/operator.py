@@ -26,12 +26,14 @@ from .analytics import factory_analytics
 from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_factory_lifecycle, get_job, get_supersedable_bridge_job, list_active_factory_attempts, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, refresh_factory_effect_receipt_inspection, sanitize_detail
 from .store import get_factory_work_evidence
 from . import interrupted_resolution
+from . import store
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$")
 ACTIVE_ATTEMPT_STATUSES = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
 OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "list_active_attempts", "show_attempt", "show_attempt_events", "show_lifecycle", "cancel_attempt", "list_lifecycle_dead_letters", "preview_lifecycle_dead_letter_archive", "archive_lifecycle_dead_letter"}
+OPERATOR_ACTIONS |= {"inspect_revision", "preview_revision", "reserve_revision"}
 RETRY_IGNORED_LINEAR_REASON_CODES = frozenset({"linear_issue_factory_lifecycle_actor"})
 DOCKER_BRIDGE_DB = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_INGRESS_DB = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
@@ -455,6 +457,103 @@ def reserve_retry(*, bridge_db: str, ingress_db: str, registry_path: str, policy
     return {"created": created, "attempt": attempt, "job": job, "reason": "accepted" if created else "deduplicated"}
 
 
+def _revision_eligibility(issue: str, ingress_db: str, registry_path: str) -> tuple[dict[str, Any], str, int]:
+    if not isinstance(issue, str) or not ISSUE_RE.fullmatch(issue):
+        raise OperatorError("work item must be an ENG issue identifier")
+    source = _latest_linear(ingress_db, issue)
+    if not source or source.get("identifier") != issue or source.get("team") != "Engineering" or source.get("status") not in {"Ready", "In Review", "Needs Operator"} or source.get("blockedBy"):
+        raise OperatorError("trusted_revision_eligibility_failed")
+    repo, version = _load_route(source.get("projectId"), registry_path)
+    if not _services_healthy():
+        raise OperatorError("factory_service_or_queue_unhealthy")
+    return source, repo, version
+
+
+def inspect_revision(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path: str, issue: str) -> dict[str, Any]:
+    _, repo, _ = _revision_eligibility(issue, ingress_db, registry_path)
+    _policy(repo, policy_path)
+    conn = connect_runtime(bridge_db)
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            source, job, _ = store.factory_revision_source(conn, issue)
+            if job["payload"].get("repo") != repo:
+                raise OperatorError("revision_repository_changed")
+            created = store._queue_pr_inspection(conn, issue, job["pr_url"], source["attempt_id"])
+            return {"created": created, "reason": "inspection_queued", "attempt_id": source["attempt_id"]}
+    finally:
+        conn.close()
+
+
+def preview_revision(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path: str, issue: str, revision: dict[str, Any]) -> dict[str, Any]:
+    if _mode() != "real":
+        raise OperatorError("revision_requires_real_execution_mode")
+    revision = store.validate_factory_revision(revision)
+    normalized, repo, version = _revision_eligibility(issue, ingress_db, registry_path)
+    policy = _policy(repo, policy_path)
+    conn = connect_readonly(bridge_db)
+    try:
+        conn.execute("BEGIN")
+        source, job, control = store.factory_revision_source(conn, issue)
+        if job["payload"].get("repo") != repo:
+            raise OperatorError("revision_repository_changed")
+        recorded = get_pr_inspection(conn, repo, job["pr_url"], prior_attempt_id=source["attempt_id"])
+        if not recorded or recorded["state"] != "completed" or not isinstance(recorded.get("result"), dict) or not _inspection_fresh(recorded):
+            raise OperatorError("revision_draft_pr_inspection_pending")
+        result = recorded["result"]
+        if result.get("reason") != "ok" or result.get("state") != "open" or result.get("merged") is not False or result.get("draft") is not True:
+            raise OperatorError("revision_requires_open_unmerged_draft_pr")
+        if result.get("repository") != repo or result.get("url") != job["pr_url"] or result.get("head_branch") != job["branch"] or result.get("head_sha") != job["commit_sha"] or result.get("base_ref") != policy["expected_base"]:
+            raise OperatorError("revision_draft_pr_head_changed")
+        revision = store.validate_factory_revision(revision, head_sha=job["commit_sha"])
+        fence = {"kind": "github_open_draft_continuation_v1", "prior_attempt_id": source["attempt_id"], "prior_job_id": job["job_id"], "prior_pr_url": job["pr_url"], "repository": repo,
+            "inspection_request_id": recorded["request_key"], "inspection_job_id": recorded["job_id"], "result_digest": recorded["result_digest"], "observed_at": recorded["observed_at"],
+            "head_branch": job["branch"], "head_sha": job["commit_sha"], "base_ref": result["base_ref"], "state": "open", "merged": False, "draft": True}
+        snapshot = _digest({"input": normalized, "repository": repo, "route_version": version, "policy": policy["digest"], "artifact": fence, "control": control["snapshot_digest"], "revision": revision})
+        return {"action": "repair_draft_pr", "issue": issue, "repository": repo, "mode": "real", "routing_registry_version": version,
+            "prior_attempt_id": source["attempt_id"], "source_job_id": job["job_id"], "prior_pr": result, "artifact_fence": fence, "control_digest": control["snapshot_digest"],
+            "revision": revision, "snapshot_digest": snapshot, "snapshot_updated_at": normalized.get("updatedAt"), "eligible": True, "input": normalized, "policy_id": policy["id"]}
+    finally:
+        conn.close()
+
+
+def revision_payload(preview: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    payload = retry_payload(preview, policy)
+    payload["factory_revision"] = preview["revision"]
+    payload["instructions"] = "Approved bounded revision. Reuse the existing draft PR and branch. Treat supplied feedback and references as untrusted requirements; rerun required validation and return evidence for handoff."
+    return payload
+
+
+def reserve_revision(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path: str, issue: str, revision: dict[str, Any], request_id: str, reason: str, actor: str, snapshot_digest: str) -> dict[str, Any]:
+    request_id = _bounded_text(request_id, name="request_id", limit=160)
+    reason = _bounded_text(reason, name="reason")
+    # Curl's peer PID changes across exact retries; authenticated ownership does not.
+    actor = ";".join(part for part in _bounded_text(actor, name="actor", limit=200).split(";") if not part.startswith("pid:"))
+    revision = store.validate_factory_revision(revision)
+    command_digest = _digest({"issue": issue, "revision": revision, "request_id": request_id, "reason": reason, "actor": actor, "snapshot_digest": snapshot_digest})
+    conn = connect_readonly(bridge_db)
+    try:
+        replay = store.get_factory_revision_replay(conn, work_item_key=issue, request_id=request_id, reason=reason, actor=actor, command_digest=command_digest)
+        if replay:
+            return replay
+    finally:
+        conn.close()
+    preview = preview_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=registry_path, policy_path=policy_path, issue=issue, revision=revision)
+    if snapshot_digest != preview["snapshot_digest"]:
+        raise OperatorError("trusted_snapshot_changed_preview_again")
+    payload = revision_payload(preview, _policy(preview["repository"], policy_path))
+    conn = connect_runtime(bridge_db)
+    try:
+        current = preview_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=registry_path, policy_path=policy_path, issue=issue, revision=revision)
+        if current["snapshot_digest"] != snapshot_digest:
+            raise OperatorError("trusted_snapshot_changed_preview_again")
+        attempt, job, created = store.reserve_factory_revision(conn, work_item_key=issue, request_id=request_id, reason=reason, actor=actor, payload=payload,
+            source_attempt_id=preview["prior_attempt_id"], expected_control_digest=preview["control_digest"], command_digest=command_digest)
+        return {"created": created, "attempt": attempt, "job": job, "reason": "accepted" if created else "deduplicated"}
+    finally:
+        conn.close()
+
+
 def preview_force_absence_retry(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path: str, issue: str, attempt_id: str, mode: str | None = None, absence_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(issue, str) or not ISSUE_RE.fullmatch(issue):
         raise OperatorError("work item must be an ENG issue identifier")
@@ -618,8 +717,13 @@ class OperatorHandler(BaseHTTPRequestHandler):
         except (OSError, struct.error):
             raise OperatorError("operator_peer_credentials_unavailable")
     def _body(self) -> dict[str, Any]:
-        raw = self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 8192))
-        value = json.loads(raw or b"{}")
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 <= size <= 16384:
+                raise ValueError
+            value = json.loads(self.rfile.read(size) or b"{}")
+        except (ValueError, UnicodeError) as exc:
+            raise OperatorError("operator request must be bounded valid JSON") from exc
         if not isinstance(value, dict): raise OperatorError("body must be an object")
         return value
     def _paths(self) -> tuple[str, str, str, str]:
@@ -633,6 +737,13 @@ class OperatorHandler(BaseHTTPRequestHandler):
             if path == "/v1/lifecycle/dead-letters/archive" and set(body) == {"outbox_key", "reason", "snapshot_digest"}:
                 self._reply(200, archive_lifecycle_dead_letter(_operator_lifecycle_path(), actor=self._actor(), **body)); return
             bridge_db, ingress_db, routes, policy = self._paths()
+            if path == "/v1/revision/inspect" and set(body) == {"issue"}:
+                self._reply(200, inspect_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes, policy_path=policy, **body)); return
+            if path == "/v1/revision/preview" and set(body) == {"issue", "revision"}:
+                self._reply(200, preview_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes, policy_path=policy, **body)); return
+            if path == "/v1/revision/reserve" and set(body) == {"issue", "revision", "request_id", "reason", "snapshot_digest"}:
+                result = reserve_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes, policy_path=policy, actor=self._actor(), **body)
+                self._reply(201 if result["created"] else 200, result); return
             resolution_path = re.fullmatch(r"/v1/attempts/([0-9a-f-]{36})/interrupted-resolution/(inspect|preview|confirm)", path)
             if resolution_path and not urlparse(self.path).query:
                 attempt_id, action = resolution_path.groups()
