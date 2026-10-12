@@ -1372,7 +1372,7 @@ function factoryRepairContext(job: BridgeJob): FactoryRepairContext | null {
   const isRevision = value.trigger === 'review_feedback';
   const revision = job.payload.factory_revision;
   if (isRevision && (!revision || typeof revision !== 'object' || Array.isArray(revision)
-    || typeof revision.feedback !== 'string' || !revision.feedback.trim() || revision.feedback.length > 6000
+    || typeof revision.feedback !== 'string' || !revision.feedback.trim() || Array.from(revision.feedback).length > 6000
     || revision.reviewed_head_sha !== value.commit_sha || typeof value.commit_sha !== 'string' || !/^[0-9a-f]{40}$/.test(value.commit_sha)
     || job.payload.expected_head_sha !== value.commit_sha || revision.source_attempt_id !== sourceAttemptId || revision.source_job_id !== sourceJobId)) return null;
   if (!sourceJobId || !sourceAttemptId || (!isRevision && (!reasonCode || !error)) || !prUrl || !branch || typeof value.source_generation !== 'number') {

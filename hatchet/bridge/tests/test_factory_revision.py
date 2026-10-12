@@ -176,6 +176,17 @@ class RevisionTests(IssueControlFixture):
     def test_maximum_feedback_and_reference_lengths_round_trip_without_truncation(self):
         self.assert_complete_revision_projection(6000, 1000)
 
+    def test_maximum_unicode_feedback_preserved_in_reserved_revision(self):
+        feedback = "a " * 2950 + "✅" * 99 + "😀"
+        self.assertEqual(len(feedback), 6000)
+        revision = {"feedback": feedback}
+        preview = operator.preview_revision(**self.paths, revision=revision)
+        self.assertTrue(preview["eligible"])
+        reserved = operator.reserve_revision(**self.paths, revision=revision, request_id="unicode-revision", reason="Approved feedback",
+                                             actor="uid:0", snapshot_digest=preview["snapshot_digest"])
+        self.assertEqual(reserved["job"]["payload"]["factory_revision"]["feedback"], feedback)
+        store._validate_repair_payload(reserved["job"]["payload"])
+
     def test_atomic_rollback_leaves_no_job_attempt_or_outbox(self):
         command = self.command()
         with patch("hatchet_hermes_bridge.store._record_factory_admission_evidence", side_effect=RuntimeError("injected evidence failure")):
@@ -265,7 +276,8 @@ class RevisionTests(IssueControlFixture):
     def test_revision_input_bounds_and_optional_reviewed_head(self):
         preview = operator.preview_revision(**self.paths, revision=self.feedback)
         self.assertEqual(preview["revision"]["reviewed_head_sha"], self.head)
-        for value in ({}, {"feedback": "x" * 6001}, {"feedback": "ok", "review_url": "file:///root/secrets"}, {"feedback": "ok", "reviewed_head_sha": "b" * 40},
+        for value in ({}, {"feedback": "x" * 6001}, {"feedback": "a " * 2950 + "✅" * 99 + "😀😀"}, {"feedback": "😀" * 6001},
+                      {"feedback": "ok", "review_url": "file:///root/secrets"}, {"feedback": "ok", "reviewed_head_sha": "b" * 40},
                       {"feedback": "ok", "design_url": "https://example.test/" + "part/" * 210}, {"feedback": "ok", "review_url": "https://example.test/?token=github_pat_fixture"}):
             with self.assertRaises((store.BridgeValidationError, store.BridgeConflict)):
                 operator.preview_revision(**self.paths, revision=value)

@@ -64,6 +64,27 @@ test('revision prompt reuses the draft and distinguishes approved feedback from 
   }
 });
 
+test('revision feedback bounds count Unicode code points like bridge admission', () => {
+  const job = greenJob();
+  job.requested_action = 'repair_draft_pr';
+  job.payload.expected_head_sha = 'a'.repeat(40);
+  job.payload.factory_repair = { source_job_id: 'prior-job', source_attempt_id: 'prior-attempt', source_generation: 1, trigger: 'review_feedback',
+    pr_url: greenResult().prUrl, branch: job.branch!, commit_sha: 'a'.repeat(40) };
+  const previous = process.env.DRIFTWARD_HERMES_ALLOWED_REPOS;
+  try {
+    process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = 'Driftward-LLC/capykit';
+    for (const feedback of ['x'.repeat(6000), 'a '.repeat(2950) + '✅'.repeat(99) + '😀', '😀'.repeat(6000)]) {
+      job.payload.factory_revision = { feedback, source_job_id: 'prior-job', source_attempt_id: 'prior-attempt', reviewed_head_sha: 'a'.repeat(40) };
+      validateRealCreateDraftPrJob(job);
+      assert.ok(buildPrompt(job).includes(JSON.stringify(feedback)));
+      job.payload.factory_revision.feedback = feedback + '😀';
+      assertFailure(() => validateRealCreateDraftPrJob(job), 'repair_context_missing');
+    }
+  } finally {
+    if (previous === undefined) delete process.env.DRIFTWARD_HERMES_ALLOWED_REPOS; else process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = previous;
+  }
+});
+
 test('revision gateway command rejects changed heads before invoking an agent', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-revision-head-'));
   const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL'] as const;
