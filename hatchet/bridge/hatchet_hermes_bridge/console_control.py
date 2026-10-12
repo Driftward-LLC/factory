@@ -225,28 +225,38 @@ class IssueControl:
             request_id = f"console-revision:{value['request_id']}"
             command_digest = _digest({"issue": issue, "request_id": request_id, "actor": actor, "reason": value["reason"], "revision": value["revision"],
                 "snapshot_digest": value["snapshot_digest"], "preview_token": token})
-            conn = store.connect_readonly(self.db_path)
+            def committed_replay() -> dict[str, Any] | None:
+                conn = store.connect_readonly(self.db_path)
+                try:
+                    previous = store.get_factory_revision_replay(conn, work_item_key=issue, request_id=request_id, actor=actor, reason=value["reason"], command_digest=command_digest)
+                    return self._result({**previous, "control": self.read(issue)}, value["request_id"]) if previous else None
+                finally:
+                    conn.close()
+            previous = committed_replay()
+            if previous is not None:
+                return previous
             try:
-                previous = store.get_factory_revision_replay(conn, work_item_key=issue, request_id=request_id, actor=actor, reason=value["reason"], command_digest=command_digest)
+                if not hmac.compare_digest(signature, hmac.new(self._key, encoded.encode(), hashlib.sha256).hexdigest()):
+                    raise store.BridgeConflict("Preview is no longer valid; preview again")
+                if claims["expires"] <= time.time():
+                    raise HTTPException(410, "Preview expired; preview again")
+                context = self._context(issue, actor, value)
+                if _digest(context) != claims["digest"]:
+                    raise store.BridgeConflict("Issue, policy, or artifact changed; preview again")
+                conn = store.connect_runtime(self.db_path)
+                try:
+                    retry = context["retry"]
+                    attempt, job, created = store.reserve_factory_revision(conn, work_item_key=issue, request_id=request_id, actor=actor, reason=value["reason"],
+                        payload=context["payload"], source_attempt_id=retry["prior_attempt_id"], expected_control_digest=claims["store_digest"], command_digest=command_digest)
+                    return self._result({"attempt": attempt, "control": self.read(issue)}, value["request_id"])
+                finally:
+                    conn.close()
+            except (store.BridgeError, HTTPException):
+                # A peer may commit after our first lookup but before revalidation.
+                previous = committed_replay()
                 if previous is not None:
-                    return self._result({**previous, "control": self.read(issue)}, value["request_id"])
-            finally:
-                conn.close()
-            if not hmac.compare_digest(signature, hmac.new(self._key, encoded.encode(), hashlib.sha256).hexdigest()):
-                raise store.BridgeConflict("Preview is no longer valid; preview again")
-            if claims["expires"] <= time.time():
-                raise HTTPException(410, "Preview expired; preview again")
-            context = self._context(issue, actor, value)
-            if _digest(context) != claims["digest"]:
-                raise store.BridgeConflict("Issue, policy, or artifact changed; preview again")
-            conn = store.connect_runtime(self.db_path)
-            try:
-                retry = context["retry"]
-                attempt, job, created = store.reserve_factory_revision(conn, work_item_key=issue, request_id=request_id, actor=actor, reason=value["reason"],
-                    payload=context["payload"], source_attempt_id=retry["prior_attempt_id"], expected_control_digest=claims["store_digest"], command_digest=command_digest)
-                return self._result({"attempt": attempt, "control": self.read(issue)}, value["request_id"])
-            finally:
-                conn.close()
+                    return previous
+                raise
         conn = store.connect_readonly(self.db_path)
         try:
             previous = store.get_factory_issue_control_command(conn, **command, action="take_control" if value["action"] == "takeover" else "return_control")

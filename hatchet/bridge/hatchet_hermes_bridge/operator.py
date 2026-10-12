@@ -531,27 +531,35 @@ def reserve_revision(*, bridge_db: str, ingress_db: str, registry_path: str, pol
     actor = ";".join(part for part in _bounded_text(actor, name="actor", limit=200).split(";") if not part.startswith("pid:"))
     revision = store.validate_factory_revision(revision)
     command_digest = _digest({"issue": issue, "revision": revision, "request_id": request_id, "reason": reason, "actor": actor, "snapshot_digest": snapshot_digest})
-    conn = connect_readonly(bridge_db)
+    def committed_replay() -> dict[str, Any] | None:
+        conn = connect_readonly(bridge_db)
+        try:
+            return store.get_factory_revision_replay(conn, work_item_key=issue, request_id=request_id, reason=reason, actor=actor, command_digest=command_digest)
+        finally:
+            conn.close()
+    replay = committed_replay()
+    if replay:
+        return replay
     try:
-        replay = store.get_factory_revision_replay(conn, work_item_key=issue, request_id=request_id, reason=reason, actor=actor, command_digest=command_digest)
+        preview = preview_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=registry_path, policy_path=policy_path, issue=issue, revision=revision)
+        if snapshot_digest != preview["snapshot_digest"]:
+            raise OperatorError("trusted_snapshot_changed_preview_again")
+        payload = revision_payload(preview, _policy(preview["repository"], policy_path))
+        conn = connect_runtime(bridge_db)
+        try:
+            current = preview_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=registry_path, policy_path=policy_path, issue=issue, revision=revision)
+            if current["snapshot_digest"] != snapshot_digest:
+                raise OperatorError("trusted_snapshot_changed_preview_again")
+            attempt, job, created = store.reserve_factory_revision(conn, work_item_key=issue, request_id=request_id, reason=reason, actor=actor, payload=payload,
+                source_attempt_id=preview["prior_attempt_id"], expected_control_digest=preview["control_digest"], command_digest=command_digest)
+            return {"created": created, "attempt": attempt, "job": job, "reason": "accepted" if created else "deduplicated"}
+        finally:
+            conn.close()
+    except BridgeError:
+        replay = committed_replay()
         if replay:
             return replay
-    finally:
-        conn.close()
-    preview = preview_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=registry_path, policy_path=policy_path, issue=issue, revision=revision)
-    if snapshot_digest != preview["snapshot_digest"]:
-        raise OperatorError("trusted_snapshot_changed_preview_again")
-    payload = revision_payload(preview, _policy(preview["repository"], policy_path))
-    conn = connect_runtime(bridge_db)
-    try:
-        current = preview_revision(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=registry_path, policy_path=policy_path, issue=issue, revision=revision)
-        if current["snapshot_digest"] != snapshot_digest:
-            raise OperatorError("trusted_snapshot_changed_preview_again")
-        attempt, job, created = store.reserve_factory_revision(conn, work_item_key=issue, request_id=request_id, reason=reason, actor=actor, payload=payload,
-            source_attempt_id=preview["prior_attempt_id"], expected_control_digest=preview["control_digest"], command_digest=command_digest)
-        return {"created": created, "attempt": attempt, "job": job, "reason": "accepted" if created else "deduplicated"}
-    finally:
-        conn.close()
+        raise
 
 
 def preview_force_absence_retry(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path: str, issue: str, attempt_id: str, mode: str | None = None, absence_evidence: dict[str, Any] | None = None) -> dict[str, Any]:

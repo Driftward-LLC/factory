@@ -1306,11 +1306,13 @@ def _job_lifecycle_summary(job: dict[str, Any] | None) -> dict[str, Any] | None:
         "dry_run",
         "factory_retry",
         "factory_repair",
-        "factory_revision",
         "factory_artifact_fence",
         "factory_absence_retry",
         "superseded_bridge_job",
     )
+    projected_payload = sanitize_detail({key: payload.get(key) for key in payload_keys if key in payload})
+    if "factory_revision" in payload:
+        projected_payload["factory_revision"] = _revision_lifecycle_summary(payload["factory_revision"])
     return {
         "job_id": job["job_id"],
         "idempotency_key": job["idempotency_key"],
@@ -1326,7 +1328,7 @@ def _job_lifecycle_summary(job: dict[str, Any] | None) -> dict[str, Any] | None:
         "error": sanitize_detail(job["error"]),
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
-        "payload": sanitize_detail({key: payload.get(key) for key in payload_keys if key in payload}),
+        "payload": projected_payload,
     }
 
 
@@ -1533,6 +1535,8 @@ def validate_factory_revision(value: Any, *, head_sha: str | None = None) -> dic
                 raise ValueError
         except ValueError as exc:
             raise BridgeValidationError(f"revision {key} must be an HTTPS reference") from exc
+        if sanitize_detail(url, 1000) != url:
+            raise BridgeValidationError(f"revision {key} contains disallowed material")
     sha = result["reviewed_head_sha"]
     if sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)):
         raise BridgeValidationError("revision reviewed head must be a full commit SHA")
@@ -1541,6 +1545,21 @@ def validate_factory_revision(value: Any, *, head_sha: str | None = None) -> dic
             raise BridgeConflict("revision reviewed head changed; preview again")
         result["reviewed_head_sha"] = head_sha
     return result
+
+
+def _revision_lifecycle_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("approval_kind") != "operator_attestation":
+        return None
+    try:
+        revision = validate_factory_revision({key: value.get(key) for key in ("feedback", "review_url", "reviewer", "review_model", "reviewed_head_sha", "design_url")})
+    except BridgeError:
+        return None
+    for key in ("source_attempt_id", "source_job_id", "approved_by", "approval_kind", "feedback_digest"):
+        text = value.get(key)
+        if not isinstance(text, str) or not text or len(text) > 200 or any(ord(char) < 32 for char in text):
+            return None
+        revision[key] = sanitize_detail(text, 200)
+    return revision
 
 
 def _validate_repair_payload(payload: dict[str, Any]) -> None:

@@ -192,17 +192,20 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   let server: grpc.Server;
   const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' } as const;
   const observed: unknown[] = [];
+  let finishExecution!: () => void;
+  const executionReleased = new Promise<void>((resolve) => { finishExecution = resolve; });
   const start = async () => {
     server = createServer(target, async (_job, _command, _timeout, _buffer, onModelSelected) => {
       calls++;
       await onModelSelected?.(selection);
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await executionReleased;
       return receipt;
     });
     await new Promise<void>((resolve, reject) => server.bindAsync(target, grpc.ServerCredentials.createInsecure(), (error) => error ? reject(error) : resolve()));
   };
   let calls = 0;
   t.after(() => {
+    finishExecution();
     server?.forceShutdown();
     for (const [key, value] of [['DRIFTWARD_HERMES_GRPC_TARGET', previous.target], ['DRIFTWARD_HERMES_INVOCATION_DIRECTORY', previous.journal], ['DRIFTWARD_HERMES_GRPC_AUTH_TOKEN', previous.token]]) {
       if (value === undefined) delete process.env[key!]; else process.env[key!] = value;
@@ -210,13 +213,24 @@ test('lost gRPC response is recovered after gateway restart without executing ag
     rmSync(directory, { recursive: true, force: true });
   });
   await start();
-  await assert.rejects(runHermesCreateDraftPrViaGrpc(correlatedJob, 60, lease, (value) => { observed.push(value); }));
+  await assert.rejects(runHermesCreateDraftPrViaGrpc(correlatedJob, 5000, lease, (value) => {
+    observed.push(value);
+    server.forceShutdown();
+  }));
   assert.deepEqual([...observed], [selection]);
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  assert.equal((await inspectHermesInvocation(job)).state, 'completed');
-  await new Promise<void>((resolve) => server.tryShutdown(() => resolve()));
+  finishExecution();
+  const journal = new InvocationJournal(path.join(directory, 'journal'));
+  for (let poll = 0; poll < 500 && journal.status(job).state !== 'completed'; poll++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(journal.status(job).state, 'completed');
   await start();
-  const recovered = await inspectHermesInvocation(updatedJob, true);
+  let recovered: Awaited<ReturnType<typeof inspectHermesInvocation>> | undefined;
+  for (let poll = 0; poll < 500 && !recovered; poll++) {
+    try { recovered = await inspectHermesInvocation(updatedJob, true); }
+    catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+  }
+  assert.ok(recovered, 'restarted gateway did not reconnect');
   assert.deepEqual(recovered.receipt, receipt);
   assert.deepEqual(recovered.lease, lease);
   assert.equal(recovered.cancellationAcknowledged, true);

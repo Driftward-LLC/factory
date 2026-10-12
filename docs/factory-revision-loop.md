@@ -74,6 +74,10 @@ is the branch displayed for revision history.
 Feedback and references are bounded and sealed with source-attempt lineage,
 authenticated operator attribution, and digests. Optional review/design URLs
 are references only: Factory does not fetch, snapshot, or verify their contents.
+Feedback supports up to 6,000 characters and references up to 1,000; validated
+history projections retain those complete values. Secret-shaped or otherwise
+unsupported references fail during preview. Evidence manifests record URL digests
+alongside the feedback digest instead of copying reference text into evidence.
 Reviewer/model metadata is an operator attestation, not proof that independent
 review ran or passed, and a design reference is not a verified specification
 approval gate. The admission manifest records reference and feedback digests;

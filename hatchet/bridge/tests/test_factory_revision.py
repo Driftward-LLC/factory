@@ -108,6 +108,74 @@ class RevisionTests(IssueControlFixture):
         self.assertEqual(results[0]["attempt_id"], results[1]["attempt_id"])
         self.assertEqual(self.counts(), (2, 2, 2))
 
+    def test_browser_exact_overlap_recovers_peer_commit_before_context(self):
+        command = self.command()
+        original = self.service._context
+        peer = []
+        def interleaved(*args):
+            if not peer:
+                peer.append(None)
+                peer[0] = self.service.confirm("ENG-8", ACTOR, command)
+            return original(*args)
+        with patch.object(self.service, "_context", side_effect=interleaved):
+            result = self.service.confirm("ENG-8", ACTOR, command)
+        self.assertEqual(result["attempt_id"], peer[0]["attempt_id"])
+        self.assertEqual(self.counts(), (2, 2, 2))
+        for changes in ({"revision": {"feedback": "Different approval"}}, {"snapshot_digest": "b" * 64}):
+            with self.assertRaises((store.BridgeConflict, store.BridgeValidationError)):
+                self.service.confirm("ENG-8", ACTOR, {**command, **changes})
+        with self.assertRaises(store.BridgeValidationError):
+            self.service.confirm("ENG-8", "other@test", command)
+
+    def test_root_exact_overlap_recovers_peer_commit_before_preview(self):
+        preview = operator.preview_revision(**self.paths, revision=self.feedback)
+        kwargs = {**self.paths, "revision": self.feedback, "request_id": "root-overlap", "reason": "approved", "actor": "uid:0", "snapshot_digest": preview["snapshot_digest"]}
+        original = operator.preview_revision
+        peer = []
+        def interleaved(**args):
+            if not peer:
+                peer.append(None)
+                peer[0] = operator.reserve_revision(**kwargs)
+            return original(**args)
+        with patch.object(operator, "preview_revision", side_effect=interleaved):
+            result = operator.reserve_revision(**kwargs)
+        self.assertEqual(result["attempt"]["attempt_id"], peer[0]["attempt"]["attempt_id"])
+        self.assertFalse(result["created"])
+        self.assertEqual(self.counts(), (2, 2, 2))
+        for changes in ({"actor": "different"}, {"revision": {"feedback": "Different approval"}}, {"snapshot_digest": "b" * 64}):
+            with self.assertRaises(store.BridgeConflict):
+                operator.reserve_revision(**{**kwargs, **changes})
+
+    def assert_complete_revision_projection(self, feedback_length, url_length):
+        from hatchet_hermes_bridge.console import _with_agent_trace
+        from hatchet_hermes_bridge import work_evidence
+        feedback = ("Actionable approved feedback. " * 250)[:feedback_length - 1] + "."
+        url = ("https://example.test/" + "reference/" * 110)[:url_length]
+        revision = {"feedback": feedback, "review_url": url, "design_url": url}
+        command = self.approval("revision", reason="Approved feedback", revision=revision)
+        result = self.service.confirm("ENG-8", ACTOR, command)
+        self.assertEqual(self.service.confirm("ENG-8", ACTOR, command)["attempt_id"], result["attempt_id"])
+        with closing(store.connect_readonly(self.db)) as conn:
+            lifecycle = store.get_factory_lifecycle(conn, "ENG-8")
+            projected = _with_agent_trace(lifecycle["attempts"][0], conn)
+            self.assertEqual(projected["revision"]["feedback"], feedback)
+            self.assertEqual(projected["revision"]["review_url"], url)
+            self.assertEqual(projected["revision"]["design_url"], url)
+            self.assertNotIn("command_digest", projected["revision"])
+            self.assertNotIn("implementation_prompt", projected["job"]["payload"])
+            evidence = store.get_factory_work_evidence(conn, result["attempt_id"])
+            reference = evidence["manifests"][0]["document"]["revision"]
+            self.assertEqual(reference["review_url_digest"], work_evidence.digest(url))
+            self.assertEqual(reference["design_url_digest"], work_evidence.digest(url))
+            self.assertNotIn("review_url", reference)
+        self.assertEqual(self.counts(), (2, 2, 2))
+
+    def test_503_character_feedback_and_427_character_urls_round_trip_without_truncation(self):
+        self.assert_complete_revision_projection(503, 427)
+
+    def test_maximum_feedback_and_reference_lengths_round_trip_without_truncation(self):
+        self.assert_complete_revision_projection(6000, 1000)
+
     def test_atomic_rollback_leaves_no_job_attempt_or_outbox(self):
         command = self.command()
         with patch("hatchet_hermes_bridge.store._record_factory_admission_evidence", side_effect=RuntimeError("injected evidence failure")):
@@ -197,7 +265,8 @@ class RevisionTests(IssueControlFixture):
     def test_revision_input_bounds_and_optional_reviewed_head(self):
         preview = operator.preview_revision(**self.paths, revision=self.feedback)
         self.assertEqual(preview["revision"]["reviewed_head_sha"], self.head)
-        for value in ({}, {"feedback": "x" * 6001}, {"feedback": "ok", "review_url": "file:///root/secrets"}, {"feedback": "ok", "reviewed_head_sha": "b" * 40}):
+        for value in ({}, {"feedback": "x" * 6001}, {"feedback": "ok", "review_url": "file:///root/secrets"}, {"feedback": "ok", "reviewed_head_sha": "b" * 40},
+                      {"feedback": "ok", "design_url": "https://example.test/" + "part/" * 210}, {"feedback": "ok", "review_url": "https://example.test/?token=github_pat_fixture"}):
             with self.assertRaises((store.BridgeValidationError, store.BridgeConflict)):
                 operator.preview_revision(**self.paths, revision=value)
 
