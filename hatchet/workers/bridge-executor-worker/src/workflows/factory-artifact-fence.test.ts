@@ -65,6 +65,27 @@ test('superseded PR fence still passes for the same closed unmerged PR', async (
   assert.deepEqual(result, { ok: true });
 });
 
+test('revision fence requires the approved existing open draft and full head', async () => {
+  const source = { prior_attempt_id: 'attempt-1', prior_job_id: 'job-1', prior_pr_url: 'https://github.com/Driftward-LLC/capykit/pull/80',
+    repository: 'Driftward-LLC/capykit', head_branch: 'codex/existing', head_sha: 'a'.repeat(40), base_ref: 'main' };
+  const job = baseJob({ expected_head_sha: source.head_sha, factory_artifact_fence: { kind: 'github_open_draft_continuation_v1', ...source },
+    factory_repair: { trigger: 'review_feedback', source_attempt_id: 'attempt-1', source_job_id: 'job-1', pr_url: source.prior_pr_url, branch: source.head_branch, commit_sha: source.head_sha },
+    factory_revision: { source_attempt_id: 'attempt-1', source_job_id: 'job-1', reviewed_head_sha: source.head_sha } });
+  job.branch = source.head_branch;
+  job.requested_action = 'repair_draft_pr';
+  const observed: DraftPrStateInspection = { repository: source.repository, number: 80, url: source.prior_pr_url, state: 'open', merged: false,
+    draft: true, head_branch: source.head_branch, head_sha: source.head_sha, base_ref: 'main', reason: 'ok' };
+  assert.deepEqual(await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => observed }), { ok: true });
+  const repair = { ...job, payload: { ...job.payload, factory_revision: null,
+    factory_repair: { source_attempt_id: 'attempt-1', source_job_id: 'job-1', pr_url: source.prior_pr_url, branch: source.head_branch, commit_sha: source.head_sha, reason_code: 'verification_github_checks_failed' } } };
+  assert.deepEqual(await validateFactoryArtifactFence(repair, { inspectDraftPrState: async () => observed }), { ok: true });
+  for (const change of [{ head_sha: 'b'.repeat(40) }, { state: 'closed' as const }, { merged: true }, { draft: false }, { head_branch: 'other' }, { reason: 'inspect_unavailable' as const }]) {
+    const result = await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({ ...observed, ...change }) });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reasonCode, 'artifact_fence_changed');
+  }
+});
+
 function absenceRetryJob(): BridgeJob {
   const fence = absenceFence();
   return baseJob({

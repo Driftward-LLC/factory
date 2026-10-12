@@ -29,6 +29,27 @@ export async function validateFactoryArtifactFence(
   if (kind === 'github_branch_pr_absence_v1') {
     return validateAbsenceFence(job, fence, inspectors.inspectGitHubHead || inspectGitHubHead);
   }
+  if (kind === 'github_open_draft_continuation_v1') {
+    const repair = jsonObject(job.payload.factory_repair);
+    const revision = jsonObject(job.payload.factory_revision);
+    const repository = stringValue(job.payload.repo);
+    const priorUrl = stringValue(fence.prior_pr_url);
+    const sha = stringValue(fence.head_sha);
+    if (!repository || fence.repository !== repository || !priorUrl || !sha || !/^[0-9a-f]{40}$/.test(sha)
+      || job.requested_action !== 'repair_draft_pr' || fence.head_branch !== job.branch || !stringValue(fence.base_ref)
+      || !repair || repair.pr_url !== priorUrl || repair.branch !== job.branch || repair.commit_sha !== sha
+      || repair.source_attempt_id !== fence.prior_attempt_id || repair.source_job_id !== fence.prior_job_id || job.payload.expected_head_sha !== sha
+      || (repair.trigger === 'review_feedback' && (!revision || revision.reviewed_head_sha !== sha || revision.source_attempt_id !== fence.prior_attempt_id || revision.source_job_id !== fence.prior_job_id))
+      || (repair.trigger !== 'review_feedback' && revision !== null)) {
+      return blocked('artifact_fence_invalid', 'revision fence must bind the approved feedback to the existing draft PR and full head');
+    }
+    const observed = await (inspectors.inspectDraftPrState || inspectDraftPrState)(repository, priorUrl);
+    if (observed.reason !== 'ok' || observed.state !== 'open' || observed.merged || !observed.draft || observed.repository !== repository
+      || observed.url !== priorUrl || observed.head_branch !== job.branch || observed.head_sha !== sha || observed.base_ref !== fence.base_ref) {
+      return blocked('artifact_fence_changed', 'revision draft PR changed since approval');
+    }
+    return { ok: true };
+  }
   if (kind) {
     return blocked('artifact_fence_invalid', `unsupported factory_artifact_fence kind ${kind}`);
   }

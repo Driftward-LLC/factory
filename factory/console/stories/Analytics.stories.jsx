@@ -26,7 +26,7 @@ const report = {
     reviews: { available: true, coverage: coverage(0), changes_requested_prs: 0, changes_requested_rate: null },
     first_pass_checks: { available: false, success_rate: null },
   },
-  recovery: { by_attempt_kind: { initial: { attempts: 18, verified: 3 }, repair: { attempts: 7, verified: 3 }, retry: { attempts: 1, verified: 0 }, absence_retry: { attempts: 1, verified: 0 }, unknown: { attempts: 0, verified: 0 } }, repair_budgets_exhausted: 3 },
+  recovery: { by_attempt_kind: { initial: { attempts: 18, verified: 3 }, repair: { attempts: 7, verified: 3 }, revision: { attempts: 2, verified: 1 }, retry: { attempts: 1, verified: 0 }, absence_retry: { attempts: 1, verified: 0 }, unknown: { attempts: 0, verified: 0 } }, repair_budgets_exhausted: 3 },
   failures: { currently_failed_attempts: 19, by_classification: [{ reason_code: 'verification_github_check_failed', count: 9 }] },
   latency_ms: { effect_committed_to_verified_ready: { p50: 180000, samples: 6, eligible: 25 } },
   time_series: dailySeries,

@@ -73,6 +73,18 @@ attempt. Display actor, time, and reason in the ownership audit. Returning does
 not replay queued events, restore ordinary intake for a controlled issue, or
 verify/continue a manually edited open PR. Unsupported actions must not appear.
 
+An eligible settled Factory attempt with a recorded open draft PR can receive an
+explicit revision request. Feedback is required; review and approved design
+references and reviewer/model attribution are optional operator attestations,
+not evidence that an independent review ran or passed. Preview pins the exact
+PR, execution branch and full trusted SHA, and confirmation reserves one new
+attempt with revision kind and source lineage. Earlier attempts stay immutable.
+Revision kind is distinct from execution stage, session references and repair.
+The execution branch comes from the job; a reservation branch identifier is not
+the PR branch. “Refresh PR observation” explicitly queues the existing typed
+GitHub inspection; ordinary refresh only rereads evidence. Changed, closed,
+merged, non-draft or unresolved artifacts cannot be approved for revision.
+
 The verification evidence panel is scoped to the newest returned attempt.
 Compare the full verified SHA only against a later stored inspection for the
 same PR. Keep an older inspection, stale observation, changed head and missing

@@ -126,6 +126,11 @@ td:last-child { color: var(--muted); font-size: .75rem; }
 .control-metadata .summary-item { padding: 12px 0; }
 .control-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr); gap: 12px; margin-top: 16px; }
 .control-form > button { justify-self: start; }
+.revision-feedback, .revision-review-details { grid-column: 1 / -1; min-width: 0; }
+.revision-feedback textarea { width: 100%; min-width: 0; resize: vertical; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); color: var(--ink); padding: 8px 10px; font: inherit; font-size: .8125rem; }
+.revision-review-details { margin: 0; padding-bottom: 12px; }
+.revision-review-details label + label { margin-top: 12px; }
+.revision-copy { white-space: pre-wrap; font-family: inherit; }
 .control-handback-note { grid-column: 1 / -1; margin: 0; }
 .control-preview, .control-unresolved { padding: 16px; margin-top: 16px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface); overflow-wrap: anywhere; }
 .control-preview h4 { margin: 0 0 12px; font-size: .875rem; font-weight: 600; }

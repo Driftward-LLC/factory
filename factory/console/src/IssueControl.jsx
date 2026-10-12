@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, ExternalLink, Notice, StatusBadge, SummaryItem } from '@driftward/ui';
-import { prUrl, time } from './model.js';
+import { prUrl, referenceUrl, time } from './model.js';
 
 const states = {
   factory: ['Factory-controlled', 'info'],
@@ -14,6 +14,10 @@ const blockers = {
   prior_draft_pr_blocks_retry: 'An open PR requires a continuation path, which is not available in this control.',
   prior_draft_pr_inspection_pending: 'A fresh PR inspection is required before handback.',
   prior_draft_pr_merged_create_new_issue: 'The previous PR is merged. Create a new issue for further work.',
+  revision_draft_pr_inspection_pending: 'A fresh PR inspection is required. Request a PR observation, refresh control after it arrives, then preview revision again.',
+  revision_requires_open_unmerged_draft_pr: 'Revision requires an open, unmerged draft PR. Inspect the current PR before deciding on further work.',
+  revision_draft_pr_head_changed: 'The PR branch or commit changed. Earlier verification does not cover this head; reconcile the artifact before requesting revision.',
+  revision_repository_changed: 'The current issue route differs from the recorded PR repository. Reconcile the issue route before revision.',
 };
 
 async function request(path, body, signal) {
@@ -30,6 +34,7 @@ async function request(path, body, signal) {
       : response.status === 409 ? 'The issue changed. Refresh and preview the action again.'
         : Object.hasOwn(blockers, code) ? blockers[code] : `Control request failed (HTTP ${response.status}).`);
     error.status = response.status;
+    error.code = code;
     throw error;
   }
   return response.json();
@@ -55,9 +60,11 @@ function IssueControlPanel({ issue, api, onChanged }) {
   const [checkedAt, setCheckedAt] = useState(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [needsObservation, setNeedsObservation] = useState(false);
   const [message, setMessage] = useState('');
   const [choice, setChoice] = useState('');
   const [reason, setReason] = useState('');
+  const [revision, setRevision] = useState({ feedback: '', review_url: '', design_url: '', reviewer: '', review_model: '' });
   const [preview, setPreview] = useState(null);
   const [unresolved, setUnresolved] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem(storageKey) || 'null'); }
@@ -68,11 +75,11 @@ function IssueControlPanel({ issue, api, onChanged }) {
   const previewHeading = useRef(null);
   const statusHeading = useRef(null);
 
-  async function call(suffix, body) {
+  async function call(suffix, body, basePath = path) {
     const controller = new AbortController();
     active.current = controller;
     const timeout = setTimeout(() => controller.abort(), 15000);
-    try { return await api(path + suffix, body, controller.signal); }
+    try { return await api(basePath + suffix, body, controller.signal); }
     finally { clearTimeout(timeout); if (active.current === controller) active.current = null; }
   }
 
@@ -87,6 +94,7 @@ function IssueControlPanel({ issue, api, onChanged }) {
       setPreview((previous) => previous && (!value.actions_enabled || previous.control?.version !== value.version ||
         !value.available_actions.some((item) => actionKey(item) === actionKey(previous.body))) ? null : previous);
       setError('');
+      setNeedsObservation(false);
     } catch (failure) {
       if (mounted.current) { setError('Control state is unavailable or stale. ' + failure.message); setPreview(null); }
     } finally { if (mounted.current) setBusy(''); }
@@ -111,14 +119,36 @@ function IssueControlPanel({ issue, api, onChanged }) {
   }, [preview]);
 
   const actions = (control?.available_actions || []).filter((item) =>
-    ['takeover', 'return'].includes(item.action) && typeof item.label === 'string');
+    ['takeover', 'return', 'revision'].includes(item.action) && typeof item.label === 'string');
   const selected = actions.find((item) => actionKey(item) === choice) || actions[0];
+  const isRevision = selected?.action === 'revision';
+  const revisionAvailable = actions.some((item) => item.action === 'revision');
+  const hasInput = isRevision ? Boolean(revision.feedback.trim()) : Boolean(reason.trim());
+
+  function editRevision(field, value) {
+    setRevision((previous) => ({ ...previous, [field]: value })); setPreview(null);
+  }
+
+  async function inspectPr() {
+    if (active.current || unresolved || !revisionAvailable || (error && !needsObservation)) return;
+    setBusy('inspect'); setPreview(null); setMessage('');
+    try {
+      const value = await call('/revision/inspect', {}, '/api/issues/' + encodeURIComponent(issue));
+      if (!mounted.current) return;
+      if (value.reason !== 'inspection_queued' || typeof value.attempt_id !== 'string') throw new Error('The observation request response is incomplete.');
+      setError(''); setNeedsObservation(false);
+      setMessage('PR observation requested. Refresh control after the observation arrives, then preview revision. This does not start implementation.');
+    } catch (failure) {
+      if (mounted.current) setError('PR observation request could not be confirmed. ' + failure.message);
+    } finally { if (mounted.current) setBusy(''); }
+  }
 
   async function prepare(event) {
     event.preventDefault();
-    if (active.current || unresolved || !selected || !reason.trim()) return;
+    if (active.current || unresolved || !selected || !hasInput) return;
     setBusy('preview'); setPreview(null); setError(''); setMessage('');
-    const body = { action: selected.action, ...(selected.intent ? { intent: selected.intent } : {}), reason: reason.trim() };
+    const body = { action: selected.action, ...(selected.intent ? { intent: selected.intent } : {}), reason: isRevision ? revision.feedback.trim().replace(/\s+/g, ' ').slice(0, 320) : reason.trim(),
+      ...(isRevision ? { revision: Object.fromEntries(Object.entries(revision).map(([key, value]) => [key, value.trim() || null])) } : {}) };
     try {
       const value = await call('/preview', body);
       if (!mounted.current) return;
@@ -126,11 +156,19 @@ function IssueControlPanel({ issue, api, onChanged }) {
       if (value.work_item_key !== issue || value.action !== body.action || (value.intent || '') !== (body.intent || '') ||
           !Number.isFinite(expiry(value.expires_at)) || expiry(value.expires_at) <= Date.now() ||
           typeof value.snapshot_digest !== 'string' || typeof value.preview_token !== 'string') throw new Error('The action preview is incomplete or expired.');
+      if (body.action === 'revision' && value.eligible === true && (
+        typeof value.revision?.feedback !== 'string' || !value.revision.feedback.trim() || typeof value.revision.source_attempt_id !== 'string' ||
+        !/^[0-9a-f]{40}$/.test(value.revision.reviewed_head_sha) || value.revision.reviewed_head_sha !== value.artifact?.head_sha ||
+        !value.artifact?.branch || !prUrl({ job: { pr_url: value.artifact.pr_url, payload: { repo: value.artifact.repository } } })
+      )) throw new Error('The revision preview is incomplete or mismatched.');
       setControl(value.control);
       setCheckedAt(new Date().toISOString());
       setPreview({ ...value, body, action_label: selected.label });
     } catch (failure) {
-      if (mounted.current) setError(failure.message + ' Refresh and preview again; no approval is retained.');
+      if (mounted.current) {
+        setNeedsObservation(failure.code === 'revision_draft_pr_inspection_pending');
+        setError(failure.message + ' Refresh and preview again; no approval is retained.');
+      }
     } finally { if (mounted.current) setBusy(''); }
   }
 
@@ -149,8 +187,9 @@ function IssueControlPanel({ issue, api, onChanged }) {
       sessionStorage.removeItem(storageKey);
       if (!mounted.current) return;
       setControl(value); setUnresolved(null); setReason(''); setChoice('');
+      setRevision({ feedback: '', review_url: '', design_url: '', reviewer: '', review_model: '' });
       setCheckedAt(new Date().toISOString());
-      setMessage(result.message || 'Control change recorded. Current execution ownership is shown below.');
+      setMessage(result.message || (body.action === 'revision' ? 'Revision attempt recorded. The issue, PR and branch are retained; earlier attempt history is preserved.' : 'Control change recorded. Current execution ownership is shown below.'));
       statusHeading.current?.focus();
       onChanged?.();
     } catch (failure) {
@@ -204,24 +243,42 @@ function IssueControlPanel({ issue, api, onChanged }) {
         <label>Control action<select value={selected ? actionKey(selected) : ''} disabled={Boolean(busy)} onChange={(event) => { setChoice(event.target.value); setPreview(null); }}>
           {actions.map((item) => <option key={actionKey(item)} value={actionKey(item)}>{item.label}</option>)}
         </select></label>
-        <label>Reason for this handoff<input required maxLength={320} value={reason} disabled={Boolean(busy)} placeholder="What are you taking over or handing back?" onChange={(event) => { setReason(event.target.value); setPreview(null); }} /></label>
+        {isRevision ? <>
+          <label className="revision-feedback">Revision feedback<textarea required maxLength={6000} rows={5} value={revision.feedback} disabled={Boolean(busy)} placeholder="Describe the review or design changes to make on this draft PR." onChange={(event) => editRevision('feedback', event.target.value)} /></label>
+          <label>Review reference (optional)<input type="url" pattern="https://.*" maxLength={1000} value={revision.review_url} disabled={Boolean(busy)} placeholder="https://…" onChange={(event) => editRevision('review_url', event.target.value)} /></label>
+          <label>Approved design reference (optional)<input type="url" pattern="https://.*" maxLength={1000} value={revision.design_url} disabled={Boolean(busy)} placeholder="https://…" onChange={(event) => editRevision('design_url', event.target.value)} /></label>
+          <details className="revision-review-details"><summary>Optional review attribution</summary>
+            <label>Reviewer (optional)<input maxLength={160} value={revision.reviewer} disabled={Boolean(busy)} onChange={(event) => editRevision('reviewer', event.target.value)} /></label>
+            <label>Review model (optional)<input maxLength={160} value={revision.review_model} disabled={Boolean(busy)} onChange={(event) => editRevision('review_model', event.target.value)} /></label>
+          </details>
+          <p className="muted control-handback-note">Confirming a revision authorizes one new attempt on the existing draft PR. References and attribution are operator attestations; they do not prove independent review or approval.</p>
+        </> : <label>Reason for this handoff<input required maxLength={320} value={reason} disabled={Boolean(busy)} placeholder="What are you taking over or handing back?" onChange={(event) => { setReason(event.target.value); setPreview(null); }} /></label>}
         {selected?.action === 'return' && <p className="muted control-handback-note">Handback authorizes only the selected action. Old queued events do not regain permission; ordinary intake remains fenced for this issue.</p>}
-        <Button type="submit" disabled={Boolean(busy) || Boolean(error) || !reason.trim()}>{busy === 'preview' ? 'Preparing preview…' : 'Preview control change'}</Button>
+        <Button type="submit" disabled={Boolean(busy) || Boolean(error) || !hasInput}>{busy === 'preview' ? 'Preparing preview…' : isRevision ? 'Preview revision' : 'Preview control change'}</Button>
+        {isRevision && <Button disabled={Boolean(busy) || Boolean(error && !needsObservation)} onClick={inspectPr}>Refresh PR observation</Button>}
       </form>}
       {preview && <div className="control-preview">
-        <h4 ref={previewHeading} tabIndex={-1}>Review control change</h4>
+        <h4 ref={previewHeading} tabIndex={-1}>{preview.action === 'revision' ? 'Review revision request' : 'Review control change'}</h4>
         <p>{typeof preview.effect_summary === 'string' ? preview.effect_summary : 'Review the current issue and artifact before confirming.'}</p>
         {preview.intent === 'fresh_attempt' && <p>Requires a current Ready, unblocked Linear issue and a fresh inspection of any prior PR. This starts fresh work; it does not continue or verify manual edits.</p>}
         <dl>
           <dt>Issue / action</dt><dd>{issue} / {preview.action_label}</dd>
-          <dt>Reason</dt><dd>{preview.body.reason}</dd>
+          {preview.action !== 'revision' && <><dt>Reason</dt><dd>{preview.body.reason}</dd></>}
           <dt>Pull request</dt><dd>{artifactUrl ? <ExternalLink href={artifactUrl}>{artifactUrl}</ExternalLink> : 'No supported pull request returned'}</dd>
           <dt>Target branch / commit</dt><dd>{artifact?.branch || 'Unavailable'} / {artifact?.head_sha || 'Unavailable'}</dd>
+          {preview.action === 'revision' && <>
+            <dt>Source attempt</dt><dd>{preview.revision?.source_attempt_id || 'Unavailable'}</dd>
+            <dt>Revision feedback</dt><dd className="revision-copy">{preview.revision?.feedback || preview.body.revision.feedback}</dd>
+            <dt>Review reference (operator attestation)</dt><dd>{referenceLink((preview.revision || preview.body.revision).review_url)}</dd>
+            <dt>Approved design reference (operator attestation)</dt><dd>{referenceLink((preview.revision || preview.body.revision).design_url)}</dd>
+            <dt>Reviewer / model (operator attestation)</dt><dd>{(preview.revision || preview.body.revision).reviewer || 'Not supplied'} / {(preview.revision || preview.body.revision).review_model || 'Not supplied'}</dd>
+          </>}
           {preview.action === 'return' && <><dt>Linear observation used for handback</dt><dd>{time(preview.linear_observed_at)}</dd></>}
           <dt>Preview expires</dt><dd>{time(expiry(preview.expires_at))}</dd>
         </dl>
         {Array.isArray(preview.blockers) && preview.blockers.length > 0 && <ul>{preview.blockers.map((item, index) => <li key={index}>{typeof item === 'string' ? item : item.message || item.reason || 'Operator inspection required'}</li>)}</ul>}
-        {preview.eligible === true ? <div className="control-buttons"><Button disabled={Boolean(busy)} onClick={() => confirm()}>Confirm {preview.action === 'takeover' ? 'manual takeover' : 'return to Factory'}</Button><Button disabled={Boolean(busy)} onClick={() => setPreview(null)}>Dismiss preview</Button></div>
+        {preview.action === 'revision' && <p>Confirmation preserves earlier attempt history and pins this PR, branch and full commit. Factory must verify the new attempt separately. Independent review is not verified by these references.</p>}
+        {preview.eligible === true ? <div className="control-buttons"><Button disabled={Boolean(busy)} onClick={() => confirm()}>Confirm {preview.action === 'takeover' ? 'manual takeover' : preview.action === 'revision' ? 'revision attempt' : 'return to Factory'}</Button><Button disabled={Boolean(busy)} onClick={() => setPreview(null)}>Dismiss preview</Button></div>
           : <p>This action is blocked. No control change has been made.</p>}
       </div>}
       <details className="control-audit"><summary>Ownership audit history ({control.history.length})</summary>
@@ -233,6 +290,11 @@ function IssueControlPanel({ issue, api, onChanged }) {
       </details>
     </>}
   </section>;
+}
+
+function referenceLink(value) {
+  const url = referenceUrl(value);
+  return url ? <ExternalLink href={url}>{url}</ExternalLink> : value ? 'Unsupported reference' : 'Not supplied';
 }
 
 function recoveryGuidance(state) {

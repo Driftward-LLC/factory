@@ -66,12 +66,16 @@ def _authorize(request: Request) -> str:
 
 
 def _body(value: Any, *, confirm: bool) -> dict[str, Any]:
-    fields = {"action", "intent", "reason"} | ({"snapshot_digest", "preview_token", "request_id"} if confirm else set())
+    fields = {"action", "intent", "reason", "revision"} | ({"snapshot_digest", "preview_token", "request_id"} if confirm else set())
     if not isinstance(value, dict) or set(value) - fields:
         raise store.BridgeValidationError("Unsupported issue control fields")
     action, intent, reason = value.get("action"), value.get("intent"), value.get("reason")
-    if not isinstance(action, str) or action not in {"takeover", "return"} or (intent != "fresh_attempt" if action == "return" else intent is not None):
+    if not isinstance(action, str) or action not in {"takeover", "return", "revision"} or (intent != "fresh_attempt" if action == "return" else intent is not None):
         raise store.BridgeValidationError("Unsupported issue control action or handback intent")
+    if action == "revision":
+        value = {**value, "revision": store.validate_factory_revision(value.get("revision"))}
+    elif "revision" in value:
+        raise store.BridgeValidationError("Revision fields require the revision action")
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 320 or any(ord(char) < 32 for char in reason):
         raise store.BridgeValidationError("A reason of 1–320 characters is required")
     if confirm:
@@ -95,6 +99,8 @@ def projection(control: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
     actions: list[dict[str, str]] = []
     if enabled and control["mode"] == "factory":
         actions = [{"action": "takeover", "label": "Take manual control"}]
+        if control.get("revision_available"):
+            actions.append({"action": "revision", "label": "Revise existing draft PR"})
     elif enabled and control["mode"] == "manual":
         actions = [{"action": "return", "intent": "fresh_attempt", "label": "Return for a fresh attempt"}]
     return {
@@ -121,18 +127,33 @@ class IssueControl:
         try:
             with conn:
                 conn.execute("BEGIN")
-                return store.get_factory_issue_control(conn, issue)
+                control = store.get_factory_issue_control(conn, issue)
+                try:
+                    store.factory_revision_source(conn, issue)
+                    control["revision_available"] = os.environ.get("HATCHET_INTAKE_DRY_RUN", "true").strip().lower() == "false"
+                except store.BridgeError:
+                    control["revision_available"] = False
+                return control
         finally:
             conn.close()
 
     def _context(self, issue: str, actor: str, value: dict[str, Any]) -> dict[str, Any]:
         control = self.read(issue)
         action = value["action"]
-        if (action == "takeover" and control["mode"] != "factory") or (action == "return" and control["mode"] != "manual"):
+        if (action in {"takeover", "revision"} and control["mode"] != "factory") or (action == "return" and control["mode"] != "manual"):
             raise store.BridgeConflict("Issue control changed; refresh before approving")
         context = {"issue": issue, "actor": actor, "action": action, "intent": value.get("intent"), "reason": value["reason"],
                    "control": control, "mode": "real" if os.environ.get("HATCHET_INTAKE_DRY_RUN", "true").strip().lower() == "false" else "dry-run"}
-        if action == "return":
+        if action == "revision":
+            if not self.ingress_db_path or context["mode"] != "real":
+                raise store.BridgeConflict("revision requires real execution mode and trusted ingress")
+            preview = operator.preview_revision(bridge_db=self.db_path, ingress_db=self.ingress_db_path, issue=issue,
+                registry_path=os.environ.get("HATCHET_INTAKE_ROUTING_REGISTRY_PATH", operator.DOCKER_ROUTING_REGISTRY),
+                policy_path=os.environ.get("HATCHET_VERIFIER_POLICY_PATH", operator.DOCKER_VERIFIER_POLICY), revision=value["revision"])
+            context["retry"] = preview
+            context["revision_input"] = value["revision"]
+            context["payload"] = operator.revision_payload(preview, operator._policy(preview["repository"], os.environ.get("HATCHET_VERIFIER_POLICY_PATH", operator.DOCKER_VERIFIER_POLICY)))
+        elif action == "return":
             if not self.ingress_db_path:
                 raise operator.OperatorError("trusted_ingress_unavailable")
             conn = store.connect_readonly(self.db_path)
@@ -169,11 +190,14 @@ class IssueControl:
         artifact = retry.get("prior_pr")
         summary = ("Hold this issue, cancel queued work, and request running work to settle. Wait for Safe to edit before changing code."
                    if value["action"] == "takeover" else
+                   "Reserve one new immutable revision attempt on this existing draft PR and branch at the displayed commit. Supplied review and design references are operator attestations, not proof an independent review ran or passed. Required verification returns evidence for handoff."
+                   if value["action"] == "revision" else
                    f"Reserve one new {context['mode']} attempt from the latest Ready observation, with configured verification and repair policy. Old events stay fenced. This does not discover, adopt, continue, or verify manually created artifacts; reconcile those before confirming.")
         return {"eligible": True, "work_item_key": issue, "action": value["action"], "intent": value.get("intent"),
                 "snapshot_digest": digest, "preview_token": token, "expires_at": expires,
                 "control": projection(control, enabled=True), "effect_summary": summary,
                 "linear_observed_at": retry.get("snapshot_updated_at"),
+                "revision": {**retry["revision"], "source_attempt_id": retry["prior_attempt_id"], "source_job_id": retry["source_job_id"]} if value["action"] == "revision" else None,
                 "artifact": {"pr_url": artifact["url"], "head_sha": artifact["head_sha"], "branch": artifact["head_branch"], "repository": retry["repository"]} if artifact else None}
 
     def confirm(self, issue: str, actor: str, value: dict[str, Any]) -> dict[str, Any]:
@@ -197,6 +221,42 @@ class IssueControl:
         command = {"work_item_key": issue, "request_id": value["request_id"], "actor": actor, "reason": value["reason"],
                    "expected_revision": claims["revision"], "expected_snapshot_digest": claims["store_digest"],
                    "command_context_digest": _digest({"snapshot_digest": value["snapshot_digest"], "preview_token": token})}
+        if value["action"] == "revision":
+            request_id = f"console-revision:{value['request_id']}"
+            command_digest = _digest({"issue": issue, "request_id": request_id, "actor": actor, "reason": value["reason"], "revision": value["revision"],
+                "snapshot_digest": value["snapshot_digest"], "preview_token": token})
+            def committed_replay() -> dict[str, Any] | None:
+                conn = store.connect_readonly(self.db_path)
+                try:
+                    previous = store.get_factory_revision_replay(conn, work_item_key=issue, request_id=request_id, actor=actor, reason=value["reason"], command_digest=command_digest)
+                    return self._result({**previous, "control": self.read(issue)}, value["request_id"]) if previous else None
+                finally:
+                    conn.close()
+            previous = committed_replay()
+            if previous is not None:
+                return previous
+            try:
+                if not hmac.compare_digest(signature, hmac.new(self._key, encoded.encode(), hashlib.sha256).hexdigest()):
+                    raise store.BridgeConflict("Preview is no longer valid; preview again")
+                if claims["expires"] <= time.time():
+                    raise HTTPException(410, "Preview expired; preview again")
+                context = self._context(issue, actor, value)
+                if _digest(context) != claims["digest"]:
+                    raise store.BridgeConflict("Issue, policy, or artifact changed; preview again")
+                conn = store.connect_runtime(self.db_path)
+                try:
+                    retry = context["retry"]
+                    attempt, job, created = store.reserve_factory_revision(conn, work_item_key=issue, request_id=request_id, actor=actor, reason=value["reason"],
+                        payload=context["payload"], source_attempt_id=retry["prior_attempt_id"], expected_control_digest=claims["store_digest"], command_digest=command_digest)
+                    return self._result({"attempt": attempt, "control": self.read(issue)}, value["request_id"])
+                finally:
+                    conn.close()
+            except (store.BridgeError, HTTPException):
+                # A peer may commit after our first lookup but before revalidation.
+                previous = committed_replay()
+                if previous is not None:
+                    return previous
+                raise
         conn = store.connect_readonly(self.db_path)
         try:
             previous = store.get_factory_issue_control_command(conn, **command, action="take_control" if value["action"] == "takeover" else "return_control")
@@ -249,6 +309,15 @@ def install_issue_control_routes(app: FastAPI, db_path: str, ingress_db_path: st
             return json.loads(raw, object_pairs_hook=_unique_object)
         except (ValueError, UnicodeError) as exc:
             raise HTTPException(400, "Issue control requires valid JSON") from exc
+
+    @app.post("/api/issues/{issue}/revision/inspect")
+    async def inspect_revision(issue: str, request: Request) -> dict[str, Any]:
+        _authorize(request)
+        if await command_body(request) != {}:
+            raise HTTPException(400, "PR observation accepts no additional fields")
+        return await run_in_threadpool(operator.inspect_revision, bridge_db=db_path, ingress_db=ingress_db_path,
+            registry_path=os.environ.get("HATCHET_INTAKE_ROUTING_REGISTRY_PATH", operator.DOCKER_ROUTING_REGISTRY),
+            policy_path=os.environ.get("HATCHET_VERIFIER_POLICY_PATH", operator.DOCKER_VERIFIER_POLICY), issue=issue)
 
     @app.post("/api/issues/{issue}/control/preview")
     async def preview(issue: str, request: Request) -> dict[str, Any]:

@@ -68,10 +68,47 @@ async function main() {
     assert.match(await panel.locator('.control-audit').textContent(), /Return to Factory/);
     assert.deepEqual(errors, []);
     await page.screenshot({ path: join(tmpdir(), 'factory-control-real-backend.png'), fullPage: true });
-    const result = nextLine(); fixture.stdin.end('verify\n');
+    const result = nextLine(); fixture.stdin.write('verify\n');
     assert.deepEqual(await result, { verified: true, attempts: 1, outbox: 1, history: 2 });
+    const seeded = nextLine(); fixture.stdin.write('seed_revision\n');
+    const source = await seeded;
+    await page.locator('#refresh-button').click();
+    await page.locator('#issue-attempts tr').filter({ hasText: 'Verified (recorded)' }).waitFor();
+    await panel.getByRole('button', { name: 'Refresh control' }).click();
+    await panel.getByLabel('Control action').selectOption('revision:');
+    await panel.getByLabel('Revision feedback').fill('Apply the approved design feedback.\nPreserve keyboard navigation.');
+    await page.waitForFunction(() => document.querySelector('.control-form button[type="submit"]').disabled === false);
+    assert.deepEqual(await panel.locator('.control-form').evaluate((form) => [...form.elements].filter((el) => el.validity && !el.validity.valid).map((el) => ({ value: el.value, message: el.validationMessage }))), []);
+    await panel.getByRole('button', { name: 'Preview revision', exact: true }).focus();
+    assert.equal(await panel.getByRole('button', { name: 'Preview revision', exact: true }).evaluate((el) => el === document.activeElement), true);
+    const [revisionReply] = await Promise.all([
+      page.waitForResponse((response) => response.url().endsWith('/control/preview')),
+      page.keyboard.press('Enter'),
+    ]);
+    assert.equal(revisionReply.status(), 200, await revisionReply.text());
+    await page.waitForFunction(() => document.querySelector('.control-preview') || !document.querySelector('.issue-control .notice').hidden);
+    assert.equal(await panel.locator('.notice').isHidden(), true, await panel.locator('.notice').textContent());
+    const revisionConfirm = panel.getByRole('button', { name: 'Confirm revision attempt' });
+    await revisionConfirm.waitFor().catch(async (error) => { console.error(await panel.textContent()); throw error; });
+    assert.match(await panel.locator('.control-preview').textContent(), new RegExp(source.source_attempt_id));
+    assert.match(await panel.locator('.control-preview').textContent(), new RegExp(source.head_sha));
+    await page.screenshot({ path: join(process.env.FACTORY_UI_EVIDENCE_DIR || tmpdir(), 'factory-revision-real-backend-preview.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(process.env.FACTORY_UI_EVIDENCE_DIR || tmpdir(), 'factory-revision-real-backend-preview-mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 960 });
+    await revisionConfirm.evaluate((el) => { el.click(); el.click(); });
+    await panel.getByText(/Revision attempt recorded/).waitFor();
+    await page.locator('#issue-attempts tr').filter({ hasText: 'Revision' }).waitFor();
+    assert.match(await page.getByRole('region', { name: 'Revision lineage' }).textContent(), /operator attestations/);
+    await page.screenshot({ path: join(process.env.FACTORY_UI_EVIDENCE_DIR || tmpdir(), 'factory-revision-real-backend-history.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: join(process.env.FACTORY_UI_EVIDENCE_DIR || tmpdir(), 'factory-revision-real-backend-history-mobile.png'), fullPage: true });
+    assert.deepEqual(errors, []);
+    const revisionResult = nextLine(); fixture.stdin.end('verify_revision\n');
+    assert.deepEqual(await revisionResult, { verified_revision: true, attempts: 2, outbox: 2, source_immutable: true });
     const code = fixture.exitCode ?? (await once(fixture, 'exit'))[0]; assert.equal(code, 0);
-    console.log('Real-backend browser check passed: authenticated preview/confirm takeover, safe handoff, return, one attempt/outbox, actor audit.');
+    console.log('Real-backend browser check passed: authenticated takeover/handback and revision preview/confirm, feedback-only request, one new attempt/outbox, same PR/branch, immutable source, actor audit. Synthetic stored PR observation; no live provider execution.');
   } finally {
     if (browser) await browser.close();
     if (fixture && fixture.exitCode === null) { fixture.stdin.end(); fixture.kill(); }

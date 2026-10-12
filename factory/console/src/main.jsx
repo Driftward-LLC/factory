@@ -40,6 +40,8 @@ import {
   needsInspection,
   verificationStates,
   nextAction,
+  attemptKind,
+  referenceUrl,
 } from './model.js';
 
 function useRoute() {
@@ -219,11 +221,12 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
                   <tr key={attempt.attempt_id}>
                     <td>
                       {detail ? (
-                        (attempt.generation ?? 'Unknown')
+                        <>{attempt.generation ?? 'Unknown'}<small>{attemptKind(record)}</small>{attempt.prior_attempt_id && <small>From {attempt.prior_attempt_id}</small>}</>
                       ) : (
                         <>
                           <IssueLink issue={attempt.work_item_key} {...navigation} />
                           <small>{repository(record) || 'Repository unavailable'}</small>
+                          <small>{attemptKind(record)}</small>
                         </>
                       )}
                     </td>
@@ -279,6 +282,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
                   <Pill status={attempt.status} />
                 </div>
                 <p className="attempt-action">{nextAction(record)}</p>
+                <p className="attempt-action">{attemptKind(record)}{attempt.prior_attempt_id ? ' · From ' + attempt.prior_attempt_id : ''}</p>
                 <AgentTrace record={record} />
                 {!detail && issuePattern.test(attempt.work_item_key) && (
                   <RouteLink
@@ -783,8 +787,11 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
     .slice(0, 80);
   const details = [
     ['Attempt ID', attempt.attempt_id],
+    ['Attempt kind', attemptKind(record)],
+    ['Source attempt', attempt.prior_attempt_id],
     ['Job ID', job.job_id],
     ['Branch', job.branch || attempt.branch],
+    ...(record.attempt_kind === 'revision' ? [['Reservation branch identifier', attempt.branch]] : []),
     ['Recorded commit SHA (not live verification)', job.commit_sha],
     ['Job state', job.state],
     ['Lease state', record.execution_lease?.status],
@@ -855,6 +862,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
             <Pill status={attempt.status} />
           </SummaryItem>
           <SummaryItem title="Repository">{repository(record)}</SummaryItem>
+          <SummaryItem title="Attempt kind">{attemptKind(record)}</SummaryItem>
           <SummaryItem title="Generation / mode">
             {String(attempt.generation ?? '—') + ' / ' + label(attempt.mode)}
           </SummaryItem>
@@ -875,6 +883,19 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
           live GitHub state or review approval.
         </p>
         <VerificationEvidence evidence={value?.verification_evidence} attemptId={attempt.attempt_id} />
+        {record.revision && <section className="verification-evidence" aria-label="Revision lineage">
+          <h3>Revision request</h3>
+          <p className="muted">A separate attempt on the same PR and branch. Review and design references below are operator attestations, not independently verified review evidence.</p>
+          <dl>
+            <dt>Source attempt</dt><dd>{record.revision.source_attempt_id || 'Unavailable'}</dd>
+            <dt>Pinned source commit</dt><dd>{record.revision.reviewed_head_sha || 'Unavailable'}</dd>
+            <dt>Execution branch</dt><dd>{job.branch || record.revision.branch || 'Unavailable'}</dd>
+            <dt>Feedback</dt><dd className="revision-copy">{record.revision.feedback || 'Unavailable'}</dd>
+            {['review_url', 'design_url'].map((key) => <Fragment key={key}><dt>{key === 'review_url' ? 'Review reference' : 'Approved design reference'} (operator attestation)</dt><dd>{referenceUrl(record.revision[key]) ? <ExternalLink href={referenceUrl(record.revision[key])}>{record.revision[key]}</ExternalLink> : record.revision[key] ? 'Unsupported reference' : 'Not supplied'}</dd></Fragment>)}
+            <dt>Reviewer / model (operator attestation)</dt><dd>{record.revision.reviewer || 'Not supplied'} / {record.revision.review_model || 'Not supplied'}</dd>
+            <dt>Authorized by</dt><dd>{record.revision.approved_by || 'Unavailable'}</dd>
+          </dl>
+        </section>}
         </>}
         <div className="detail-grid">
           <section>

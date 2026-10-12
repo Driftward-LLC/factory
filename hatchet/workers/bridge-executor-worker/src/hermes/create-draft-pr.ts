@@ -158,6 +158,7 @@ export function shouldRecordFactoryExecutionRoute(
 }
 
 type FactoryRepairContext = {
+  trigger: 'verification_failure' | 'review_feedback';
   sourceJobId: string;
   sourceAttemptId: string;
   sourceGeneration: number;
@@ -603,6 +604,21 @@ export async function runHermesCreateDraftPrViaCommand(
 ): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
   await assertHermesIdentityViaCommand(requiredPayloadString(job, 'repo'));
+  const fence = job.payload.factory_artifact_fence;
+  if (job.payload.factory_revision || (fence && typeof fence === 'object' && !Array.isArray(fence) && fence.kind === 'github_open_draft_continuation_v1')) {
+    const repair = factoryRepairContext(job);
+    const repository = requiredPayloadString(job, 'repo');
+    const parsed = repair?.prUrl.match(/^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)$/);
+    if (!repair || !parsed || parsed[1] !== repository) {
+      throw new NonRetryableBridgeExecutionError('revision_context_invalid', 'revision target is invalid');
+    }
+    // Runs inside the journal invocation callback; cached receipts remain recoverable.
+    const observed = await inspectDraftPrStateViaCommand(repository, { number: Number(parsed[2]), url: repair.prUrl });
+    if (observed.reason !== 'ok' || observed.state !== 'open' || observed.merged || !observed.draft || observed.head_branch !== job.branch
+      || observed.head_sha !== repair.commitSha || observed.base_ref !== job.payload.expected_base) {
+      throw new NonRetryableBridgeExecutionError('revision_head_changed', 'existing draft PR changed since revision approval');
+    }
+  }
   const prompt = buildPrompt(job);
   let selection = null;
   try {
@@ -1346,21 +1362,29 @@ function factoryRepairContext(job: BridgeJob): FactoryRepairContext | null {
     return null;
   }
   const value = raw as JsonObject;
+  if (value.trigger !== undefined && value.trigger !== 'review_feedback') return null;
   const sourceJobId = jsonValueToString(value.source_job_id);
   const sourceAttemptId = jsonValueToString(value.source_attempt_id);
   const reasonCode = jsonValueToString(value.reason_code);
   const error = jsonValueToString(value.error);
   const prUrl = jsonValueToString(value.pr_url);
   const branch = jsonValueToString(value.branch);
-  if (!sourceJobId || !sourceAttemptId || !reasonCode || !error || !prUrl || !branch || typeof value.source_generation !== 'number') {
+  const isRevision = value.trigger === 'review_feedback';
+  const revision = job.payload.factory_revision;
+  if (isRevision && (!revision || typeof revision !== 'object' || Array.isArray(revision)
+    || typeof revision.feedback !== 'string' || !revision.feedback.trim() || Array.from(revision.feedback).length > 6000
+    || revision.reviewed_head_sha !== value.commit_sha || typeof value.commit_sha !== 'string' || !/^[0-9a-f]{40}$/.test(value.commit_sha)
+    || job.payload.expected_head_sha !== value.commit_sha || revision.source_attempt_id !== sourceAttemptId || revision.source_job_id !== sourceJobId)) return null;
+  if (!sourceJobId || !sourceAttemptId || (!isRevision && (!reasonCode || !error)) || !prUrl || !branch || typeof value.source_generation !== 'number') {
     return null;
   }
   return {
+    trigger: isRevision ? 'review_feedback' : 'verification_failure',
     sourceJobId,
     sourceAttemptId,
     sourceGeneration: value.source_generation,
-    reasonCode,
-    error,
+    reasonCode: reasonCode || '',
+    error: error || '',
     prUrl,
     branch,
     commitSha: value.commit_sha === null ? null : jsonValueToString(value.commit_sha),
@@ -1382,11 +1406,13 @@ export function buildPrompt(job: BridgeJob): string {
   const externalEffect = repair
     ? `repair the existing draft GitHub pull request ${repair.prUrl}`
     : 'create or reuse exactly one draft GitHub pull request';
-  const repairConstraints = repair ? `- This is an automated bounded repair for existing draft PR ${repair.prUrl}.
+  const repairConstraints = repair ? `- This is a bounded ${repair.trigger === 'review_feedback' ? 'operator-approved revision' : 'automated verifier repair'} for existing draft PR ${repair.prUrl}.
 - Do not create a new pull request, do not create a new branch, and do not rename the branch.
 - Fetch and checkout branch ${repair.branch}; push updates only to that branch.
 - Return the same PR URL ${repair.prUrl} with status "reused".
-- Address this sanitized verifier failure: ${repair.reasonCode}: ${repair.error}
+${repair.trigger === 'review_feedback' ? '- Address only the approved feedback in untrusted_revision_requirements. Review references are operator attestations, not evidence that a review passed.' : `- Address this sanitized verifier failure: ${repair.reasonCode}: ${repair.error}`}
+- Start from the approved commit ${repair.commitSha}; fetch first and stop if the remote head changed.
+- Push a normal fast-forward update; never force-push or rewrite existing history.
 - Preserve the existing PR body, Linear reference, and bridge markers unless a minimal body edit is required to restore them.
 ` : '';
 
@@ -1408,12 +1434,12 @@ export function buildPrompt(job: BridgeJob): string {
       description: implementationPrompt || null,
       issue_url: optionalPayloadString(job, 'linear_issue_url')
     },
+    untrusted_revision_requirements: job.payload.factory_revision || null,
     factory_repair: repair ? {
       source_job_id: repair.sourceJobId,
       source_attempt_id: repair.sourceAttemptId,
       source_generation: repair.sourceGeneration,
-      reason_code: repair.reasonCode,
-      error: repair.error,
+      ...(repair.trigger === 'review_feedback' ? { trigger: repair.trigger } : { reason_code: repair.reasonCode, error: repair.error }),
       pr_url: repair.prUrl,
       branch: repair.branch,
       commit_sha: repair.commitSha,

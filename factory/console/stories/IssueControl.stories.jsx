@@ -12,15 +12,18 @@ function fixture(options = {}) {
   return async (path, body) => {
     if (options.unavailable) throw new Error('Fictional control service unavailable.');
     if (!body) return control;
+    if (path.endsWith('/revision/inspect')) return { created: true, reason: 'inspection_queued', attempt_id: 'fictional-source-attempt' };
     if (path.endsWith('/preview')) return {
       eligible: !options.blocked, work_item_key: control.work_item_key, action: body.action, intent: body.intent,
-      snapshot_digest: 'a'.repeat(64), preview_token: 'fictional-preview', expires_at: new Date(Date.now() + 300000).toISOString(), control,
+      snapshot_digest: 'a'.repeat(64), preview_token: 'fictional-preview', expires_at: new Date(Date.now() + (options.expired ? 1000 : 300000)).toISOString(), control,
       effect_summary: body.action === 'takeover'
         ? 'Hold this issue, fence new execution and request cancellation. Manual editing remains unsafe until the authority confirms handoff.'
-        : 'Validate current evidence and authorize one fresh attempt. Old queued events remain fenced.',
+        : body.action === 'revision' ? 'Authorize one new immutable revision attempt on this draft PR and branch. Earlier attempt history is preserved.' : 'Validate current evidence and authorize one fresh attempt. Old queued events remain fenced.',
       blockers: options.blocked ? ['An earlier execution has an unresolved external effect.'] : [],
-      artifact: { pr_url: 'https://github.com/example/project/pull/12', branch: 'factory/ENG-901', head_sha: 'b'.repeat(40) },
+      artifact: { pr_url: 'https://github.com/example/project/pull/12', repository: 'example/project', branch: 'factory/ENG-901', head_sha: 'b'.repeat(40) },
+      revision: body.revision && { ...body.revision, reviewed_head_sha: 'b'.repeat(40), source_attempt_id: 'fictional-source-attempt', source_job_id: 'fictional-source-job' },
     };
+    if (options.ambiguous) throw new Error('Fictional ambiguous confirmation response.');
     if (options.conflict) { const error = new Error('The issue changed. Preview again.'); error.status = 409; throw error; }
     control = { ...control, status: body.action === 'takeover' ? 'handoff_pending' : 'factory', version: control.version + 1,
       safe_to_edit: false, reason: body.reason, available_actions: [],
@@ -43,3 +46,9 @@ export const ReadOnly = { args: { api: fixture({ control: { actions_enabled: fal
 export const BlockedPreview = { args: { api: fixture({ blocked: true }) } };
 export const ConcurrentChange = { args: { api: fixture({ conflict: true }) } };
 export const Unavailable = { args: { api: fixture({ unavailable: true }) } };
+const revisionControl = { available_actions: [{ action: 'revision', label: 'Revise existing draft PR' }] };
+export const RevisionReady = { args: { api: fixture({ control: revisionControl }) } };
+export const RevisionBlocked = { args: { api: fixture({ control: revisionControl, blocked: true }) } };
+export const RevisionExpired = { args: { api: fixture({ control: revisionControl, expired: true }) } };
+export const RevisionAmbiguous = { args: { issue: 'ENG-902', api: fixture({ control: { ...revisionControl, work_item_key: 'ENG-902' }, ambiguous: true }) } };
+export const RevisionUnavailable = { args: { api: fixture({ control: revisionControl, unavailable: true }) } };

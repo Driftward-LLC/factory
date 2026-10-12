@@ -24,6 +24,7 @@ RESERVATION_KINDS = {
     "retry_reserved": "retry",
     "absence_retry_reserved": "absence_retry",
     "repair_reserved": "repair",
+    "revision_reserved": "revision",
     "legacy_imported": "legacy",
 }
 TERMINAL_ATTEMPT_EVENTS = {
@@ -370,7 +371,7 @@ def factory_analytics(
         "recovery": {
             "by_attempt_kind": {
                 key: {"attempts": reservation_counts.get(key, 0), "verified": verified_by_kind.get(key, 0)}
-                for key in ("initial", "retry", "absence_retry", "repair", "unknown")
+                for key in ("initial", "retry", "absence_retry", "repair", "revision", "unknown")
             },
             "repair_budgets_exhausted": repair_budgets,
             **recovery,

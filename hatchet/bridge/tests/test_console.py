@@ -86,6 +86,21 @@ class AgentTraceProjectionTests(unittest.TestCase):
         self.assertEqual(self.trace()["status"], "setup_failed")
         self.assertIsNone(self.trace()["url"])
 
+    def test_revision_projection_requires_durable_kind_and_matching_lineage(self):
+        self.record["attempt"]["prior_attempt_id"] = "source-attempt"
+        self.record["job"]["payload"]["factory_revision"] = {
+            "source_attempt_id": "source-attempt", "approval_kind": "operator_attestation",
+            "feedback": "Apply review feedback", "review_model": "review-model", "private_extra": "hidden",
+        }
+        self.assertIsNone(_with_agent_trace(self.record, self.conn)["revision"])
+        self.conn.execute("INSERT INTO factory_attempt_events VALUES (?,?,?,?)", (self.attempt_id, "revision_reserved", "2026-10-01T00:00:00Z", "revision"))
+        projected = _with_agent_trace(self.record, self.conn)
+        self.assertEqual(projected["attempt_kind"], "revision")
+        self.assertEqual(projected["revision"]["feedback"], "Apply review feedback")
+        self.assertNotIn("private_extra", projected["revision"])
+        self.record["attempt"]["prior_attempt_id"] = "wrong-source"
+        self.assertIsNone(_with_agent_trace(self.record, self.conn)["revision"])
+
 
 class FactoryConsoleTests(unittest.TestCase):
     def setUp(self):
