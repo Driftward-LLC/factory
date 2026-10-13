@@ -16,7 +16,8 @@ import {
   LockClosedIcon,
   ActivityLogIcon,
 } from '@driftward/ui/icons';
-import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark } from '@driftward/ui';
+import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark,
+  FactoryTheme, Card, Heading, TextInput, EmptyState, Link } from '@driftward/ui';
 import Analytics from './Analytics.jsx';
 import VerificationEvidence from './VerificationEvidence.jsx';
 import IssueControl from './IssueControl.jsx';
@@ -149,7 +150,8 @@ function Pill({ status }) {
 }
 function RouteLink({ route, navigate, changes, children, ...props }) {
   return (
-    <a
+    <Link
+      type="inherit" color="inherit"
       {...props}
       href={routeUrl({ ...route, ...changes })}
       onClick={(event) => {
@@ -160,7 +162,7 @@ function RouteLink({ route, navigate, changes, children, ...props }) {
       }}
     >
       {children}
-    </a>
+    </Link>
   );
 }
 function IssueLink({ issue, ...navigation }) {
@@ -209,7 +211,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
             {!records.length ? (
               <tr>
                 <td colSpan={detail ? 5 : 6} className="empty">
-                  {empty}
+                  <EmptyState title={empty} isCompact />
                 </td>
               </tr>
             ) : (
@@ -230,6 +232,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
                     <td>
                       <Pill status={attempt.status} />
                       {!detail && <small>Generation {attempt.generation ?? 'unknown'}</small>}
+                      {!detail && <small className="attempt-guidance">{nextAction(record)}</small>}
                     </td>
                     <td>
                       {attempt.mode === 'dry-run'
@@ -264,7 +267,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
         aria-label={detail ? 'Issue attempt history' : 'Factory attempts'}
       >
         {!records.length ? (
-          <li className="empty">{empty}</li>
+          <li className="empty"><EmptyState title={empty} isCompact /></li>
         ) : (
           records.map((record) => {
             const attempt = record.attempt || {};
@@ -379,10 +382,11 @@ function Overview({ overview, error, stale, ...navigation }) {
       <section className="review-section" aria-labelledby="review-title">
         <div className="section-heading">
           <div>
-            <h2 id="review-title">Needs review</h2>
+            <Heading level={2} id="review-title">Needs review</Heading>
             <p className="muted">All modes · active + most recent 30 attempts</p>
           </div>
         </div>
+        <Card className="review-group" padding={0}>
         <ul className="review-queues">
           {queues.map(([status, title, description, total]) => (
             <li key={status}>
@@ -410,16 +414,17 @@ function Overview({ overview, error, stale, ...navigation }) {
             </li>
           ))}
         </ul>
+        </Card>
       </section>
       <section className="panel" aria-labelledby="active-title">
         <div className="section-heading">
           <div>
-            <h2 id="active-title">
+            <Heading level={2} id="active-title">
               Active work{' '}
               <span className="heading-count">
                 {overview ? count(overview.active_attempts.length) : '—'}
               </span>
-            </h2>
+            </Heading>
             <p className="muted">Execution and verification, ordered by attention needed.</p>
           </div>
           <RouteLink
@@ -460,7 +465,7 @@ function Overview({ overview, error, stale, ...navigation }) {
         <section className="panel" aria-labelledby="recent-title">
           <div className="section-heading">
             <div>
-              <h2 id="recent-title">Recent activity</h2>
+              <Heading level={2} id="recent-title">Recent activity</Heading>
               <p className="muted">
                 Latest 8 attempts · outcomes are recorded, not live PR status.
               </p>
@@ -494,9 +499,9 @@ function Overview({ overview, error, stale, ...navigation }) {
         <aside className="system-summary" aria-label="System and ledger">
           <section className="attention-section" aria-labelledby="attention-title">
             <div className="section-heading">
-              <h2 id="attention-title">
+              <Heading level={2} id="attention-title">
                 <ActivityLogIcon aria-hidden="true" /> System status
-              </h2>
+              </Heading>
             </div>
             <div className="signals">
               <article className="signal" data-attention={reconciliation?.actionable > 0}>
@@ -630,7 +635,7 @@ function Work({ records, available, error, route, navigate }) {
     <section className="panel" aria-labelledby="work-title">
       <div className="section-heading">
         <div>
-          <h2 id="work-title">Active &amp; recent attempts</h2>
+          <Heading level={2} id="work-title">Active &amp; recent attempts</Heading>
           <p className="muted">
             All active attempts plus the most recent 30. Filters apply to this returned set, not the
             full Linear backlog.
@@ -664,17 +669,14 @@ function Work({ records, available, error, route, navigate }) {
         aria-label="Filter returned attempts"
         onSubmit={(event) => event.preventDefault()}
       >
-        <label className="search-filter" htmlFor="work-query">
-          Search
-          <input
+          <TextInput label="Search" containerClassName="search-filter"
             id="work-query"
-            type="search"
+            startIcon={<MagnifyingGlassIcon aria-hidden="true" />}
             placeholder="Issue, repository, branch"
             autoComplete="off"
             value={route.q}
-            onChange={(event) => navigate({ q: event.target.value.slice(0, 200) }, true)}
+            onChange={(value) => navigate({ q: value.slice(0, 200) }, true)}
           />
-        </label>
         <Button
           className="filter-toggle"
           type="button"
@@ -763,7 +765,7 @@ function Work({ records, available, error, route, navigate }) {
     </section>
   );
 }
-function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
+function IssueDetail({ issue, snapshot, onClose, onControlChange, returnView }) {
   const heading = useRef(null);
   useEffect(() => {
     if (issue) heading.current?.focus();
@@ -804,9 +806,9 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
     >
       <div className="section-heading">
         <div>
-          <h2 id="issue-title" ref={heading} tabIndex={-1}>
+          <Heading level={2} id="issue-title" ref={heading} tabIndex={-1}>
             {issue || 'Issue'}
-          </h2>
+          </Heading>
         </div>
         <div className="issue-links">
           <ExternalLink
@@ -821,8 +823,8 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
           <ExternalLink id="github-link" hidden={!url} href={url || undefined}>
             Pull request <ArrowTopRightIcon aria-hidden="true" />
           </ExternalLink>
-          <Button id="close-issue" type="button" onClick={onClose}>
-            Close
+          <Button id="close-issue" type="button" variant="ghost" onClick={onClose}>
+            Back to {returnView === 'work' ? 'work' : returnView === 'analytics' ? 'analytics' : 'overview'}
           </Button>
         </div>
       </div>
@@ -860,7 +862,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
           </SummaryItem>
           <SummaryItem title="Last recorded change">{time(attempt.updated_at)}</SummaryItem>
         </div>
-        <div className="next-step">
+        <Card className="next-step" padding={4}>
           <span className="eyebrow">Next step</span>
           <p id="next-step">
             {attempt.mode === 'dry-run'
@@ -869,7 +871,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
                 ? steps[attempt.status]
                 : 'No supported next step can be inferred. Inspect the latest lifecycle evidence and current issue in Linear.'}
           </p>
-        </div>
+        </Card>
         <p id="artifact-note" className="muted">
           PR links and commit references are recorded evidence. Stored inspections below are not
           live GitHub state or review approval.
@@ -878,7 +880,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
         </>}
         <div className="detail-grid">
           <section>
-            <h3>Attempt history</h3>
+            <Heading level={3}>Attempt history</Heading>
             <AttemptTable
               id="issue-attempts"
               records={value?.attempts}
@@ -898,7 +900,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange }) {
             </details>
           </section>
           <section>
-            <h3>Latest returned evidence</h3>
+            <Heading level={3}>Latest returned evidence</Heading>
             <p className="muted">
               Up to 80 returned events, newest first. Source and API limits apply; this is not a
               complete audit history.
@@ -1083,24 +1085,21 @@ function App() {
                 if (issue === route.issue) refreshIssue();
               }}
             >
-              <label className="sr-only" htmlFor="issue-input">
-                Go to issue
-              </label>
               <div className="input-action">
-                <MagnifyingGlassIcon aria-hidden="true" />
-                <input
+                <TextInput label="Go to issue" isLabelHidden containerClassName="issue-lookup"
                   id="issue-input"
                   ref={issueInput}
-                  name="issue"
+                  htmlName="issue"
                   autoComplete="off"
                   spellCheck={false}
                   placeholder="Go to issue…"
                   pattern="[Ee][Nn][Gg]-[1-9][0-9]*"
                   required
+                  startIcon={<MagnifyingGlassIcon aria-hidden="true" />}
                   value={issueDraft}
-                  onChange={(event) => setIssueDraft(event.target.value)}
+                  onChange={setIssueDraft}
                 />
-                <Button type="submit">Open</Button>
+                <Button type="submit" variant="ghost">Open</Button>
               </div>
             </form>
             <span
@@ -1119,7 +1118,10 @@ function App() {
             </span>
             <Button
               id="refresh-button"
+              aria-label="Refresh"
               type="button"
+              variant="ghost"
+              loading={Boolean(overviewSnapshot.loading || issueSnapshot.loading || analyticsSnapshot.loading)}
               disabled={Boolean(overviewSnapshot.loading || issueSnapshot.loading || analyticsSnapshot.loading)}
               onClick={refresh}
             >
@@ -1131,9 +1133,9 @@ function App() {
         <main id="main" tabIndex={-1}>
           <div className="page-heading">
             <div>
-              <h1 id="page-title">
+              <Heading level={1} id="page-title">
                 {route.issue ? 'Issue inspection' : work ? 'Work' : analytics ? 'Analytics' : 'Overview'}
-              </h1>
+              </Heading>
               <p id="page-description" className="muted">
                 {route.issue
                   ? 'Review the recorded result and choose the next step.'
@@ -1177,6 +1179,7 @@ function App() {
             issue={route.issue}
             snapshot={issueSnapshot}
             onControlChange={refresh}
+            returnView={route.view}
             onClose={() => {
               navigate({ issue: '' });
               issueInput.current?.focus();
@@ -1188,4 +1191,4 @@ function App() {
   );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<FactoryTheme><App /></FactoryTheme>);

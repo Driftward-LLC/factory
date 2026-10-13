@@ -11,17 +11,24 @@ this catalog are fictional; stories do not call Factory or Hermes APIs.
 ## Use the library
 
 ```jsx
-import { Button, StatusBadge } from '@driftward/ui';
+import { FactoryTheme, Button, StatusBadge } from '@driftward/ui';
 import { ReloadIcon } from '@driftward/ui/icons';
 import '@driftward/ui/styles.css';
 
-<Button onClick={refresh}><ReloadIcon aria-hidden="true" />Refresh</Button>
-<StatusBadge tone="warning">Pending verification</StatusBadge>
+<FactoryTheme>
+  <Button onClick={refresh}><ReloadIcon aria-hidden="true" />Refresh</Button>
+  <StatusBadge tone="warning">Pending verification</StatusBadge>
+</FactoryTheme>
 ```
 
-The stylesheet defines the dark theme and global base element styles; import it
-once. Native inputs, selects, and semantic HTML use that baseline. Factory page
-layouts and work-stage mappings remain in the console.
+The stylesheet bundles Astryx 0.7.0's static component styles, the neutral dark
+theme and Factory's global base element styles; import it once. Use `FactoryTheme`
+to apply the shared theme. Factory exposes Astryx surfaces, headings, metadata,
+links, empty states and loading indicators through `@driftward/ui`. `TextInput`
+also types Factory's native validation attributes; `isRequired` communicates ARIA
+semantics while native `required` enables browser validation. Native selects,
+details and tables keep their browser contracts. Factory page layouts,
+ownership and work-stage mappings remain in the console.
 
 ## For agents
 

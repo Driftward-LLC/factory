@@ -3,11 +3,12 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
-const { readFile } = require('node:fs/promises');
+const { readFile, mkdir } = require('node:fs/promises');
 const { join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { chromium } = require('playwright');
 const root = resolve(__dirname, '..');
+const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
 const stamp = new Date().toISOString();
 const controls = new Map();
 const confirms = [];
@@ -33,6 +34,7 @@ const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/j
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://localhost').pathname;
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
   if (assets[path]) {
     res.setHeader('Content-Type', assets[path][1]);
     res.end(await readFile(join(root, 'factory/console', assets[path][0]))); return;
@@ -80,12 +82,16 @@ const server = createServer(async (req, res) => {
   res.end(JSON.stringify(value));
 });
 async function main() {
+  await mkdir(evidenceDir, { recursive: true });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const base = 'http://127.0.0.1:' + server.address().port;
   const browser = await chromium.launch({ headless: true, executablePath: process.env.FACTORY_CONSOLE_CHROMIUM });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1080 } });
     const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+    const cspViolations = [];
+    await page.exposeFunction('recordFactoryCspViolation', violation => cspViolations.push(violation));
+    await page.addInitScript(() => document.addEventListener('securitypolicyviolation', event => window.recordFactoryCspViolation({ directive: event.effectiveDirective, blocked: event.blockedURI })));
     const panel = page.locator('.issue-control');
     const reason = panel.getByLabel('Reason for this handoff');
     const preview = panel.getByRole('button', { name: 'Preview control change' });
@@ -96,12 +102,17 @@ async function main() {
     }
     await open('ENG-901');
     assert.equal(await preview.isDisabled(), true);
+    assert.equal(await reason.evaluate(element => element.required), true, 'Ownership reason retains native required validation');
+    assert.equal(await reason.evaluate(element => element.maxLength), 320);
+    await reason.fill('   ');
+    assert.equal(await preview.isDisabled(), true, 'Whitespace cannot authorize a preview');
+    assert.equal(previews.length, 0);
     await reason.fill('Manual debugging <script>must remain text</script>');
     await preview.focus(); await page.keyboard.press('Enter');
     await confirm.waitFor();
     assert.equal(await panel.locator('h4').evaluate((el) => el === document.activeElement), true);
     assert.equal(await panel.locator('a[href^="javascript:"]').count(), 0);
-    await page.screenshot({ path: join(tmpdir(), 'factory-control-preview-desktop.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-control-preview-desktop.png'), fullPage: true });
     // Two synchronous clicks must produce one durable request, then pending (never safe-to-edit).
     await confirm.evaluate((el) => { el.click(); el.click(); });
     await panel.getByText('Handoff pending', { exact: true }).waitFor();
@@ -116,9 +127,9 @@ async function main() {
     await panel.getByRole('button', { name: 'Refresh control' }).click();
     await panel.getByText(/No durable executor receipt was found/).waitFor();
     assert.equal(await panel.getByText(/Manual control—safe to edit/).count(), 0);
-    await page.screenshot({ path: join(tmpdir(), 'factory-control-recovery-desktop.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-control-recovery-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(tmpdir(), 'factory-control-recovery-mobile.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-control-recovery-mobile.png'), fullPage: true });
     await page.setViewportSize({ width: 1280, height: 960 });
 
     // Only authoritative safe_to_edit makes the manual editing label available.
@@ -186,6 +197,10 @@ async function main() {
     // Switching issues fences a late preview and does not alter history/focus handling.
     let started; const delayed = new Promise((done) => { started = done; }); delayPreview = started;
     await preview.click(); await delayed;
+    assert.equal(await reason.isDisabled(), true, 'A pending preview disables the reason');
+    assert.equal(await panel.getByLabel('Control action').isDisabled(), true, 'A pending preview disables the action');
+    assert.equal(await panel.getByRole('button', { name: 'Preparing preview…' }).isDisabled(), true);
+    assert.equal(await panel.getByRole('button', { name: 'Refresh control' }).isDisabled(), true);
     await page.locator('#issue-input').fill('ENG-904'); await page.locator('#issue-form').evaluate((el) => el.requestSubmit());
     await panel.getByText('Factory-controlled', { exact: true }).waitFor();
     releasePreview();
@@ -197,13 +212,13 @@ async function main() {
 
     // Phone/intermediate layouts, keyboard and doubled text retain usable controls.
     await reason.fill('Responsive control example'); await preview.click(); await confirm.waitFor();
-    for (const width of [320, 390, 700, 850, 1280]) {
+    for (const width of [320, 390, 700, 768, 850, 1024, 1280, 1440]) {
       await page.setViewportSize({ width, height: 1080 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Overflow at ' + width);
       for (const button of await panel.locator('button:visible').all()) assert.ok((await button.boundingBox()).height >= 44);
     }
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(tmpdir(), 'factory-control-preview-mobile.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-control-preview-mobile.png'), fullPage: true });
     await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
@@ -211,7 +226,12 @@ async function main() {
     await panel.getByText(/Read-only access/).waitFor();
     assert.equal(await preview.count(), 0);
     assert.deepEqual(errors, []);
+    assert.deepEqual(cspViolations, [], 'Ownership controls must work with the production CSP');
     console.log('Issue control browser checks passed: preview/confirm, fencing, idempotency, authorization states, responsive layout.');
   } finally { await browser.close(); }
 }
-main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => server.close());
+main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => {
+  releasePreview?.();
+  server.closeAllConnections();
+  server.close();
+});

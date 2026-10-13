@@ -1,4 +1,5 @@
-import { StatusBadge, SummaryItem } from '@driftward/ui';
+import { StatusBadge, SummaryItem, Card, Heading, MetadataList, MetadataListItem } from '@driftward/ui';
+import { CheckCircledIcon } from '@driftward/ui/icons';
 import { time } from './model.js';
 
 const results = {
@@ -33,15 +34,15 @@ export default function VerificationEvidence({ evidence, attemptId }) {
   const comparison = supported && Object.hasOwn(comparisons, evidence.head_comparison) ? evidence.head_comparison : 'unavailable';
   const simulated = supported && evidence.mode === 'dry-run';
   return <section className="verification-evidence" aria-labelledby="verification-evidence-title">
-    <h3 id="verification-evidence-title">Verification evidence</h3>
+    <Heading level={3} id="verification-evidence-title"><CheckCircledIcon aria-hidden="true" /> Verification evidence</Heading>
     {!supported ? <p className="muted">Verification evidence is unavailable for this attempt.</p> : <>
       <p className="muted">Newest returned attempt only. These records do not grant merge or review approval.</p>
       {!evidence.available && <p className="muted">No immutable checkpoints were recorded for this attempt. Historical stage labels are not checkpoint evidence.</p>}
-      <div className="evidence-checkpoints">
+      <Card padding={0} className="evidence-checkpoints">
         <Checkpoint title="Specification snapshot" checkpoint={evidence.specification} />
         <Checkpoint title="Implementation receipt" checkpoint={evidence.implementation} />
         <Checkpoint title="Verification receipt" checkpoint={verification} />
-      </div>
+      </Card>
       {simulated ? <p>Dry-run evidence does not establish a real artifact or verification.</p> : <>
         <div className="evidence-comparison" data-comparison={comparison}>
           <StatusBadge tone={comparison === 'head_changed' || inspection.status === 'invalid' ? 'warning' : ''}>
@@ -50,14 +51,14 @@ export default function VerificationEvidence({ evidence, attemptId }) {
           <p>{comparisons[comparison]}</p>
           {inspection.status === 'stale' && <p className="muted">This inspection is outside its freshness window. Refreshing this page only rereads stored evidence; confirm the current PR on GitHub.</p>}
         </div>
-        <dl className="evidence-facts">
-          <div><dt>Verified SHA</dt><dd>{verification.result === 'passed' ? verification.commit_sha || 'Unavailable' : 'Unavailable'}</dd></div>
-          <div><dt>Inspected PR head</dt><dd>{inspection.head_sha || 'Unavailable'}</dd></div>
-          <div><dt>Verification recorded</dt><dd>{verification.recorded_at ? time(verification.recorded_at) : 'Unavailable'}</dd></div>
-          <div><dt>PR observed</dt><dd>{inspection.observed_at ? time(inspection.observed_at) : 'Unavailable'}</dd></div>
-          <div><dt>Observed PR state</dt><dd>{inspection.pr_state === 'open' ? 'Open' : inspection.pr_state === 'closed' ? inspection.merged === true ? 'Merged' : 'Closed' : 'Unavailable'}</dd></div>
-          <div><dt>Independent review</dt><dd>Unavailable in this view</dd></div>
-        </dl>
+        <MetadataList columns="multi" className="evidence-facts">
+          <MetadataListItem label="Verified SHA">{verification.result === 'passed' ? verification.commit_sha || 'Unavailable' : 'Unavailable'}</MetadataListItem>
+          <MetadataListItem label="Inspected PR head">{inspection.head_sha || 'Unavailable'}</MetadataListItem>
+          <MetadataListItem label="Verification recorded">{verification.recorded_at ? time(verification.recorded_at) : 'Unavailable'}</MetadataListItem>
+          <MetadataListItem label="PR observed">{inspection.observed_at ? time(inspection.observed_at) : 'Unavailable'}</MetadataListItem>
+          <MetadataListItem label="Observed PR state">{inspection.pr_state === 'open' ? 'Open' : inspection.pr_state === 'closed' ? inspection.merged === true ? 'Merged' : 'Closed' : 'Unavailable'}</MetadataListItem>
+          <MetadataListItem label="Independent review">Unavailable in this view</MetadataListItem>
+        </MetadataList>
         {verification.result === 'passed' && <details>
           <summary>Recorded check evidence</summary>
           <p className="muted">{verification.checks_passed ?? 'Unavailable'} GitHub checks passed at verification. Local command results are executor-reported, not independent test execution.</p>

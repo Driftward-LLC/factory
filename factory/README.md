@@ -220,8 +220,24 @@ NODE_PATH=/tmp/factory-console-checks/node_modules node tools/test_factory_conso
 ```
 
 An existing compatible Chromium executable can be selected with
-`FACTORY_CONSOLE_CHROMIUM`. The check writes fixture screenshots to the
-system temporary directory and closes its browser and local server afterward.
+`FACTORY_CONSOLE_CHROMIUM`. Set `FACTORY_CONSOLE_EVIDENCE_DIR` to retain all
+console, ownership-control, backend and Storybook screenshots in a named evidence
+directory; the default is the system temporary directory. Screenshots are
+fictional test data. Each check closes its browser and local server afterward.
+The ordinary browsing check asserts that every request is read-only and runs
+with the production Content Security Policy, including `style-src 'self'`.
+The ownership checks exercise the explicit preview and confirm flow separately:
+
+```bash
+NODE_PATH=/tmp/factory-console-checks/node_modules node tools/test_factory_issue_control_browser.cjs
+NODE_PATH=/tmp/factory-console-checks/node_modules node tools/test_factory_issue_control_backend_browser.cjs
+```
+
+The first uses synthetic HTTP fixtures. The second uses the real console API,
+disposable SQLite stores and a loopback test identity proxy; it verifies one
+authorized fresh attempt, one outbox record and two ownership audit entries.
+Set `FACTORY_CONSOLE_TEST_PYTHON` to the Python environment containing the bridge's
+pinned dependencies. Neither check contacts the deployed console or an executor.
 
 `factory analytics` is the root-only, read-only performance and quality report.
 It projects real, non-legacy attempt cohorts from the bridge ledger and joins

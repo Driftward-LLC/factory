@@ -1,4 +1,4 @@
-import { Metric, Notice } from '@driftward/ui';
+import { Metric, Notice, Card, Heading, EmptyState } from '@driftward/ui';
 import { count, duration, label, time } from './model.js';
 import AnalyticsTrend from './AnalyticsTrend.jsx';
 
@@ -50,10 +50,10 @@ export default function Analytics({ report, days, onDaysChange, error }) {
           </select>
         </label>
       </div>
-      {!report && <p className="empty" role="status">{error ? 'Analytics unavailable. Try refreshing.' : 'Loading analytics…'}</p>}
+      {!report && <EmptyState title={error ? 'Analytics unavailable. Try refreshing.' : 'Loading analytics…'} isCompact />}
       {report && <div id="analytics-content">
         <p className="muted analytics-window">{time(report.window.started_at)} – {time(report.window.ended_at)}</p>
-        <div className="analytics-metrics">
+        <Card padding={5} className="analytics-metrics">
           <Metric name="Work items" id="analytics-work-items" value={count(report.coverage.cohort_work_items)}>
             Across {count(report.coverage.cohort_attempts)} attempts
           </Metric>
@@ -66,15 +66,15 @@ export default function Analytics({ report, days, onDaysChange, error }) {
           <Metric name="Repair attempts" value={count(recovery.by_attempt_kind?.repair?.attempts)}>
             {count(recovery.by_attempt_kind?.repair?.verified)} reached recorded verification
           </Metric>
-        </div>
+        </Card>
         <Notice id="analytics-empty">{report.coverage.cohort_attempts === 0
           ? 'No real attempts were created in this window. Choose a longer time window to inspect earlier work.' : ''}</Notice>
         <Notice id="analytics-coverage-warning">{missingEvidence
           ? 'GitHub evidence is incomplete. Missing checks, reviews, or outcomes cannot establish PR quality. Coverage is shown below.' : ''}</Notice>
         <AnalyticsTrend series={report.time_series} />
         <div className="analytics-columns">
-          <section className="panel" aria-labelledby="analytics-delivery-title">
-            <h2 id="analytics-delivery-title">Delivery funnel</h2>
+          <Card padding={5} className="panel analytics-panel" role="region" aria-labelledby="analytics-delivery-title">
+            <Heading level={2} id="analytics-delivery-title">Delivery funnel</Heading>
             <p className="muted">Unique work items · share of all attempted work</p>
             <ol className="analytics-funnel">
               {[
@@ -86,9 +86,9 @@ export default function Analytics({ report, days, onDaysChange, error }) {
               </li>)}
             </ol>
             <p className="muted">Unfinished work is still in progress. Recorded verification is a workflow milestone, not a review approval.</p>
-          </section>
-          <section className="panel" aria-labelledby="analytics-quality-title">
-            <h2 id="analytics-quality-title">PR quality signals</h2>
+          </Card>
+          <Card padding={5} className="panel analytics-panel" role="region" aria-labelledby="analytics-quality-title">
+            <Heading level={2} id="analytics-quality-title">PR quality signals</Heading>
             <p className="muted">Review rates apply only to PRs with recorded reviews.</p>
             <dl className="analytics-signals">
               {quality.map(([id, title, value, note]) => <div key={id}>
@@ -96,9 +96,9 @@ export default function Analytics({ report, days, onDaysChange, error }) {
                 <dd id={'analytics-' + id}>{value}</dd>
               </div>)}
             </dl>
-          </section>
-          <section className="panel" aria-labelledby="analytics-recovery-title">
-            <h2 id="analytics-recovery-title">Attempts and repairs</h2>
+          </Card>
+          <Card padding={5} className="panel analytics-panel" role="region" aria-labelledby="analytics-recovery-title">
+            <Heading level={2} id="analytics-recovery-title">Attempts and repairs</Heading>
             <p className="muted">One work item can have several attempts.</p>
             <div className="table-wrap" role="region" aria-label="Attempt outcomes by kind" tabIndex={0}>
               <table><thead><tr><th scope="col">Attempt kind</th><th scope="col">Attempts</th><th scope="col">Verified (recorded)</th></tr></thead>
@@ -108,9 +108,9 @@ export default function Analytics({ report, days, onDaysChange, error }) {
               </table>
             </div>
             <p className="muted">Repair budgets exhausted: {count(recovery.repair_budgets_exhausted)}. Human rework effort is not measured yet.</p>
-          </section>
-          <section className="panel" aria-labelledby="analytics-evidence-title">
-            <h2 id="analytics-evidence-title">Evidence coverage</h2>
+          </Card>
+          <Card padding={5} className="panel analytics-panel" role="region" aria-labelledby="analytics-evidence-title">
+            <Heading level={2} id="analytics-evidence-title">Evidence coverage</Heading>
             <p className="muted">Authenticated GitHub events matched to tracked PRs.</p>
             <dl className="analytics-signals">
               {evidence.map(([title, coverage]) => <div key={title}>
@@ -119,7 +119,7 @@ export default function Analytics({ report, days, onDaysChange, error }) {
             </dl>
             <p className="muted">Factory also checks CI during verification. Those checks are separate from the event coverage shown here.</p>
             <p className="muted">Human rework, independent review findings, and post-merge defects are not measured in this report.</p>
-          </section>
+          </Card>
         </div>
         <details className="analytics-diagnostics">
           <summary>Failure reasons and verification timing</summary>

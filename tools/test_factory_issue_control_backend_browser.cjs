@@ -5,15 +5,17 @@ const assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
 const { createServer } = require('node:https');
 const { request } = require('node:http');
-const { mkdtemp, readFile, rm } = require('node:fs/promises');
+const { mkdtemp, readFile, rm, mkdir } = require('node:fs/promises');
 const { join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { createInterface } = require('node:readline');
 const { once } = require('node:events');
 const { chromium } = require('playwright');
 const root = resolve(__dirname, '..');
+const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
 
 async function main() {
+  await mkdir(evidenceDir, { recursive: true });
   const temp = await mkdtemp(join(tmpdir(), 'factory-control-browser-tls-'));
   let proxy, fixture, browser, lines;
   try {
@@ -67,7 +69,7 @@ async function main() {
     assert.match(await panel.locator('.control-audit').textContent(), /Manual takeover/);
     assert.match(await panel.locator('.control-audit').textContent(), /Return to Factory/);
     assert.deepEqual(errors, []);
-    await page.screenshot({ path: join(tmpdir(), 'factory-control-real-backend.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-control-real-backend.png'), fullPage: true });
     const result = nextLine(); fixture.stdin.end('verify\n');
     assert.deepEqual(await result, { verified: true, attempts: 1, outbox: 1, history: 2 });
     const code = fixture.exitCode ?? (await once(fixture, 'exit'))[0]; assert.equal(code, 0);
