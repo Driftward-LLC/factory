@@ -222,7 +222,7 @@ function IssueControlPanel({ issue, api, onChanged }) {
           <MetadataListItem label="Preview expires">{time(expiry(preview.expires_at))}</MetadataListItem>
         </MetadataList>
         {Array.isArray(preview.blockers) && preview.blockers.length > 0 && <ul>{preview.blockers.map((item, index) => <li key={index}>{typeof item === 'string' ? item : item.message || item.reason || 'Operator inspection required'}</li>)}</ul>}
-        {preview.eligible === true ? <div className="control-buttons"><Button variant="primary" loading={busy === 'confirm'} disabled={Boolean(busy)} onClick={() => confirm()}>Confirm {preview.action === 'takeover' ? 'manual takeover' : 'return to Factory'}</Button><Button variant="ghost" disabled={Boolean(busy)} onClick={() => setPreview(null)}>Dismiss preview</Button></div>
+        {preview.eligible === true ? <div className="control-buttons"><Button aria-label={'Confirm ' + (preview.action === 'takeover' ? 'manual takeover' : 'return to Factory')} variant="primary" loading={busy === 'confirm'} disabled={Boolean(busy)} onClick={() => confirm()}>Confirm {preview.action === 'takeover' ? 'manual takeover' : 'return to Factory'}</Button><Button variant="ghost" disabled={Boolean(busy)} onClick={() => setPreview(null)}>Dismiss preview</Button></div>
           : <p>This action is blocked. No control change has been made.</p>}
       </Card>}
       <details className="control-audit"><summary>Ownership audit history ({control.history.length})</summary>

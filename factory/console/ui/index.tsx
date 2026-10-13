@@ -44,12 +44,28 @@ export function TextInput(props: FactoryTextInputProps) {
   return <AstryxTextInput {...props} />;
 }
 
-/** Native action contract over Astryx. Loading blocks interaction; forms opt into submit. */
+type ButtonName = { 'aria-label': string } | { 'aria-labelledby': string };
+export type ButtonProps = Omit<ComponentProps<'button'>, 'children'> & { variant?: ButtonVariant } & (
+  { children?: ReactNode; loading?: false }
+  | { children: string | number; loading?: boolean }
+  | (ButtonName & { children?: ReactNode; loading?: boolean })
+);
+
+/**
+ * Native action contract over Astryx. Loading blocks interaction and keeps a name.
+ * Plain text/number labels name themselves. Composed loading labels require an
+ * explicit aria-label or aria-labelledby; idle compositions keep native naming.
+ */
 export function Button({ type = 'button', disabled, loading = false, variant = 'secondary', children, ...props }:
-  ComponentProps<'button'> & { loading?: boolean; variant?: ButtonVariant }) {
+  ButtonProps) {
+  const textLabel = typeof children === 'string' || typeof children === 'number' ? String(children) : '';
+  if (loading && !textLabel.trim() && !props['aria-label']?.trim() && !props['aria-labelledby']?.trim()) {
+    throw new Error('Loading buttons with composed children require aria-label or aria-labelledby.');
+  }
   return <AstryxButton type={type} isDisabled={disabled} isLoading={loading} variant={variant}
-    label={props['aria-label'] ?? (typeof children === 'string' ? children : '')}
-    {...props}><span className="button-content">{children}</span></AstryxButton>;
+    label={props['aria-label']?.trim() ? props['aria-label'] : textLabel} {...props}>
+    <span className="button-content">{children}</span>
+  </AstryxButton>;
 }
 
 /** Polite status announcement. Empty content hides the notice without unmounting it. */

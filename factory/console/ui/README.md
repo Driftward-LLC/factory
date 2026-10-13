@@ -20,6 +20,12 @@ Exports: `Button`, `Notice`, `StatusBadge`, `ExternalLink`, `Metric`,
 directly. `TextInput` retains Astryx's field properties and adds typed native
 `required`, `maxLength`, `pattern` and `spellCheck` attributes used by Factory.
 Component properties are typed in `index.tsx`.
+`Button` requires `aria-label` or `aria-labelledby` for composed/nested children
+when `loading` can become true. TypeScript enforces this contract; JavaScript
+misuse throws a clear error. Plain text/number labels name themselves. Supply
+the explicit name before loading begins so it stays stable through the action.
+Native `aria-label` and `aria-labelledby` overrides remain available;
+`aria-labelledby` retains its normal precedence when both are supplied.
 Icons are named React SVG exports in `icons.ts` (Radix Icons, MIT).
 
 The stylesheet applies global element styles and the shared dark theme. Use

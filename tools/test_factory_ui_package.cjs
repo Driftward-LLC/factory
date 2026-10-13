@@ -27,6 +27,10 @@ const html = renderToStaticMarkup(<FactoryTheme>
   <BrandMark /><Card><Heading level={2}>Disposable package consumer</Heading>
     <Button><ReloadIcon aria-hidden="true" />Refresh</Button>
     <Button variant="primary" loading>Refreshing…</Button>
+    <Button id="composed-action" loading aria-label="Refresh evidence"><ReloadIcon aria-hidden="true" /><span>Refresh <strong>evidence</strong><span aria-hidden="true"> decorative hint</span></span></Button>
+    <Button loading aria-label="Inspect artifact"><ReloadIcon aria-hidden="true" /><span>Refresh evidence</span></Button>
+    <span id="provided-action-name">Inspect recorded outcome</span>
+    <Button loading aria-labelledby="provided-action-name" aria-label="Ignored lower-priority label"><span>Refresh evidence</span></Button>
     <StatusBadge tone="warning">Pending</StatusBadge><Metric name="Attempts" value={0}>Recorded examples</Metric>
     <SummaryItem title="Missing evidence" /><Notice>Recorded service failure</Notice>
     <ExternalLink href="https://example.test/record">Fictional record</ExternalLink>
@@ -41,6 +45,20 @@ for (const expected of ['type="button"', 'disabled=""', 'pill warning', '<strong
   if (!html.includes(expected)) throw new Error('Packed component render missing ' + expected);
 }
 if (html.includes('<style')) throw new Error('Packed components must use the static stylesheet');
+const buttons = [...html.matchAll(/<button([^>]*)>([\\s\\S]*?)<\\/button>/g)];
+const composed = buttons.find(([, , content]) => content.includes('Refresh <strong>evidence</strong>'));
+if (!composed?.[1].includes('aria-label="Refresh evidence"') || /aria-labelledby=/.test(composed[1])) throw new Error('Packed composed loading action must retain its explicit name');
+const nativeIds = buttons.map(([, attrs]) => attrs.match(/(?:^|\\s)id="([^"]+)"/)?.[1]).filter(Boolean);
+if (new Set(nativeIds).size !== nativeIds.length) throw new Error('Packed buttons must retain distinct native IDs');
+const explicit = buttons.find(([, attrs]) => attrs.includes('aria-label="Inspect artifact"'));
+if (!explicit || /aria-labelledby=/.test(explicit[1])) throw new Error('Packed explicit aria-label must retain native naming priority');
+if (!buttons.some(([, attrs]) => attrs.includes('aria-labelledby="provided-action-name"') && attrs.includes('aria-label="Ignored lower-priority label"'))) throw new Error('Packed explicit aria-labelledby must be retained');
+// @ts-expect-error Composed loading labels need an explicit accessible name.
+const unnamedLoading = <Button loading><ReloadIcon aria-hidden="true" /><span>Refresh evidence</span></Button>;
+let rejectedUnnamedLoading = false;
+try { renderToStaticMarkup(unnamedLoading); }
+catch (error) { rejectedUnnamedLoading = error instanceof Error && error.message === 'Loading buttons with composed children require aria-label or aria-labelledby.'; }
+if (!rejectedUnnamedLoading) throw new Error('JavaScript consumers must reject unsupported unnamed composed loading actions');
 `);
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: temp, stdio: 'pipe' });
   const installed = JSON.parse(readFileSync(join(temp, 'node_modules/@driftward/ui/package.json')));
