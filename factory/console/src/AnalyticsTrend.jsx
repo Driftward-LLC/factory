@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Notice } from '@driftward/ui';
+import { Notice, Heading } from '@driftward/ui';
 import { count } from './model.js';
 
 const metrics = [
@@ -54,7 +54,7 @@ export default function AnalyticsTrend({ series }) {
   return (
     <section id="analytics-trend" className="panel analytics-trend" aria-labelledby="analytics-trend-title">
       <div className="section-heading">
-        <div><h2 id="analytics-trend-title">Daily activity</h2>
+        <div><Heading level={2} id="analytics-trend-title">Daily activity</Heading>
           <p className="muted">Recorded events by UTC day. Includes work started before this window.</p></div>
       </div>
       {!points.length ? <Notice id="analytics-trend-unavailable">Daily activity is unavailable for this snapshot.</Notice> : <>

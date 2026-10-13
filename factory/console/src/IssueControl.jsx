@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, ExternalLink, Notice, StatusBadge, SummaryItem } from '@driftward/ui';
+import { Button, ExternalLink, Notice, StatusBadge, SummaryItem, Card, Heading, TextInput, MetadataList, MetadataListItem } from '@driftward/ui';
+import { LockClosedIcon, ReloadIcon } from '@driftward/ui/icons';
 import { prUrl, time } from './model.js';
 
 const states = {
@@ -167,8 +168,8 @@ function IssueControlPanel({ issue, api, onChanged }) {
   const artifactUrl = artifact && prUrl({ job: { pr_url: artifact.pr_url, payload: { repo: artifact.repository } } });
   return <section className="issue-control" aria-labelledby="issue-control-title" aria-busy={Boolean(busy)}>
     <div className="section-heading">
-      <div><h3 id="issue-control-title" ref={statusHeading} tabIndex={-1}>Execution control</h3><p>Ownership is separate from the Linear issue status.</p></div>
-      <Button disabled={Boolean(busy)} onClick={refresh}>Refresh control</Button>
+      <div><Heading level={3} id="issue-control-title" ref={statusHeading} tabIndex={-1}><LockClosedIcon aria-hidden="true" /> Execution control</Heading><p>Ownership is separate from the Linear issue status.</p></div>
+      <Button aria-label="Refresh control" variant="ghost" loading={busy === 'refresh'} disabled={Boolean(busy)} onClick={refresh}><ReloadIcon aria-hidden="true" /> Refresh control</Button>
     </div>
     <div className="control-state" role="status">
       <StatusBadge tone={error ? 'warning' : tone}>{stateLabel}{error && control ? ' (stale)' : ''}</StatusBadge>
@@ -187,11 +188,11 @@ function IssueControlPanel({ issue, api, onChanged }) {
     {checkedAt && <p className="muted">Control checked {time(checkedAt)}. Refresh before editing; other operators can change ownership.</p>}
     <p className="muted" role="status">{message}</p>
     {!control && !error && <p className="muted">Loading issue control…</p>}
-    {unresolved && <div className="control-unresolved">
+    {unresolved && <Card padding={4} className="control-unresolved">
       <p>A previous control request has an unresolved result. New actions are blocked.</p>
       {!unresolved.invalid && <Button disabled={Boolean(busy)} onClick={() => confirm(unresolved)}>Check previous request</Button>}
       {unresolved.invalid && <p>Stored request data could not be read. Ask an operator to reconcile the issue before submitting another action.</p>}
-    </div>}
+    </Card>}
     {control && <>
       <div className="control-metadata">
         <SummaryItem title="Last changed by">{control.actor || 'No ownership change recorded'}</SummaryItem>
@@ -204,26 +205,26 @@ function IssueControlPanel({ issue, api, onChanged }) {
         <label>Control action<select value={selected ? actionKey(selected) : ''} disabled={Boolean(busy)} onChange={(event) => { setChoice(event.target.value); setPreview(null); }}>
           {actions.map((item) => <option key={actionKey(item)} value={actionKey(item)}>{item.label}</option>)}
         </select></label>
-        <label>Reason for this handoff<input required maxLength={320} value={reason} disabled={Boolean(busy)} placeholder="What are you taking over or handing back?" onChange={(event) => { setReason(event.target.value); setPreview(null); }} /></label>
+        <TextInput label="Reason for this handoff" required maxLength={320} value={reason} isDisabled={Boolean(busy)} placeholder="What are you taking over or handing back?" onChange={(value) => { setReason(value); setPreview(null); }} />
         {selected?.action === 'return' && <p className="muted control-handback-note">Handback authorizes only the selected action. Old queued events do not regain permission; ordinary intake remains fenced for this issue.</p>}
-        <Button type="submit" disabled={Boolean(busy) || Boolean(error) || !reason.trim()}>{busy === 'preview' ? 'Preparing preview…' : 'Preview control change'}</Button>
+        <Button variant="primary" type="submit" loading={busy === 'preview'} disabled={Boolean(busy) || Boolean(error) || !reason.trim()}>{busy === 'preview' ? 'Preparing preview…' : 'Preview control change'}</Button>
       </form>}
-      {preview && <div className="control-preview">
+      {preview && <Card padding={4} className="control-preview">
         <h4 ref={previewHeading} tabIndex={-1}>Review control change</h4>
         <p>{typeof preview.effect_summary === 'string' ? preview.effect_summary : 'Review the current issue and artifact before confirming.'}</p>
         {preview.intent === 'fresh_attempt' && <p>Requires a current Ready, unblocked Linear issue and a fresh inspection of any prior PR. This starts fresh work; it does not continue or verify manual edits.</p>}
-        <dl>
-          <dt>Issue / action</dt><dd>{issue} / {preview.action_label}</dd>
-          <dt>Reason</dt><dd>{preview.body.reason}</dd>
-          <dt>Pull request</dt><dd>{artifactUrl ? <ExternalLink href={artifactUrl}>{artifactUrl}</ExternalLink> : 'No supported pull request returned'}</dd>
-          <dt>Target branch / commit</dt><dd>{artifact?.branch || 'Unavailable'} / {artifact?.head_sha || 'Unavailable'}</dd>
-          {preview.action === 'return' && <><dt>Linear observation used for handback</dt><dd>{time(preview.linear_observed_at)}</dd></>}
-          <dt>Preview expires</dt><dd>{time(expiry(preview.expires_at))}</dd>
-        </dl>
+        <MetadataList columns="multi" className="preview-facts">
+          <MetadataListItem label="Issue / action">{issue} / {preview.action_label}</MetadataListItem>
+          <MetadataListItem label="Reason">{preview.body.reason}</MetadataListItem>
+          <MetadataListItem label="Pull request">{artifactUrl ? <ExternalLink href={artifactUrl}>{artifactUrl}</ExternalLink> : 'No supported pull request returned'}</MetadataListItem>
+          <MetadataListItem label="Target branch / commit">{artifact?.branch || 'Unavailable'} / {artifact?.head_sha || 'Unavailable'}</MetadataListItem>
+          {preview.action === 'return' && <MetadataListItem label="Linear observation used for handback">{time(preview.linear_observed_at)}</MetadataListItem>}
+          <MetadataListItem label="Preview expires">{time(expiry(preview.expires_at))}</MetadataListItem>
+        </MetadataList>
         {Array.isArray(preview.blockers) && preview.blockers.length > 0 && <ul>{preview.blockers.map((item, index) => <li key={index}>{typeof item === 'string' ? item : item.message || item.reason || 'Operator inspection required'}</li>)}</ul>}
-        {preview.eligible === true ? <div className="control-buttons"><Button disabled={Boolean(busy)} onClick={() => confirm()}>Confirm {preview.action === 'takeover' ? 'manual takeover' : 'return to Factory'}</Button><Button disabled={Boolean(busy)} onClick={() => setPreview(null)}>Dismiss preview</Button></div>
+        {preview.eligible === true ? <div className="control-buttons"><Button variant="primary" loading={busy === 'confirm'} disabled={Boolean(busy)} onClick={() => confirm()}>Confirm {preview.action === 'takeover' ? 'manual takeover' : 'return to Factory'}</Button><Button variant="ghost" disabled={Boolean(busy)} onClick={() => setPreview(null)}>Dismiss preview</Button></div>
           : <p>This action is blocked. No control change has been made.</p>}
-      </div>}
+      </Card>}
       <details className="control-audit"><summary>Ownership audit history ({control.history.length})</summary>
         <p className="muted">Latest returned ownership changes. Attempt execution history is shown separately.</p>
         <ol className="timeline">{control.history.length ? control.history.map((event, index) => <li className="timeline-item" key={event.request_id || index}>

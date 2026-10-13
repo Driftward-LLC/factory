@@ -1,11 +1,11 @@
-import { Button, ExternalLink, Notice, StatusBadge } from '@driftward/ui';
+import { Button, ExternalLink, Notice, StatusBadge, Heading, Card, EmptyState } from '@driftward/ui';
 import { ArrowTopRightIcon } from '@driftward/ui/icons';
 import { time } from './model.js';
 
 export default function BeforeExecution({ intake, onOpen, issue = false, stale = false }) {
   return <section className="panel before-execution" aria-label="Before execution">
     <div className="section-heading"><div>
-      <h2>Before execution <span className="heading-count">{intake?.available ? `${intake.items.length} observed` : 'Unavailable'}</span></h2>
+      <Heading level={2}>Before execution <span className="heading-count">{intake?.available ? `${intake.items.length} observed` : 'Unavailable'}</span></Heading>
       <p className="muted">Linear status is separate from Factory execution. No attempt recorded{issue ? ' for this issue' : ' for these issues'}.</p>
     </div></div>
     <details className="intake-scope"><summary>Source and refresh limits</summary><p className="muted">Recorded webhook observations, not a live Linear backlog or a confirmed execution queue.
@@ -13,11 +13,12 @@ export default function BeforeExecution({ intake, onOpen, issue = false, stale =
       {' '}Refresh rereads records; it does not start work. Issues without a received event cannot appear.</p></details>
     <Notice>{stale ? 'Stale dashboard snapshot. These observations may no longer reflect current Linear status.' : ''}</Notice>
     <Notice>{intake?.truncated ? 'Partial list: the observation limit was reached. Use Go to issue to inspect a specific issue.' : ''}</Notice>
-    {!intake?.available ? <p className="empty">Linear observations unavailable. This does not mean nothing is waiting.</p>
-      : !intake.items.length ? <p className="empty">{issue ? 'No Linear observation received for this issue.' : 'No pre-execution issues found within the observed scope.'} Check Linear for issues Factory has not observed.</p>
+    {!intake?.available ? <EmptyState title="Linear observations unavailable" description="This does not mean nothing is waiting." isCompact />
+      : !intake.items.length ? <EmptyState title={issue ? 'No Linear observation received for this issue.' : 'No pre-execution issues found within the observed scope.'} description="Check Linear for issues Factory has not observed." isCompact />
       : <ul className="intake-list">{intake.items.map(item => <li key={item.issue}>
+        <Card padding={4} className="intake-record">
         <div className="intake-identity">
-          {onOpen ? <Button onClick={() => onOpen(item.issue)}>{item.issue}</Button> : <strong>{item.issue}</strong>}
+          {onOpen ? <Button variant="ghost" onClick={() => onOpen(item.issue)}>{item.issue}</Button> : <strong>{item.issue}</strong>}
           <StatusBadge tone={item.linear_status === 'Blocked' ? 'warning' : 'info'}>Linear: {item.linear_status} (observed)</StatusBadge>
         </div>
         <p>{item.removed ? 'Issue removal observed. No execution implied.'
@@ -29,6 +30,7 @@ export default function BeforeExecution({ intake, onOpen, issue = false, stale =
         {item.blocked_by?.length > 0 && <p>Observed blockers: {item.blocked_by.map(key => <ExternalLink key={key} href={'https://linear.app/driftward/issue/' + encodeURIComponent(key)}>{key} <ArrowTopRightIcon aria-hidden="true" /></ExternalLink>)}</p>}
         <p className="muted">Last observed {time(item.observed_at)} · Linear updated {time(item.provider_updated_at)}. Not revalidated with Linear.</p>
         <ExternalLink href={'https://linear.app/driftward/issue/' + encodeURIComponent(item.issue)}>Open in Linear <ArrowTopRightIcon aria-hidden="true" /></ExternalLink>
+        </Card>
       </li>)}</ul>}
   </section>;
 }

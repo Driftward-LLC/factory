@@ -21,6 +21,10 @@ at `factory/console/ui/`. Storybook renders the same implementations as the
 console. See [the design system guide](docs/design-system.md) for the catalog,
 agent access, and contribution checks. Edit Factory layout styles in
 `factory/console/src/styles.css`; the served `styles.css` is generated.
+Astryx 0.7.0 supplies shared controls, grouped surfaces, headings, metadata,
+notices and empty/loading states through this package. The neutral dark theme
+uses Factory's established colors and typography. Component styling is bundled
+locally as static CSS; keep the console's `style-src 'self'` policy intact.
 
 ## Operator tasks and information order
 
@@ -178,6 +182,12 @@ screenshots of Overview, Work, and an issue on desktop and mobile. Check
 intermediate widths and 200% text scaling, keyboard focus and activation, and
 text/background contrast. Screenshot inspection alone does not establish full
 accessibility compliance.
+
+Include 320, 390, 768, 1024 and 1440px viewport widths. Verify native disabled
+and loading control behavior, including a held ownership preview: its action,
+reason, preview and refresh controls must stay disabled until it settles.
+The catalog and packed-package consumer must exercise the same Astryx components
+and static styles used by the served console.
 
 The checked-in browser test uses disposable data and never dispatches real
 work. Production rollout follows the existing Factory release process.

@@ -3,12 +3,13 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { createServer } = require('node:http');
-const { readFile } = require('node:fs/promises');
+const { readFile, mkdir } = require('node:fs/promises');
 const { resolve, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { chromium } = require('playwright');
 
 const root = resolve(__dirname, '..');
+const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
 const now = Date.now();
 function record(issue, generation, status, mode = 'real', repo = 'Driftward-LLC/capykit') {
   const id = issue + '-' + generation;
@@ -194,19 +195,38 @@ const server = createServer(async (request, response) => {
   } else { response.statusCode = 404; response.end('{}'); }
 });
 async function main() {
+  await mkdir(evidenceDir, { recursive: true });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const base = 'http://127.0.0.1:' + server.address().port;
   const browser = await chromium.launch({ headless: true, executablePath: process.env.FACTORY_CONSOLE_CHROMIUM });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1080 } });
     const errors = [];
+    const cspViolations = [];
+    await page.exposeFunction('recordFactoryCspViolation', violation => cspViolations.push(violation));
+    await page.addInitScript(() => {
+      document.addEventListener('securitypolicyviolation', event => window.recordFactoryCspViolation({ directive: event.effectiveDirective, blocked: event.blockedURI }));
+    });
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(base);
     await page.waitForFunction(() => document.querySelector('#metric-total').textContent === '8');
+    assert.equal(await page.locator('[data-astryx-theme="neutral"]').count() > 0, true, 'Console applies the shared neutral theme');
+    assert.equal(await page.locator('#refresh-button.astryx-button').count(), 1);
+    assert.equal(await page.locator('.astryx-text-input #issue-input').count(), 1);
+    assert.equal(await page.locator('style').count(), 0, 'Console components use the static stylesheet');
     await page.keyboard.press('Tab');
     assert.equal(await page.locator('.skip-link').evaluate((el) => el === document.activeElement), true);
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('#main').evaluate((el) => el === document.activeElement), true);
+    const initialUrl = page.url();
+    for (const value of ['', 'not-an-issue', 'ENG-0']) {
+      await page.locator('#issue-input').fill(value);
+      assert.equal(await page.locator('#issue-input').evaluate(element => element.checkValidity()), false, 'Issue lookup retains required and pattern validation');
+      await page.locator('#issue-form button').click();
+      assert.equal(page.url(), initialUrl, 'Invalid issue lookup must not navigate');
+      assert.equal(await page.locator('#issue-detail').isVisible(), false);
+    }
+    await page.locator('#issue-input').fill('');
     const intakePanel = page.locator('[data-view="overview"] .before-execution');
     assert.match(await intakePanel.textContent(), /ENG-154/);
     assert.match(await intakePanel.textContent(), /Linear: Blocked \(observed\)/);
@@ -230,10 +250,22 @@ async function main() {
     failOverview = false;
     await page.locator('#refresh-button').click();
     await page.waitForFunction(() => !document.querySelector('#notice').textContent);
-    for (const width of [320, 768, 1440]) {
+    for (const width of [320, 390, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: 1080 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Intake layout fits viewport');
-      if (width === 320) await page.screenshot({ path: join(tmpdir(), 'factory-before-execution-mobile.png'), fullPage: true });
+      if ([390, 1440].includes(width)) {
+        assert(await page.locator('#refresh-button').evaluate(button => {
+          const icon = button.querySelector('svg').getBoundingClientRect();
+          const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+          let text;
+          while ((text = walker.nextNode()) && text.textContent.trim() !== 'Refresh') {}
+          if (!text) return false;
+          const range = document.createRange(); range.selectNode(text);
+          const label = range.getBoundingClientRect();
+          return icon.right <= label.left && Math.abs(icon.top + icon.height / 2 - label.top - label.height / 2) <= 3;
+        }), 'Refresh icon and label share a row at ' + width);
+      }
+      if (width === 320) await page.screenshot({ path: join(evidenceDir, 'factory-before-execution-mobile.png'), fullPage: true });
     }
     assert.deepEqual(await contrastFailures(page, '.before-execution .muted, .before-execution .pill'), []);
     assert.equal(await page.locator('#signal-dead-letters').textContent(), 'Unavailable');
@@ -268,9 +300,10 @@ async function main() {
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     await page.setViewportSize({ width: 1440, height: 1080 });
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-overview.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-overview.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-preview-desktop.png') });
     assert.deepEqual(await contrastFailures(page, '.muted, .pill, .review-queues small, nav a, .signal p'), []);
-    for (const width of [320, 700, 850, 1024, 1280]) {
+    for (const width of [320, 390, 700, 768, 850, 1024, 1280, 1440]) {
       await page.setViewportSize({ width, height: 960 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Overview overflow at ' + width);
     }
@@ -307,7 +340,7 @@ async function main() {
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('#status-filter').inputValue(), 'active');
     assert.equal(await page.locator('[data-work-scope="active"]').getAttribute('aria-current'), 'page');
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-work-list.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-work-list.png'), fullPage: true });
     assert.equal(await page.locator('#work-attempts tr').count(), 3);
     await page.locator('#status-filter').selectOption('attention');
     assert.match(await page.locator('#work-attempts').textContent(), /ENG-104/);
@@ -360,7 +393,7 @@ async function main() {
     evidenceState = 'head_changed';
     await page.locator('#refresh-button').click();
     await page.waitForFunction(() => document.querySelector('[data-comparison="head_changed"]'));
-    for (const width of [320, 700, 1024, 1440]) {
+    for (const width of [320, 390, 700, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: 1080 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Evidence overflow at ' + width);
       if (width === 320) {
@@ -369,15 +402,15 @@ async function main() {
         assert.equal(await trace.getAttribute('href'), verified.agent_trace.url);
         assert((await trace.boundingBox()).height >= 44, 'Mobile trace link touch target');
       }
-      if (width === 320) await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-evidence-mobile.png'), fullPage: true });
+      if (width === 320) await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-evidence-mobile.png'), fullPage: true });
     }
     await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Evidence overflow at 200% text');
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     assert.deepEqual(await contrastFailures(page, '.verification-evidence .muted, .verification-evidence .pill, .verification-evidence small'), []);
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-evidence.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-evidence.png'), fullPage: true });
     assert.equal(await page.locator('#github-link').getAttribute('href'), verified.job.pr_url);
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-work.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-work.png'), fullPage: true });
     await page.goBack();
     assert.equal(await page.locator('#issue-detail').isVisible(), false);
     await page.goForward();
@@ -431,7 +464,7 @@ async function main() {
     assert.equal(await page.locator('#issue-attempts-mobile details a').first().isVisible(), true);
     await page.locator('#issue-attempts-mobile summary').first().click();
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-mobile.png'), fullPage: true });
     await page.locator('#close-issue').click();
     assert.equal(await page.locator('#issue-input').evaluate((el) => el === document.activeElement), true);
     assert.equal(await page.locator('#work-attempts-mobile').isVisible(), true);
@@ -449,8 +482,9 @@ async function main() {
     await page.locator('#close-issue').click();
     assert.ok(await page.locator('#work-attempts-mobile .inspect-link').evaluate((el) => el.getBoundingClientRect().height >= 44));
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile-work.png'), fullPage: true });
-    for (const width of [320, 560, 700, 850, 1024, 1280]) {
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-mobile-work.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-preview-mobile.png') });
+    for (const width of [320, 390, 560, 700, 768, 850, 1024, 1280, 1440]) {
       await page.setViewportSize({ width, height: 960 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Work overflow at ' + width);
     }
@@ -606,8 +640,8 @@ async function main() {
     assert.deepEqual(await contrastFailures(page, '#analytics-trend-chart text', 'fill'), []);
     assert.deepEqual(await contrastFailures(page, '#analytics-trend-chart path[data-series]', 'stroke', 3), []);
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-analytics.png'), fullPage: true });
-    for (const width of [320, 560, 700, 850, 1024, 1280, 1440]) {
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-analytics.png'), fullPage: true });
+    for (const width of [320, 390, 560, 700, 768, 850, 1024, 1280, 1440]) {
       await page.setViewportSize({ width, height: 960 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Analytics overflow at ' + width);
       assert.doesNotMatch(await trend.innerHTML(), /NaN|Infinity/);
@@ -617,7 +651,7 @@ async function main() {
     await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.locator('#analytics-days').evaluate((el) => el.getBoundingClientRect().height >= 44));
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-analytics-mobile.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-analytics-mobile.png'), fullPage: true });
 
     analyticsState = 'missing-series';
     await page.locator('#refresh-button').click();
@@ -654,7 +688,7 @@ async function main() {
 
     await page.locator('[data-nav="overview"]').click();
     await page.evaluate(() => { document.activeElement.blur(); window.scrollTo(0, 0); });
-    await page.screenshot({ path: join(tmpdir(), 'factory-dashboard-mobile-overview.png'), fullPage: true });
+    await page.screenshot({ path: join(evidenceDir, 'factory-dashboard-mobile-overview.png'), fullPage: true });
     await page.locator('[data-nav="work"]').click();
     emptyOverview = true;
     await page.locator('#refresh-button').click();
@@ -671,9 +705,10 @@ async function main() {
     assert.equal(await page.locator('#metric-active').textContent(), '—');
     assert.equal(await page.locator('#queue-attention').textContent(), 'Unavailable');
     assert.deepEqual(errors, []);
+    assert.deepEqual(cspViolations, [], 'Console must work with the production CSP');
     assert.ok(methods.every((method) => method === 'GET'));
     console.log('PASS: review queues, navigation, sidebar queues, keyboard scope links, deep links, filters, deduplication, safe links/text, unknown states, analytics evidence coverage, time-series rendering and gaps, pointer/keyboard day inspection, daily data table, period history and races, stale/empty/error states, issue races, visibility refresh, responsive details, keyboard controls, text/chart contrast and read-only requests.');
-    console.log('Fixture screenshots: ' + join(tmpdir(), 'factory-dashboard-{overview,work,mobile,mobile-work,analytics,analytics-mobile}.png'));
+    console.log('Fixture screenshots: ' + evidenceDir);
   } finally { await browser.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => {

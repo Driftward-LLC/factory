@@ -19,7 +19,7 @@ function fixture(options = {}) {
         ? 'Hold this issue, fence new execution and request cancellation. Manual editing remains unsafe until the authority confirms handoff.'
         : 'Validate current evidence and authorize one fresh attempt. Old queued events remain fenced.',
       blockers: options.blocked ? ['An earlier execution has an unresolved external effect.'] : [],
-      artifact: { pr_url: 'https://github.com/example/project/pull/12', branch: 'factory/ENG-901', head_sha: 'b'.repeat(40) },
+      artifact: { repository: 'example/project', pr_url: 'https://github.com/example/project/pull/12', branch: 'factory/ENG-901', head_sha: 'b'.repeat(40) },
     };
     if (options.conflict) { const error = new Error('The issue changed. Preview again.'); error.status = 409; throw error; }
     control = { ...control, status: body.action === 'takeover' ? 'handoff_pending' : 'factory', version: control.version + 1,

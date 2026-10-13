@@ -17,8 +17,9 @@ Open `http://127.0.0.1:6006`. When running on the VPS, forward that port over SS
 to view it locally. The development server binds to loopback; it is not part of
 the production Factory console or its Docker Compose runtime.
 
-The catalog includes seven shared components, their loading/missing/status
-examples, live theme swatches, the approved SVG icon set, and agent guidance.
+The catalog includes Factory's shared components and Astryx controls, their
+loading/disabled/missing/status examples, live theme swatches, the approved SVG
+icon set, and agent guidance.
 The Factory Analytics page also has fictional missing-evidence, partial-review,
 empty, loading, and unavailable examples composed from the shared components.
 Its daily activity chart also has missing-timestamp and disconnected-series
@@ -26,8 +27,11 @@ examples, with keyboard day selection and an accessible table.
 The Factory verification evidence panel has matching, changed, stale, older,
 failed, legacy, dry-run, invalid and unavailable examples. It uses the shared
 status badge and summary components without implying live approval.
-The console's existing appearance is the initial design system. This change
-does not adopt Reflect's marketing-site theme.
+Astryx core and its neutral theme are pinned to 0.7.0. Factory keeps its dark
+neutral surfaces, platform typography and restrained lavender accents. Its
+theme provider and static stylesheet are shared with the catalog; no remote
+font or asset is required. Components do not change Factory's ownership,
+execution or evidence authority.
 
 ## Agent access
 
@@ -73,22 +77,39 @@ registration belongs to the Hermes runtime, never a Factory worker container.
 The build bundles the shared styles into the existing `/styles.css` endpoint.
 `npm run dev --prefix factory/console` watches both JavaScript and CSS.
 
-The package starts at version `0.1.0` and is private. Factory links it using npm
+The package is version `0.2.0` and is private. Factory links it using npm
 workspaces. To use the same version in another React application:
 
 ```bash
 npm run pack:ui --prefix factory/console
 # In the consuming application:
-npm install /tmp/driftward-ui-0.1.0.tgz
+npm install /tmp/driftward-ui-0.2.0.tgz
 ```
 
 The package exports TypeScript/JSX source for a React-capable bundler and expects
-React 19. Import `@driftward/ui/styles.css` once; it applies global base styles
-as well as component classes. Existing applications should inspect those base
-styles before adopting them. Icons are included through the pinned MIT-licensed
-Radix dependency; stories and Storybook are not runtime dependencies of the
-package. Review changes in a PR and bump the package version for releases.
+React 19. Import `@driftward/ui/styles.css` once and wrap the application in
+`FactoryTheme`. TypeScript consumers use `moduleResolution: "bundler"`:
+Astryx 0.7.0's declarations use extensionless imports and do not support NodeNext
+resolution. The stylesheet includes compiled Astryx styles, the neutral dark
+theme and Factory's base styles; it needs no runtime stylesheet injection or
+consumer StyleX compiler. Existing applications should inspect the base styles
+before adopting them. Icons use the pinned MIT-licensed Radix dependency.
+Astryx is a declared package dependency; its CLI, stories and Storybook are not
+runtime dependencies. Review changes in a PR and bump the package version for releases.
 No package has been published to an external registry.
+
+`Button`, `Notice`, `StatusBadge` and `ExternalLink` preserve Factory's native
+attribute, announcement and safe-destination contracts while using Astryx.
+`Button` defaults to `type="button"`; `loading` disables it and `type="submit"`
+remains explicit. `Card`, `Heading`, `MetadataList`, `MetadataListItem`,
+`Link`, `EmptyState` and `Spinner` expose Astryx's verified properties directly.
+`TextInput` adds typed native validation attributes to Astryx's field contract.
+For example, `TextInput` takes `label`, `value`, `isDisabled`,
+`isRequired` and an `onChange(value, event)` callback. Use the actual component
+documentation before replacing a native input or composing a new screen.
+`isRequired` communicates required semantics; pass native `required` as well
+when the form relies on browser constraint validation, as the console's issue
+lookup and ownership reason do.
 
 ## Validation and sharing
 
@@ -107,10 +128,13 @@ port. It exercises MCP discovery and property documentation, the generated
 manifest, every story, keyboard focus, status semantics, and mobile asset
 layout. Screenshots contain fictional examples only. Set
 `FACTORY_CONSOLE_CHROMIUM` to use a separately installed Chromium executable.
+Set `FACTORY_CONSOLE_EVIDENCE_DIR` to retain screenshots in a named directory.
 
 The package check packs the actual published files and installs them into a
 temporary React application. It verifies TypeScript imports (including CSS),
-server rendering, and bundled icons/styles without accessing production data.
+theme and control rendering, metadata and empty states, pinned runtime
+dependencies, and bundled icons/static Astryx styles without accessing
+production data. It does not rely on the source workspace's dependency tree.
 
 CI builds the catalog, runs these checks, and uploads the static site as the
 `driftward-ui-storybook` artifact. The static site in
