@@ -167,3 +167,63 @@ Design references: [Hatchet cancellation](https://docs.hatchet.run/v1/cancellati
 [fencing at the write boundary](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html),
 [idempotent request semantics](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/),
 and [operator intervention in distributed recovery](https://learn.microsoft.com/en-us/azure/architecture/patterns/compensating-transaction).
+
+## Retire an absence-superseded orphan before deployment
+
+Older reviewed absence retries may have left the prior attempt `superseded`
+while its job remains `running` and its expired authorized lease remains
+unreleased. Cancellation and manual-hold resolution above cannot be used for
+that historical state: do not fabricate cancellation or change the issue's
+ownership to make it eligible.
+
+Use the reviewed source checkout's root-only maintenance command below only
+after establishing the same four containment and workspace-preservation checks
+above. Retain the real evidence bundle and snapshot; an expired lease or absent
+branch alone is insufficient. The old invocation and all replay paths must be
+permanently contained even while services restart for deployment. Prepare the
+same attestation schema and a fresh branch/PR absence object identifying the
+old job's exact repository and branch. Evidence must be recorded after
+supersession, with absence inspected after containment review. Root-owned
+`0600` evidence files must reside in a root-owned `0700` directory.
+
+```bash
+python3 tools/factory-retire-superseded.py preview \
+  --database /absolute/active-installation/bridge.db \
+  --attempt-id OLD-ATTEMPT-ID --successor-attempt-id VERIFIED-SUCCESSOR-ID \
+  --attestation /root/recovery/attestation.json \
+  --absence-evidence /root/recovery/absence.json \
+  --reason "Reviewed containment of superseded invocation and retained workspace"
+```
+
+The database must be an existing, migrated, root-owned regular file in a
+root-owned directory, without symlinks or other write permission. Preview opens
+it read-only. It requires exactly the latest direct successor in
+`verified_ready`, with a `ready_for_human_review` job and durable absence-fence
+and supersession-event identities matching the old lease. Any other unresolved
+execution on the issue blocks. Observed completion receipts, existing artifacts,
+or a prior recovery decision block retirement. No PR lookup or executor work is
+queued by this command; the root operator supplies the inspected absence.
+
+Review the preview and use the identical arguments/evidence with `confirm`,
+adding `--request-id UNIQUE-ROOT-REQUEST-ID --snapshot-digest PREVIEW-DIGEST --yes`.
+Confirmation acquires SQLite's writer barrier with `BEGIN IMMEDIATE` and
+rechecks the exact old rows, audit history, successor and issue-control snapshot.
+This barrier protects the database transaction; the retained containment
+evidence establishes external quiescence. The command runs no migration.
+
+Only the old job becomes `failed` with
+`operator_interrupted_outcome_unknown`, its lease is released, and its accepted
+delivery is suppressed. The old attempt stays `superseded`; the verified
+successor, all attempt fields, and ownership rows stay unchanged. No observed
+effect timestamp, receipt, success, retry, generation, or Linear update is
+created. Existing released-lease and superseded-attempt fences reject late
+commits, heartbeats, and reclaims. The existing recovery ledger and both old
+timelines retain `execution_interrupted_resolved` with the distinct
+`factory-superseded-retirement-v1` operation, evidence digests and unknown outcome.
+Identical request replay returns the original result after expiry or restart;
+changed intent is rejected. A failure before audit commit rolls everything back.
+
+This maintenance path does not broaden automatic recovery or authorize a
+production invocation merely by landing the source. Run the ordinary deployment
+quiescence check afterward, and retain its cold backup and this recovery ledger.
+Never reopen or replay the retired lease.
