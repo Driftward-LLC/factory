@@ -276,6 +276,70 @@ service-specific commands only for
 focused debugging, installer work, or break-glass recovery after `factory`
 identifies the component involved.
 
+## Exact-head review repairs
+
+After an independent review, root can authorize one repair of a Factory-owned
+open draft PR, including a source attempt that is already `verified_ready`.
+The previous attempt and successful verification remain intact. This is an
+operator action, not a GitHub comment or automatic review trigger.
+
+```bash
+factory review-repair ENG-X inspect --source-attempt ATTEMPT-ID --yes
+# Wait for the existing typed inspection worker/outbox to record its result.
+factory review-repair ENG-X preview --source-attempt ATTEMPT-ID \
+  --repo OWNER/REPO --pr https://github.com/OWNER/REPO/pull/N \
+  --branch EXISTING-BRANCH --reviewed-head FULL-40-HEX-SHA \
+  --feedback "independent review findings" --reason "reviewed repair"
+factory review-repair ENG-X confirm --source-attempt ATTEMPT-ID \
+  --repo OWNER/REPO --pr https://github.com/OWNER/REPO/pull/N \
+  --branch EXISTING-BRANCH --reviewed-head FULL-40-HEX-SHA \
+  --feedback "independent review findings" --reason "reviewed repair" \
+  --request-id STABLE-REQUEST-ID --snapshot-digest DIGEST-FROM-PREVIEW --yes
+```
+
+`inspect` explicitly queues only the existing read-only action; `preview` never
+queues work. Inspection must be at most 120 seconds old at approval. Preview
+binds the exact issue, latest real source attempt/job, canonical repository,
+PR URL, existing branch, full reviewed SHA, sanitized feedback (up to 2,000
+Unicode code points), reason, next generation/review round, ingress, ownership and policy.
+Review-repair HTTP requests retain a 32 KiB body cap so escaped Unicode feedback
+fits the same character bound; other operator actions retain their 8 KiB cap.
+Confirm revalidates under the ledger write lock and atomically appends one
+repair attempt, job, audit events and accepted outbox. Identical retransmissions
+of a stable request ID return that attempt; changed intent or digest conflicts.
+The Unix peer supplies the root actor; callers cannot choose it.
+
+Review repairs allow Engineering issues in `Ready` or `In Review`, with no
+blockers or Factory delegate and an enabled project route. Fresh intake retains
+its Ready-only gate. Held/manual control, unresolved attempts or execution and
+verifier leases (even expired but unreleased), missing lineage, changed policies,
+stale inspection, closed/merged/non-draft PRs and head/base/branch drift block
+approval. Each approval grants exactly one round; another review requires a new
+explicit preview and confirmation against the resulting latest attempt/head.
+If that latest repair failed conclusively before any effect authorization, its
+settled immutable repair lineage can identify the inherited draft/head for a
+new explicit inspection and approval. The failed job keeps its absent receipt;
+the new attempt records that failed predecessor and the original artifact owner.
+An authorized, unknown or unreleased execution can never use this recovery path.
+No automatic repairs follow this operator repair, even when the deployment's
+automatic verifier-repair budget is high. Automatic repair defaults are unchanged.
+
+The worker mechanically reinspects the exact draft before the effect gate, and
+the credential-bearing invocation repeats that check before starting Hermes.
+The full expected head is carried to Hermes, with a descendant-only normal
+fast-forward push requirement and no permission to overwrite remote work.
+Push-time rechecking is part of the existing agent contract, not a new native
+GitHub compare-and-swap security boundary; remote drift during agent execution
+remains a limitation of that authority model. The operator and workers receive
+no GitHub/provider credentials, and this path never merges or deploys.
+
+This touches protected bridge/executor compatibility surfaces. Activation
+requires an operator-reviewed rollout, including the separately installed
+credential-bearing gateway where used, followed by synthetic smoke validation;
+the ordinary image-only automatic deployment cannot activate it. See
+[automatic deployment](../docs/automatic-deployment.md). No schema migration,
+historical artifact migration or shared Hermes state migration is introduced.
+
 ## Fresh retries
 
 `factory retry` is a root-only, explicit fresh-attempt control. It talks only

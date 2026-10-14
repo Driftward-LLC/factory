@@ -48,6 +48,9 @@ Usage:
   factory retry ENG-X --reason TEXT --request-id ID --snapshot-digest DIGEST [--supersede-pr URL] [--supersede-job JOB-ID] --yes
   factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
   factory retry ENG-X force-absence --attempt-id ATTEMPT-ID --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+  factory review-repair ENG-X inspect --source-attempt ATTEMPT-ID --yes
+  factory review-repair ENG-X preview --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT
+  factory review-repair ENG-X confirm --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory lifecycle ENG-X [--json] [--limit N]
   factory lifecycle dead-letters list [--json] [--limit N]
   factory lifecycle dead-letters preview OUTBOX-KEY
@@ -636,6 +639,45 @@ retry_issue() {
   local body
   body="$(jq -cn --arg issue "$issue" --arg mode "$mode" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,mode:$mode,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
   operator_request POST /v1/retry/reserve "$body"
+}
+
+review_repair() {
+  local issue="${1:-}" phase="${2:-}"; shift 2 || die "review-repair requires an issue and phase"
+  local source="" repo="" pr="" branch="" head="" feedback="" reason="" request_id="" digest="" yes=""
+  [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "review-repair phase must be inspect, preview or confirm"
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == --yes || $# -ge 2 ]] || die "$1 requires a value"
+    case "$1" in
+      --source-attempt) source="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --pr) pr="$2"; shift 2 ;;
+      --branch) branch="$2"; shift 2 ;;
+      --reviewed-head) head="$2"; shift 2 ;;
+      --feedback) feedback="$2"; shift 2 ;;
+      --reason) reason="$2"; shift 2 ;;
+      --request-id) request_id="$2"; shift 2 ;;
+      --snapshot-digest) digest="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
+      *) die "unknown review-repair option: $1" ;;
+    esac
+  done
+  [[ -n "$source" ]] || die "review-repair requires --source-attempt"
+  local body
+  if [[ "$phase" == inspect ]]; then
+    [[ -n "$yes" ]] || die "inspect queues one read-only artifact inspection; use --yes"
+    [[ -z "$repo$pr$branch$head$feedback$reason$request_id$digest" ]] || die "inspect accepts only --source-attempt and --yes"
+    body="$(jq -cn --arg issue "$issue" --arg source_attempt_id "$source" '{issue:$issue,source_attempt_id:$source_attempt_id}')"
+  else
+    [[ -n "$repo" && -n "$pr" && -n "$branch" && -n "$head" && -n "$feedback" && -n "$reason" ]] || die "review-repair requires the exact artifact, feedback and reason"
+    body="$(jq -cn --arg issue "$issue" --arg source_attempt_id "$source" --arg repository "$repo" --arg pr_url "$pr" --arg branch "$branch" --arg reviewed_head_sha "$head" --arg feedback "$feedback" --arg reason "$reason" '{issue:$issue,source_attempt_id:$source_attempt_id,repository:$repository,pr_url:$pr_url,branch:$branch,reviewed_head_sha:$reviewed_head_sha,feedback:$feedback,reason:$reason}')"
+    if [[ "$phase" == confirm ]]; then
+      [[ -n "$yes" && -n "$request_id" && -n "$digest" ]] || die "confirm requires --yes, --request-id and --snapshot-digest from preview"
+      body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
+    else
+      [[ -z "$yes$request_id$digest" ]] || die "preview does not accept confirmation options"
+    fi
+  fi
+  operator_request POST "/v1/review-repair/$phase" "$body"
 }
 
 attempts() {
@@ -1500,6 +1542,10 @@ main() {
     lifecycle)
       shift
       lifecycle "$@"
+      ;;
+    review-repair)
+      shift
+      review_repair "$@"
       ;;
     attempts)
       shift
