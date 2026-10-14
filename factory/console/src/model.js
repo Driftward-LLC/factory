@@ -146,6 +146,11 @@ export function elapsed(record) {
 }
 
 export function needsInspection(record) {
+  return needsExecutionInspection(record)
+    || ['changes_requested', 'needs_operator', 'stale'].includes(independentReviewStatus(record));
+}
+
+function needsExecutionInspection(record) {
   const status = record.attempt?.status;
   return (
     activeStates.has(status) &&
@@ -157,9 +162,30 @@ export function needsInspection(record) {
 
 export function nextAction(record) {
   if (record.attempt?.mode === 'dry-run') return 'Inspect simulated result';
-  if (needsInspection(record)) return 'Inspect unresolved execution';
+  if (needsExecutionInspection(record)) return 'Inspect unresolved execution';
   if (verificationStates.has(record.attempt?.status)) return 'Inspect verification evidence';
   if (record.attempt?.status === 'failed') return 'Review failure evidence';
+  const reviewAction = independentReviewAction(record);
+  if (reviewAction) return reviewAction;
   if (record.attempt?.status === 'verified_ready') return 'Confirm current PR checks';
   return 'Inspect latest evidence';
+}
+
+export function independentReviewAction(record) {
+  const actions = { pending: 'Wait for independent review', running: 'Wait for independent review',
+    changes_requested: 'Inspect independent review findings', needs_operator: 'Operator action required: inspect review stop reason',
+    stale: 'Inspect the changed review head' };
+  const status = independentReviewStatus(record);
+  return Object.hasOwn(actions, status) ? actions[status] : '';
+}
+
+function independentReviewStatus(record) {
+  const review = record.independent_review;
+  return review?.schema === 'factory-console-independent-review-v1' && review.attempt_id === record.attempt?.attempt_id
+    ? review.status : '';
+}
+
+export function isActiveWork(record) {
+  return activeStates.has(record.attempt?.status)
+    || ['pending', 'running', 'changes_requested', 'needs_operator', 'stale'].includes(independentReviewStatus(record));
 }

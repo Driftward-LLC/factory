@@ -57,6 +57,7 @@ if [[ "${BRIDGE_TEST_MODE:-}" == 1 ]]; then
   install -m 0644 "$repo_root/hatchet/bridge/README.md" "$stage/README.md"
   install -m 0644 "$repo_root/hatchet/bridge/predeploy-check.py" "$stage/predeploy-check.py"
   install -m 0644 "$repo_root/hatchet/workers/verifier-policy.json" "$stage/verifier-policy.json"
+  install -m 0644 "$repo_root/hatchet/workers/independent-review-policy.json" "$stage/independent-review-policy.json"
   install -m 0644 "$BRIDGE_TEST_PREBUILT_TRIGGER" "$stage/worker-triggers/push-accepted-event.js"
 else
   git -C "$repo_root" archive --format=tar "$release_version" -- hatchet/bridge hatchet/workers | tar -xf - -C "$source_root"
@@ -74,6 +75,7 @@ else
   install -m 0644 "$source_root/hatchet/bridge/README.md" "$stage/README.md"
   install -m 0644 "$source_root/hatchet/bridge/predeploy-check.py" "$stage/predeploy-check.py"
   install -m 0644 "$source_root/hatchet/workers/verifier-policy.json" "$stage/verifier-policy.json"
+  install -m 0644 "$source_root/hatchet/workers/independent-review-policy.json" "$stage/independent-review-policy.json"
   npm exec --prefix "$source_root/hatchet/workers" -- esbuild \
     "$source_root/hatchet/workers/bridge-executor-worker/src/triggers/push-accepted-event.ts" \
     --bundle \

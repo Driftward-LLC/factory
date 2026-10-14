@@ -23,6 +23,7 @@ import VerificationEvidence from './VerificationEvidence.jsx';
 import IssueControl from './IssueControl.jsx';
 import BeforeExecution from './BeforeExecution.jsx';
 import AgentTrace from './AgentTrace.jsx';
+import { IndependentReviewBadge } from './IndependentReview.jsx';
 import {
   activeStates,
   terminalStates,
@@ -41,6 +42,8 @@ import {
   needsInspection,
   verificationStates,
   nextAction,
+  independentReviewAction,
+  isActiveWork,
 } from './model.js';
 
 function useRoute() {
@@ -231,6 +234,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
                     </td>
                     <td>
                       <Pill status={attempt.status} />
+                      <div className="attempt-review"><IndependentReviewBadge review={record.independent_review} attemptId={attempt.attempt_id} /></div>
                       {!detail && <small>Generation {attempt.generation ?? 'unknown'}</small>}
                       {!detail && <small className="attempt-guidance">{nextAction(record)}</small>}
                     </td>
@@ -281,6 +285,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
                   )}
                   <Pill status={attempt.status} />
                 </div>
+                <div className="attempt-review"><IndependentReviewBadge review={record.independent_review} attemptId={attempt.attempt_id} /></div>
                 <p className="attempt-action">{nextAction(record)}</p>
                 <AgentTrace record={record} />
                 {!detail && issuePattern.test(attempt.work_item_key) && (
@@ -322,7 +327,7 @@ function AttemptTable({ id, records = [], detail = false, empty, ...navigation }
 function allRecords(overview) {
   const records = new Map();
   // Active entries win if an attempt is also present in the recent list.
-  for (const record of [...overview.recent_attempts, ...overview.active_attempts]) {
+  for (const record of [...overview.recent_attempts, ...(overview.review_attempts || []), ...overview.active_attempts]) {
     if (record.attempt?.attempt_id) records.set(record.attempt.attempt_id, record);
   }
   return [...records.values()].sort(
@@ -351,17 +356,26 @@ function hatchetUrl(value) {
   }
   return undefined;
 }
+function ReviewScope({ scope }) {
+  if (!scope) return null;
+  return <p className="muted review-scope">{!scope.available
+    ? 'Independent review queue unavailable. This does not mean no review needs attention.'
+    : `Review scope: up to ${scope.limit} unfinished reviews and the latest ${scope.limit} passed reviews checked for recorded head changes.`}
+    {scope.available && (scope.unfinished_truncated || scope.passed_scan_truncated) && ' Partial review scan; older records may be outside this returned set.'}
+  </p>;
+}
 function Overview({ overview, error, stale, ...navigation }) {
   const counts = overview?.status_counts;
   const reconciliation = overview?.reconciliation;
   const lifecycle = overview?.lifecycle_outbox;
   const recent = overview?.recent_attempts.slice(0, 8) || [];
   const records = overview ? allRecords(overview) : [];
+  const activeWork = records.filter(isActiveWork);
   const queues = [
     [
       'attention',
       'Needs inspection',
-      'Unknown outcomes, cancellation requests, or expired leases.',
+      'Unresolved execution, review findings, operator stops, or changed review heads.',
       records.filter(needsInspection).length,
     ],
     [
@@ -383,7 +397,7 @@ function Overview({ overview, error, stale, ...navigation }) {
         <div className="section-heading">
           <div>
             <Heading level={2} id="review-title">Needs review</Heading>
-            <p className="muted">All modes · active + most recent 30 attempts</p>
+            <p className="muted">All modes · active execution, returned review work and most recent 30 attempts</p>
           </div>
         </div>
         <Card className="review-group" padding={0}>
@@ -422,10 +436,11 @@ function Overview({ overview, error, stale, ...navigation }) {
             <Heading level={2} id="active-title">
               Active work{' '}
               <span className="heading-count">
-                {overview ? count(overview.active_attempts.length) : '—'}
+                {overview ? count(activeWork.length) : '—'}
               </span>
             </Heading>
-            <p className="muted">Execution and verification, ordered by attention needed.</p>
+            <p className="muted">Execution, verification and independent review, ordered by attention needed.</p>
+            <ReviewScope scope={overview?.review_scope} />
           </div>
           <RouteLink
             {...navigation}
@@ -439,7 +454,7 @@ function Overview({ overview, error, stale, ...navigation }) {
           id="active-attempts"
           records={
             overview
-              ? [...overview.active_attempts].sort((a, b) => {
+              ? [...activeWork].sort((a, b) => {
                   const priority = (record) =>
                     needsInspection(record)
                       ? 0
@@ -604,7 +619,7 @@ function Overview({ overview, error, stale, ...navigation }) {
     </>
   );
 }
-function Work({ records, available, error, route, navigate }) {
+function Work({ records, available, error, route, navigate, reviewScope }) {
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const filterCount =
     Number(route.status !== 'all') + Number(route.mode !== 'all') + Number(Boolean(route.repo));
@@ -614,7 +629,7 @@ function Work({ records, available, error, route, navigate }) {
     const attempt = record.attempt || {};
     const groups = {
       all: true,
-      active: activeStates.has(attempt.status),
+      active: isActiveWork(record),
       attention: needsInspection(record),
       verifying: verificationStates.has(attempt.status),
       verified: attempt.status === 'verified_ready',
@@ -637,9 +652,10 @@ function Work({ records, available, error, route, navigate }) {
         <div>
           <Heading level={2} id="work-title">Active &amp; recent attempts</Heading>
           <p className="muted">
-            All active attempts plus the most recent 30. Filters apply to this returned set, not the
+            All active execution, returned review work and the most recent 30. Filters apply to this returned set, not the
             full Linear backlog.
           </p>
+          <ReviewScope scope={reviewScope} />
         </div>
       </div>
       <nav className="work-scopes" aria-label="Work queues">
@@ -697,7 +713,7 @@ function Work({ records, available, error, route, navigate }) {
             >
               <option value="all">All stages</option>
               <option value="active">Active</option>
-              <option value="attention">Active: needs inspection</option>
+              <option value="attention">Needs inspection: execution or review</option>
               <option value="verifying">Pending verification</option>
               <option value="verified">Verified (recorded)</option>
               <option value="failed">Failed (recorded)</option>
@@ -742,7 +758,7 @@ function Work({ records, available, error, route, navigate }) {
       </form>
       <p id="work-count" className="muted" role="status" aria-live="polite">
         {available
-          ? `${filtered.length} of ${records.length} returned attempts · active + recent, deduplicated by attempt`
+          ? `${filtered.length} of ${records.length} returned attempts · execution + review + recent, deduplicated by attempt`
           : error
             ? 'No work snapshot available.'
             : 'Waiting for data'}
@@ -867,6 +883,8 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange, returnView }) 
           <p id="next-step">
             {attempt.mode === 'dry-run'
               ? 'This is a dry-run attempt. Its simulated result does not establish that a real PR was created or verified.'
+              : independentReviewAction(record)
+                ? `${independentReviewAction(record)}. Review records do not grant permission to merge or deploy.`
               : Object.hasOwn(steps, attempt.status)
                 ? steps[attempt.status]
                 : 'No supported next step can be inferred. Inspect the latest lifecycle evidence and current issue in Linear.'}
@@ -1048,7 +1066,7 @@ function App() {
               </RouteLink>
             ))}
           </nav>
-          <p className="nav-scope">Active + recent 30 · all modes</p>
+          <p className="nav-scope">Execution + review + recent 30 · all modes</p>
         </div>
         <div className="sidebar-note">
           <ExternalLink id="hatchet-link" hidden={!hatchet} href={hatchet}>
@@ -1164,6 +1182,7 @@ function App() {
           </div>
           <div data-view="work" hidden={!work || Boolean(route.issue)}>
             <Work
+              reviewScope={overview?.review_scope}
               records={records}
               available={Boolean(overview)}
               error={overviewError}

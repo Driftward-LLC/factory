@@ -171,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
                     raise BridgeError("immutable bridge release root is required for outbox dispatch")
                 batch_limit = max(1, min(args.limit, 250))
                 receipt_sweep = sweep_factory_effect_receipt_inspections(conn, batch_limit)
+                from . import independent_review
+                review_sweep = independent_review.sweep(conn, batch_limit)
                 deliveries = [(row, claim_factory_outbox_delivery, acknowledge_factory_outbox, fail_factory_outbox_delivery) for row in list_factory_outbox(conn, batch_limit)]
                 deliveries += [(row, claim_factory_inspection_outbox, acknowledge_factory_inspection_outbox, fail_factory_inspection_outbox_delivery) for row in list_factory_inspection_outbox(conn, batch_limit)]
                 for row, claim, acknowledge, fail in deliveries:
@@ -189,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         fail(conn, claimed["outbox_key"], claimed["delivery_lease_id"]); failed += 1
                         print(f"factory outbox delivery failed: {claimed['outbox_key']}", file=sys.stderr)
-                print_json({"delivered": delivered, "failed": failed, "receipt_inspection_sweep": receipt_sweep})
+                print_json({"delivered": delivered, "failed": failed, "receipt_inspection_sweep": receipt_sweep, "independent_review_sweep": review_sweep})
                 if failed:
                     return 1
             else:

@@ -139,6 +139,13 @@ process.stdout.write(${JSON.stringify(JSON.stringify({ status: 'created', pr_url
       }
       assert.doesNotMatch(JSON.stringify(actual), /FAKE_SECRET/);
     }
+    job.payload.independent_review_enrollment = { policy_digest: 'c'.repeat(64) };
+    for (const fixture of ['not json', JSON.stringify({ ...selection, selected_model: 'gpt-6-astra' })]) {
+      process.env.FACTORY_MODEL_FIXTURE = fixture;
+      await runHermesCreateDraftPrViaCommand(job, command, 5000, 4096);
+      const actual = JSON.parse(readFileSync(process.env.FACTORY_MODEL_ARGS!, 'utf8'));
+      assert.deepEqual(actual.args.slice(0, 4), ['--model', 'gpt-6.1-sol', '--provider', 'openai-codex']);
+    }
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name];

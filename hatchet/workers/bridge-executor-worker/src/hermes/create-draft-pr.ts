@@ -625,6 +625,9 @@ export async function runHermesCreateDraftPrViaCommand(
   } catch {
     // Missing metadata never changes execution authority or creates a retry.
   }
+  if (job.payload.independent_review_enrollment) {
+    selection = { model_source: 'executor_config' as const, selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' };
+  }
   const modelArgs = selection ? ['--model', selection.selected_model, '--provider', selection.selected_provider] : [];
   if (selection) await reportModelSelection(onModelSelected, selection);
 

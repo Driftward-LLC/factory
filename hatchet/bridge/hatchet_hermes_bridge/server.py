@@ -361,6 +361,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._write_json(200, {"inspection": record_pr_inspection(self.conn, parts[1], body.get("result"), request_key=body.get("inspection_request_key"), capability=body.get("inspection_capability"))})
                 return
 
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "independent-review" and parts[3] in {"claim", "complete", "authorization"}:
+                if not self._require_inspection_auth(): return
+                from . import independent_review
+                if parts[3] == "claim":
+                    self._write_json(200, {"claimed": independent_review.claim(self.conn, parts[1], body.get("review_capability"))})
+                elif parts[3] == "authorization":
+                    self._write_json(200, independent_review.authorization(self.conn, parts[1], body.get("review_capability")))
+                else:
+                    self._write_json(200, {"review": independent_review.complete(self.conn, parts[1], body.get("review_capability"), body.get("result"))})
+                return
+
             if len(parts) == 3 and parts[0] == "factory" and parts[1] == "outbox" and parts[2] == "claim":
                 item = claim_factory_outbox_delivery(self.conn, body.get("outbox_key"))
                 self._write_json(200, {"outbox": item})

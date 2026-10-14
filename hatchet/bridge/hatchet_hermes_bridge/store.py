@@ -25,7 +25,7 @@ from . import work_evidence
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
 # identity also binds the transitive source closure that implements these
@@ -120,7 +120,7 @@ EXECUTION_COMMIT_FIELDS = frozenset({
     *EXECUTION_ANALYTICS_COMMON_FIELDS, "backend_outcome", "backend_elapsed_ms",
 })
 
-ALLOWED_ACTIONS = {"create_draft_pr", "repair_draft_pr", "inspect_draft_pr_state"}
+ALLOWED_ACTIONS = {"create_draft_pr", "repair_draft_pr", "inspect_draft_pr_state", "read_only_review"}
 DRAFT_PR_EFFECT_ACTIONS = {"create_draft_pr", "repair_draft_pr"}
 REPAIRABLE_VERIFICATION_REASONS = {
     "verification_github_check_failed",
@@ -283,6 +283,7 @@ def _require_runtime_schema(conn: sqlite3.Connection) -> None:
         "factory_execution_manifests", "factory_work_checkpoints",
         "reconciliation_scan_state",
         "factory_issue_controls", "factory_issue_control_commands",
+        "factory_independent_reviews",
     }
     found = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= found:
@@ -514,6 +515,19 @@ def init_db(conn: sqlite3.Connection) -> None:
             capability TEXT, state TEXT NOT NULL, result_json TEXT, result_digest TEXT, observed_at TEXT, reason TEXT,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS factory_independent_reviews (
+            review_id TEXT PRIMARY KEY, lineage_key TEXT NOT NULL,
+            pass_number INTEGER NOT NULL CHECK(pass_number BETWEEN 1 AND 2),
+            source_attempt_id TEXT NOT NULL, source_job_id TEXT NOT NULL UNIQUE,
+            job_id TEXT NOT NULL UNIQUE, repository TEXT NOT NULL, pr_url TEXT NOT NULL,
+            head_sha TEXT NOT NULL, policy_digest TEXT NOT NULL, capability TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('pending','running','awaiting_inspection','passed','changes_requested','needs_operator')),
+            result_json TEXT, result_digest TEXT, reason TEXT, repair_attempt_id TEXT,
+            started_at TEXT, result_recorded_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(lineage_key,pass_number), UNIQUE(lineage_key,head_sha),
+            FOREIGN KEY(source_attempt_id) REFERENCES factory_attempts(attempt_id),
+            FOREIGN KEY(job_id) REFERENCES bridge_jobs(job_id)
+        );
         CREATE TABLE IF NOT EXISTS factory_recovery_requests (
             request_key TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE, job_id TEXT NOT NULL,
             evidence_json TEXT NOT NULL, evidence_digest TEXT NOT NULL, result_json TEXT,
@@ -572,6 +586,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_import_conflict_attestations_delete BEFORE DELETE ON factory_import_conflict_attestations FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'factory import conflict attestations are append-only'); END")
         for operation in ("UPDATE", "DELETE"):
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_factory_issue_control_commands_{operation.lower()} BEFORE {operation} ON factory_issue_control_commands BEGIN SELECT RAISE(ABORT, 'issue control history is append-only'); END")
+        conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_delete BEFORE DELETE ON factory_independent_reviews BEGIN SELECT RAISE(ABORT, 'review budget is durable'); END")
+        conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_identity BEFORE UPDATE ON factory_independent_reviews WHEN NEW.review_id!=OLD.review_id OR NEW.lineage_key!=OLD.lineage_key OR NEW.pass_number!=OLD.pass_number OR NEW.source_attempt_id!=OLD.source_attempt_id OR NEW.source_job_id!=OLD.source_job_id OR NEW.job_id!=OLD.job_id OR NEW.repository!=OLD.repository OR NEW.pr_url!=OLD.pr_url OR NEW.head_sha!=OLD.head_sha OR NEW.policy_digest!=OLD.policy_digest OR NEW.capability!=OLD.capability OR (OLD.result_json IS NOT NULL AND (NEW.result_json IS NOT OLD.result_json OR NEW.result_digest IS NOT OLD.result_digest)) BEGIN SELECT RAISE(ABORT, 'review identity and receipt are immutable'); END")
+        conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_replace BEFORE INSERT ON factory_independent_reviews WHEN EXISTS (SELECT 1 FROM factory_independent_reviews WHERE review_id=NEW.review_id OR (lineage_key=NEW.lineage_key AND pass_number=NEW.pass_number) OR source_job_id=NEW.source_job_id) BEGIN SELECT RAISE(ABORT, 'review budget is durable'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_issue_control_commands_replace BEFORE INSERT ON factory_issue_control_commands WHEN EXISTS (SELECT 1 FROM factory_issue_control_commands WHERE request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT, 'issue control history is append-only'); END")
         for table in ("factory_execution_manifests", "factory_work_checkpoints"):
             for operation in ("UPDATE", "DELETE"):
@@ -1517,7 +1534,7 @@ def _validate_repair_payload(payload: dict[str, Any]) -> None:
     _parse_pr_reference(repo, repair.get("pr_url"))
     if payload.get("dry_run") is not False:
         raise BridgeValidationError("repair action payload is invalid")
-    if repair.get("reason_code") not in REPAIRABLE_VERIFICATION_REASONS | {"operator_review_feedback"}:
+    if repair.get("reason_code") not in REPAIRABLE_VERIFICATION_REASONS | {"operator_review_feedback", "policy_review_feedback"}:
         raise BridgeValidationError("repair reason is not supported")
     if not isinstance(repair.get("source_job_id"), str) or not repair["source_job_id"]:
         raise BridgeValidationError("repair action payload is invalid")
@@ -1535,7 +1552,7 @@ def _validate_repair_payload(payload: dict[str, Any]) -> None:
         raise BridgeValidationError("repair action payload is invalid")
 
 
-def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = False, internal_repair: bool = False) -> tuple[str, str, dict[str, Any]]:
+def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = False, internal_repair: bool = False, internal_review: bool = False) -> tuple[str, str, dict[str, Any]]:
     if not isinstance(request, dict):
         raise BridgeValidationError("request must be a JSON object")
 
@@ -1549,6 +1566,11 @@ def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = Fal
         raise BridgeValidationError(f"requested_action must be one of {sorted(ALLOWED_ACTIONS)}")
     if not isinstance(payload, dict):
         raise BridgeValidationError("payload must be a JSON object")
+    if action == "read_only_review":
+        if not internal_review:
+            raise BridgeValidationError("review jobs are created only by the policy-controlled review ledger")
+        from . import independent_review
+        independent_review.validate_request(payload)
     if action == "inspect_draft_pr_state":
         if not internal_inspection:
             raise BridgeValidationError("inspection jobs are created only by the factory operator lineage")
@@ -1573,8 +1595,8 @@ def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = Fal
     return idempotency_key.strip(), action, payload
 
 
-def submit_job(conn: sqlite3.Connection, request: dict[str, Any], *, internal_inspection: bool = False, internal_repair: bool = False) -> tuple[dict[str, Any], bool]:
-    idempotency_key, action, payload = _validate_submit(request, internal_inspection=internal_inspection, internal_repair=internal_repair)
+def submit_job(conn: sqlite3.Connection, request: dict[str, Any], *, internal_inspection: bool = False, internal_repair: bool = False, internal_review: bool = False) -> tuple[dict[str, Any], bool]:
+    idempotency_key, action, payload = _validate_submit(request, internal_inspection=internal_inspection, internal_repair=internal_repair, internal_review=internal_review)
     payload = _normalize_correlation_payload(payload)
     serialized_payload = canonical_json(payload)
     digest = payload_hash(payload)
@@ -3472,6 +3494,11 @@ def reserve_factory_intake(
         sealed_payload["work_item_id"] = work_item_key
         sealed_payload["linear_issue"] = work_item_key
         sealed_payload["dry_run"] = mode == "dry-run"
+        from . import independent_review
+        sealed_payload.pop("independent_review_enrollment", None)
+        review_policy = independent_review.policy()
+        if mode == "real" and review_policy["enabled"] and payload.get("repo") in review_policy["repositories"]:
+            sealed_payload["independent_review_enrollment"] = {"policy_digest": review_policy["digest"]}
         job, job_created = submit_job(conn, {
             "idempotency_key": attempt["idempotency_key"],
             "requested_action": "create_draft_pr",
@@ -4163,6 +4190,9 @@ def authorize_factory_effect(conn: sqlite3.Connection, job_id: str, claim: dict[
         job = get_job(conn, job_id)
         attempt = get_factory_attempt(conn, row["attempt_id"])
         if _issue_control_held(conn, attempt["work_item_key"]):
+            return False
+        from . import independent_review
+        if not independent_review.repair_authorized(conn, job, attempt["attempt_id"]):
             return False
         if job["state"] != "running" or attempt["job_id"] != job_id or attempt["status"] not in {"running", "effect_authorized"}:
             raise BridgeConflict("factory effect authorization requires a running attempt and job")

@@ -3,6 +3,7 @@ syntax = "proto3";
 package driftward.factory.hermes.v1;
 
 service HermesFactoryGateway {
+  rpc ReadOnlyReview(ReadOnlyReviewRequest) returns (ReadOnlyReviewResponse);
   rpc CheckIdentity(CheckIdentityRequest) returns (CheckIdentityResponse);
   rpc CreateDraftPullRequest(CreateDraftPullRequestRequest) returns (DraftPullRequestResult);
   rpc InspectInvocation(CreateDraftPullRequestRequest) returns (InvocationStatus);
@@ -10,6 +11,14 @@ service HermesFactoryGateway {
   rpc InspectDraftPullRequest(InspectDraftPullRequestRequest) returns (InspectDraftPullRequestResponse);
   rpc InspectPullRequestState(InspectPullRequestStateRequest) returns (InspectPullRequestStateResponse);
   rpc InspectGitHubHead(InspectGitHubHeadRequest) returns (InspectGitHubHeadResponse);
+}
+
+message ReadOnlyReviewRequest {
+  string job_json = 1;
+}
+
+message ReadOnlyReviewResponse {
+  string receipt_json = 1;
 }
 
 message CheckIdentityRequest {

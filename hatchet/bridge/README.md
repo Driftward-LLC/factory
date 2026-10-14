@@ -39,6 +39,7 @@ Linear comments.
   mode `0600`; delivered only to scoped worker envs)
 - Allowed external-effect actions: `create_draft_pr`, bounded `repair_draft_pr`
 - Allowed retry-inspection action: `inspect_draft_pr_state`
+- Policy-reserved read-only review action: `read_only_review` (disabled by default)
 - Compose API service: `bridge`
 - Legacy bridge reconciler service/timer: retired; keep disabled except for a
   reviewed break-glass recovery action
@@ -52,6 +53,11 @@ They preserve an earlier verified result and grant one update to the same open
 draft PR/branch, with no follow-on automatic repair. See the
 [operator runbook](../../factory/README.md#exact-head-review-repairs) for explicit
 inspection, preview/confirmation, fences and rollout limitations.
+
+The separate [bounded independent review loop](../../docs/bounded-independent-review.md)
+reserves at most two durable passes for an enrolled PR lineage and can authorize
+one exact-head repair only through explicitly enabled checked-in policy. It
+preserves legacy verified-ready semantics and never grants merge/deploy authority.
 
 Current release provenance is embedded in the Factory image as OCI version and
 revision labels and in `/app/hatchet/bridge/RELEASE_METADATA.json`. The bridge

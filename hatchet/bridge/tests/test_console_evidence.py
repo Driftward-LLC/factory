@@ -69,7 +69,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["specification"]["result"], "recorded")
         self.assertEqual(evidence["verification"]["result"], "unavailable")
         self.assertEqual(evidence["head_comparison"], "unavailable")
-        self.assertEqual(evidence["independent_review"], "unavailable")
+        self.assertEqual(evidence["independent_review"]["status"], "not_requested")
         self.assertIsNone(console.lifecycle(self.path, "ENG-999")["verification_evidence"])
 
     def test_matching_head_is_only_a_readonly_observation(self):
@@ -84,7 +84,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["head_comparison"], "same_head")
         self.assertEqual(evidence["verification"]["commit_sha"], "a" * 40)
         self.assertEqual(evidence["verification"]["local_evidence_source"], "executor_reported")
-        self.assertEqual(evidence["independent_review"], "unavailable")
+        self.assertEqual(evidence["independent_review"]["status"], "not_requested")
         for private in ("private requirements", "private inspection details", "capability", "required_local_commands", "hermes_session_id", "route"):
             self.assertNotIn(private, json.dumps(evidence))
 
@@ -185,6 +185,108 @@ class ConsoleEvidenceTests(unittest.TestCase):
         legacy = console.lifecycle(self.path, "ENG-803")["verification_evidence"]
         self.assertFalse(legacy["available"])
         self.assertEqual(legacy["verification"]["result"], "unavailable")
+
+    def review_record(self, state="pending", *, receipt=None):
+        created = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        self.conn.execute("""INSERT INTO factory_independent_reviews
+            (review_id,lineage_key,pass_number,source_attempt_id,source_job_id,job_id,repository,pr_url,
+             head_sha,policy_digest,capability,state,result_json,result_digest,reason,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                "fictional-review", "fictional-lineage", 1, self.attempt["attempt_id"], self.job["job_id"], self.job["job_id"],
+                "Driftward-LLC/capykit", "https://github.com/Driftward-LLC/capykit/pull/801", "a" * 40, "b" * 64,
+                "private-capability-not-for-console", state, store.canonical_json(receipt) if receipt else None,
+                store.payload_hash(receipt) if receipt else None, "review_inconclusive" if state == "needs_operator" else None,
+                created, store.utc_now()))
+        self.conn.commit()
+
+    def review_receipt(self, verdict="passed"):
+        return {"schema": "factory-independent-review-v1", "review_id": "fictional-review", "repository": "Driftward-LLC/capykit",
+                "pr_url": "https://github.com/Driftward-LLC/capykit/pull/801", "head_sha": "a" * 40, "verdict": verdict,
+                "reviewer_model": "gpt-6-astra", "reviewer_session_id": "fictional-review-session", "backend": "isolated_codex",
+                "isolation": {"separate_session": True, "isolated_checkout": True, "isolated_browser": True, "write_credentials": False},
+                "reason": "ok", "findings": [] if verdict == "passed" else [{"priority": 1, "file": "src/example.ts", "line": 7,
+                                                                              "title": "Fictional finding", "body": "Bounded fixture evidence."}]}
+
+    def test_review_pending_running_and_missing_receipt_are_distinct_and_readonly(self):
+        self.commit()
+        self.verify()
+        self.review_record()
+        before = self.conn.total_changes
+        for state, expected in (("pending", "pending"), ("running", "running"), ("awaiting_inspection", "pending"), ("passed", "unavailable"), ("needs_operator", "needs_operator")):
+            self.conn.execute("UPDATE factory_independent_reviews SET state=?", (state,))
+            self.conn.commit()
+            report = console.lifecycle(self.path, "ENG-801")
+            review = report["verification_evidence"]["independent_review"]
+            self.assertEqual(review["status"], expected)
+            self.assertEqual(review["pass_count"], 1)
+            self.assertEqual(review["max_passes"], 2)
+            self.assertEqual(report["attempts"][0]["independent_review"], review)
+            self.assertEqual(console.overview(self.path, "fixture")["recent_attempts"][0]["independent_review"], review)
+        self.assertEqual(self.conn.total_changes, before + 5)
+        self.assertEqual(store.get_factory_attempt(self.conn, self.attempt["attempt_id"])["status"], "verified_ready")
+
+    def test_review_work_supplements_terminal_attempt_outside_recent_without_changing_execution_counts(self):
+        self.commit()
+        self.verify()
+        self.review_record()
+        for index in range(31):
+            attempt, _ = store.reserve_factory_attempt(self.conn, work_item_key=f"ENG-{900 + index}", mode="real",
+                                                      request_id=f"recent-{index}", reason="fixture", actor="test")
+            with self.conn:
+                self.conn.execute("UPDATE factory_attempts SET status='completed' WHERE attempt_id=?", (attempt["attempt_id"],))
+        self.conn.execute("UPDATE factory_attempts SET updated_at='2000-01-01T00:00:00Z' WHERE attempt_id=?", (self.attempt["attempt_id"],))
+        self.conn.commit()
+        for state in ("pending", "running", "changes_requested", "needs_operator"):
+            self.conn.execute("UPDATE factory_independent_reviews SET state=?", (state,))
+            self.conn.commit()
+            report = console.overview(self.path, "fixture")
+            self.assertEqual(report["active_attempts"], [])
+            self.assertEqual(report["status_counts"], {"completed": 31, "verified_ready": 1})
+            self.assertNotIn(self.attempt["attempt_id"], [row["attempt"]["attempt_id"] for row in report["recent_attempts"]])
+            self.assertEqual([row["attempt"]["attempt_id"] for row in report["review_attempts"]], [self.attempt["attempt_id"]])
+            self.assertTrue(report["review_scope"]["available"])
+            self.assertEqual(report["review_scope"]["limit"], 100)
+            self.assertFalse(report["review_scope"]["unfinished_truncated"])
+
+    def test_recorded_passed_review_with_changed_head_is_in_review_work(self):
+        self.commit()
+        self.verify()
+        self.review_record("passed", receipt=self.review_receipt())
+        self.inspect("b" * 40)
+        report = console.overview(self.path, "fixture")
+        self.assertEqual(report["active_attempts"], [])
+        self.assertEqual(len(report["review_attempts"]), 1)
+        self.assertEqual(report["review_attempts"][0]["independent_review"]["status"], "stale")
+        self.assertEqual(report["review_attempts"][0]["attempt"]["status"], "verified_ready")
+
+    def test_review_pass_is_exact_head_and_never_exports_capability_or_full_receipt(self):
+        self.commit()
+        self.verify()
+        self.review_record("passed", receipt=self.review_receipt())
+        self.inspect()
+        evidence = self.evidence()
+        review = evidence["independent_review"]
+        self.assertEqual(review["status"], "passed")
+        self.assertEqual(review["reviewed_sha"], "a" * 40)
+        self.assertEqual(review["reviewer_model"], "gpt-6-astra")
+        self.assertEqual(review["reviewer_session_id"], "fictional-review-session")
+        for private in ("capability", "private-capability", "isolation", "generator_session", "private requirements"):
+            self.assertNotIn(private, json.dumps(review))
+        inspection = store.get_pr_inspection(self.conn, "Driftward-LLC/capykit", "https://github.com/Driftward-LLC/capykit/pull/801")
+        with patch.object(console_evidence, "get_pr_inspection", return_value={**inspection, "result": {**inspection["result"], "head_sha": "b" * 40}}):
+            self.assertEqual(self.evidence()["independent_review"]["status"], "stale")
+        self.assertEqual(self.evidence()["verification"]["result"], "passed")
+
+    def test_changes_requested_findings_are_bounded_and_inconsistent_receipt_is_unavailable(self):
+        self.commit()
+        self.verify()
+        self.review_record("changes_requested", receipt=self.review_receipt("changes_requested"))
+        review = self.evidence()["independent_review"]
+        self.assertEqual(review["status"], "changes_requested")
+        self.assertEqual(review["findings"][0]["priority"], 1)
+        self.conn.execute("UPDATE factory_independent_reviews SET state='passed'")
+        self.conn.commit()
+        self.assertEqual(self.evidence()["independent_review"]["status"], "unavailable")
 
 
 if __name__ == "__main__":

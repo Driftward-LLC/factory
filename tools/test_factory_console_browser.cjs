@@ -41,6 +41,26 @@ malicious.job.pr_url = 'https://github.com/attacker/repo/pull/1';
 malicious.agent_trace = { attempt_id: malicious.attempt.attempt_id, status: 'unverified', url: 'https://us.posthog.com.attacker.example/project/12345/ai-observability/traces/fb9fa7e1-4065-5818-af72-3e41a35fe39a' };
 const records = [running, failed, verified, simulated, unknown, unrecognized, malicious, verifying];
 let intakeState = 'blocked';
+let reviewState = 'not_requested';
+let reviewOnlyState;
+const reviewOnly = record('ENG-108', 1, 'verified_ready');
+function reviewWork() {
+  if (!reviewOnlyState) return [];
+  return [{ ...reviewOnly, independent_review: { ...independentReview(reviewOnly), status: reviewOnlyState,
+    current_sha: (reviewOnlyState === 'stale' ? 'b' : 'a').repeat(40) } }, withReview(verified)];
+}
+function independentReview(item) {
+  return { schema: 'factory-console-independent-review-v1', attempt_id: reviewState === 'wrong_attempt' ? 'other-attempt' : item.attempt.attempt_id,
+    status: reviewState, reviewed_sha: reviewState === 'invalid_pass' ? null : 'a'.repeat(40), current_sha: (reviewState === 'stale' ? 'b' : 'a').repeat(40),
+    pass_count: reviewState === 'not_requested' ? 0 : reviewState === 'needs_operator' ? 2 : 1, max_passes: 2, reviewer_model: 'gpt-6-astra', reviewer_session_id: 'fictional-review-session',
+    recorded_at: new Date(now - 60000).toISOString(), reason_code: reviewState === 'not_requested' ? null : reviewState === 'needs_operator' ? 'review_budget_exhausted' : 'ok',
+    findings: ['changes_requested', 'needs_operator'].includes(reviewState) ? [{ priority: 1, file: 'src/example.ts', line: 7, title: 'Fictional review finding', body: 'Bounded fictional finding <script>alert(1)</script>' }] : [] };
+}
+function withReview(item) {
+  const review = independentReview(item);
+  if (reviewState === 'invalid_pass') review.status = 'passed';
+  return { ...item, independent_review: review };
+}
 function intake() {
   return { available: intakeState !== 'unavailable', truncated: intakeState === 'partial', scan_limit: 500, limit: 100,
     items: ['empty', 'unavailable'].includes(intakeState) ? [] : [{ issue: 'ENG-154', linear_status: 'Blocked', blocked_by: ['ENG-151'], blocked_by_count: 1, dispatch_eligible: false, observed_at: new Date(now - 60000).toISOString(), provider_updated_at: new Date(now - 120000).toISOString() }] };
@@ -49,8 +69,10 @@ function overview() {
   return {
     generated_at: new Date().toISOString(), mode: 'real',
     intake: intake(),
-    active_attempts: [running, unknown, verifying],
-    recent_attempts: records,
+    active_attempts: [running, unknown, verifying].map(withReview),
+    recent_attempts: records.map(withReview),
+    review_attempts: reviewWork(),
+    review_scope: { available: true, limit: 100, unfinished_truncated: false, passed_scan_truncated: false },
     status_counts: { running: 1, failed: 2, verified_ready: 2, effect_outcome_unknown: 1, constructor: 1, verification_pending: 1 },
     reconciliation: { actionable: 2, actionable_severity: { critical: 0, warning: 2 }, scope: { terminal_work: 9 } },
     lifecycle_outbox: { available: false, dead_letters: 0 },
@@ -68,7 +90,7 @@ function verificationEvidence(issue) {
     implementation: { result: item.attempt.mode === 'dry-run' ? 'not_applicable' : 'recorded', recorded_at: new Date(now - 600000).toISOString() },
     verification: { result: item.attempt.mode === 'dry-run' ? 'not_applicable' : 'passed', recorded_at: new Date(now - 300000).toISOString(), commit_sha: 'a'.repeat(40), checks_passed: 3, local_commands_passed: 2, policy_digest: 'c'.repeat(64), receipt_digest: 'd'.repeat(64), local_evidence_source: 'executor_reported' },
     inspection: { status: evidenceState === 'stale' ? 'stale' : 'recorded', observed_at: new Date(now - 60000).toISOString(), head_sha: (evidenceState === 'head_changed' ? 'b' : 'a').repeat(40), pr_state: 'open', merged: false, draft: true },
-    head_comparison: evidenceState === 'stale' ? 'same_head' : evidenceState, independent_review: 'unavailable',
+    head_comparison: evidenceState === 'stale' ? 'same_head' : evidenceState, independent_review: withReview(item).independent_review,
   };
 }
 function lifecycle(issue) {
@@ -76,7 +98,7 @@ function lifecycle(issue) {
     work_item_key: issue,
     intake: issue === 'ENG-154' ? intake() : { ...intake(), items: [] },
     verification_evidence: verificationEvidence(issue),
-    attempts: records.filter((r) => r.attempt.work_item_key === issue).sort((a, b) => b.attempt.generation - a.attempt.generation),
+    attempts: records.filter((r) => r.attempt.work_item_key === issue).sort((a, b) => b.attempt.generation - a.attempt.generation).map(withReview),
     timeline: [{
       event_id: issue + '-event', event_type: 'execution_backend_invoked', generation: 1,
       created_at: new Date(now - 60000).toISOString(),
@@ -273,6 +295,23 @@ async function main() {
     assert.equal(await page.locator('#hatchet-link').isVisible(), false);
     assert.equal(await page.locator('#active-attempts tr').count(), 3);
     assert.match(await page.locator('#active-attempts tr').first().textContent(), /ENG-104/);
+    for (const state of ['pending', 'running', 'changes_requested', 'needs_operator', 'stale']) {
+      reviewOnlyState = state;
+      await page.locator('#refresh-button').click();
+      await page.waitForFunction(() => document.querySelector('#nav-work-count').textContent === '9');
+      assert.equal(await page.locator('#active-attempts tr').count(), 4, 'Review-only terminal attempt remains visible: ' + state);
+      assert.match(await page.locator('#active-attempts').textContent(), /ENG-108/);
+      assert.equal(await page.locator('#queue-attention').textContent(), ['pending', 'running'].includes(state) ? '1' : '2');
+      await page.locator('[data-work-link]').click();
+      assert.equal(await page.locator('#work-attempts tr').count(), 4, 'Active work includes independent review without duplicate attempt');
+      assert.match(await page.locator('#work-attempts').textContent(), /ENG-108/);
+      await page.locator('#status-filter').selectOption('attention');
+      assert.equal(await page.locator('#work-attempts tr').count(), ['pending', 'running'].includes(state) ? 1 : 2);
+      await page.locator('[data-nav="overview"]').click();
+    }
+    reviewOnlyState = undefined;
+    await page.locator('#refresh-button').click();
+    await page.waitForFunction(() => document.querySelector('#nav-work-count').textContent === '8');
     assert.equal(await page.locator('.ledger-summary').getAttribute('open'), null);
     await page.locator('.ledger-summary summary').click();
     assert.equal(await page.locator('#metric-total').isVisible(), true);
@@ -368,12 +407,43 @@ async function main() {
     assert.equal(await page.locator('#issue-attempts .agent-trace a').getAttribute('href'), verified.agent_trace.url);
     const evidencePanel = page.locator('.verification-evidence');
     assert.match(await evidencePanel.textContent(), /matches the verified SHA/);
-    assert.match(await evidencePanel.textContent(), /Independent reviewUnavailable in this view/);
+    assert.match(await evidencePanel.textContent(), /Independent review: Not requested/);
+    assert.match(await evidencePanel.textContent(), /Deterministic checks passed \(recorded\)/);
     await evidencePanel.locator('summary').focus();
     await page.keyboard.press('Enter');
     assert.equal(await evidencePanel.locator('details').getAttribute('open'), '');
     assert.match(await evidencePanel.textContent(), /executor-reported, not independent test execution/);
     await page.keyboard.press('Enter');
+    for (const [state, expected] of [
+      ['pending', 'Pending'], ['running', 'Running'], ['changes_requested', 'Changes requested'],
+      ['passed', 'Passed (recorded)'], ['needs_operator', 'Needs operator'], ['unavailable', 'Unavailable'],
+      ['stale', 'Stale'], ['unknown', 'Unavailable'], ['wrong_attempt', 'Unavailable'], ['invalid_pass', 'Unavailable'],
+    ]) {
+      reviewState = state;
+      await page.locator('#refresh-button').click();
+      await page.waitForFunction(text => document.querySelector('.independent-review .pill')?.textContent.includes(text), expected);
+      const reviewPanel = page.locator('.independent-review');
+      assert.equal(await reviewPanel.locator('.pill.success').count(), state === 'passed' ? 1 : 0, state + ' review approval');
+      assert.match(await reviewPanel.textContent(), /not live GitHub state or permission to merge or deploy/);
+      if (['pending', 'running'].includes(state)) assert.match(await page.locator('#next-step').textContent(), /Wait for independent review/);
+      if (state === 'changes_requested') {
+        assert.match(await page.locator('#next-step').textContent(), /Inspect independent review findings/);
+        await reviewPanel.locator('summary').focus();
+        await page.keyboard.press('Enter');
+        assert.equal(await reviewPanel.locator('details').getAttribute('open'), '');
+        assert.match(await reviewPanel.textContent(), /Bounded fictional finding <script>/);
+        await page.setViewportSize({ width: 320, height: 1000 });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Review findings fit 320px');
+        await page.screenshot({ path: join(evidenceDir, 'factory-independent-review-findings-mobile.png'), fullPage: true });
+        await page.setViewportSize({ width: 1440, height: 1080 });
+      }
+      if (state === 'needs_operator') {
+        assert.match(await reviewPanel.textContent(), /2 \/ 2 maximum/);
+        assert.match(await page.locator('#next-step').textContent(), /Operator action required/);
+      }
+      if (state === 'stale') assert.match(await reviewPanel.textContent(), /changed recorded head invalidates/);
+    }
+    reviewState = 'not_requested';
     for (const [state, message] of [
       ['head_changed', 'Earlier verification does not cover that revision'],
       ['inspection_predates_verification', 'The PR inspection predates verification'],

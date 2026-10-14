@@ -32,6 +32,7 @@ import { recoverClaimedVerification } from './verification-recovery';
 import { recoverExecutionReceipt } from './execution-recovery';
 import { transitionToVerificationPending } from './verification-pending';
 import type { ExecutionFailureDomain, ExecutionFailureStage } from '../hermes/errors';
+import { runIndependentReviewViaGrpc } from '../hermes/hermes-gateway-client';
 
 if (!globalThis.crypto) {
   globalThis.crypto = webcrypto as Crypto;
@@ -108,6 +109,17 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
       await bridge.recordPrInspection(running.job_id, requestKey, inspectionCapability, result as unknown as JsonObject);
       const completed = await bridge.getJob(running.job_id);
       return { executed: true, job: completed, dryRun: false, reused: false };
+    }
+
+    if (job.requested_action === 'read_only_review') {
+      const capability = job.payload.review_capability;
+      if (typeof capability !== 'string' || !await bridge.claimIndependentReview(job.job_id, capability)) {
+        return { executed: false, blockedReason: 'review_already_claimed_or_operator_required', job, dryRun: false, reused: true };
+      }
+      // A lost/ambiguous invocation cannot be retried as another hidden review pass.
+      const result = await runIndependentReviewViaGrpc(await bridge.getJob(job.job_id));
+      await bridge.completeIndependentReview(job.job_id, capability, result);
+      return { executed: true, job: await bridge.getJob(job.job_id), dryRun: false, reused: false };
     }
 
     if (!isDraftPrEffectAction(job.requested_action)) {

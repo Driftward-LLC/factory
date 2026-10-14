@@ -123,6 +123,21 @@ function reviewRepairJob(): BridgeJob {
   return job;
 }
 
+test('policy review repair uses separate authority and the same exact-head fence', async () => {
+  const job = reviewRepairJob();
+  (job.payload.factory_artifact_fence as JsonObject).kind = 'policy_review_repair_v1';
+  (job.payload.factory_repair as JsonObject).reason_code = 'policy_review_feedback';
+  const review = job.payload.factory_review_repair as JsonObject;
+  review.policy_authority = { kind: 'independent_review_policy_v1', review_id: 'review-1', policy_digest: 'c'.repeat(64) };
+  const observation: DraftPrStateInspection = { repository: 'Driftward-LLC/capykit', number: 77,
+    url: 'https://github.com/Driftward-LLC/capykit/pull/77', state: 'open', merged: false, draft: true,
+    head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main', reason: 'ok' };
+  assert.deepEqual(await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => observation }), { ok: true });
+  assert.equal((await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({ ...observation, head_sha: 'b'.repeat(40) }) })).ok, false);
+  review.approval = { principal: 'root' };
+  assert.equal((await validateFactoryArtifactFence(job)).ok, false);
+});
+
 function absenceRetryJob(): BridgeJob {
   const fence = absenceFence();
   return baseJob({

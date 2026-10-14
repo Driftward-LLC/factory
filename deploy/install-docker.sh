@@ -424,6 +424,11 @@ install -D -m 0755 "$script_dir/factory-docker-smoke" /usr/local/bin/factory-doc
 install -D -m 0755 "$factory_cli_source" "$factory_cli_target"
 install -d -m 0755 -o root -g root "$factory_share_dir/desired-state"
 install -d -m 0755 -o root -g root "$factory_share_dir/hermes-gateway"
+install -d -m 0755 -o root -g root "$factory_share_dir/independent-reviewer/deploy/independent-reviewer"
+for reviewer_asset in Dockerfile runner.py source_server.py browser_probe.cjs response.schema.json package.json package-lock.json; do
+  install -m 0644 "$script_dir/independent-reviewer/$reviewer_asset" "$factory_share_dir/independent-reviewer/deploy/independent-reviewer/$reviewer_asset"
+done
+install -m 0644 "$script_dir/INDEPENDENT-REVIEW.md" "$factory_share_dir/independent-reviewer/INDEPENDENT-REVIEW.md"
 install -m 0755 "$factory_hatchet_doctor_source" "$factory_hatchet_doctor_target"
 install -m 0644 "$factory_hatchet_desired_state_source" "$factory_hatchet_desired_state_target"
 install -m 0644 "$hermes_gateway_proto_source" "$hermes_gateway_proto_target"

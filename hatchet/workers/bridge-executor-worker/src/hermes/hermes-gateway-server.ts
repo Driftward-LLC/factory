@@ -22,6 +22,7 @@ import {
 import { NonRetryableBridgeExecutionError } from './errors';
 import { InvocationJournal, invocationLease } from './invocation-journal';
 import { MODEL_SELECTION_HEADER } from './model-selection';
+import { IndependentReviewer } from './independent-review';
 import {
   DEFAULT_HERMES_GRPC_TARGET,
   isHermesGrpcUnixTarget,
@@ -67,6 +68,7 @@ type UnaryCall<T> = grpc.ServerUnaryCall<T, unknown>;
 type SendUnary<T> = grpc.sendUnaryData<T>;
 
 export function createServer(target: string, runDraftPr = runHermesCreateDraftPrViaCommand): grpc.Server {
+  const reviewer = new IndependentReviewer(process.env.DRIFTWARD_FACTORY_REVIEW_DIRECTORY || '/var/lib/driftward-hermes-factory/reviews');
   // Open lazily so read-only identity/inspection remains available during a storage fault.
   let journal: InvocationJournal | undefined;
   const invocations = () => journal ||= new InvocationJournal(process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY ||
@@ -80,6 +82,12 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
   };
   const server = new grpc.Server();
   server.addService(loadGatewayService().service, {
+    readOnlyReview: unary(target, async (request: { jobJson?: string }) => {
+      const raw = requiredString(request.jobJson, 'job_json');
+      if (raw.length > 100000) throw new Error('Review job exceeds gateway limit');
+      const job = JSON.parse(raw) as BridgeJob;
+      return { receiptJson: JSON.stringify(await reviewer.run(job)) };
+    }),
     checkIdentity: unary(target, async (request: CheckIdentityRequest) => {
       invocations();
       const identity = await assertHermesIdentityViaCommand(requiredString(request.repo, 'repo'));

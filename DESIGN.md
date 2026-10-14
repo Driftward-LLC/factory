@@ -42,6 +42,14 @@ outcome, cancellation request, or expired lease; it does not mean the complete
 Linear blocked backlog. Pending verification covers `effect_committed` and
 `verification_pending`. Recent failures are historical attempts within the
 returned set, not a claim that those issues are currently blocked.
+Active work also includes independent review pending/running and review findings,
+operator stops or changed recorded review heads, even when execution already
+reached its historical `verified_ready` stage. Needs inspection includes those
+review findings/stops/head changes separately from unresolved execution. The
+console supplements execution-active and recent records with up to 100 unfinished
+review records and scans the latest 100 passed reviews for recorded head changes;
+show partial/unavailable review scope explicitly. Deduplicate by attempt before
+counting. Ledger execution-active counts and global execution fences stay separate.
 
 Runtime mode, all-time attempt counts, and terminal reconciliation findings
 belong in an expandable ledger summary. They must not compete with the review
@@ -81,8 +89,16 @@ The verification evidence panel is scoped to the newest returned attempt.
 Compare the full verified SHA only against a later stored inspection for the
 same PR. Keep an older inspection, stale observation, changed head and missing
 evidence distinct. A matching head is not live verification or approval. Local
-checks are executor-reported; independent review remains unavailable. Page
-refresh rereads evidence and does not request new execution or inspection.
+checks are executor-reported. Independent review is a separate exact-head record:
+show not requested, pending, running, changes requested, passed (recorded), needs
+operator, unavailable and stale distinctly. Historical attempts without enrollment
+must not look pending or independently approved. Show the full reviewed SHA,
+bounded pass count (at most two), safe reviewer model/session reference, recorded
+reason and bounded findings. A changed later recorded head invalidates earlier
+review; missing or inconclusive evidence cannot establish approval. Overview,
+Work and attempt history carry the same read-only review status. Neither review
+nor deterministic checks confer merge/deploy permission or prove live GitHub
+freshness. Page refresh rereads evidence and does not request new execution or inspection.
 
 Analytics uses its own 7-, 30-, or 90-day attempt cohort, rather than the active
 and recent list used by Overview and Work. Show delivery stages, recorded

@@ -20,7 +20,7 @@ export async function validateFactoryArtifactFence(
   inspectors: ArtifactFenceInspectors = {}
 ): Promise<FactoryArtifactFenceValidation> {
   const rawFence = job.payload.factory_artifact_fence;
-  if (job.payload.factory_review_repair && (!rawFence || jsonObject(rawFence)?.kind !== 'operator_review_repair_v1')) {
+  if (job.payload.factory_review_repair && (!rawFence || !['operator_review_repair_v1', 'policy_review_repair_v1'].includes(String(jsonObject(rawFence)?.kind)))) {
     return blocked('artifact_fence_invalid', 'operator review repair requires its exact artifact fence');
   }
   if (rawFence === undefined || rawFence === null) return { ok: true };
@@ -29,7 +29,7 @@ export async function validateFactoryArtifactFence(
   if (!fence) return blocked('artifact_fence_invalid', 'factory_artifact_fence must be a JSON object');
 
   const kind = stringValue(fence.kind);
-  if (kind === 'operator_review_repair_v1') {
+  if (kind === 'operator_review_repair_v1' || kind === 'policy_review_repair_v1') {
     const review = jsonObject(job.payload.factory_review_repair);
     const repair = jsonObject(job.payload.factory_repair);
     const repository = stringValue(job.payload.repo);
@@ -43,6 +43,14 @@ export async function validateFactoryArtifactFence(
       || review.branch !== job.branch || repair.branch !== job.branch || fence.head_branch !== job.branch
       || review.automatic_repairs_allowed !== false || typeof review.feedback !== 'string' || [...review.feedback].length > 2000) {
       return blocked('artifact_fence_invalid', 'operator review repair must bind its approved source, artifact and head');
+    }
+    if (kind === 'policy_review_repair_v1') {
+      const authority = jsonObject(review.policy_authority);
+      if (!authority || authority.kind !== 'independent_review_policy_v1' || typeof authority.review_id !== 'string'
+        || typeof authority.policy_digest !== 'string' || !/^[0-9a-f]{64}$/.test(authority.policy_digest)
+        || repair.reason_code !== 'policy_review_feedback' || review.approval !== undefined) {
+        return blocked('artifact_fence_invalid', 'policy review repair requires its separate policy authority');
+      }
     }
     const observed = await (inspectors.inspectDraftPrState || inspectDraftPrState)(repository, String(fence.prior_pr_url));
     if (observed.reason !== 'ok' || observed.repository !== repository || observed.url !== fence.prior_pr_url

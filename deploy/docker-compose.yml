@@ -401,6 +401,9 @@ services:
     environment:
       <<: *hatchet-client-env
       DRIFTWARD_BRIDGE_RELEASE_ROOT: /app
+      HATCHET_FACTORY_OPERATOR_RUNTIME: docker
+      HATCHET_FACTORY_OPERATOR_BRIDGE_DB: /var/lib/driftward-hatchet-bridge/bridge.db
+      HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/driftward-hatchet-event-ingress/ingress.db
     volumes:
       - factory-bridge-data:/var/lib/driftward-hatchet-bridge
       - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress
