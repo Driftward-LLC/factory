@@ -38,3 +38,5 @@ export const IndependentReviewUnavailable = { args: { evidence: { ...evidence, i
 export const IndependentReviewUnknown = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'unknown' } } } };
 export const IndependentReviewStale = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'stale', current_sha: 'b'.repeat(40) } } } };
 export const IndependentReviewInvalidPass = { args: { evidence: { ...evidence, independent_review: { ...review, reviewed_sha: null } } } };
+export const IndependentReviewSuperseded = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'superseded', historical_status: 'changes_requested', superseded_by_attempt_id: 'fictional-repair-attempt', current_sha: 'b'.repeat(40), findings } } } };
+export const IndependentReviewInheritedStop = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'needs_operator', inherited_from_attempt_id: 'fictional-earlier-attempt', reason_code: 'review_operator_required', findings } } } };

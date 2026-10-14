@@ -50,6 +50,10 @@ console supplements execution-active and recent records with up to 100 unfinishe
 review records and scans the latest 100 passed reviews for recorded head changes;
 show partial/unavailable review scope explicitly. Deduplicate by attempt before
 counting. Ledger execution-active counts and global execution fences stay separate.
+Once the reserved repair advances, the prior review is superseded in work queues;
+retain its historical result, reviewed SHA and findings without treating expected
+repair head changes as a new operator alert. A same-head repair that inherited an
+operator stop still needs attention and never implies a second review pass.
 
 Runtime mode, all-time attempt counts, and terminal reconciliation findings
 belong in an expandable ledger summary. They must not compete with the review

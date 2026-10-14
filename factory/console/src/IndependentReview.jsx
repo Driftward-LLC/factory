@@ -1,5 +1,5 @@
 import { StatusBadge, Heading, MetadataList, MetadataListItem } from '@driftward/ui';
-import { time } from './model.js';
+import { label, time } from './model.js';
 
 const states = {
   not_requested: ['', 'Not requested'],
@@ -10,6 +10,7 @@ const states = {
   needs_operator: ['danger', 'Needs operator'],
   unavailable: ['', 'Unavailable'],
   stale: ['warning', 'Stale'],
+  superseded: ['', 'Superseded by repair'],
 };
 
 function projection(review, attemptId) {
@@ -19,7 +20,7 @@ function projection(review, attemptId) {
       || !Number.isInteger(review.pass_count) || review.pass_count < 1 || review.pass_count > 2
       || review.max_passes !== 2 || review.reviewer_model !== 'gpt-6-astra'
       || !Number.isFinite(Date.parse(review.recorded_at || '')))) return { ...review, status: 'unavailable' };
-  if (/^[0-9a-f]{40}$/.test(review.current_sha || '') && /^[0-9a-f]{40}$/.test(review.reviewed_sha || '')
+  if (review.status !== 'superseded' && /^[0-9a-f]{40}$/.test(review.current_sha || '') && /^[0-9a-f]{40}$/.test(review.reviewed_sha || '')
       && review.current_sha !== review.reviewed_sha) return { ...review, status: 'stale' };
   return review;
 }
@@ -40,6 +41,8 @@ export default function IndependentReview({ review, attemptId }) {
     {value.status === 'not_requested' && <p className="muted">This attempt was not enrolled in independent review. Historical verification labels do not establish independent approval.</p>}
     {value.status === 'unavailable' && <p className="muted">Missing or inconclusive review evidence does not establish approval.</p>}
     {value.status === 'stale' && <p className="muted">A changed recorded head invalidates the earlier review. Its result does not cover the new revision.</p>}
+    {value.status === 'superseded' && <p className="muted">The reserved repair supersedes this review in work queues. Its historical result and findings remain recorded for the earlier SHA.</p>}
+    {value.inherited_from_attempt_id && <p className="muted">This repair inherits an operator stop from the earlier review. No additional review pass was recorded for the unchanged head.</p>}
     {value.reason_code && <p className="muted">Recorded reason: {value.reason_code}</p>}
     {value.status !== 'not_requested' && <MetadataList columns="multi" className="evidence-facts">
       <MetadataListItem label="Reviewed SHA">{value.reviewed_sha || 'Unavailable'}</MetadataListItem>
@@ -48,6 +51,9 @@ export default function IndependentReview({ review, attemptId }) {
       <MetadataListItem label="Reviewer model">{value.reviewer_model || 'Unavailable'}</MetadataListItem>
       <MetadataListItem label="Reviewer session reference">{value.reviewer_session_id || 'Unavailable'}</MetadataListItem>
       <MetadataListItem label="Review record updated">{value.recorded_at ? time(value.recorded_at) : 'Unavailable'}</MetadataListItem>
+      {value.historical_status && <MetadataListItem label="Historical review result">{label(value.historical_status)}</MetadataListItem>}
+      {value.superseded_by_attempt_id && <MetadataListItem label="Reserved repair attempt">{value.superseded_by_attempt_id}</MetadataListItem>}
+      {value.inherited_from_attempt_id && <MetadataListItem label="Earlier reviewed attempt">{value.inherited_from_attempt_id}</MetadataListItem>}
     </MetadataList>}
     {findings.length > 0 && <details className="review-findings">
       <summary>Recorded review findings ({findings.length})</summary>

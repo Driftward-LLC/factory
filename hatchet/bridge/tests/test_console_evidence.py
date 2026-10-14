@@ -289,5 +289,72 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(self.evidence()["independent_review"]["status"], "unavailable")
 
 
+class ConsoleReviewLineageTests(unittest.TestCase):
+    def reviewed_repair(self):
+        from test_independent_review import IndependentReviewTests
+        from hatchet_hermes_bridge import independent_review as reviews
+        case = IndependentReviewTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        first = case.reserve()
+        case.complete(first, "changes_requested")
+        self.assertEqual(reviews.sweep(case.conn)["repairs"], 1)
+        repair_id = case.conn.execute("SELECT repair_attempt_id FROM factory_independent_reviews WHERE review_id=?", (first["review_id"],)).fetchone()[0]
+        repair = store.get_factory_attempt(case.conn, repair_id)
+        return case, first, repair, store.get_job(case.conn, repair["job_id"])
+
+    def finish_repair(self, case, repair, job, sha="b" * 40):
+        case.finish(job, sha=sha)
+        case.conn.execute("UPDATE bridge_jobs SET hermes_session_id='repair-session' WHERE job_id=?", (job["job_id"],))
+        case.conn.commit()
+        case.intent.update(source_attempt_id=repair["attempt_id"], reviewed_head_sha=sha)
+        case.inspect()
+
+    def test_reserved_repair_supersedes_prior_findings_in_recent_and_review_queues(self):
+        case, first, repair, job = self.reviewed_repair()
+        report = console.overview(case.db, "fixture")
+        self.assertEqual([row["attempt"]["attempt_id"] for row in report["active_attempts"]], [repair["attempt_id"]])
+        self.assertEqual(report["review_attempts"], [])
+        prior = next(row for row in report["recent_attempts"] if row["attempt"]["attempt_id"] == first["source_attempt_id"])["independent_review"]
+        self.assertEqual(prior["status"], "superseded")
+        self.assertEqual(prior["historical_status"], "changes_requested")
+        self.assertTrue(prior["findings"])
+        self.assertEqual(prior["reviewed_sha"], "a" * 40)
+
+    def test_second_review_pending_passed_and_operator_stop_only_queue_current_review(self):
+        from hatchet_hermes_bridge import independent_review as reviews
+        for verdict in ("passed", "changes_requested", "inconclusive"):
+            with self.subTest(verdict=verdict):
+                case, first, repair, job = self.reviewed_repair()
+                self.finish_repair(case, repair, job)
+                second = reviews.reserve(case.conn, job["job_id"])
+                report = console.overview(case.db, "fixture")
+                self.assertEqual([(row["attempt"]["attempt_id"], row["independent_review"]["status"]) for row in report["review_attempts"]], [(repair["attempt_id"], "pending")])
+                case.complete(second, verdict)
+                report = console.overview(case.db, "fixture")
+                self.assertEqual(report["active_attempts"], [])
+                expected = [] if verdict == "passed" else [(repair["attempt_id"], "needs_operator" if verdict == "inconclusive" else "changes_requested")]
+                self.assertEqual([(row["attempt"]["attempt_id"], row["independent_review"]["status"]) for row in report["review_attempts"]], expected)
+                prior = next(row for row in report["recent_attempts"] if row["attempt"]["attempt_id"] == first["source_attempt_id"])["independent_review"]
+                self.assertEqual(prior["status"], "superseded")
+                self.assertTrue(prior["findings"])
+                self.assertEqual(case.conn.execute("SELECT state FROM factory_independent_reviews WHERE review_id=?", (first["review_id"],)).fetchone()[0], "changes_requested")
+
+    def test_unchanged_repair_inherits_operator_stop_without_approval_or_second_pass(self):
+        from hatchet_hermes_bridge import independent_review as reviews
+        case, first, repair, job = self.reviewed_repair()
+        self.finish_repair(case, repair, job, "a" * 40)
+        self.assertIsNone(reviews.reserve(case.conn, job["job_id"]))
+        report = console.overview(case.db, "fixture")
+        self.assertEqual([(row["attempt"]["attempt_id"], row["independent_review"]["status"]) for row in report["review_attempts"]], [(repair["attempt_id"], "needs_operator")])
+        lifecycle = console.lifecycle(case.db, "ENG-8")
+        inherited = lifecycle["attempts"][0]["independent_review"]
+        self.assertEqual(inherited["status"], "needs_operator")
+        self.assertEqual(inherited["inherited_from_attempt_id"], first["source_attempt_id"])
+        self.assertEqual(inherited["pass_count"], 1)
+        self.assertTrue(inherited["findings"])
+        self.assertEqual(lifecycle["attempts"][1]["independent_review"]["status"], "superseded")
+
+
 if __name__ == "__main__":
     unittest.main()

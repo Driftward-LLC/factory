@@ -43,22 +43,27 @@ const records = [running, failed, verified, simulated, unknown, unrecognized, ma
 let intakeState = 'blocked';
 let reviewState = 'not_requested';
 let reviewOnlyState;
+let supersededHistory = false;
 const reviewOnly = record('ENG-108', 1, 'verified_ready');
 function reviewWork() {
   if (!reviewOnlyState) return [];
   return [{ ...reviewOnly, independent_review: { ...independentReview(reviewOnly), status: reviewOnlyState,
-    current_sha: (reviewOnlyState === 'stale' ? 'b' : 'a').repeat(40) } }, withReview(verified)];
+    reviewed_sha: (supersededHistory ? 'b' : 'a').repeat(40),
+    current_sha: (supersededHistory || reviewOnlyState === 'stale' ? 'b' : 'a').repeat(40) } }, withReview(verified)];
 }
 function independentReview(item) {
   return { schema: 'factory-console-independent-review-v1', attempt_id: reviewState === 'wrong_attempt' ? 'other-attempt' : item.attempt.attempt_id,
-    status: reviewState, reviewed_sha: reviewState === 'invalid_pass' ? null : 'a'.repeat(40), current_sha: (reviewState === 'stale' ? 'b' : 'a').repeat(40),
+    status: reviewState, reviewed_sha: reviewState === 'invalid_pass' ? null : 'a'.repeat(40), current_sha: (['stale', 'superseded'].includes(reviewState) ? 'b' : 'a').repeat(40),
     pass_count: reviewState === 'not_requested' ? 0 : reviewState === 'needs_operator' ? 2 : 1, max_passes: 2, reviewer_model: 'gpt-6-astra', reviewer_session_id: 'fictional-review-session',
     recorded_at: new Date(now - 60000).toISOString(), reason_code: reviewState === 'not_requested' ? null : reviewState === 'needs_operator' ? 'review_budget_exhausted' : 'ok',
-    findings: ['changes_requested', 'needs_operator'].includes(reviewState) ? [{ priority: 1, file: 'src/example.ts', line: 7, title: 'Fictional review finding', body: 'Bounded fictional finding <script>alert(1)</script>' }] : [] };
+    findings: ['changes_requested', 'needs_operator', 'superseded', 'inherited_stop'].includes(reviewState) ? [{ priority: 1, file: 'src/example.ts', line: 7, title: 'Fictional review finding', body: 'Bounded fictional finding <script>alert(1)</script>' }] : [] };
 }
 function withReview(item) {
   const review = independentReview(item);
   if (reviewState === 'invalid_pass') review.status = 'passed';
+  if (reviewState === 'inherited_stop') Object.assign(review, { status: 'needs_operator', inherited_from_attempt_id: 'earlier-attempt' });
+  if (reviewState === 'superseded' || supersededHistory && item === verified) Object.assign(review, { status: 'superseded',
+    historical_status: 'changes_requested', superseded_by_attempt_id: reviewOnly.attempt.attempt_id, current_sha: 'b'.repeat(40) });
   return { ...item, independent_review: review };
 }
 function intake() {
@@ -309,6 +314,21 @@ async function main() {
       assert.equal(await page.locator('#work-attempts tr').count(), ['pending', 'running'].includes(state) ? 1 : 2);
       await page.locator('[data-nav="overview"]').click();
     }
+    supersededHistory = true;
+    for (const state of ['pending', 'passed', 'needs_operator']) {
+      reviewOnlyState = state;
+      await Promise.all([page.waitForResponse(response => response.url().endsWith('/api/overview')), page.locator('#refresh-button').click()]);
+      await page.locator('[data-work-link]').click();
+      assert.equal(await page.locator('#work-attempts tr').count(), state === 'passed' ? 3 : 4);
+      assert.equal(await page.locator('#work-attempts [data-issue="ENG-102"]').count(), 0, 'Superseded historical pass is not active');
+      await page.locator('#status-filter').selectOption('attention');
+      assert.equal(await page.locator('#work-attempts tr').count(), state === 'needs_operator' ? 2 : 1);
+      assert.equal(await page.locator('#work-attempts [data-issue="ENG-102"]').count(), 0, 'Recent records cannot reintroduce superseded findings into attention');
+      await page.locator('[data-work-scope="all"]').click();
+      assert.match(await page.locator('#work-attempts tr').filter({ hasText: 'ENG-102' }).textContent(), /Superseded by repair/);
+      await page.locator('[data-nav="overview"]').click();
+    }
+    supersededHistory = false;
     reviewOnlyState = undefined;
     await page.locator('#refresh-button').click();
     await page.waitForFunction(() => document.querySelector('#nav-work-count').textContent === '8');
@@ -418,6 +438,7 @@ async function main() {
       ['pending', 'Pending'], ['running', 'Running'], ['changes_requested', 'Changes requested'],
       ['passed', 'Passed (recorded)'], ['needs_operator', 'Needs operator'], ['unavailable', 'Unavailable'],
       ['stale', 'Stale'], ['unknown', 'Unavailable'], ['wrong_attempt', 'Unavailable'], ['invalid_pass', 'Unavailable'],
+      ['superseded', 'Superseded by repair'], ['inherited_stop', 'Needs operator'],
     ]) {
       reviewState = state;
       await page.locator('#refresh-button').click();
@@ -442,6 +463,8 @@ async function main() {
         assert.match(await page.locator('#next-step').textContent(), /Operator action required/);
       }
       if (state === 'stale') assert.match(await reviewPanel.textContent(), /changed recorded head invalidates/);
+      if (state === 'superseded') assert.match(await reviewPanel.textContent(), /historical result and findings remain recorded/);
+      if (state === 'inherited_stop') assert.match(await reviewPanel.textContent(), /No additional review pass was recorded/);
     }
     reviewState = 'not_requested';
     for (const [state, message] of [

@@ -202,7 +202,7 @@ const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
     assert.equal(await page.locator('.verification-evidence .pill.success').count(), 0);
     for (const [story, status] of [['pending', 'pending'], ['running', 'running'], ['changes-requested', 'changes_requested'],
       ['passed', 'passed'], ['needs-operator', 'needs_operator'], ['unavailable', 'unavailable'], ['unknown', 'unavailable'],
-      ['stale', 'stale'], ['invalid-pass', 'unavailable']]) {
+      ['stale', 'stale'], ['invalid-pass', 'unavailable'], ['superseded', 'superseded'], ['inherited-stop', 'needs_operator']]) {
       await visit('factory-verificationevidence--independent-review-' + story);
       const review = page.locator('.independent-review');
       assert.equal(await review.getAttribute('data-review-status'), status);

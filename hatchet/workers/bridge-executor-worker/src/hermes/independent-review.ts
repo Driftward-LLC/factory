@@ -95,7 +95,9 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export async function authorizeIndependentReview(job: BridgeJob, r: ReviewIntent, invocationRequired = true): Promise<boolean> {
+type ReviewAuthorizationPurpose = 'launch' | 'complete' | 'retrieve';
+
+export async function authorizeIndependentReview(job: BridgeJob, r: ReviewIntent, purpose: ReviewAuthorizationPurpose = 'launch'): Promise<boolean> {
   const base = process.env.HATCHET_HERMES_BRIDGE_URL;
   const token = process.env.HATCHET_HERMES_BRIDGE_TOKEN;
   const inspectionToken = process.env.HATCHET_HERMES_INSPECTION_TOKEN;
@@ -110,8 +112,9 @@ export async function authorizeIndependentReview(job: BridgeJob, r: ReviewIntent
         'Content-Type': 'application/json' }, body: JSON.stringify({ review_capability: job.payload.review_capability }),
     });
     if (!response.ok) return false;
-    const observed = await response.json() as { authorized?: boolean; invocation_allowed?: boolean; job_id?: string; review?: unknown };
-    return observed.authorized === true && (!invocationRequired || observed.invocation_allowed === true) && observed.job_id === job.job_id
+    const observed = await response.json() as { authorized?: boolean; invocation_allowed?: boolean; completion_allowed?: boolean; job_id?: string; review?: unknown };
+    const allowed = purpose === 'retrieve' || (purpose === 'complete' ? observed.completion_allowed : observed.invocation_allowed) === true;
+    return observed.authorized === true && allowed && observed.job_id === job.job_id
       && canonical(observed.review) === canonical(r);
   } catch { return false; }
 }
@@ -152,7 +155,7 @@ export class IndependentReviewer {
       if (!existsSync(intentPath)) return inconclusiveReview(r, 'review_inconclusive');
       privatePath(intentPath, false);
       if (JSON.parse(readFileSync(intentPath, 'utf8')).fingerprint !== fingerprint) throw new Error('Review identity already reserved for different intent');
-      if (!await this.authorize(job, r, false)) return inconclusiveReview(r, 'review_policy_changed');
+      if (!await this.authorize(job, r, 'retrieve')) return inconclusiveReview(r, 'review_policy_changed');
       if (this.active.has(r.review_id)) return this.active.get(r.review_id)!;
       const receiptPath = path.join(location, 'receipt.json');
       if (!existsSync(receiptPath)) return inconclusiveReview(r, 'review_inconclusive');
@@ -269,7 +272,7 @@ export class IndependentReviewer {
         '/opt/factory-reviewer/runner.py'];
       await runCommand('/usr/bin/docker', args, 15000);
       await runCommand('/usr/bin/docker', ['network', 'connect', sourceNetwork, container], 15000);
-      if (!await this.authorize(job, r)) return fail('review_policy_changed');
+      if (!await this.authorize(job, r, 'launch')) return fail('review_policy_changed');
       const raw = await runCommand('/usr/bin/docker', ['start', '-a', container], 600000);
       const result = JSON.parse(raw);
       if (!result || Object.keys(result).sort().join(',') !== 'findings,head_sha,reason,verdict' || result.head_sha !== r.head_sha) return fail('review_malformed');
@@ -282,7 +285,7 @@ export class IndependentReviewer {
         '--validate-findings', r.head_sha, JSON.stringify(bounded.findings)], 15000);
       await refresh();
       if ((await runCommand('/usr/bin/git', [...git, 'rev-parse', '--verify', `${ref}^{commit}`], 15000)).trim() !== r.head_sha) return fail('review_head_changed');
-      if (!await this.authorize(job, r)) return fail('review_policy_changed');
+      if (!await this.authorize(job, r, 'complete')) return fail('review_policy_changed');
       return bounded;
     } catch (error) {
       return fail(error && typeof error === 'object' && 'killed' in error && error.killed ? 'review_timeout' : 'review_backend_unavailable');

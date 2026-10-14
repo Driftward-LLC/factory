@@ -58,7 +58,7 @@ for attempt in range(40):
 assert info['head_sha']==HEAD and info['base_sha']==BASE and info['browser_probe']=='passed'
 assert 'counter.py' in json.loads(call('diff',{})[0]['text'])
 assert json.loads(call('read_file',{'path':'counter.py'})[0]['text'])=='count = 1'
-check=json.loads(call('run_check',{'argv':['python3','-c',"from pathlib import Path; import os; assert not Path('/run/reviewer-auth.json').exists(); assert not Path('/root/.codex/auth.json').exists(); assert not os.access('/run/source.git/config',os.W_OK); print('source_credentials_absent')"]})[0]['text'])
+check=json.loads(call('run_check',{'argv':['python3','-c',"from pathlib import Path; import os; assert not Path('/run/reviewer-auth.json').exists(); assert not os.access('/root/.codex/auth.json',os.R_OK); assert not os.access('/run/source.git/config',os.W_OK); print('source_credentials_absent')"]})[0]['text'])
 assert check['exit_code']==0,check
 call('start_preview',{'argv':['python3','-m','http.server','3000','--bind','127.0.0.1']})
 time.sleep(0.5)
@@ -73,7 +73,11 @@ print(json.dumps({'native_source_mcp':'passed','immutable_source_read':'passed',
 
 
 def command(args, timeout=30):
-    return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
+    try:
+        return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=timeout).strip()
+    except subprocess.CalledProcessError as error:
+        print("Synthetic fixture command failed: " + (error.stderr or "")[-4000:])
+        raise
 
 
 def main():
@@ -99,7 +103,10 @@ def main():
             probe = """import json,os,socket,importlib.util
 from pathlib import Path
 paths=['/run/reviewer-auth.json','/run/docker.sock','/var/run/docker.sock','/root/.codex/auth.json','/docker/driftward/hermes/data']
-result={'visible':{p:Path(p).exists() for p in paths},'credential_env_present':any(any(s in k for s in ['TOKEN','API_KEY','AUTHORIZATION']) for k in os.environ),'playwright_available':importlib.util.find_spec('playwright') is not None}
+def visible(p):
+ try:return Path(p).exists()
+ except PermissionError:return False
+result={'visible':{p:visible(p) for p in paths},'credential_env_present':any(any(s in k for s in ['TOKEN','API_KEY','AUTHORIZATION']) for k in os.environ),'playwright_available':importlib.util.find_spec('playwright') is not None}
 try:
  socket.create_connection(('1.1.1.1',443),timeout=1).close();result['external_network_reachable']=True
 except OSError:result['external_network_reachable']=False
@@ -119,7 +126,11 @@ print(json.dumps(result))"""
             assert not evidence["agent"]["external_network_reachable"]
             evidence["containment_probe"] = "passed"
             if args.runtime:
-                evidence["runtime"] = runtime_probe(args.image, common, source, agent, temporary, marker)
+                try:
+                    evidence["runtime"] = runtime_probe(args.image, common, source, agent, temporary, marker)
+                except Exception:
+                    print("Synthetic source startup logs: " + command(["docker", "logs", source])[-4000:])
+                    raise
             else:
                 evidence["full_reviewer_capability"] = "unavailable_without_provisioned_codex_playwright_image"
             Path(args.evidence).write_text(json.dumps(evidence, indent=2) + "\n")

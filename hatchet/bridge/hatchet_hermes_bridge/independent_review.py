@@ -73,6 +73,8 @@ def projection(conn, source_job_id: str) -> dict[str, Any]:
     """Safe read-only status; callers retain legacy verified_ready semantics."""
     row = conn.execute("SELECT * FROM factory_independent_reviews WHERE source_job_id=?", (source_job_id,)).fetchone()
     if not row:
+        row = conn.execute("SELECT r.* FROM factory_independent_reviews r JOIN factory_attempts a ON a.attempt_id=r.repair_attempt_id WHERE a.job_id=? AND r.state='needs_operator'", (source_job_id,)).fetchone()
+    if not row:
         return {"state": "checks_passed", "passes_used": 0, "max_passes": 2, "reason": None}
     used = conn.execute("SELECT COUNT(*) FROM factory_independent_reviews WHERE lineage_key=?", (row["lineage_key"],)).fetchone()[0]
     return {"state": {"pending": "review_pending", "running": "review_pending", "awaiting_inspection": "review_pending", "passed": "review_passed"}.get(row["state"], row["state"]),
@@ -80,10 +82,11 @@ def projection(conn, source_job_id: str) -> dict[str, Any]:
             "reason": row["reason"], "repair_attempt_id": row["repair_attempt_id"]}
 
 
-def _fresh_artifact(conn, attempt, job) -> dict[str, Any]:
+def _fresh_artifact(conn, attempt, job, *, require_fresh: bool = True) -> dict[str, Any]:
     from . import operator
     recorded = store.get_pr_inspection(conn, job["payload"]["repo"], job["pr_url"], prior_attempt_id=attempt["attempt_id"])
-    if not recorded or not recorded["fresh"] or not operator._inspection_fresh(recorded):
+    if (not recorded or recorded["state"] != "completed" or not isinstance(recorded.get("result"), dict)
+            or (require_fresh and (not recorded["fresh"] or not operator._inspection_fresh(recorded)))):
         raise store.BridgeConflict("review requires a fresh typed artifact inspection")
     result = recorded["result"]
     if (result.get("reason") != "ok" or result.get("state") != "open" or result.get("draft") is not True
@@ -120,6 +123,12 @@ def reserve(conn, source_job_id: str) -> dict[str, Any] | None:
             preflight_reason = "review_head_changed"
         lineage = store.payload_hash({"repository": job["payload"]["repo"], "pr_url": job["pr_url"]})
         rows = conn.execute("SELECT * FROM factory_independent_reviews WHERE lineage_key=? ORDER BY pass_number", (lineage,)).fetchall()
+        if rows and rows[-1]["repair_attempt_id"] == attempt["attempt_id"] and rows[-1]["head_sha"] == job["commit_sha"]:
+            # An unchanged artifact is not another review opportunity or a new budget.
+            if rows[-1]["state"] == "changes_requested":
+                _stop(conn, rows[-1], "review_operator_required")
+                store._append_factory_attempt_event_once(conn, attempt["attempt_id"], "independent_review_unchanged_head", rows[-1]["review_id"])
+            return None
         if len(rows) >= 2:
             raise store.BridgeConflict("independent review budget exhausted; operator required")
         if rows and (rows[-1]["state"] != "changes_requested" or rows[-1]["repair_attempt_id"] != attempt["attempt_id"]):
@@ -186,17 +195,23 @@ def authorization(conn, job_id: str, capability: str) -> dict[str, Any]:
     """Native gateway checks a real reservation; this endpoint never grants a pass."""
     row = _row(conn, job_id, capability)
     request = store.get_job(conn, job_id)["payload"]["review"]
-    allowed = row["state"] == "running"
+    allowed = completion_allowed = row["state"] == "running"
     if allowed:
         try:
             current = policy()
             source = store.get_job(conn, row["source_job_id"])
             attempt, _, _ = review_repair._source(conn, store.get_factory_attempt(conn, row["source_attempt_id"])["work_item_key"], row["source_attempt_id"])
-            _fresh_artifact(conn, attempt, source)
-            allowed = current["enabled"] and current["digest"] == row["policy_digest"] and row["repository"] in current["repositories"]
+            completion_allowed = current["enabled"] and current["digest"] == row["policy_digest"] and row["repository"] in current["repositories"]
+            # The bridge still obtains a fresh final inspection before any pass.
+            _fresh_artifact(conn, attempt, source, require_fresh=False)
+            allowed = completion_allowed
+            if allowed:
+                try: _fresh_artifact(conn, attempt, source)
+                except store.BridgeError: allowed = False
         except store.BridgeError:
-            allowed = False
-    return {"authorized": True, "invocation_allowed": bool(allowed), "job_id": job_id, "state": row["state"], "review": request}
+            allowed = completion_allowed = False
+    return {"authorized": True, "invocation_allowed": bool(allowed), "completion_allowed": bool(completion_allowed),
+            "job_id": job_id, "state": row["state"], "review": request}
 
 
 def claim(conn, job_id: str, capability: str) -> bool:
@@ -360,7 +375,15 @@ def sweep(conn, limit: int = 50) -> dict[str, int]:
             with conn:
                 _stop(conn, row, "review_head_changed")
     reserved = 0
-    rows = conn.execute("SELECT a.attempt_id,a.job_id,a.work_item_key FROM factory_attempts a WHERE a.mode='real' AND a.status='verified_ready' AND NOT EXISTS (SELECT 1 FROM factory_independent_reviews r WHERE r.source_job_id=a.job_id) ORDER BY a.updated_at DESC LIMIT ?", (limit,)).fetchall()
+    repositories = current["repositories"]
+    rows = conn.execute(f"""SELECT a.attempt_id,a.job_id,a.work_item_key FROM factory_attempts a
+        JOIN bridge_jobs j ON j.job_id=a.job_id
+        WHERE a.mode='real' AND a.status='verified_ready'
+        AND json_extract(j.payload_json,'$.repo') IN ({','.join('?' for _ in repositories)})
+        AND json_extract(j.payload_json,'$.independent_review_enrollment.policy_digest')=?
+        AND NOT EXISTS (SELECT 1 FROM factory_independent_reviews r WHERE r.source_job_id=a.job_id
+            OR (r.repair_attempt_id=a.attempt_id AND r.state='needs_operator'))
+        ORDER BY a.updated_at DESC LIMIT ?""", (*repositories, current["digest"], limit)).fetchall()
     for row in rows:
         job = store.get_job(conn, row["job_id"])
         if job["payload"].get("repo") not in current["repositories"]:

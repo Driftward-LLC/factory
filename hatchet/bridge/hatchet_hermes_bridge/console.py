@@ -191,7 +191,7 @@ def _review_work(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[s
     try:
         for finished in (False, True):
             rows = conn.execute(
-                "SELECT source_attempt_id FROM factory_independent_reviews WHERE "
+                "SELECT source_attempt_id,repair_attempt_id FROM factory_independent_reviews WHERE "
                 + ("state='passed'" if finished else "state!='passed'")
                 + " ORDER BY updated_at DESC,review_id LIMIT ?", (limit + 1,),
             ).fetchall()
@@ -199,8 +199,13 @@ def _review_work(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[s
             for row in rows[:limit]:
                 attempt = get_factory_attempt(conn, row["source_attempt_id"])
                 record = _with_review(_factory_attempt_lifecycle_summary(conn, attempt), conn)
-                if not finished or record["independent_review"]["status"] == "stale":
+                if record["independent_review"]["status"] != "superseded" and (not finished or record["independent_review"]["status"] == "stale"):
                     records[attempt["attempt_id"]] = record
+                elif row["repair_attempt_id"]:
+                    repair = get_factory_attempt(conn, row["repair_attempt_id"])
+                    current = _with_review(_factory_attempt_lifecycle_summary(conn, repair), conn)
+                    if current["independent_review"]["status"] == "needs_operator":
+                        records[repair["attempt_id"]] = current
         return list(records.values()), scope
     except (BridgeError, sqlite3.Error, KeyError, TypeError):
         return [], {**scope, "available": False}

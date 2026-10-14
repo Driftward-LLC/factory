@@ -10,7 +10,7 @@ import sqlite3
 from typing import Any
 
 from . import independent_review, work_evidence
-from .store import BridgeError, get_factory_work_evidence, get_pr_inspection, sanitize_detail
+from .store import BridgeError, get_factory_attempt, get_factory_work_evidence, get_pr_inspection, sanitize_detail
 
 
 def _time(value: Any) -> datetime | None:
@@ -64,10 +64,19 @@ def project_review(conn: Any, record: dict[str, Any]) -> dict[str, Any]:
         "status": "unavailable", "pass_count": None, "max_passes": 2,
         "reviewed_sha": None, "current_sha": None, "recorded_at": None,
         "reviewer_model": None, "reviewer_session_id": None, "reason_code": None, "findings": [],
+        "historical_status": None, "superseded_by_attempt_id": None, "inherited_from_attempt_id": None,
     }
     try:
         row = conn.execute("SELECT * FROM factory_independent_reviews WHERE source_attempt_id=? AND source_job_id=?",
                            (attempt["attempt_id"], job.get("job_id"))).fetchone()
+        inherited = False
+        if not row:
+            row = conn.execute(
+                "SELECT r.* FROM factory_independent_reviews r JOIN factory_attempts a ON a.attempt_id=r.repair_attempt_id "
+                "WHERE r.repair_attempt_id=? AND a.job_id=? AND r.state='needs_operator' AND r.reason='review_operator_required' AND r.head_sha=?",
+                (attempt["attempt_id"], job.get("job_id"), job.get("commit_sha")),
+            ).fetchone()
+            inherited = row is not None
         if not row:
             return {**report, "status": "not_requested", "pass_count": 0}
         sha = _reference(row["head_sha"], r"[0-9a-f]{40}")
@@ -84,6 +93,8 @@ def project_review(conn: Any, record: dict[str, Any]) -> dict[str, Any]:
         report.update(status="pending" if row["state"] == "awaiting_inspection" else row["state"],
                       pass_count=passes, reviewed_sha=sha, recorded_at=row["updated_at"],
                       reason_code=row["reason"] if row["reason"] in independent_review.REASONS else None)
+        if inherited:
+            report["inherited_from_attempt_id"] = _reference(row["source_attempt_id"], r"[A-Za-z0-9_.:-]+")
         if row["result_json"]:
             receipt = json.loads(row["result_json"])
             if work_evidence.digest(receipt) != row["result_digest"]:
@@ -111,6 +122,14 @@ def project_review(conn: Any, record: dict[str, Any]) -> dict[str, Any]:
                 report["current_sha"] = _reference(result.get("head_sha"), r"[0-9a-f]{40}") or committed
         if report["current_sha"] and report["current_sha"] != sha:
             report["status"] = "stale"
+        if not inherited and row["repair_attempt_id"]:
+            repair = get_factory_attempt(conn, row["repair_attempt_id"])
+            if (repair["work_item_key"] == attempt["work_item_key"]
+                    and (row["state"] == "changes_requested" or (row["state"] == "needs_operator" and row["reason"] == "review_operator_required" and repair["status"] == "verified_ready"))
+                    and repair["status"] in {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending",
+                                             "cancellation_requested", "effect_outcome_unknown", "verified_ready"}):
+                report.update(status="superseded", historical_status=row["state"],
+                              superseded_by_attempt_id=_reference(repair["attempt_id"], r"[A-Za-z0-9_.:-]+"))
         return report
     except (BridgeError, sqlite3.Error, ValueError, TypeError, KeyError):
         return {**report, "status": "unavailable", "findings": [], "reviewer_model": None, "reviewer_session_id": None}

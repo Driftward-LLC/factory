@@ -39,6 +39,16 @@ job envelope cannot manufacture an extra review pass. The gateway's bridge and
 inspection credentials stay outside both reviewer containers. Recovery may
 return an already retained receipt but cannot launch another model call.
 
+The native review operation has a 15-minute command budget plus bounded
+authorization and cleanup; the gateway call allows 17 minutes and the existing
+workflow task allows 25 minutes. Launch
+authorization requires a fresh inspection. Completion authorization preserves
+the policy, manual-control, latest-attempt, and exact-artifact checks while
+allowing the launch observation to age naturally during review; it grants no
+pass. The bridge still obtains a fresh final typed inspection before settling
+the retained receipt. An unchanged repair head requires an operator and does
+not allocate or execute another review pass.
+
 A completed reviewer receipt is retained while the existing typed inspection
 outbox obtains a fresh final observation. The reviewer is not rerun while
 waiting. A changed, closed, merged, or non-draft artifact fails closed. The

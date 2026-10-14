@@ -210,6 +210,52 @@ class IndependentReviewTests(unittest.TestCase):
         row = self.reserve()
         self.assertEqual((row["state"], row["reason"]), ("needs_operator", "review_inconclusive"))
 
+    def test_launch_inspection_expiry_retains_completion_without_granting_pass(self):
+        row = self.reserve(); reviews.claim(self.conn, row["job_id"], row["capability"])
+        self.conn.execute("UPDATE factory_inspection_requests SET observed_at='2020-01-01T00:00:00.000000Z' WHERE state='completed'"); self.conn.commit()
+        authority = reviews.authorization(self.conn, row["job_id"], row["capability"])
+        self.assertFalse(authority["invocation_allowed"])
+        self.assertTrue(authority["completion_allowed"])
+        self.assertEqual(reviews.complete(self.conn, row["job_id"], row["capability"], self.receipt(row))["state"], "review_pending")
+        self.assertFalse(reviews._settle_receipt(self.conn, row["review_id"]))
+        self.inspect(); reviews._settle_receipt(self.conn, row["review_id"])
+        self.assertEqual(reviews.projection(self.conn, self.job["job_id"])["state"], "review_passed")
+
+    def test_unchanged_repair_head_requires_operator_without_second_pass_or_dispatch_failure(self):
+        row = self.reserve(); self.complete(row, "changes_requested"); reviews.sweep(self.conn)
+        repair_id = self.conn.execute("SELECT repair_attempt_id FROM factory_independent_reviews").fetchone()[0]
+        repair = store.get_factory_attempt(self.conn, repair_id)
+        job = store.get_job(self.conn, repair["job_id"])
+        self.finish(job, sha="a" * 40)
+        self.conn.execute("UPDATE bridge_jobs SET hermes_session_id='repair-session' WHERE job_id=?", (job["job_id"],)); self.conn.commit()
+        self.intent.update(source_attempt_id=repair_id); self.inspect()
+        for _ in range(2):
+            self.assertEqual(reviews.sweep(self.conn), {"reserved": 0, "repairs": 0})
+        projected = reviews.projection(self.conn, job["job_id"])
+        self.assertEqual((projected["state"], projected["passes_used"]), ("needs_operator", 1))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_independent_reviews").fetchone()[0], 1)
+        self.assertEqual(len(store.list_factory_outbox(self.conn)), 2)
+
+    def test_completion_authority_still_rejects_policy_revocation_and_manual_control(self):
+        row = self.reserve(); reviews.claim(self.conn, row["job_id"], row["capability"])
+        self.config["enabled"] = False
+        self.assertFalse(reviews.authorization(self.conn, row["job_id"], row["capability"])["completion_allowed"])
+        self.config["enabled"] = True
+        self.conn.execute("INSERT INTO factory_issue_controls (work_item_key,held,revision,actor,reason,updated_at) VALUES ('ENG-8',1,1,'root','manual',?)", (store.utc_now(),)); self.conn.commit()
+        self.assertFalse(reviews.authorization(self.conn, row["job_id"], row["capability"])["completion_allowed"])
+
+    def test_unenrolled_newer_attempts_cannot_starve_an_eligible_older_attempt(self):
+        payload = fixtures.verifier_payload(REPO)
+        payload["instructions"] = "Another task"
+        for index in range(3):
+            attempt, job, _ = store.reserve_factory_intake(self.conn, work_item_key=f"ENG-{90 + index}", mode="real",
+                request_id=f"newer-{index}", reason="fixture", actor="intake-worker", payload=payload)
+            unenrolled = dict(job["payload"]); unenrolled.pop("independent_review_enrollment", None)
+            self.conn.execute("UPDATE bridge_jobs SET payload_json=?,state='ready_for_human_review' WHERE job_id=?", (store.canonical_json(unenrolled), job["job_id"]))
+            self.conn.execute("UPDATE factory_attempts SET status='verified_ready' WHERE attempt_id=?", (attempt["attempt_id"],)); self.conn.commit()
+        self.assertEqual(reviews.sweep(self.conn, limit=1)["reserved"], 1)
+        self.assertEqual(self.conn.execute("SELECT source_job_id FROM factory_independent_reviews").fetchone()[0], self.job["job_id"])
+
 
 if __name__ == "__main__":
     unittest.main()
