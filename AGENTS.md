@@ -48,6 +48,11 @@ browser state, and Hermes session retention.
 - Do not mount Driftward Hermes data, provider credentials, browser state, root
   GitHub auth, the Docker socket, or the host root filesystem into Factory
   containers.
+- The opt-in UI-verification executor is a separate credential boundary: only
+  its Codex role may receive a newly provisioned verifier API credential. Its
+  preview, browser and checker roles never receive model/provider credentials.
+  Do not import interactive Codex or Hermes auth, or treat pilot observations
+  as Factory verification receipts. See `deploy/UI-VERIFICATION.md`.
 - `factory doctor hatchet` is read-only. Pause/remove/apply paths for live
   Hatchet workflows require explicit reviewed operator approval.
 - Lifecycle dead-letter archive must use the root-only operator preview and

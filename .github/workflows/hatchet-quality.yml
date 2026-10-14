@@ -22,6 +22,17 @@ permissions:
   contents: read
 
 jobs:
+  ui-verifier-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated Codex verifier and synthetic preview
+        run: |
+          docker build --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" -f deploy/ui-verifier/Dockerfile -t factory-ui-verifier:ci .
+          docker build --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" -f tools/fixtures/ui-verifier/Dockerfile -t factory-ui-preview:ci .
+      - name: Exercise real browser transport without provider credentials
+        run: sudo python3 tools/check_factory_ui_verifier.py --runner-image factory-ui-verifier:ci --preview-image factory-ui-preview:ci
   console-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 10

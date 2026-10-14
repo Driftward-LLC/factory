@@ -104,6 +104,11 @@ for the Hermes-versus-direct-Codex measurement and canary design.
 See [docs/factory-work-evidence.md](docs/factory-work-evidence.md) for immutable
 execution manifests, checkpoint receipts, and explicit replay-data gaps.
 
+The optional [Codex UI-verification pilot](deploy/UI-VERIFICATION.md) runs a
+credential-isolated Codex runner, browser and disposable preview under Factory's
+operator tooling. It is not enabled by production startup and does not mark
+attempts verified or replace Hermes execution.
+
 See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboard-plan.md)
 for the proposed capability roadmap and first operator-dashboard implementation slice.
 

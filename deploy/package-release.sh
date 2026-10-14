@@ -5,16 +5,18 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version=""
 image=""
+ui_verifier_image=""
 output_dir=""
 source_commit=""
 validation_only=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version|--image|--output-dir|--source-commit)
+    --version|--image|--ui-verifier-image|--output-dir|--source-commit)
       [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 64; }
       case "$1" in
         --version) version="$2" ;;
         --image) image="$2" ;;
+        --ui-verifier-image) ui_verifier_image="$2" ;;
         --output-dir) output_dir="$2" ;;
         --source-commit) source_commit="$2" ;;
       esac
@@ -31,11 +33,14 @@ done
 [[ "$image" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]] || {
   echo "--image must be a digest-pinned ghcr.io/driftward-llc/factory reference" >&2; exit 64;
 }
+if [[ -n "$ui_verifier_image" && ! "$ui_verifier_image" =~ ^ghcr\.io/driftward-llc/factory-ui-verifier@sha256:[a-f0-9]{64}$ ]]; then
+  echo '--ui-verifier-image must be a digest-pinned Factory verifier reference' >&2; exit 64
+fi
 [[ -n "$output_dir" ]] || { echo "--output-dir is required" >&2; exit 64; }
 source_commit="${source_commit:-$(git -C "$repo_root" rev-parse HEAD)}"
 [[ "$source_commit" =~ ^[a-f0-9]{40}$ ]] || { echo "invalid source commit" >&2; exit 64; }
 source_epoch="$(git -C "$repo_root" show -s --format=%ct "$source_commit")"
-files=(deploy/docker-compose.yml deploy/compose.portable.yml deploy/compose.production.yml deploy/compose.telemetry.yml deploy/otel-collector.yaml deploy/telemetry.py deploy/factory-portable.py deploy/factory-cutover.py deploy/factory-production.py deploy/bootstrap.py deploy/portable_state.py deploy/PORTABLE.md deploy/CUTOVER.md)
+files=(deploy/docker-compose.yml deploy/compose.portable.yml deploy/compose.production.yml deploy/compose.telemetry.yml deploy/otel-collector.yaml deploy/telemetry.py deploy/factory-portable.py deploy/factory-cutover.py deploy/factory-production.py deploy/bootstrap.py deploy/portable_state.py deploy/PORTABLE.md deploy/CUTOVER.md deploy/compose.ui-verifier.yml deploy/factory-ui-verify.py deploy/ui_verification.py deploy/UI-VERIFICATION.md)
 for file in "${files[@]}"; do
   [[ -f "$repo_root/$file" && ! -L "$repo_root/$file" ]] || {
     echo "missing or symlinked release input: $file" >&2; exit 66;
@@ -61,6 +66,7 @@ printf '%s\n' \
   'FACTORY_RELEASE_PLATFORM=linux/amd64' \
   "FACTORY_RELEASE_VALIDATION_ONLY=$validation_only" \
   "FACTORY_IMAGE=$image" \
+  "FACTORY_UI_VERIFIER_IMAGE=$ui_verifier_image" \
   "FACTORY_RELEASE_VERSION=$version" \
   "FACTORY_RELEASE_COMMIT=$source_commit" > "$staging/$bundle/factory.env"
 tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner \
