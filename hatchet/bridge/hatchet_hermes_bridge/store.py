@@ -1517,7 +1517,7 @@ def _validate_repair_payload(payload: dict[str, Any]) -> None:
     _parse_pr_reference(repo, repair.get("pr_url"))
     if payload.get("dry_run") is not False:
         raise BridgeValidationError("repair action payload is invalid")
-    if repair.get("reason_code") not in REPAIRABLE_VERIFICATION_REASONS:
+    if repair.get("reason_code") not in REPAIRABLE_VERIFICATION_REASONS | {"operator_review_feedback"}:
         raise BridgeValidationError("repair reason is not supported")
     if not isinstance(repair.get("source_job_id"), str) or not repair["source_job_id"]:
         raise BridgeValidationError("repair action payload is invalid")
@@ -3266,6 +3266,9 @@ def _reserve_factory_verification_repair(
     factory_attempt: dict[str, Any],
     details: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
+    # An operator review grants exactly one repair, regardless of the auto budget.
+    if (failed_job.get("payload") or {}).get("factory_review_repair") is not None:
+        return None
     if _issue_control_held(conn, factory_attempt["work_item_key"]) or factory_attempt["status"] in {"canceled", "canceled_after_effect", "cancellation_requested", "superseded"}:
         return None
     reason_code = failed_job.get("reason_code")
@@ -3312,13 +3315,27 @@ def _reserve_factory_verification_repair(
         "Fix only the verifier failure evidence, then rerun the required validation commands."
     )
 
+    return _reserve_factory_repair_locked(conn, source_job=failed_job, source_attempt=factory_attempt,
+                                         repair_payload=repair_payload, request_id=request_id, reason=reason,
+                                         actor="verification-repair")
+
+
+def _reserve_factory_repair_locked(
+    conn: sqlite3.Connection, *, source_job: dict[str, Any], source_attempt: dict[str, Any],
+    repair_payload: dict[str, Any], request_id: str, reason: str, actor: str,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Share the existing repair lineage/outbox; caller holds the write transaction."""
+    failed_job, factory_attempt = source_job, source_attempt
+    repair_context = repair_payload["factory_repair"]
+    reason_code, branch, pr_url = repair_context["reason_code"], repair_context["branch"], repair_context["pr_url"]
+
     attempt, created = _reserve_factory_attempt_locked(
         conn,
         work_item_key=factory_attempt["work_item_key"],
         mode=factory_attempt["mode"],
         request_id=request_id,
         reason=reason,
-        actor="verification-repair",
+        actor=actor,
         artifact_fence=repair_payload.get("factory_artifact_fence"),
         trusted_snapshot_digest=repair_payload.get("trusted_snapshot_digest"),
         reserved_event_type="repair_reserved",
@@ -3334,7 +3351,7 @@ def _reserve_factory_verification_repair(
         "generation": attempt["generation"],
         "request_id": request_id,
         "reason": reason,
-        "actor": "verification-repair",
+        "actor": actor,
         "prior_attempt_id": factory_attempt["attempt_id"],
         "supersede_pr_url": None,
         "repair_source_job_id": failed_job["job_id"],

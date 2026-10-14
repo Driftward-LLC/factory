@@ -20,12 +20,38 @@ export async function validateFactoryArtifactFence(
   inspectors: ArtifactFenceInspectors = {}
 ): Promise<FactoryArtifactFenceValidation> {
   const rawFence = job.payload.factory_artifact_fence;
+  if (job.payload.factory_review_repair && (!rawFence || jsonObject(rawFence)?.kind !== 'operator_review_repair_v1')) {
+    return blocked('artifact_fence_invalid', 'operator review repair requires its exact artifact fence');
+  }
   if (rawFence === undefined || rawFence === null) return { ok: true };
 
   const fence = jsonObject(rawFence);
   if (!fence) return blocked('artifact_fence_invalid', 'factory_artifact_fence must be a JSON object');
 
   const kind = stringValue(fence.kind);
+  if (kind === 'operator_review_repair_v1') {
+    const review = jsonObject(job.payload.factory_review_repair);
+    const repair = jsonObject(job.payload.factory_repair);
+    const repository = stringValue(job.payload.repo);
+    const sha = stringValue(fence.head_sha);
+    if (!review || !repair || job.requested_action !== 'repair_draft_pr' || !repository || fence.repository !== repository
+      || !sha || !/^[0-9a-f]{40}$/.test(sha) || job.payload.expected_head_sha !== sha
+      || review.reviewed_head_sha !== sha || repair.commit_sha !== sha
+      || review.pr_url !== fence.prior_pr_url || repair.pr_url !== fence.prior_pr_url
+      || review.source_attempt_id !== fence.prior_attempt_id || repair.source_attempt_id !== fence.prior_attempt_id
+      || repair.source_job_id !== fence.prior_job_id || review.repository !== repository
+      || review.branch !== job.branch || repair.branch !== job.branch || fence.head_branch !== job.branch
+      || review.automatic_repairs_allowed !== false || typeof review.feedback !== 'string' || [...review.feedback].length > 2000) {
+      return blocked('artifact_fence_invalid', 'operator review repair must bind its approved source, artifact and head');
+    }
+    const observed = await (inspectors.inspectDraftPrState || inspectDraftPrState)(repository, String(fence.prior_pr_url));
+    if (observed.reason !== 'ok' || observed.repository !== repository || observed.url !== fence.prior_pr_url
+      || observed.state !== 'open' || observed.merged || !observed.draft || observed.head_branch !== job.branch
+      || observed.head_sha !== sha || observed.base_ref !== fence.base_ref || observed.base_ref !== job.payload.expected_base) {
+      return blocked('artifact_fence_changed', 'reviewed draft head changed before execution');
+    }
+    return { ok: true };
+  }
   if (kind === 'github_branch_pr_absence_v1') {
     return validateAbsenceFence(job, fence, inspectors.inspectGitHubHead || inspectGitHubHead);
   }

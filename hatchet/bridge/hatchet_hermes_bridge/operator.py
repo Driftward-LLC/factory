@@ -26,6 +26,7 @@ from .analytics import factory_analytics
 from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidationError, connect_runtime, connect_readonly, get_factory_attempt, get_factory_lifecycle, get_job, get_supersedable_bridge_job, list_active_factory_attempts, list_factory_attempt_events, list_factory_attempts, list_factory_import_conflicts, get_pr_inspection, next_factory_attempt_key, reserve_factory_absence_retry, reserve_factory_retry, cancel_factory_attempt, refresh_factory_effect_receipt_inspection, sanitize_detail
 from .store import get_factory_work_evidence
 from . import interrupted_resolution
+from . import review_repair
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -618,7 +619,13 @@ class OperatorHandler(BaseHTTPRequestHandler):
         except (OSError, struct.error):
             raise OperatorError("operator_peer_credentials_unavailable")
     def _body(self) -> dict[str, Any]:
-        raw = self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 8192))
+        # Review feedback permits 2,000 code points, including JSON-escaped
+        # supplementary characters; retain the smaller cap for other actions.
+        limit = 32768 if urlparse(self.path).path in {"/v1/review-repair/inspect", "/v1/review-repair/preview", "/v1/review-repair/confirm"} else 8192
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 0 or length > limit:
+            raise OperatorError("operator request body exceeds its bounded limit")
+        raw = self.rfile.read(length)
         value = json.loads(raw or b"{}")
         if not isinstance(value, dict): raise OperatorError("body must be an object")
         return value
@@ -633,6 +640,24 @@ class OperatorHandler(BaseHTTPRequestHandler):
             if path == "/v1/lifecycle/dead-letters/archive" and set(body) == {"outbox_key", "reason", "snapshot_digest"}:
                 self._reply(200, archive_lifecycle_dead_letter(_operator_lifecycle_path(), actor=self._actor(), **body)); return
             bridge_db, ingress_db, routes, policy = self._paths()
+            review_path = re.fullmatch(r"/v1/review-repair/(inspect|preview|confirm)", path)
+            if review_path and not urlparse(self.path).query:
+                phase = review_path.group(1)
+                actor = self._actor()
+                fields = {"issue", "source_attempt_id"} if phase == "inspect" else set(review_repair.FIELDS)
+                if phase == "confirm": fields |= {"request_id", "snapshot_digest"}
+                if set(body) != fields:
+                    raise OperatorError("unsupported review repair fields")
+                if phase == "inspect":
+                    conn = connect_runtime(bridge_db)
+                    try: result = review_repair.inspect(conn, actor=actor, **body)
+                    finally: conn.close()
+                else:
+                    operation = review_repair.preview if phase == "preview" else review_repair.confirm
+                    result = operation(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes,
+                                       policy_path=policy, actor=actor, **body)
+                self._reply(201 if result.get("created") else 200, result)
+                return
             resolution_path = re.fullmatch(r"/v1/attempts/([0-9a-f-]{36})/interrupted-resolution/(inspect|preview|confirm)", path)
             if resolution_path and not urlparse(self.path).query:
                 attempt_id, action = resolution_path.groups()

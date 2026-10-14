@@ -40,6 +40,55 @@ import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
 
+test('review repair prompt carries bounded review data without inventing verifier failure', () => {
+  const job = reviewRepairJob();
+  const prompt = buildPrompt(job);
+  assert.match(prompt, /untrusted_review_feedback/);
+  assert.match(prompt, /Fix stale observations/);
+  assert.match(prompt, /normal fast-forward push/);
+  assert.doesNotMatch(prompt, /Address this sanitized verifier failure/);
+  assert.match(prompt, new RegExp('a'.repeat(40)));
+});
+
+test('credential-bearing invocation rejects a reviewed head that drifted after worker preflight', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-review-drift-'));
+  const previousPath = process.env.PATH;
+  const previousRuntimeUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+  try {
+    writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(JSON.stringify({
+      number: 77, url: 'https://github.com/Driftward-LLC/capykit/pull/77', state: 'OPEN', mergedAt: null,
+      isDraft: true, headRefName: 'codex/existing', headRefOid: 'b'.repeat(40), baseRefName: 'main',
+    }))});\n`, { mode: 0o700 });
+    process.env.PATH = `${directory}${path.delimiter}${previousPath || ''}`;
+    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
+    await assert.rejects(runHermesCreateDraftPrViaCommand(reviewRepairJob(), path.join(directory, 'never-invoke'), 1000),
+      (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'artifact_fence_changed');
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    if (previousRuntimeUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER; else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousRuntimeUser;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function reviewRepairJob(): BridgeJob {
+  const job = greenJob();
+  const prUrl = 'https://github.com/Driftward-LLC/capykit/pull/77';
+  job.requested_action = 'repair_draft_pr';
+  job.branch = 'codex/existing';
+  Object.assign(job.payload, {
+    expected_head_sha: 'a'.repeat(40), expected_base: 'main',
+    factory_artifact_fence: { kind: 'operator_review_repair_v1', repository: 'Driftward-LLC/capykit',
+      prior_attempt_id: 'source-attempt', prior_job_id: 'source-job', prior_pr_url: prUrl,
+      head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main' },
+    factory_repair: { source_attempt_id: 'source-attempt', source_job_id: 'source-job', source_generation: 1,
+      reason_code: 'operator_review_feedback', error: 'review', verification_attempt_id: null,
+      pr_url: prUrl, branch: job.branch, commit_sha: 'a'.repeat(40) },
+    factory_review_repair: { source_attempt_id: 'source-attempt', repository: 'Driftward-LLC/capykit',
+      pr_url: prUrl, branch: job.branch, reviewed_head_sha: 'a'.repeat(40), feedback: 'Fix stale observations', automatic_repairs_allowed: false },
+  });
+  return job;
+}
+
 test('executor uses its runtime model snapshot, preserves correlation, and tolerates missing telemetry', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-runtime-model-'));
   const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS',
