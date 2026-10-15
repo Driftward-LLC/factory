@@ -9,11 +9,13 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import sys
 import threading
 import time
 
 MODEL = "gpt-6-astra"
+AUTH_ROOT = Path("/opt/data/factory-reviewer-auth")
 TOOLSET = "factory-review-source"
 PREFIX = "factory_source_"
 API_FILES = ("run_agent.py", "agent/agent_init.py", "agent/agent_init_fallback.py", "agent/secret_scope.py",
@@ -23,8 +25,10 @@ API_FILES = ("run_agent.py", "agent/agent_init.py", "agent/agent_init_fallback.p
              "agent/chat_completion_helpers.py", "agent/tool_dispatch_helpers.py",
              "agent/codex_responses_adapter.py", "agent/vision_message_prep.py", "hermes_cli/lifecycle.py",
              "hermes_cli/plugins.py", "hermes_cli/plugins_dispatch.py", "hermes_cli/plugins_ledger.py",
-             "hermes_cli/plugins_manifest.py", "agent/turn_response_intake.py", "agent/api_request_hooks.py")
-NATIVE_SDK_SHA256 = "27edce8b142617d7feaf3a21ad9884b82a725236700684ff5d5963fb3d385512"
+             "hermes_cli/plugins_manifest.py", "agent/turn_response_intake.py", "agent/api_request_hooks.py",
+             "agent/credential_sources.py", "agent/credential_pool.py", "hermes_cli/config.py",
+             "hermes_cli/auth_oauth_grants.py")
+NATIVE_SDK_SHA256 = "4bd9fdb5176131c3cc88cd6b85679d58005d29abb86bd39db315cd686cd81f78"
 PROPERTIES = {
     "inspect_source": {}, "read_file": {"path": {"type": "string"}}, "diff": {},
     "run_check": {"argv": {"type": "array", "items": {"type": "string"}}},
@@ -33,6 +37,7 @@ PROPERTIES = {
     "validate_findings": {"findings": {"type": "array", "items": {"type": "object"}}},
 }
 CONFIG = {"model": {"default": MODEL, "provider": "openai-codex"},
+          "auth": {"adopt_external_logins": False},
           "fallback_providers": [], "plugins": {"enabled": []}, "mcp_servers": {},
           "tools": {"tool_search": {"enabled": "off"}, "connectors": {"enabled": False}},
           "context": {"engine": "compressor"},
@@ -68,6 +73,29 @@ def profile_path(session: str) -> Path:
 
 def start_ticks(pid: int) -> str:
     return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+
+
+def dedicated_auth() -> None:
+    """Native refresh stays inside one dedicated login domain; never adopt another CLI's grant."""
+    from hermes_constants import get_hermes_home
+    from hermes_cli.auth import _global_auth_file_path, get_codex_auth_status
+    from agent.credential_sources import adopt_external_logins_enabled
+    root = Path(os.environ["HERMES_HOME"])
+    if (root != AUTH_ROOT or root.resolve() != AUTH_ROOT
+            or Path(get_hermes_home()).parent != root / "profiles"
+            or _global_auth_file_path() != root / "auth.json"
+            or adopt_external_logins_enabled()):
+        raise RuntimeError("dedicated reviewer authentication boundary unavailable")
+    for path, directory in [(root, True), (root / "auth.json", False)]:
+        info = path.lstat()
+        if (info.st_uid != os.geteuid() or info.st_mode & 0o077
+                or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))):
+            raise RuntimeError("dedicated reviewer authentication state is not private")
+    # This native API is explicitly read-only: no adoption, refresh, or pool/store mutation.
+    status = get_codex_auth_status()
+    if (status.get("logged_in") is not True or status.get("auth_mode") != "chatgpt"
+            or status.get("base_url") != "https://chatgpt.com/backend-api/codex"):
+        raise RuntimeError("dedicated reviewer ChatGPT sign-in required")
 
 
 def stop(session: str) -> None:
@@ -120,6 +148,7 @@ def review(request: dict, channel_in, channel_out, telemetry_config: dict | None
     set_secret_scope({}, profile_home=str(profile))
     from hermes_cli.plugins_discovery import suppress_plugin_discovery
     with suppress_plugin_discovery():
+        dedicated_auth()
         from run_agent import AIAgent
         from tools.registry import registry
 
@@ -213,11 +242,11 @@ def emit_assessment(request, channel_in, channel_out, telemetry_config) -> None:
 
 
 def main() -> None:
-    # Preserve HOME only for Hermes' own root resolution; never import platform/provider environment.
+    # Preserve HOME, but use a separate native auth root; no generator/CLI login adoption.
     home = os.environ.get("HOME", "/root")
     telemetry_config = {name: os.environ[name] for name in ("POSTHOG_API_KEY", "POSTHOG_HOST") if name in os.environ}
     os.environ.clear()
-    os.environ.update({"HOME": home, "HERMES_HOME": "/opt/data",
+    os.environ.update({"HOME": home, "HERMES_HOME": str(AUTH_ROOT),
                        "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"})
     sys.path.insert(0, "/opt/hermes")
     session = sys.argv[-1]

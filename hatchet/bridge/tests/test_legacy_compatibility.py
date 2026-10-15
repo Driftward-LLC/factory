@@ -104,6 +104,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
         )
 
     def insert(self, row, *, event=None):
+        self.conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         self.conn.execute(
             "INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (row["job_id"], row["idempotency_key"], row["state"], row["requested_action"], row["payload_json"], "fixture", row["branch"], row["pr_url"], NOW, NOW),
@@ -284,6 +285,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
                 path = str(Path(directory) / "bridge.db")
                 conn = connect(path)
                 conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (row["job_id"], row["idempotency_key"], row["state"], row["requested_action"], row["payload_json"], "fixture", row["branch"], row["pr_url"], NOW, NOW))
+                conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
                 conn.commit()
                 result = subprocess.run(["python3", str(CHECK), "--db", path, "--routing-registry", str(ROUTES), "--validate-legacy-import"], capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode == 0, expected)

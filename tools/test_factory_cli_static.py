@@ -572,7 +572,7 @@ exit 1
 
         self.assertIn("DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock", unit)
         self.assertIn("ExecStart=__NODE_BIN__ __FACTORY_SHARE_DIR__/hermes-gateway/hermes-gateway-server.js", unit)
-        self.assertIn("ReadWritePaths=/run/driftward-hermes-factory /var/lib/driftward-hermes-factory /run/docker.sock /var/run/docker.sock", unit)
+        self.assertIn("ReadWritePaths=/run/driftward-hermes-factory /var/lib/driftward-hermes-factory /var/lib/driftward-factory-reviewer /run/docker.sock /var/run/docker.sock", unit)
         self.assertIn("StateDirectoryMode=0700", unit)
         self.assertNotIn("OPENAI_API_KEY", unit)
         self.assertNotIn("ANTHROPIC_API_KEY", unit)

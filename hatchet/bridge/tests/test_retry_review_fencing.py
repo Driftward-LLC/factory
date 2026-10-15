@@ -85,6 +85,7 @@ class RetryReviewFencingTests(unittest.TestCase):
 
     def test_malformed_legacy_payload_records_conflict_and_readonly_requires_predeploy(self):
         conn = connect(self.db)
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('legacy','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr','{', 'x','branch','2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')")
         conn.commit(); conn.close()
         # Reopening invokes the write-time import/backfill and keeps the problem
@@ -95,6 +96,7 @@ class RetryReviewFencingTests(unittest.TestCase):
 
     def test_eng8_legacy_event_pr20_is_imported_as_a_blocking_artifact(self):
         conn = connect(self.db)
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         payload = json.dumps({"linear_issue": "ENG-8", "work_item_id": "ENG-8", "repo": "Driftward-LLC/capykit", "dry_run": False})
         branch = "codex/hatchet-hermes-d648b143d1aa45d1"
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('eng8-legacy','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr',?,?, ?,'2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')", (payload, "fixture", branch))
@@ -108,6 +110,7 @@ class RetryReviewFencingTests(unittest.TestCase):
 
     def test_legacy_cross_repository_event_is_recorded_as_an_import_conflict(self):
         conn = connect(self.db)
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         payload = json.dumps({"linear_issue": "ENG-8", "repo": "Driftward-LLC/capykit", "dry_run": False})
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('wrong-repo','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr',?,?,NULL,'2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')", (payload, "fixture"))
         conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('00000000-0000-4000-8000-000000000021','wrong-repo','effect_committed','effect_committed',?, '2026-01-01T00:01:00.000000Z')", (json.dumps({"pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/143"}),))
@@ -128,6 +131,7 @@ class RetryReviewFencingTests(unittest.TestCase):
             with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
                 db = str(Path(directory) / "bridge.db")
                 conn = connect(db)
+                conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
                 payload = {"linear_issue":"ENG-8", "repo":"Driftward-LLC/capykit", "dry_run":False}
                 if source == "payload": payload.update(malformed)
                 branch = malformed["branch"] if source == "direct" else None
@@ -248,13 +252,14 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertIsNone(rows[1]["result_json"])
         conn.close()
 
-    def test_bridge_init_refreshes_latest_attempt_expired_inspection(self):
+    def test_legacy_bridge_init_refreshes_latest_attempt_expired_inspection(self):
         conn = connect(self.db)
         from hatchet_hermes_bridge.store import _queue_pr_inspection
         attempt, _job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="refresh-on-init", reason="retry", actor="uid:0", payload={"repo":"Driftward-LLC/capykit"})
         url = "https://github.com/Driftward-LLC/capykit/pull/22"
         conn.execute("UPDATE factory_attempts SET status='failed', prior_pr_url=?, updated_at=? WHERE attempt_id=?", (url, "2000-01-01T00:00:00.000000Z", attempt["attempt_id"]))
         _queue_pr_inspection(conn, "ENG-62", url, attempt["attempt_id"])
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         conn.execute("UPDATE factory_inspection_requests SET created_at='2000-01-01T00:00:00.000000Z',updated_at='2000-01-01T00:00:00.000000Z' WHERE prior_attempt_id=?", (attempt["attempt_id"],)); conn.commit(); conn.close()
         conn = connect(self.db)
         rows = conn.execute("SELECT request_key,state FROM factory_inspection_requests WHERE prior_attempt_id=? ORDER BY created_at,request_key", (attempt["attempt_id"],)).fetchall()

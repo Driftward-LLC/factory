@@ -1,7 +1,8 @@
 # Bounded independent review
 
-Status: implemented behind a disabled policy; no live enrollment, execution,
-merge, deployment, or credential provisioning is authorized by this change.
+Status: review policy enabled for new real intake in `Driftward-LLC/factory` and
+`Driftward-LLC/capykit`; automatic repair remains disabled. Runtime activation
+still requires the compatible deployment and provisioned native backend.
 
 Factory separates deterministic checks from independent review. The persisted
 `verified_ready` attempt and `ready_for_human_review` job still mean checks
@@ -9,8 +10,8 @@ passed. The independent review ledger separately records pending, passed,
 changes requested, or needs operator. A passed review grants no merge/deploy
 authority and is valid only for the recorded full commit SHA.
 
-The checked-in `hatchet/workers/independent-review-policy.json` defaults to
-`enabled: false`, `automatic_repairs_allowed: false`, no repositories, and an
+The checked-in `hatchet/workers/independent-review-policy.json` selects
+`enabled: true`, `automatic_repairs_allowed: false`, only these two repositories, and an
 immutable maximum of two review passes. Policy lives with the deployed source,
 not in model prompts or worker payloads. Only newly admitted real intake under
 an enabled repository policy receives a digest-bound enrollment. Existing
@@ -75,15 +76,19 @@ existing accepted-event outboxes are durable application state and must be
 preserved by migration and rollback inventory.
 
 Provision and independently validate an isolated reviewer backend through the
-existing typed gateway. The generator's shared Hermes runtime is not a review
-sandbox. The reviewer needs a separate session, checkout, browser state and
-provider identity; it must have no GitHub push/merge credentials or permissions,
-host root data, generator session state, or worker credentials. Missing backend
+existing typed gateway. The native execution profile separates state and fixes
+the model/tool boundary; the offline source container isolates tests/browser
+from provider/platform credentials. The reviewer uses a separate native ChatGPT
+sign-in under its dedicated auth root, without cloning tokens or generator
+context, and has no GitHub write tools. Missing dedicated login fails closed;
+generator/root and external CLI credentials are not fallback identities.
+Follow [the native backend runbook](../deploy/INDEPENDENT-REVIEW.md). Missing backend
 capability remains a visible needs-operator result. Follow the review backend's
 provisioning instructions and verify isolation with synthetic fixtures before
 any real work is enabled.
 
-Repository enrollment and automatic repair require a separately reviewed
-source policy change. Enabling review alone does not enable repair. No UI,
+Repository enrollment is limited to new admissions under the deployed policy
+digest; historical work is never backfilled. Automatic repair requires another
+reviewed source policy change. Enabling review alone does not enable repair. No UI,
 review receipt, PR check, or model can flip either policy flag. Console views
 are read-only projections and offer no repair, merge, or deploy approval.

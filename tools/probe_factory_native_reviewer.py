@@ -5,6 +5,7 @@ Run: python3 tools/probe_factory_native_reviewer.py hermes-driftward-hermes-1
 from __future__ import annotations
 
 import io
+import base64
 import json
 import os
 from pathlib import Path
@@ -22,10 +23,16 @@ def inside(script: str, observer_code: str) -> None:
     exec(compile(observer_code, "review_observer.py", "exec"), observer.__dict__)
     native = ModuleType("native_probe")
     exec(compile(script, "native_agent.py", "exec"), native.__dict__)
+    fingerprint = native.hashlib.sha256()
+    for name in native.API_FILES:
+        fingerprint.update(name.encode() + b"\0")
+        fingerprint.update((Path("/opt/hermes") / name).read_bytes())
+    assert fingerprint.hexdigest() == native.NATIVE_SDK_SHA256
     with tempfile.TemporaryDirectory(prefix="factory-sdk-probe-") as temporary:
         os.environ.clear()
         os.environ.update({"HOME": temporary, "HERMES_HOME": temporary,
                            "PATH": "/usr/local/bin:/usr/bin:/bin"})
+        native.AUTH_ROOT = Path(temporary)  # Only fake credentials; never touch the live dedicated root.
         session = "factory-reviewer:" + "a" * 36
         profile = native.profile_path(session)
         profile.mkdir(parents=True)
@@ -40,12 +47,58 @@ def inside(script: str, observer_code: str) -> None:
         set_secret_scope({}, profile_home=str(profile))
         from hermes_cli.plugins_discovery import suppress_plugin_discovery
         with suppress_plugin_discovery():
+            from hermes_cli import auth
+            from agent import credential_sources
+            adopt_external_logins_enabled = credential_sources.adopt_external_logins_enabled
+            assert not adopt_external_logins_enabled()
+            assert auth._global_auth_file_path() == Path(temporary) / "auth.json"
+            checks = ["reviewed_native_sdk_fingerprint"]
+            try:
+                native.dedicated_auth()
+            except FileNotFoundError:
+                checks.append("missing_dedicated_login_denied")
+            else:
+                raise AssertionError("missing login accepted")
+            # A fake external CLI login must never be imported, including recovery/pool paths.
+            external = Path(temporary) / ".codex" / "auth.json"
+            external.parent.mkdir()
+            external.write_text(json.dumps({"tokens": {"access_token": "EXTERNAL_CANARY", "refresh_token": "EXTERNAL_CANARY"}}))
+            authfile = Path(temporary) / "auth.json"
+            authfile.write_text("{}")
+            authfile.chmod(0o600)
+            with patch.object(auth, "_import_codex_cli_tokens", side_effect=AssertionError("external import denied")):
+                try:
+                    auth.resolve_codex_runtime_credentials()
+                except auth.AuthError:
+                    checks.append("empty_dedicated_root_cannot_adopt_external_login")
+                else:
+                    raise AssertionError("empty dedicated root found another login")
+            fake_token = "synthetic." + base64.urlsafe_b64encode(json.dumps({"exp": 4102444800}).encode()).decode().rstrip("=") + ".synthetic"
+            authfile.write_text(json.dumps({"providers": {"openai-codex": {"tokens": {
+                "access_token": fake_token, "refresh_token": "synthetic-refresh"}}}}))
+            before = authfile.read_bytes()
+            native.dedicated_auth()
+            assert authfile.read_bytes() == before and not (profile / "auth.json").exists()
+            checks.append("dedicated_root_readonly_native_fallback_without_token_copy")
+            with patch.object(credential_sources, "adopt_external_logins_enabled", return_value=True):
+                try:
+                    native.dedicated_auth()
+                except RuntimeError:
+                    checks.append("external_adoption_policy_drift_denied")
+                else:
+                    raise AssertionError("external login adoption enabled")
+            with patch.object(native, "AUTH_ROOT", Path(temporary) / "other"):
+                try:
+                    native.dedicated_auth()
+                except RuntimeError:
+                    checks.append("wrong_auth_domain_denied")
+                else:
+                    raise AssertionError("wrong auth domain accepted")
             from run_agent import AIAgent
             from agent import agent_init
             from tools.registry import registry
             from agent.tool_dispatch_helpers import make_tool_result_message
             original_client = agent_init._build_client
-            checks = []
 
             def fake_client(agent, *_):
                 original_client(agent, "synthetic-not-a-real-key", "https://chatgpt.com/backend-api/codex", [])

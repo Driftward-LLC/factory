@@ -30,6 +30,7 @@ class IndependentReviewerTests(unittest.TestCase):
         self.assertEqual(native_agent.MODEL, "gpt-6-astra")
         self.assertEqual(native_agent.CONFIG["plugins"], {"enabled": []})
         self.assertEqual(native_agent.CONFIG["mcp_servers"], {})
+        self.assertEqual(native_agent.CONFIG["auth"], {"adopt_external_logins": False})
         self.assertEqual(set(native_agent.PROPERTIES), set(source_server.TOOLS))
         names = {native_agent.PREFIX + name for name in native_agent.PROPERTIES}
         agent = SimpleNamespace(model=native_agent.MODEL, provider="openai-codex", api_mode="codex_responses",

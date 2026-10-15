@@ -8,7 +8,8 @@ receipt with `backend: isolated_hermes`. The model supplies verdict/findings onl
 Historical `isolated_codex` receipts remain readable.
 
 Each invocation creates a fresh `factory-reviewer-<UUID>` profile under
-Driftward Hermes' `/opt/data/profiles/`. Its generated `config.yaml` selects
+Driftward Hermes' dedicated `/opt/data/factory-reviewer-auth/profiles/` root.
+Its generated `config.yaml` selects
 Astra and disables fallback, plugins, MCP, Tool Search, connectors, memory and
 compression. It copies no generator config, SOUL, memory, sessions, skills,
 browser state, credentials or tools. Each fresh profile has one writer.
@@ -20,12 +21,27 @@ guards. It has no local shell, filesystem, delegate, platform or tool-discovery
 tools. Personal Hermes is never selected.
 
 Hermes' supported routed-profile home and empty secret scope prevent default and
-project dotenv loading. Native provider resolution reuses Driftward Hermes'
-existing OpenAI Codex OAuth login through its root-auth fallback, including native
-shared-store refresh locking. The adapter does not read, copy, mount, export or
-serialize OAuth tokens. It preserves the runtime's HOME and root HERMES_HOME;
-only the routed profile home changes. No reviewer `auth.json` is provisioned.
-Default-profile config/model settings are not changed.
+project dotenv loading. The reviewer requires a separate native ChatGPT sign-in
+stored once at `/opt/data/factory-reviewer-auth/auth.json`. Each invocation sets
+only its own process's `HERMES_HOME` to that custom root; Hermes' routed-profile
+fallback and refresh locking use this dedicated auth domain, never generator
+`/opt/data/auth.json`. Fresh execution profiles receive no copied tokens.
+`auth.adopt_external_logins: false` in both the dedicated root and generated
+profile disables external CLI adoption/recovery. A private-file, exact-root and
+read-only native login-status preflight fails closed before model construction.
+The adapter does not serialize, mount, export or copy OAuth tokens. HOME and
+the runtime's default environment/config/model remain unchanged.
+
+An operator must create the dedicated root mode 0700 and its `config.yaml` mode
+0600 with `auth: {adopt_external_logins: false}` before starting sign-in. Use a
+one-off environment-allowlisted native process rooted there and the installed
+`hermes_cli.auth_codex._login_openai_codex(..., force_new_login=True)` with the
+`openai-codex` provider registry entry. This native fresh-login entrypoint skips
+both existing-login offers and Codex CLI imports; do not use `auth add`'s initial
+pool-seeding path for setup. Only the user completes device/browser consent.
+Never copy a generator token, reuse a profile clone, or rewrite global HOME or
+CODEX_HOME. The earlier shared-login synthetic-source live canary is not proof
+of this separate sign-in; repeat the bounded provider check only after consent.
 
 Reviewer tracing uses the Factory-owned `review_observer.py`, explicitly attached
 to four native Hermes lifecycle hooks while generic plugin discovery remains
@@ -67,7 +83,10 @@ Responses request.
 Build and pin `deploy/independent-reviewer/Dockerfile` for the source role.
 It keeps the reviewed Node base digest and Playwright MCP 0.0.83 lock, Git/Python
 and Chromium. Project-specific offline test dependencies may require a reviewed
-derived image. Missing required browser/dependencies/checks must yield
+derived image. The image does not provide Factory/Capykit npm or pip dependency
+trees: the synthetic HTML canary does not verify either project's full UI/build.
+Read-only review remains useful when the changed code and available focused
+checks suffice; missing required browser/dependencies/checks must yield
 inconclusive. Source networks are fresh internal Docker 28+ IPv4 bridges with
 gateway mode `isolated` and IPv6 disabled, avoiding a reachable host bridge.
 
@@ -100,14 +119,50 @@ Managed instruction snapshots are root-owned mode-0600
 `/etc/driftward/factory-reviewer/review-code.md` and `verify-app.md`. Their verified
 contents enter the prompt explicitly; installed plugin presence is insufficient.
 Source fetch separately requires a source-only GitHub read credential at
-`/etc/driftward/factory-reviewer/source-token`. This remains an activation gate;
-native provider-login reuse does not provision it. Only trusted host Git
+`/etc/driftward/factory-reviewer/source-token`. The public
+`source_token_broker.py` uses the existing `factory-hermes` App inside the native
+runtime: its App/installation IDs and private key stay under
+`/opt/data/github-apps/factory-hermes`. It signs in place and requests only
+`factory` and `capykit` with `contents:read`; GitHub's implicit `metadata:read` is
+accepted, all other permissions/repos are rejected. It never reads the native
+generator token cache or copies a private key. This is the same App identity,
+with a narrower credential, not a new grant or App.
+
+GitHub documents repository/permission downscoping and the one-hour lifetime in
+[its installation-token guide](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+The host's `renew_source_token.py` captures the token only through private
+subprocess IPC, independently validates returned scope/expiry, and atomically
+replaces the mode-0600 token. Its private metadata file contains only scope,
+expiry and a token checksum. A local lock prevents concurrent minting; a valid
+credential with over 30 minutes remaining is reused. Issuance/validation failure
+leaves the previous token unchanged, with no fallback to broader auth. The
+oneshot logs only status/expiry or a fixed failure message and has no internal
+retry. A 20-minute timer renews before expiry; failure remains visible and cannot
+keep an expired token valid. Missing existing App access to either repository is
+an activation blocker, not permission to broaden its grant automatically.
+
+The host installer packages the two public helper files and systemd templates;
+it does not enable the renewal timer. After reviewing the deployment and canary,
+install the rendered `driftward-factory-reviewer-source-token.service` and timer
+from `independent-reviewer/systemd/` in the shared package, replacing
+`__FACTORY_SHARE_DIR__` with `/usr/local/share/driftward-factory`. Ensure the
+existing `/etc/driftward/factory-reviewer` directory is root-owned mode 0700,
+then run the oneshot once and inspect only its status and non-secret expiry
+metadata before enabling `driftward-factory-reviewer-source-token.timer`.
+The service can access only the local Docker socket and reviewer credential
+directory; its fixed broker executes inside `hermes-driftward-hermes-1`.
+
+Only trusted host Git
 subprocesses consume it, never workers, the reviewer profile, tests or browser.
 Do not copy generator GitHub write auth into a profile. Private bare mirrors at
 `/var/lib/driftward-factory-reviewer/repositories/OWNER/REPO.git` contain no shared
 auth. Locked fixed-HTTPS fetches update the PR and configured base; immutable
 snapshots bind inspection, and a final fetch checks the head again. New commits
 require a new review ID.
+Only each credential-free immutable snapshot is explicitly made readable to the
+source UID (directories 0755, files 0444), along with its ephemeral MCP token
+(0444). Their containing journal remains 0700. The service's restrictive 0007
+umask and private source/platform credentials are not relaxed.
 
 The host installer packages public assets under
 `/usr/local/share/driftward-factory/independent-reviewer/`, preserving build-context
@@ -122,6 +177,7 @@ Run the credential-free SDK compatibility probe and focused tests with:
 python3 tools/probe_factory_native_reviewer.py hermes-driftward-hermes-1
 python3 -m unittest tools.test_factory_independent_reviewer -v
 python3 -m unittest tools.test_factory_reviewer_observer -v
+python3 -m unittest tools.test_factory_reviewer_source_token -v
 ```
 
 The probe uses only a disposable `/tmp` Hermes root, synthetic client credentials
@@ -132,6 +188,10 @@ also verifies generation/tool hooks, usage counts, parent/request identities,
 metadata-only fake HTTP export and flush-before-assessment ordering. Disabled
 and failing exporters preserve the verdict and the number of model requests.
 It does not prove real Astra access, OAuth refresh or live PostHog delivery.
+It also verifies dedicated-root fallback, missing-login/wrong-root denial and
+external CLI adoption refusal using only fake credentials. Build the workers
+before the source-container probe; that probe uses the actual gateway snapshot
+readability helper and should also be run under `umask 0007`.
 Tests cover partial relay-line timeout, gateway SIGKILL with independent exact
 native termination, preservation of unrelated processes, and refusal of
 mismatched PID/starttime. Source inspection waits for startup checkout/browser

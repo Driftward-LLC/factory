@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew the source-only reviewer credential before expiry
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=20min
+AccuracySec=30s
+RandomizedDelaySec=15s
+Persistent=true
+Unit=driftward-factory-reviewer-source-token.service
+
+[Install]
+WantedBy=timers.target
