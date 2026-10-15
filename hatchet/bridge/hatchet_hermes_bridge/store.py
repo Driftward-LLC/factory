@@ -580,6 +580,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     # invoke it.
     try:
         conn.execute("BEGIN IMMEDIATE")
+        has_version = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bridge_schema_meta'").fetchone()
+        previous_version = conn.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone() if has_version else None
+        previous_version = previous_version[0] if previous_version else 0
+        if type(previous_version) is not int or not 0 <= previous_version <= SCHEMA_VERSION:
+            raise BridgeValidationError("unsupported bridge schema version for migration")
         for statement in (item.strip() for item in schema_sql.split(";") if item.strip()):
             conn.execute(statement)
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_import_conflict_attestations_update BEFORE UPDATE ON factory_import_conflict_attestations FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'factory import conflict attestations are append-only'); END")
@@ -597,25 +602,31 @@ def init_db(conn: sqlite3.Connection) -> None:
             # REPLACE otherwise bypasses DELETE triggers when recursive_triggers is off.
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_{table}_replace BEFORE INSERT ON {table} WHEN EXISTS (SELECT 1 FROM {table} WHERE {identity}=NEW.{identity} OR (attempt_id=NEW.attempt_id AND {kind}=NEW.{kind})) BEGIN SELECT RAISE(ABORT, 'work evidence is append-only'); END")
         _migration_failpoint("after-ddl")
-        _migrate_bridge_verification_columns(conn)
-        _migrate_reconciliation_findings(conn)
-        _migrate_factory_retry_columns(conn)
-        _migrate_conflict_resolution_columns(conn)
-        _migrate_canonical_times(conn, "bridge_jobs", ("created_at", "updated_at"))
-        _migrate_canonical_times(conn, "bridge_events", ("created_at",))
-        _backfill_factory_attempts(conn)
-        _backfill_factory_inspections(conn)
+        # Schema 9 adds only review storage; rerunning old backfills would
+        # refresh historical inspections and dispatch work during this upgrade.
+        if previous_version < 8:
+            _migrate_bridge_verification_columns(conn)
+            _migrate_reconciliation_findings(conn)
+            _migrate_factory_retry_columns(conn)
+            _migrate_conflict_resolution_columns(conn)
+            _migrate_canonical_times(conn, "bridge_jobs", ("created_at", "updated_at"))
+            _migrate_canonical_times(conn, "bridge_events", ("created_at",))
+            _backfill_factory_attempts(conn)
+            _backfill_factory_inspections(conn)
         _migration_failpoint("during-backfill")
-        _append_deterministic_conflict_resolutions(conn, operator="migration")
+        if previous_version < 8:
+            _append_deterministic_conflict_resolutions(conn, operator="migration")
         _migration_failpoint("during-resolution-insertion")
-        _append_deterministic_conflict_attestations(conn, operator="migration")
+        if previous_version < 8:
+            _append_deterministic_conflict_attestations(conn, operator="migration")
         _migration_failpoint("during-attestation-insertion")
         _migration_failpoint("before-version-update")
-        conn.execute(
-            "INSERT INTO bridge_schema_meta(singleton,schema_version,migrated_at) VALUES (1,?,?) "
-            "ON CONFLICT(singleton) DO UPDATE SET schema_version=excluded.schema_version,migrated_at=excluded.migrated_at",
-            (SCHEMA_VERSION, utc_now()),
-        )
+        if previous_version != SCHEMA_VERSION:
+            conn.execute(
+                "INSERT INTO bridge_schema_meta(singleton,schema_version,migrated_at) VALUES (1,?,?) "
+                "ON CONFLICT(singleton) DO UPDATE SET schema_version=excluded.schema_version,migrated_at=excluded.migrated_at",
+                (SCHEMA_VERSION, utc_now()),
+            )
         _migration_failpoint("before-commit")
         conn.commit()
     except Exception:

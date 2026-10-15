@@ -238,6 +238,7 @@ class RuntimeConnectionTests(unittest.TestCase):
 
 class ConflictResolutionTests(unittest.TestCase):
     def _historical_conflict(self, conn, *, reason="legacy_artifact_reference_conflict", number=8):
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=3")
         key = "hatchet:work-item:linear:ENG-8:create_draft_pr:real:active"
         key = f"hatchet:work-item:linear:ENG-{number}:create_draft_pr:real:active"
         branch = deterministic_branch(key)
@@ -333,6 +334,7 @@ class ConflictResolutionTests(unittest.TestCase):
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
             with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two}):
+                conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations WHERE producing_release_sha=?", (sha_one,)).fetchone()[0], 38)
@@ -340,11 +342,13 @@ class ConflictResolutionTests(unittest.TestCase):
             registry["routes"] = list(reversed(registry["routes"]))
             formatted = Path(directory) / "format-only.json"; formatted.write_text(json.dumps(registry, indent=4) + "\n")
             with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(formatted)}):
+                conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
             registry["routes"][0]["execution_enabled"] = not registry["routes"][0]["execution_enabled"]
             changed = Path(directory) / "semantic-change.json"; changed.write_text(json.dumps(registry))
             with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(changed)}):
+                conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 76)
             changed_legacy = Path(store.__file__).with_name("legacy_artifacts.py").read_text().replace(
@@ -355,6 +359,7 @@ class ConflictResolutionTests(unittest.TestCase):
             changed_contract = store._resolver_contract_digest(source_overrides={"legacy_artifacts": changed_legacy})
             with patch.object(store, "_resolver_contract_digest", return_value=changed_contract):
                 with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(changed)}):
+                    conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                     init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 114)
             conn.close()

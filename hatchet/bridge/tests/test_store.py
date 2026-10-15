@@ -1094,6 +1094,7 @@ class BridgeStoreTests(unittest.TestCase):
         # Reopen migrations after a complete legacy artifact exists, then prove
         # the imported generation-one lineage cannot use the fresh verifier path.
         self.conn.execute("DELETE FROM factory_attempts"); self.conn.commit()
+        self.conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         self.conn.execute("UPDATE bridge_jobs SET state='completed',pr_url=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/91", job["job_id"]))
         self.conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('legacy-eng91',?,'effect_committed','effect_committed',?,'2026-08-17T00:00:00Z')", (job["job_id"], json.dumps({"pr_url":"https://github.com/Driftward-LLC/capykit/pull/91", "head_branch":job["branch"]})))
         self.conn.commit()

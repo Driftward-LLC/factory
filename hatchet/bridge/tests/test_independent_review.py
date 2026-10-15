@@ -173,6 +173,47 @@ class IndependentReviewTests(unittest.TestCase):
         self.assertEqual(dict(self.conn.execute("SELECT * FROM factory_independent_reviews").fetchone()), before)
         self.assertEqual(self.reserve()["review_id"], row["review_id"])
 
+    def test_schema8_upgrade_and_schema9_reentry_preserve_all_historical_rows(self):
+        self.conn.execute("UPDATE factory_inspection_requests SET observed_at='2020-01-01T00:00:00.000000Z' WHERE state='completed'")
+        self.conn.execute("DROP TABLE factory_independent_reviews")
+        self.conn.execute("UPDATE bridge_schema_meta SET schema_version=8")
+        self.conn.commit()
+
+        def contents(include_metadata=False):
+            tables = [row[0] for row in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+            return {name: [tuple(row) for row in self.conn.execute(f'SELECT * FROM "{name}" ORDER BY rowid')]
+                    for name in tables if include_metadata or name != "bridge_schema_meta"}
+
+        before = contents()
+        self.assertGreater(len(before["factory_inspection_requests"]), 0)
+        store.init_db(self.conn)
+        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 9)
+        self.assertEqual(contents(), {**before, "factory_independent_reviews": []})
+        self.assertEqual(self.conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(self.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+        after = contents(include_metadata=True)
+        store.init_db(self.conn)
+        self.assertEqual(contents(include_metadata=True), after)
+
+    def test_older_schema_still_backfills_stale_inspections(self):
+        self.conn.execute("UPDATE factory_inspection_requests SET observed_at='2020-01-01T00:00:00.000000Z' WHERE state='completed'")
+        self.conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
+        self.conn.commit()
+        before = self.conn.execute("SELECT count(*) FROM factory_inspection_requests").fetchone()[0]
+        store.init_db(self.conn)
+        self.assertGreater(self.conn.execute("SELECT count(*) FROM factory_inspection_requests").fetchone()[0], before)
+
+    def test_future_or_malformed_schema_version_is_rejected_before_ddl(self):
+        self.conn.execute("DROP TABLE factory_independent_reviews")
+        for version in (10, "future", -1, 8.5):
+            with self.subTest(version=version):
+                self.conn.execute("UPDATE bridge_schema_meta SET schema_version=?", (version,))
+                self.conn.commit()
+                with self.assertRaisesRegex(store.BridgeValidationError, "unsupported bridge schema version"):
+                    store.init_db(self.conn)
+                self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], version)
+                self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name='factory_independent_reviews'").fetchone())
+
     def test_requirement_digest_is_utf8_canonical_and_claim_respects_manual_control(self):
         value = {"title": "Fix café 🧪", "description": "Check the Unicode input"}
         request = store.get_job(self.conn, self.reserve()["job_id"])["payload"]
