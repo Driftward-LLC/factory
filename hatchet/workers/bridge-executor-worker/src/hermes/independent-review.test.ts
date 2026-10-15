@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
-import { boundedIndependentReview, inconclusiveReview, IndependentReviewer, reviewIntent, runIndependentReviewRelay, type ReviewIntent } from './independent-review';
+import { boundedIndependentReview, inconclusiveReview, IndependentReviewer, reviewIntent, runIndependentReviewRelay, readableReviewSnapshot, type ReviewIntent } from './independent-review';
 
 const requirements = { description: 'The counter must increase once per click.', title: 'Fix counter' };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -16,6 +16,24 @@ const intent: ReviewIntent = { review_id: 'review-1', repository: 'Driftward-LLC
   generator_session_id: 'generator-1', pass_number: 1, policy_digest: 'b'.repeat(64) };
 const job = (r = intent) => ({ requested_action: 'read_only_review', branch: r.branch,
   payload: { repo: r.repository, review: r, dry_run: false } }) as unknown as BridgeJob;
+
+test('immutable source export is readable under gateway umask while journal stays private', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-source-umask-'));
+  const prior = process.umask(0o007);
+  try {
+    const snapshot = path.join(directory, 'source.git');
+    mkdirSync(path.join(snapshot, 'objects'), { recursive: true });
+    writeFileSync(path.join(snapshot, 'objects', 'pack'), 'synthetic source');
+    readableReviewSnapshot(snapshot);
+    assert.equal(statSync(directory).mode & 0o777, 0o700);
+    assert.equal(statSync(snapshot).mode & 0o777, 0o755);
+    assert.equal(statSync(path.join(snapshot, 'objects')).mode & 0o777, 0o755);
+    assert.equal(statSync(path.join(snapshot, 'objects', 'pack')).mode & 0o777, 0o444);
+  } finally {
+    process.umask(prior);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('gateway SIGKILL timeout independently stops exact native process after relay finally is lost', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-relay-timeout-'));
@@ -151,12 +169,17 @@ test('long review retains its receipt after launch inspection expires but still 
       if (file.endsWith('/git')) {
         if (args.includes('fetch')) { assert.match(env?.GIT_CONFIG_VALUE_0 || '', /^Authorization: Basic /); return ''; }
         if (args.includes('bundle')) { writeFileSync(args[args.indexOf('create') + 1], 'synthetic bundle'); return ''; }
+        if (args.includes('clone')) { mkdirSync(args.at(-1)!); return ''; }
         return args.at(-1)?.startsWith('refs/heads/') ? 'e'.repeat(40)
           : headChanged && inspectionAgeSeconds > 0 ? 'f'.repeat(40) : intent.head_sha;
       }
       if (args[0] === 'network' && args[1] === 'inspect') return '[{"Internal":true,"EnableIPv6":false,"Options":{"com.docker.network.bridge.gateway_mode_ipv4":"isolated"}}]';
       if (args[0] === 'image') return '[{"Config":{"Labels":{"io.driftward.factory.independent-reviewer":"1"}}}]';
       if (args[0] === 'inspect') return JSON.stringify([{ Image: `sha256:${'9'.repeat(64)}`, State: { Running: true } }]);
+      if (args[0] === 'run') {
+        const mount = args.find((a) => a.includes('dst=/run/mcp-token'))!;
+        assert.equal(statSync(mount.split('src=')[1].split(',')[0]).mode & 0o777, 0o444);
+      }
       if (args[0] === 'start') {
         inspectionAgeSeconds = 480;
         return JSON.stringify({ verdict: 'passed', findings: [], head_sha: intent.head_sha, reason: 'ok' });

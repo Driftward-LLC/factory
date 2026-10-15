@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BridgeJob, JsonObject } from '@driftward/hatchet-worker-shared';
 import { isSecretShaped } from './bounded-evidence';
@@ -149,6 +149,18 @@ function persist(location: string, value: unknown): void {
   try { fsyncSync(directory); } finally { closeSync(directory); }
 }
 
+/** Only this credential-free export is visible through a bind mount to source UID 10001. */
+export function readableReviewSnapshot(directory: string): void {
+  if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error('Invalid source export');
+  chmodSync(directory, 0o755);
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const location = path.join(directory, entry.name);
+    if (entry.isDirectory()) readableReviewSnapshot(location);
+    else if (entry.isFile()) chmodSync(location, 0o444);
+    else throw new Error('Invalid source export entry');
+  }
+}
+
 /** mkdir reservation survives process crashes; an ambiguous outcome never starts a second model call. */
 export class IndependentReviewer {
   private active = new Map<string, Promise<JsonObject>>();
@@ -252,11 +264,13 @@ export class IndependentReviewer {
       // Never expose a mirror's remotes/auth config. This exported Git database is immutable in source/tests.
       await runCommand('/usr/bin/git', ['clone', '--bare', '--no-hardlinks', bundle, snapshot], 60000);
       await runCommand('/usr/bin/git', ['--git-dir', snapshot, 'config', '--remove-section', 'remote.origin'], 15000);
+      readableReviewSnapshot(snapshot);
       persist(requestPath, { head_sha: r.head_sha, expected_base: base, requirements: r.requirements,
         telemetry: { role: 'reviewer', review_id: r.review_id, repository: r.repository,
           head_sha: r.head_sha, pass_number: r.pass_number } });
       chmodSync(requestPath, 0o444);
       writeFileSync(tokenPath, token, { mode: 0o444, flag: 'wx' });
+      chmodSync(tokenPath, 0o444);
       const hermes = JSON.parse(await runCommand('/usr/bin/docker', ['inspect', 'hermes-driftward-hermes-1'], 15000));
       if (!Array.isArray(hermes) || hermes.length !== 1 || hermes[0].Image !== config.hermes_image
         || hermes[0].State?.Running !== true) return fail('review_isolation_unavailable');

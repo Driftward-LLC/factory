@@ -24,7 +24,7 @@ StateDirectory=driftward-hermes-factory
 StateDirectoryMode=0700
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/run/driftward-hermes-factory /var/lib/driftward-hermes-factory /run/docker.sock /var/run/docker.sock
+ReadWritePaths=/run/driftward-hermes-factory /var/lib/driftward-hermes-factory /var/lib/driftward-factory-reviewer /run/docker.sock /var/run/docker.sock
 
 [Install]
 WantedBy=multi-user.target

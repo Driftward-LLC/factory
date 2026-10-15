@@ -29,9 +29,13 @@ def runtime_probe(image, common, source, inspector, temporary):
     head = git("rev-parse", "HEAD")
     bundle = root / "source.bundle"
     git("bundle", "create", str(bundle), "main", "candidate")
+    bundle.chmod(0o444)
     snapshot = root / "source.git"
     command(["git", "clone", "--bare", str(bundle), str(snapshot)])
     command(["git", "--git-dir", str(snapshot), "config", "--remove-section", "remote.origin"])
+    # Apply the actual gateway export boundary, including its restrictive service umask regression.
+    gateway = Path(__file__).resolve().parents[1] / 'hatchet/workers/bridge-executor-worker/dist/hermes/independent-review.js'
+    command(['node', '-e', 'require(process.argv[1]).readableReviewSnapshot(process.argv[2])', str(gateway), str(snapshot)])
     token = root / "mcp-token"
     token.write_text("synthetic-private-mcp-token")
     token.chmod(0o444)

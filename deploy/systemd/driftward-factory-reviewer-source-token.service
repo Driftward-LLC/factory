@@ -1,0 +1,22 @@
+[Unit]
+Description=Renew repository-scoped read-only Factory reviewer source token
+Requires=docker.service
+After=docker.service network-online.target driftward-hermes.service
+Wants=network-online.target driftward-hermes.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 __FACTORY_SHARE_DIR__/independent-reviewer/deploy/independent-reviewer/renew_source_token.py
+TimeoutStartSec=60
+CPUQuota=10%
+MemoryMax=96M
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/driftward/factory-reviewer /run/docker.sock /var/run/docker.sock
+RestrictAddressFamilies=AF_UNIX
+StandardOutput=journal
+StandardError=journal
