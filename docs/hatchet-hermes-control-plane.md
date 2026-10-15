@@ -27,7 +27,9 @@ PostHog SDK, extra service, or PostHog credentials in Factory containers are nee
 ## Complete draft PR diff inspection
 
 The typed executor inspection pins both GitHub base and head commit SHAs and
-fetches the diff through the immutable compare endpoint. Paginated PR filenames
+fetches the diff through the immutable compare endpoint. The supported CLI view
+fields are joined to REST's exact revisions only when their head SHA and head/base
+branch names agree; this avoids requiring newer CLI JSON fields. Paginated PR filenames
 must match GitHub's changed-file count. A second PR observation rejects changes
 to those revisions or PR identity during inspection; checks use that latest
 observation for the same head.

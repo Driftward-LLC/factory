@@ -16,7 +16,8 @@ test('real gateway uses the shared bounded PR inspection default', async () => {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
 if (args.includes('python3')) { process.stderr.write('PRIVATE_FALLBACK_CONTENT'); process.exit(Number(process.env.TEST_FALLBACK_CODE)); }
-else if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify({changedFiles: 1, baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40)}))});
+else if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify({changedFiles: 1, headRefOid: 'a'.repeat(40)}))});
+else if (args.includes('repos/Driftward-LLC/capykit/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify({baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40)}))});
 else if (args.some(a => a.includes('/compare/'))) {
   if (process.env.TEST_DIFF_FAILURE) {
     process.stderr.write('HTTP ' + process.env.TEST_DIFF_FAILURE + ' Comparison.diff too_large PRIVATE_CONTENT');

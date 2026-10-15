@@ -797,9 +797,21 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
       { failureDomain: 'verification', failureStage: 'verification_checks', timedOut: true });
     return milliseconds;
   };
-  const readView = () => execHermesRuntimeJson<GithubPrView & { changedFiles?: number }>(
-    ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,baseRefOid,isDraft,url,author,body,changedFiles,statusCheckRollup'],
-    remaining(), maxBuffer);
+  const readView = async () => {
+    const view = await execHermesRuntimeJson<GithubPrView & { changedFiles?: number }>(
+      ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,changedFiles,statusCheckRollup'],
+      remaining(), maxBuffer);
+    // Older supported gh versions expose headRefOid but no baseRefOid in pr view.
+    const revisions = await execHermesRuntimeJson<GithubPrView>(
+      ['gh', 'api', `repos/${repo}/pulls/${prNumber}`, '--jq', '{headRefOid:.head.sha,baseRefOid:.base.sha,headRefName:.head.ref,baseRefName:.base.ref}'],
+      remaining(), maxBuffer);
+    for (const key of ['headRefOid', 'headRefName', 'baseRefName'] as const) {
+      if (revisions[key] !== view[key]) {
+        throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR revisions changed while reading GitHub metadata');
+      }
+    }
+    return { ...view, baseRefOid: revisions.baseRefOid };
+  };
   const view = await readView();
   if (!/^[a-f0-9]{40}$/.test(view.headRefOid || '') || !/^[a-f0-9]{40}$/.test(view.baseRefOid || '')) {
     throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR inspection did not return exact base and head revisions');

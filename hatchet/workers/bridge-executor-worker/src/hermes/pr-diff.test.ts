@@ -56,13 +56,25 @@ if (args.includes('python3')) {
 }
 if (mode === 'identity-error') { process.stderr.write('PRIVATE_AUTH_DIAGNOSTIC'); process.exit(1); }
 if (args.includes('view')) {
+  const supportedFields = new Set('headRefName,headRefOid,baseRefName,isDraft,url,author,body,changedFiles,statusCheckRollup'.split(','));
+  if (args[args.indexOf('--json') + 1].split(',').some(field => !supportedFields.has(field))) {
+    process.stderr.write('Unknown JSON field'); process.exit(1);
+  }
   const countPath = path.join(root, 'views');
   const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath)) : 0;
   fs.writeFileSync(countPath, String(count + 1));
   const view = JSON.parse(fs.readFileSync(path.join(root, 'view.json')));
   if (count && mode === 'head-drift') view.headRefOid = 'a'.repeat(40);
-  if (count && mode === 'base-drift') view.baseRefOid = 'b'.repeat(40);
+  delete view.baseRefOid;
+  process.stdout.write(JSON.stringify(view));
+} else if (args.includes('repos/Driftward-LLC/capykit/pulls/82')) {
+  const view = JSON.parse(fs.readFileSync(path.join(root, 'view.json')));
+  const count = Number(fs.readFileSync(path.join(root, 'views')));
+  if (count > 1 && mode === 'head-drift') view.headRefOid = 'a'.repeat(40);
+  if (count > 1 && mode === 'base-drift') view.baseRefOid = 'b'.repeat(40);
   if (mode === 'missing-sha') delete view.baseRefOid;
+  if (mode === 'snapshot-head-mismatch') view.headRefOid = 'c'.repeat(40);
+  if (mode === 'snapshot-base-branch-mismatch') view.baseRefName = 'other-base';
   process.stdout.write(JSON.stringify(view));
 } else if (args.some(a => a.includes('/compare/'))) {
   const view = JSON.parse(fs.readFileSync(path.join(root, 'view.json')));
@@ -129,12 +141,12 @@ os.execv('/usr/bin/git', ['git'] + args)
       assert.equal(findAddedTempFileReference(observed.diffText), '+@/tmp/not-file-content');
       assert.deepEqual(readdirSync(temporary), []);
     });
-    await t.test('immutable API success needs no local source', async () => {
+    await t.test('supported CLI fields join exact REST revisions and API success needs no local source', async () => {
       reset('api-success');
       await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 82, 5000);
       assert.equal(existsSync(path.join(directory, 'fallback-called')), false);
     });
-    for (const mode of ['api-partial', 'head-drift', 'base-drift', 'missing-sha', 'unrelated-error', 'incomplete', 'wrong-paths', 'fetch-error']) {
+    for (const mode of ['api-partial', 'head-drift', 'base-drift', 'missing-sha', 'snapshot-head-mismatch', 'snapshot-base-branch-mismatch', 'unrelated-error', 'incomplete', 'wrong-paths', 'fetch-error']) {
       await t.test(`fails closed for ${mode}`, async () => {
         reset(mode);
         await failure();

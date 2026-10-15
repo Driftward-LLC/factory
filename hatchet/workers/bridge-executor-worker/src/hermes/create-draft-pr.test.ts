@@ -162,7 +162,8 @@ test('PR inspection accepts a large bounded diff and classifies overflow without
   try {
     writeFileSync(path.join(commandDirectory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 1, baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 1, headRefOid: 'a'.repeat(40) })))});
+else if (args.includes('repos/Driftward-LLC/capykit/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
 else if (args.some(a => a.includes('/compare/'))) process.stdout.write('diff --git a/tests/cli.test.ts b/tests/cli.test.ts\\nPRIVATE_DIFF_CONTENT'.padEnd(${diffBytes}, '+'));
 else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'tests/cli.test.ts'}) + '\\n');
 else process.exit(1);
@@ -197,7 +198,8 @@ test('PR inspection includes paths beyond file 100 and rejects incomplete or dup
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 101, baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 101, headRefOid: 'a'.repeat(40) })))});
+else if (args.includes('repos/Driftward-LLC/capykit/pulls/61')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
 else if (args.some(a => a.includes('/compare/'))) process.stdout.write('diff --git a/README.md b/README.md\\n'.repeat(101));
 else if (args.includes('api')) {
   const files = Array.from({length:100}, (_,i)=>({path:'src/file-'+i+'.ts'}));
