@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import os
+import signal
+import time
+from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,20 +19,107 @@ RUNNER = ROOT / "deploy/independent-reviewer"
 sys.path.insert(0, str(RUNNER))
 import runner
 import source_server
+import native_agent
 
 
 class IndependentReviewerTests(unittest.TestCase):
     def test_model_role_has_no_shell_and_uses_exact_astra(self):
-        args = runner.model_arguments(Path("schema"), Path("output"), Path("clean-home"))
-        self.assertEqual(args[args.index("--model") + 1], "gpt-6-astra")
-        self.assertIn("--ignore-user-config", args)
-        self.assertIn("--ignore-rules", args)
-        self.assertIn("features.shell_tool=false", args)
-        self.assertIn("features.unified_exec=false", args)
-        self.assertIn("features.plugins=false", args)
-        self.assertIn("features.apps=false", args)
-        self.assertIn('mcp_servers.source.url="http://source:8765/mcp"', args)
-        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", args)
+        args = runner.native_arguments("hermes-driftward-hermes-1", "factory-reviewer:" + "a" * 36)
+        self.assertEqual(args[:5], ["/usr/bin/docker", "exec", "-i", "--workdir", "/opt/hermes"])
+        self.assertNotIn("codex", args)
+        self.assertEqual(native_agent.MODEL, "gpt-6-astra")
+        self.assertEqual(native_agent.CONFIG["plugins"], {"enabled": []})
+        self.assertEqual(native_agent.CONFIG["mcp_servers"], {})
+        self.assertEqual(set(native_agent.PROPERTIES), set(source_server.TOOLS))
+        names = {native_agent.PREFIX + name for name in native_agent.PROPERTIES}
+        agent = SimpleNamespace(model=native_agent.MODEL, provider="openai-codex", api_mode="codex_responses",
+            enabled_toolsets=[native_agent.TOOLSET], valid_tool_names=names,
+            tools=[{"function": {"name": n}} for n in names], _fallback_chain=[], compression_enabled=False)
+        native_agent.guard(agent)
+        for key, value in [("model", "gpt-6.1-sol"), ("api_mode", "codex_app_server"),
+                           ("enabled_toolsets", ["all"]), ("valid_tool_names", names | {"terminal"}),
+                           ("_fallback_chain", [{"model": "other"}]), ("compression_enabled", True)]:
+            with patch.object(agent, key, value), self.assertRaises(RuntimeError):
+                native_agent.guard(agent)
+
+    def test_exact_native_termination_preserves_other_process_and_ambiguous_marker(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"HERMES_HOME": temporary}):
+            session = "factory-reviewer:" + "a" * 36
+            profile = native_agent.profile_path(session)
+            profile.mkdir(parents=True)
+            unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", session], start_new_session=True)
+            try:
+                marker = {"pid": process.pid, "start_ticks": native_agent.start_ticks(process.pid), "session": session}
+                (profile / "invocation.json").write_text(json.dumps({**marker, "start_ticks": "wrong"}))
+                with self.assertRaises(RuntimeError):
+                    native_agent.stop(session)
+                self.assertIsNone(process.poll())
+                self.assertTrue(profile.exists())
+                (profile / "invocation.json").write_text(json.dumps(marker))
+                native_agent.stop(session)
+                self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+                self.assertIsNone(unrelated.poll())
+                self.assertFalse(profile.exists())
+                with self.assertRaises(FileNotFoundError):
+                    native_agent.stop(session)
+            finally:
+                for child in [process, unrelated]:
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=5)
+
+    def test_partial_relay_line_cannot_hide_deadline(self):
+        child = subprocess.Popen([sys.executable, "-c", "import sys,time; sys.stdout.write('{'); sys.stdout.flush(); time.sleep(30)"],
+                                 stdout=subprocess.PIPE)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                runner.relay_line(child.stdout, bytearray(), time.monotonic() + 0.05)
+        finally:
+            child.kill()
+            child.communicate(timeout=5)
+
+    def test_request_frame_unicode_and_byte_limit(self):
+        session = "factory-reviewer:" + "a" * 36
+        for description in ["界" * 12000, "😀" * 6000]:
+            prompt = (RUNNER / "runner.py").read_text() + json.dumps({"title": "😀" * 160,
+                "description": description})
+            frame = native_agent.request_frame(session, prompt)
+            self.assertGreater(len(frame), 64001)
+            self.assertEqual(native_agent.read_request(io.BytesIO(frame))["prompt"], prompt)
+        overhead = len(native_agent.request_frame(session, ""))
+        frame = native_agent.request_frame(session, "a" * (native_agent.REQUEST_LIMIT - overhead))
+        self.assertEqual(len(frame), native_agent.REQUEST_LIMIT)
+        self.assertEqual(len(native_agent.read_request(io.BytesIO(frame))["prompt"]), native_agent.REQUEST_LIMIT - overhead)
+        with self.assertRaises(ValueError):
+            native_agent.request_frame(session, "a" * (native_agent.REQUEST_LIMIT - overhead + 1))
+        with self.assertRaises(ValueError):
+            native_agent.read_request(io.BytesIO(frame[:-1]))
+        probe = [{"type": "text", "text": json.dumps({"head_sha": "a" * 40,
+            "base_sha": "b" * 40, "browser_probe": "passed"})}]
+        with patch.object(runner, "command", return_value=json.dumps(probe)), \
+             patch.object(runner.subprocess, "Popen") as launch:
+            receipt = runner.run("a" * 40, "b" * 40, {"title": "Synthetic", "description": "界" * 12000},
+                                 "source", "hermes", session, "a" * native_agent.REQUEST_LIMIT)
+            self.assertEqual(receipt["reason"], "review_budget_exhausted")
+            launch.assert_not_called()
+
+    def test_delayed_source_checkout_cannot_pass_inspection_before_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            ready = Path(temporary) / "source-ready.json"
+            with patch.object(source_server, "READY", ready), \
+                 patch.object(source_server, "command", return_value="a" * 40) as command, \
+                 patch.object(source_server, "browser_probe") as browser:
+                # The immutable database can already be mounted while startup checkout is pending.
+                with self.assertRaises(FileNotFoundError):
+                    source_server.call_tool("inspect_source", {}, "a" * 40, "b" * 40)
+                command.assert_not_called()
+                browser.assert_not_called()
+                ready.write_text(json.dumps({"head_sha": "a" * 40, "base_sha": "b" * 40}))
+                self.assertEqual(json.loads(source_server.call_tool("inspect_source", {}, "a" * 40,
+                    "b" * 40)[0]["text"])["browser_probe"], "passed")
+                with patch.object(source_server, "command", return_value="c" * 40), self.assertRaises(ValueError):
+                    source_server.call_tool("inspect_source", {}, "a" * 40, "b" * 40)
 
     def test_source_commands_are_credential_free_and_bounded(self):
         self.assertEqual(source_server.checked_argv(["python3", "-m", "unittest"]), ["python3", "-m", "unittest"])

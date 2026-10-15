@@ -42,7 +42,7 @@ export function reviewIntent(job: BridgeJob): ReviewIntent {
 export function inconclusiveReview(r: ReviewIntent, reason: ReviewReason, session = `unstarted:${r.review_id}`): JsonObject {
   return { schema: 'factory-independent-review-v1', review_id: r.review_id, repository: r.repository,
     pr_url: r.pr_url, head_sha: r.head_sha, verdict: 'inconclusive', reviewer_model: 'gpt-6-astra',
-    reviewer_session_id: session, backend: 'isolated_codex', isolation: { separate_session: true,
+    reviewer_session_id: session, backend: 'isolated_hermes', isolation: { separate_session: true,
       isolated_checkout: true, isolated_browser: true, write_credentials: false }, findings: [], reason };
 }
 
@@ -84,7 +84,22 @@ export const reviewerCommand: Command = (file, args, timeout, environment = {}) 
   (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
+/** Gateway-owned cleanup survives SIGKILL of the one-shot relay and its lost finally block. */
+export async function runIndependentReviewRelay(args: string[], timeout: number,
+  command: Command = reviewerCommand, cleanup: Command = command): Promise<string> {
+  try { return await command('/usr/bin/python3', args, timeout); }
+  catch (error) {
+    try {
+      await cleanup('/usr/bin/python3', [args[0], '--stop', args.at(-2)!, args.at(-1)!], 30000);
+    } catch {
+      throw Object.assign(new Error('Native reviewer termination unconfirmed'), { isolationUnknown: true });
+    }
+    throw error;
+  }
+}
+
 type Provisioning = { schema: string; image: string; canary_digest: string; policy_digest: string;
+  hermes_image: string;
   review_skill_digest: string; verify_skill_digest: string;
   repositories: Record<string, { base_ref: string }> };
 
@@ -181,10 +196,10 @@ export class IndependentReviewer {
     try {
       privatePath(this.configPath, false);
       config = JSON.parse(readFileSync(this.configPath, 'utf8'));
-      if (config.schema !== 'factory-isolated-reviewer-provisioning-v1' || !/^.+@sha256:[a-f0-9]{64}$/.test(config.image)
+      if (config.schema !== 'factory-hermes-reviewer-provisioning-v2' || !/^.+@sha256:[a-f0-9]{64}$/.test(config.image)
+        || !/^sha256:[a-f0-9]{64}$/.test(config.hermes_image)
         || !/^[a-f0-9]{64}$/.test(config.canary_digest) || !/^[a-f0-9]{64}$/.test(config.policy_digest)
         || !config.repositories?.[r.repository] || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(config.repositories[r.repository].base_ref)) throw new Error();
-      privatePath(path.join(this.roots.provisioning, 'auth.json'), false);
       privatePath(path.join(this.roots.provisioning, 'source-token'), false);
       for (const [file, digest] of [['review-code', config.review_skill_digest], ['verify-app', config.verify_skill_digest]]) {
         const skill = path.join(this.roots.provisioning, `${file}.md`);
@@ -237,13 +252,14 @@ export class IndependentReviewer {
       // Never expose a mirror's remotes/auth config. This exported Git database is immutable in source/tests.
       await runCommand('/usr/bin/git', ['clone', '--bare', '--no-hardlinks', bundle, snapshot], 60000);
       await runCommand('/usr/bin/git', ['--git-dir', snapshot, 'config', '--remove-section', 'remote.origin'], 15000);
-      persist(requestPath, { head_sha: r.head_sha, expected_base: base, requirements: r.requirements });
+      persist(requestPath, { head_sha: r.head_sha, expected_base: base, requirements: r.requirements,
+        telemetry: { role: 'reviewer', review_id: r.review_id, repository: r.repository,
+          head_sha: r.head_sha, pass_number: r.pass_number } });
       chmodSync(requestPath, 0o444);
       writeFileSync(tokenPath, token, { mode: 0o444, flag: 'wx' });
-      const network = JSON.parse(await runCommand('/usr/bin/docker', ['network', 'inspect', 'factory-reviewer'], 15000));
-      if (!Array.isArray(network) || network.length !== 1 || network[0].Internal !== true
-        || network[0].Options?.['com.docker.network.bridge.gateway_mode_ipv4'] !== 'isolated'
-        || network[0].EnableIPv6 === true) return fail('review_isolation_unavailable');
+      const hermes = JSON.parse(await runCommand('/usr/bin/docker', ['inspect', 'hermes-driftward-hermes-1'], 15000));
+      if (!Array.isArray(hermes) || hermes.length !== 1 || hermes[0].Image !== config.hermes_image
+        || hermes[0].State?.Running !== true) return fail('review_isolation_unavailable');
       const image = JSON.parse(await runCommand('/usr/bin/docker', ['image', 'inspect', config.image], 15000))[0];
       if (image?.Config?.Volumes || image?.Config?.Labels?.['io.driftward.factory.independent-reviewer'] !== '1') return fail('review_isolation_unavailable');
       await runCommand('/usr/bin/docker', ['network', 'create', '--internal', '--opt',
@@ -258,22 +274,11 @@ export class IndependentReviewer {
         '--mount', `type=bind,src=${tokenPath},dst=/run/mcp-token,readonly`,
         '--env', 'HOME=/workspace/home', '--entrypoint', 'python3', config.image,
         '/opt/factory-reviewer/source_server.py', r.head_sha, base], 15000);
-      // Agent has no source or shell; only source MCP. Source/tests have no credentials or outbound network.
-      const args = ['create', '--name', container, ...common, '--network', 'factory-reviewer',
-        '--user', '0:0',
-        '--mount', `type=bind,src=${requestPath},dst=/run/request.json,readonly`,
-        '--mount', `type=bind,src=${tokenPath},dst=/run/mcp-token,readonly`,
-        '--mount', `type=bind,src=${path.join(this.roots.provisioning, 'auth.json')},dst=/run/reviewer-auth.json,readonly`,
-        '--mount', `type=bind,src=${path.join(this.roots.provisioning, 'review-code.md')},dst=/run/review-code.md,readonly`,
-        '--mount', `type=bind,src=${path.join(this.roots.provisioning, 'verify-app.md')},dst=/run/verify-app.md,readonly`,
-        '--env', 'HTTPS_PROXY=http://factory-reviewer-egress:3128', '--env', 'HTTP_PROXY=http://factory-reviewer-egress:3128',
-        '--env', 'NO_PROXY=localhost,127.0.0.1,source', '--env', 'HOME=/workspace/home', '--env', 'CODEX_HOME=/workspace/codex',
-        '--env', `FACTORY_REVIEW_SESSION=${session}`, '--entrypoint', 'python3', config.image,
-        '/opt/factory-reviewer/runner.py'];
-      await runCommand('/usr/bin/docker', args, 15000);
-      await runCommand('/usr/bin/docker', ['network', 'connect', sourceNetwork, container], 15000);
       if (!await this.authorize(job, r, 'launch')) return fail('review_policy_changed');
-      const raw = await runCommand('/usr/bin/docker', ['start', '-a', container], 600000);
+      const assets = '/usr/local/share/driftward-factory/independent-reviewer/deploy/independent-reviewer';
+      const raw = await runIndependentReviewRelay([path.join(assets, 'runner.py'), requestPath,
+        path.join(this.roots.provisioning, 'review-code.md'), path.join(this.roots.provisioning, 'verify-app.md'),
+        source, 'hermes-driftward-hermes-1', session], 660000, runCommand, this.command);
       const result = JSON.parse(raw);
       if (!result || Object.keys(result).sort().join(',') !== 'findings,head_sha,reason,verdict' || result.head_sha !== r.head_sha) return fail('review_malformed');
       const receipt = { ...fail('review_inconclusive'), verdict: result.verdict, findings: result.findings, reason: result.reason };
@@ -288,10 +293,10 @@ export class IndependentReviewer {
       if (!await this.authorize(job, r, 'complete')) return fail('review_policy_changed');
       return bounded;
     } catch (error) {
+      if (error && typeof error === 'object' && 'isolationUnknown' in error) return fail('review_isolation_unavailable');
       return fail(error && typeof error === 'object' && 'killed' in error && error.killed ? 'review_timeout' : 'review_backend_unavailable');
     } finally {
-      // Killing docker's client does not stop its container. Always stop the exact generated container name.
-      await this.command('/usr/bin/docker', ['rm', '-f', container], 15000).catch(() => undefined);
+      // The one-shot host relay confirms exact native SDK termination; its own watchdog is independent.
       await this.command('/usr/bin/docker', ['rm', '-f', source], 15000).catch(() => undefined);
       await this.command('/usr/bin/docker', ['network', 'rm', sourceNetwork], 15000).catch(() => undefined);
       if (sourceLocked) { try { rmdirSync(`${mirror}.review-lock`); } catch { /* A retained lock fails closed. */ } }

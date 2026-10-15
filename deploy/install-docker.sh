@@ -425,7 +425,7 @@ install -D -m 0755 "$factory_cli_source" "$factory_cli_target"
 install -d -m 0755 -o root -g root "$factory_share_dir/desired-state"
 install -d -m 0755 -o root -g root "$factory_share_dir/hermes-gateway"
 install -d -m 0755 -o root -g root "$factory_share_dir/independent-reviewer/deploy/independent-reviewer"
-for reviewer_asset in Dockerfile runner.py source_server.py browser_probe.cjs response.schema.json package.json package-lock.json; do
+for reviewer_asset in Dockerfile runner.py native_agent.py review_observer.py source_server.py browser_probe.cjs response.schema.json package.json package-lock.json; do
   install -m 0644 "$script_dir/independent-reviewer/$reviewer_asset" "$factory_share_dir/independent-reviewer/deploy/independent-reviewer/$reviewer_asset"
 done
 install -m 0644 "$script_dir/INDEPENDENT-REVIEW.md" "$factory_share_dir/independent-reviewer/INDEPENDENT-REVIEW.md"

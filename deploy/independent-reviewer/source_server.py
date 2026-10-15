@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from runner import browser_probe, checkout, command, model_result
 
 REPO = Path("/workspace/repo")
+READY = Path("/workspace/source-ready.json")
 IMMUTABLE_GIT = ["/usr/bin/git", "--no-replace-objects", "--git-dir", "/run/source.git"]
 ALLOWED = {"python3", "node", "npm", "npx", "bash", "sh", "git", "pytest"}
 ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/workspace/home",
@@ -47,6 +48,10 @@ def call_tool(name: str, args: dict, head: str, base: str) -> list[dict]:
     if name not in TOOLS or set(args) != set(TOOLS[name]):
         raise ValueError("unsupported tool arguments")
     if name == "inspect_source":
+        if json.loads(READY.read_text()) != {"head_sha": head, "base_sha": base}:
+            raise ValueError("source checkout startup incomplete")
+        if command(["git", "-C", str(REPO), "rev-parse", "HEAD"]) != head:
+            raise ValueError("source checkout head mismatch")
         browser_probe()
         value = {"head_sha": command([*IMMUTABLE_GIT, "rev-parse", head + "^{commit}"]), "base_sha": base,
                  "browser_probe": "passed", "write_credentials": False}
@@ -138,6 +143,9 @@ def handler(head: str, base: str, token: str):
 
 
 if __name__ == "__main__":
+    if sys.argv[1] == "--call-tool":
+        print(json.dumps(call_tool(sys.argv[4], json.loads(sys.argv[5]), sys.argv[2], sys.argv[3])))
+        sys.exit(0)
     if sys.argv[1] == "--validate-findings":
         validate_findings(json.loads(sys.argv[3]), sys.argv[2])
         sys.exit(0)
@@ -145,4 +153,5 @@ if __name__ == "__main__":
     Path("/workspace/home").mkdir(mode=0o700)
     checkout(Path("/run/source.bundle"), REPO, head, base)
     browser_probe()
+    READY.write_text(json.dumps({"head_sha": head, "base_sha": base}))
     ThreadingHTTPServer(("0.0.0.0", 8765), handler(head, base, Path("/run/mcp-token").read_text())).serve_forever()
