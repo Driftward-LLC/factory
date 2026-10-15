@@ -1,6 +1,6 @@
 export type BridgeState = 'accepted' | 'running' | 'effect_committed' | 'verification_pending' | 'ready_for_human_review' | 'completed' | 'failed';
 
-export type BridgeAction = 'create_draft_pr' | 'repair_draft_pr' | 'inspect_draft_pr_state';
+export type BridgeAction = 'create_draft_pr' | 'repair_draft_pr' | 'inspect_draft_pr_state' | 'read_only_review';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];

@@ -1,9 +1,10 @@
 import { StatusBadge, SummaryItem, Card, Heading, MetadataList, MetadataListItem } from '@driftward/ui';
 import { CheckCircledIcon } from '@driftward/ui/icons';
 import { time } from './model.js';
+import IndependentReview from './IndependentReview.jsx';
 
 const results = {
-  recorded: ['', 'Recorded'], passed: ['success', 'Verification recorded'],
+  recorded: ['', 'Recorded'], passed: ['success', 'Deterministic checks passed (recorded)'],
   failed: ['danger', 'Verification failed'], unavailable: ['', 'Unavailable'],
   invalid: ['warning', 'Evidence invalid'], not_applicable: ['', 'Not applicable'],
 };
@@ -36,12 +37,12 @@ export default function VerificationEvidence({ evidence, attemptId }) {
   return <section className="verification-evidence" aria-labelledby="verification-evidence-title">
     <Heading level={3} id="verification-evidence-title"><CheckCircledIcon aria-hidden="true" /> Verification evidence</Heading>
     {!supported ? <p className="muted">Verification evidence is unavailable for this attempt.</p> : <>
-      <p className="muted">Newest returned attempt only. These records do not grant merge or review approval.</p>
+      <p className="muted">Newest returned attempt only. These records do not grant permission to merge or deploy.</p>
       {!evidence.available && <p className="muted">No immutable checkpoints were recorded for this attempt. Historical stage labels are not checkpoint evidence.</p>}
       <Card padding={0} className="evidence-checkpoints">
         <Checkpoint title="Specification snapshot" checkpoint={evidence.specification} />
         <Checkpoint title="Implementation receipt" checkpoint={evidence.implementation} />
-        <Checkpoint title="Verification receipt" checkpoint={verification} />
+        <Checkpoint title="Deterministic verification receipt" checkpoint={verification} />
       </Card>
       {simulated ? <p>Dry-run evidence does not establish a real artifact or verification.</p> : <>
         <div className="evidence-comparison" data-comparison={comparison}>
@@ -57,7 +58,6 @@ export default function VerificationEvidence({ evidence, attemptId }) {
           <MetadataListItem label="Verification recorded">{verification.recorded_at ? time(verification.recorded_at) : 'Unavailable'}</MetadataListItem>
           <MetadataListItem label="PR observed">{inspection.observed_at ? time(inspection.observed_at) : 'Unavailable'}</MetadataListItem>
           <MetadataListItem label="Observed PR state">{inspection.pr_state === 'open' ? 'Open' : inspection.pr_state === 'closed' ? inspection.merged === true ? 'Merged' : 'Closed' : 'Unavailable'}</MetadataListItem>
-          <MetadataListItem label="Independent review">Unavailable in this view</MetadataListItem>
         </MetadataList>
         {verification.result === 'passed' && <details>
           <summary>Recorded check evidence</summary>
@@ -68,6 +68,7 @@ export default function VerificationEvidence({ evidence, attemptId }) {
             <dt>Verification receipt digest</dt><dd>{verification.receipt_digest || 'Unavailable'}</dd>
           </dl>
         </details>}
+        <IndependentReview review={evidence.independent_review} attemptId={attemptId} />
       </>}
     </>}
   </section>;

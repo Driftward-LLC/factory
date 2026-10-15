@@ -74,6 +74,7 @@ REQUIRED_RELEASE_FILES = {
     "README.md",
     "predeploy-check.py",
     "verifier-policy.json",
+    "independent-review-policy.json",
     "worker-triggers/push-accepted-event.js",
 }
 GENERATED_BUNDLE_FILES = frozenset({"worker-triggers/push-accepted-event.js"})

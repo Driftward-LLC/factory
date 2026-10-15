@@ -200,6 +200,24 @@ const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
     await visit('factory-verificationevidence--legacy-without-checkpoints');
     assert.match(await page.locator('.verification-evidence').textContent(), /No immutable checkpoints/);
     assert.equal(await page.locator('.verification-evidence .pill.success').count(), 0);
+    for (const [story, status] of [['pending', 'pending'], ['running', 'running'], ['changes-requested', 'changes_requested'],
+      ['passed', 'passed'], ['needs-operator', 'needs_operator'], ['unavailable', 'unavailable'], ['unknown', 'unavailable'],
+      ['stale', 'stale'], ['invalid-pass', 'unavailable'], ['superseded', 'superseded'], ['inherited-stop', 'needs_operator']]) {
+      await visit('factory-verificationevidence--independent-review-' + story);
+      const review = page.locator('.independent-review');
+      assert.equal(await review.getAttribute('data-review-status'), status);
+      assert.equal(await review.locator('.pill.success').count(), status === 'passed' ? 1 : 0);
+      assert.match(await review.textContent(), /Separate from deterministic checks/);
+      if (story === 'changes-requested') {
+        await review.locator('summary').focus();
+        await page.keyboard.press('Enter');
+        assert.equal(await review.locator('details').getAttribute('open'), '');
+        await page.setViewportSize({ width: 320, height: 900 });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        await page.screenshot({ path: join(evidenceDir, 'factory-storybook-independent-review-mobile.png'), fullPage: true });
+        await page.setViewportSize({ width: 1280, height: 900 });
+      }
+    }
     await visit('factory-issuecontrol--factory-controlled');
     const control = page.locator('.issue-control');
     assert.equal(await control.getByRole('button', { name: 'Preview control change' }).isDisabled(), true);

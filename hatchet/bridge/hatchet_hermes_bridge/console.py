@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .analytics import factory_analytics
-from .console_evidence import _time, attempt_evidence
+from .console_evidence import _time, attempt_evidence, project_review
 from .console_intake import observed_intake
 from .console_control import install_issue_control_routes
 from .store import (
@@ -30,6 +30,8 @@ from .store import (
     EXECUTION_FAILURE_STAGES,
     connect_readonly,
     get_factory_lifecycle,
+    get_factory_attempt,
+    _factory_attempt_lifecycle_summary,
     list_active_factory_attempts,
     list_recent_factory_attempts,
     reconciliation_findings_status,
@@ -113,6 +115,10 @@ def _with_agent_trace(record: dict[str, Any], conn: sqlite3.Connection) -> dict[
     return {**record, "agent_trace": trace}
 
 
+def _with_review(record: dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
+    return {**_with_agent_trace(record, conn), "independent_review": project_review(conn, record)}
+
+
 def _allow_unauthenticated() -> bool:
     return os.environ.get("FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED", "").strip().lower() in {"1", "true", "yes"}
 
@@ -156,13 +162,16 @@ def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None, in
     try:
         # Intake exclusion and attempt lists must agree on one ledger snapshot.
         conn.execute("BEGIN")
+        review_attempts, review_scope = _review_work(conn)
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "viewer": viewer,
             "mode": _mode(),
             "intake": observed_intake(conn, ingress_db_path),
-            "active_attempts": [_with_agent_trace(row, conn) for row in list_active_factory_attempts(conn)],
-            "recent_attempts": [_with_agent_trace(row, conn) for row in list_recent_factory_attempts(conn)],
+            "active_attempts": [_with_review(row, conn) for row in list_active_factory_attempts(conn)],
+            "recent_attempts": [_with_review(row, conn) for row in list_recent_factory_attempts(conn)],
+            "review_attempts": review_attempts,
+            "review_scope": review_scope,
             "status_counts": _status_counts(conn),
             "reconciliation": reconciliation_findings_status(conn),
             "lifecycle_outbox": _lifecycle_status(lifecycle_db_path),
@@ -174,6 +183,34 @@ def overview(db_path: str, viewer: str, lifecycle_db_path: str | None = None, in
         conn.close()
 
 
+def _review_work(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Supplement terminal execution records without changing execution fences."""
+    limit = 100
+    scope = {"available": True, "limit": limit, "unfinished_truncated": False, "passed_scan_truncated": False}
+    records: dict[str, dict[str, Any]] = {}
+    try:
+        for finished in (False, True):
+            rows = conn.execute(
+                "SELECT source_attempt_id,repair_attempt_id FROM factory_independent_reviews WHERE "
+                + ("state='passed'" if finished else "state!='passed'")
+                + " ORDER BY updated_at DESC,review_id LIMIT ?", (limit + 1,),
+            ).fetchall()
+            scope["passed_scan_truncated" if finished else "unfinished_truncated"] = len(rows) > limit
+            for row in rows[:limit]:
+                attempt = get_factory_attempt(conn, row["source_attempt_id"])
+                record = _with_review(_factory_attempt_lifecycle_summary(conn, attempt), conn)
+                if record["independent_review"]["status"] != "superseded" and (not finished or record["independent_review"]["status"] == "stale"):
+                    records[attempt["attempt_id"]] = record
+                elif row["repair_attempt_id"]:
+                    repair = get_factory_attempt(conn, row["repair_attempt_id"])
+                    current = _with_review(_factory_attempt_lifecycle_summary(conn, repair), conn)
+                    if current["independent_review"]["status"] == "needs_operator":
+                        records[repair["attempt_id"]] = current
+        return list(records.values()), scope
+    except (BridgeError, sqlite3.Error, KeyError, TypeError):
+        return [], {**scope, "available": False}
+
+
 def lifecycle(db_path: str, issue: str, ingress_db_path: str | None = None) -> dict[str, Any]:
     if not ISSUE_RE.fullmatch(issue):
         raise BridgeValidationError("issue must be an ENG identifier")
@@ -183,7 +220,7 @@ def lifecycle(db_path: str, issue: str, ingress_db_path: str | None = None) -> d
         with conn:
             conn.execute("BEGIN")
             report = get_factory_lifecycle(conn, issue)
-            report["attempts"] = [_with_agent_trace(row, conn) for row in report["attempts"]]
+            report["attempts"] = [_with_review(row, conn) for row in report["attempts"]]
             report["verification_evidence"] = attempt_evidence(conn, report["attempts"][0]) if report["attempts"] else None
             report["intake"] = observed_intake(conn, ingress_db_path, issue)
             return report

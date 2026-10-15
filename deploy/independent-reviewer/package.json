@@ -1,0 +1,9 @@
+{
+  "name": "factory-independent-reviewer",
+  "private": true,
+  "version": "0.1.0",
+  "dependencies": {
+    "@openai/codex": "0.160.1",
+    "@playwright/mcp": "0.0.83"
+  }
+}

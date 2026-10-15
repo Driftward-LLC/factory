@@ -27,6 +27,10 @@ examples, with keyboard day selection and an accessible table.
 The Factory verification evidence panel has matching, changed, stale, older,
 failed, legacy, dry-run, invalid and unavailable examples. It uses the shared
 status badge and summary components without implying live approval.
+Independent review examples cover pending, running, findings, a recorded exact-head
+pass, the two-pass operator stop, unavailable/unknown receipts and changed-head
+staleness. Historical attempts are explicitly not enrolled. These records remain
+separate from deterministic verification and never grant merge/deploy permission.
 Astryx core and its neutral theme are pinned to 0.7.0. Factory keeps its dark
 neutral surfaces, platform typography and restrained lavender accents. Its
 theme provider and static stylesheet are shared with the catalog; no remote

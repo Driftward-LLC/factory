@@ -6,7 +6,8 @@ import { invocationLease, type InvocationLease, type InvocationStatus } from './
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { boundedModelSelection, MODEL_SELECTION_HEADER, reportModelSelection, type ModelSelectionObserver } from './model-selection';
-import type { BridgeJob, JsonValue } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, JsonValue, JsonObject } from '@driftward/hatchet-worker-shared';
+import { boundedIndependentReview, inconclusiveReview, reviewIntent } from './independent-review';
 import {
   boundedHermesDraftPrReceipt,
   gatewayReasonCode,
@@ -161,6 +162,7 @@ type InspectGitHubHeadResponse = {
 
 type UnaryCallback<T> = (error: grpc.ServiceError | null, response: T) => void;
 type GatewayClient = grpc.Client & {
+  readOnlyReview(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<{ receiptJson?: string }>): grpc.ClientUnaryCall;
   inspectInvocation(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<unknown>): grpc.ClientUnaryCall;
   cancelInvocation(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<unknown>): grpc.ClientUnaryCall;
   checkIdentity(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<CheckIdentityResponse>): grpc.ClientUnaryCall;
@@ -171,6 +173,17 @@ type GatewayClient = grpc.Client & {
 };
 
 let cachedClient: { target: string; client: GatewayClient } | null = null;
+
+export async function runIndependentReviewViaGrpc(job: BridgeJob): Promise<JsonObject> {
+  const intent = reviewIntent(job);
+  try {
+    const response = await callGateway<{ receiptJson?: string }>('readOnlyReview', { jobJson: JSON.stringify(job) }, 1020000, 'hermes_grpc_gateway_failed');
+    return boundedIndependentReview(intent, JSON.parse(response.receiptJson || 'null')) ?? inconclusiveReview(intent, 'review_malformed');
+  } catch {
+    // The durable host reservation prevents another model call when this RPC outcome is ambiguous.
+    return inconclusiveReview(intent, 'review_backend_unavailable');
+  }
+}
 
 export function hermesGrpcGatewayEnabled(): boolean {
   return Boolean((process.env.DRIFTWARD_HERMES_GRPC_TARGET || '').trim());

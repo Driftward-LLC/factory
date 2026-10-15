@@ -208,7 +208,7 @@ class WorkEvidenceTests(unittest.TestCase):
         failed_upgrade.close()
         self.conn = connect_migrate(self.path)
         self.addCleanup(self.conn.close)
-        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 8)
+        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], store.SCHEMA_VERSION)
         self.assertEqual(store.get_job(self.conn, job["job_id"])["job_id"], job["job_id"])
         self.assertFalse(self.evidence(attempt)["available"])
         store.record_factory_execution_route(self.conn, job["job_id"], self.route(attempt, job))

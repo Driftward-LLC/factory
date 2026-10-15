@@ -24,6 +24,7 @@ def release_tree(root: Path) -> None:
     (root / "README.md").write_text("runtime release\n")
     (root / "predeploy-check.py").write_text("print('ok')\n")
     (root / "verifier-policy.json").write_text("{}\n")
+    (root / "independent-review-policy.json").write_text("{}\n")
     (root / "hatchet_hermes_bridge" / "__init__.py").write_text("")
     (root / "hatchet_hermes_bridge" / "store.py").write_text("VALUE = 'safe'\n")
     (root / "worker-triggers" / "push-accepted-event.js").write_text("export {};\n")

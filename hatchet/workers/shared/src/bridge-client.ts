@@ -231,6 +231,21 @@ export class BridgeClient {
     if (this.inspectionToken) headers['X-Hatchet-Inspection-Token'] = this.inspectionToken;
     await this.requestJson(`/jobs/${encodeURIComponent(jobId)}/inspection-result`, { method: 'POST', body: JSON.stringify({ inspection_request_key: requestKey, inspection_capability: capability, result }), headers });
   }
+
+  async claimIndependentReview(jobId: string, capability: string): Promise<boolean> {
+    const headers: Record<string, string> = {};
+    if (this.inspectionToken) headers['X-Hatchet-Inspection-Token'] = this.inspectionToken;
+    const response = await this.requestJson<{ claimed: boolean }>(`/jobs/${encodeURIComponent(jobId)}/independent-review/claim`,
+      { method: 'POST', body: JSON.stringify({ review_capability: capability }), headers });
+    return response.claimed;
+  }
+
+  async completeIndependentReview(jobId: string, capability: string, result: JsonObject): Promise<void> {
+    const headers: Record<string, string> = {};
+    if (this.inspectionToken) headers['X-Hatchet-Inspection-Token'] = this.inspectionToken;
+    await this.requestJson(`/jobs/${encodeURIComponent(jobId)}/independent-review/complete`,
+      { method: 'POST', body: JSON.stringify({ review_capability: capability, result }), headers });
+  }
   async recoverFactoryExecution(jobId: string, requestKey: string, evidence: JsonObject): Promise<void> {
     const headers: Record<string, string> = {};
     if (this.recoveryToken) headers['X-Hatchet-Recovery-Token'] = this.recoveryToken;

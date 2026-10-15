@@ -72,7 +72,7 @@ ledger_snapshot() {
 import hashlib,json,sqlite3,sys
 c=sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True)
 tables={row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-for table in ('bridge_jobs','bridge_events','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events','factory_import_conflicts','factory_import_conflict_resolutions','factory_import_conflict_attestations','factory_issue_controls','factory_issue_control_commands'):
+for table in ('bridge_jobs','bridge_events','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events','factory_import_conflicts','factory_import_conflict_resolutions','factory_import_conflict_attestations','factory_issue_controls','factory_issue_control_commands','factory_independent_reviews'):
  if table not in tables:
   print(f'{table}=missing'); continue
  rows=c.execute("SELECT * FROM "+table).fetchall()
@@ -374,7 +374,7 @@ health="$(curl --silent --fail --max-time 2 -H "Authorization: Bearer $token" ht
 HEALTH="$health" RELEASE="$release_version" python3 - <<'PY'
 import json,os
 health=json.loads(os.environ['HEALTH'])
-assert health == {'ok':True,'schema_version':8,'release_commit':os.environ['RELEASE']}
+assert health == {'ok':True,'schema_version':9,'release_commit':os.environ['RELEASE']}
 PY
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$release_root/current" DB="$db" python3 -B - <<'PY'
 import os

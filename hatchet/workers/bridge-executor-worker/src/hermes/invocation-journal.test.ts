@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -181,11 +181,13 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   let server: grpc.Server;
   const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' } as const;
   const observed: unknown[] = [];
+  let finishExecution!: () => void;
+  const executionBarrier = new Promise<void>((resolve) => { finishExecution = resolve; });
   const start = async () => {
     server = createServer(target, async (_job, _command, _timeout, _buffer, onModelSelected) => {
       calls++;
       await onModelSelected?.(selection);
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await executionBarrier;
       return receipt;
     });
     await new Promise<void>((resolve, reject) => server.bindAsync(target, grpc.ServerCredentials.createInsecure(), (error) => error ? reject(error) : resolve()));
@@ -199,13 +201,34 @@ test('lost gRPC response is recovered after gateway restart without executing ag
     rmSync(directory, { recursive: true, force: true });
   });
   await start();
-  await assert.rejects(runHermesCreateDraftPrViaGrpc(correlatedJob, 60, lease, (value) => { observed.push(value); }));
+  await assert.rejects(runHermesCreateDraftPrViaGrpc(correlatedJob, 10_000, lease, (value) => {
+    observed.push(value);
+    // Disconnect only after execution has started and its metadata reached the client.
+    server.forceShutdown();
+  }));
   assert.deepEqual([...observed], [selection]);
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  assert.equal((await inspectHermesInvocation(job)).state, 'completed');
-  await new Promise<void>((resolve) => server.tryShutdown(() => resolve()));
+  const resultPath = path.join(directory, 'journal', job.job_id, 'result.json');
+  const committed = new Promise<void>((resolve, reject) => {
+    const watcher = watch(path.dirname(resultPath), () => {
+      if (existsSync(resultPath)) { clearTimeout(deadline); watcher.close(); resolve(); }
+    });
+    const deadline = setTimeout(() => { watcher.close(); reject(new Error('Executor receipt was not durably committed')); }, 10_000);
+    t.after(() => { clearTimeout(deadline); watcher.close(); });
+  });
+  finishExecution();
+  await committed;
+  assert.equal(new InvocationJournal(path.join(directory, 'journal')).status(job).state, 'completed');
   await start();
-  const recovered = await inspectHermesInvocation(updatedJob, true);
+  let recovered;
+  const reconnectDeadline = Date.now() + 10_000;
+  while (!recovered) {
+    try { recovered = await inspectHermesInvocation(updatedJob, true); }
+    catch (error) {
+      if ((error as { reasonCode?: string }).reasonCode !== 'hermes_grpc_gateway_unavailable' || Date.now() >= reconnectDeadline) throw error;
+      // Reconnect the cached channel after the deliberately forced transport loss.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
   assert.deepEqual(recovered.receipt, receipt);
   assert.deepEqual(recovered.lease, lease);
   assert.equal(recovered.cancellationAcknowledged, true);

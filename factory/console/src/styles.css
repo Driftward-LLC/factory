@@ -171,6 +171,12 @@ td:last-child { color: var(--muted); font-size: .75rem; }
 .evidence-checkpoints .summary-item strong { display: block; }
 .evidence-checkpoints small { display: block; margin-top: 8px; color: var(--muted); font-size: .75rem; font-weight: 400; }
 .evidence-comparison { margin-top: 16px; }
+.attempt-review { margin-top: 8px; }
+.independent-review { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.independent-review > h4 { margin-bottom: 12px; }
+.independent-review p, .review-findings { font-size: .8125rem; }
+.review-findings li { padding-block: 8px; overflow-wrap: anywhere; }
+.review-findings small { display: block; color: var(--muted); }
 .evidence-facts { margin: 20px 0; }
 .evidence-facts > dl { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 20px 24px; }
 .evidence-facts dd { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
