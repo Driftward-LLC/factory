@@ -138,6 +138,9 @@ def handler(head: str, base: str, token: str):
 
 
 if __name__ == "__main__":
+    if sys.argv[1] == "--call-tool":
+        print(json.dumps(call_tool(sys.argv[4], json.loads(sys.argv[5]), sys.argv[2], sys.argv[3])))
+        sys.exit(0)
     if sys.argv[1] == "--validate-findings":
         validate_findings(json.loads(sys.argv[3]), sys.argv[2])
         sys.exit(0)

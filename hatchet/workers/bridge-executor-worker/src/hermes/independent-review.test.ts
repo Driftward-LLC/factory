@@ -82,11 +82,12 @@ test('long review retains its receipt after launch inspection expires but still 
     const mirror = path.join(repositories, `${intent.repository}.git`);
     mkdirSync(provision, { mode: 0o700 });
     mkdirSync(mirror, { recursive: true, mode: 0o700 });
-    for (const name of ['auth.json', 'source-token', 'review-code.md', 'verify-app.md']) {
+    for (const name of ['source-token', 'review-code.md', 'verify-app.md']) {
       writeFileSync(path.join(provision, name), name === 'source-token' ? 'synthetic-source-read-token' : 'synthetic', { mode: 0o600 });
     }
     const config = path.join(directory, 'config.json');
-    writeFileSync(config, JSON.stringify({ schema: 'factory-isolated-reviewer-provisioning-v1',
+    writeFileSync(config, JSON.stringify({ schema: 'factory-hermes-reviewer-provisioning-v2',
+      hermes_image: `sha256:${'9'.repeat(64)}`,
       image: `reviewer@sha256:${'c'.repeat(64)}`, canary_digest: 'd'.repeat(64), policy_digest: intent.policy_digest,
       review_skill_digest: digest('synthetic'), verify_skill_digest: digest('synthetic'),
       repositories: { [intent.repository]: { base_ref: 'main' } } }), { mode: 0o600 });
@@ -97,6 +98,10 @@ test('long review retains its receipt after launch inspection expires but still 
     let headChanged = false;
     const run = async (file: string, args: string[], _timeout: number, env?: NodeJS.ProcessEnv) => {
       commands.push({ file, args });
+      if (file.endsWith('/python3')) {
+        inspectionAgeSeconds = 480;
+        return JSON.stringify({ verdict: 'passed', findings: [], head_sha: intent.head_sha, reason: 'ok' });
+      }
       if (file.endsWith('/git')) {
         if (args.includes('fetch')) { assert.match(env?.GIT_CONFIG_VALUE_0 || '', /^Authorization: Basic /); return ''; }
         if (args.includes('bundle')) { writeFileSync(args[args.indexOf('create') + 1], 'synthetic bundle'); return ''; }
@@ -105,6 +110,7 @@ test('long review retains its receipt after launch inspection expires but still 
       }
       if (args[0] === 'network' && args[1] === 'inspect') return '[{"Internal":true,"EnableIPv6":false,"Options":{"com.docker.network.bridge.gateway_mode_ipv4":"isolated"}}]';
       if (args[0] === 'image') return '[{"Config":{"Labels":{"io.driftward.factory.independent-reviewer":"1"}}}]';
+      if (args[0] === 'inspect') return JSON.stringify([{ Image: `sha256:${'9'.repeat(64)}`, State: { Running: true } }]);
       if (args[0] === 'start') {
         inspectionAgeSeconds = 480;
         return JSON.stringify({ verdict: 'passed', findings: [], head_sha: intent.head_sha, reason: 'ok' });
@@ -124,18 +130,21 @@ test('long review retains its receipt after launch inspection expires but still 
     assert.equal(inspectionAgeSeconds, 480);
     assert.deepEqual(authorizationPhases, ['launch', 'launch', 'complete']);
     const source = commands.find((c) => c.args[0] === 'run')!.args.join(' ');
-    const agent = commands.find((c) => c.args[0] === 'create')!.args.join(' ');
+    const agent = commands.find((c) => c.file.endsWith('/python3'))!.args.join(' ');
     assert.match(source, /source\.bundle/);
     assert.doesNotMatch(source, /auth\.json|source-token|factory-reviewer-egress|docker\.sock/);
-    assert.match(agent, /reviewer-auth\.json/);
+    assert.match(agent, /runner\.py/);
+    assert.match(agent, /hermes-driftward-hermes-1/);
+    assert.equal(receipt.backend, 'isolated_hermes');
+    assert.doesNotMatch(agent, /auth\.json|source-token|CODEX_HOME|factory-reviewer-egress/);
     assert.doesNotMatch(agent, /source\.bundle|repositories|docker\.sock/);
     const count = commands.length;
     assert.deepEqual(await new IndependentReviewer(path.join(directory, 'journal'), config, run, undefined, authorize).run(job()), receipt);
     assert.equal(commands.length, count);
-    assert.equal(commands.filter((c) => c.args[0] === 'start').length, 1);
+    assert.equal(commands.filter((c) => c.file.endsWith('/python3')).length, 1);
     assert.doesNotMatch(JSON.stringify(receipt), /synthetic-source-read-token/);
     assert.equal(JSON.parse(readFileSync(path.join(directory, 'journal', 'review-1', 'receipt.json'), 'utf8')).verdict, 'passed');
-    const startCount = () => commands.filter((c) => c.args[0] === 'start').length;
+    const startCount = () => commands.filter((c) => c.file.endsWith('/python3')).length;
     const alreadyStarted = startCount();
     assert.equal((await adapter.run(job({ ...intent, review_id: 'stale-launch' }))).reason, 'review_policy_changed');
     assert.equal(startCount(), alreadyStarted);

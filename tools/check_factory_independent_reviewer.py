@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable Docker split-role probe, synthetic credentials only; no model call."""
+"""Disposable credential-free source/browser Docker probe; no model call."""
 import argparse
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ import tempfile
 import uuid
 
 
-def runtime_probe(image, common, source, agent, temporary, marker):
+def runtime_probe(image, common, source, inspector, temporary):
     root = Path(temporary)
     repo = root / "fixture"
     repo.mkdir()
@@ -43,7 +43,7 @@ def runtime_probe(image, common, source, agent, temporary, marker):
              "--mount", f"type=bind,src={snapshot},dst=/run/source.git,readonly",
              "--mount", f"type=bind,src={token},dst=/run/mcp-token,readonly",
              image, "/opt/factory-reviewer/source_server.py", head, base])
-    probe = """import json,time,urllib.request,subprocess
+    probe = """import json,time,urllib.request,subprocess,shutil
 def call(name,args):
  raw=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':name,'arguments':args}}).encode()
  req=urllib.request.Request('http://source:8765/mcp',data=raw,headers={'Content-Type':'application/json','Authorization':'Bearer synthetic-private-mcp-token'})
@@ -64,12 +64,16 @@ call('start_preview',{'argv':['python3','-m','http.server','3000','--bind','127.
 time.sleep(0.5)
 browser=call('browser_check',{'url':'http://127.0.0.1:3000/index.html'})
 assert 'Factory synthetic browser' in browser[0]['text'] and browser[1]['type']=='image'
-version=subprocess.check_output(['codex','--version'],text=True).strip()
-print(json.dumps({'native_source_mcp':'passed','immutable_source_read':'passed','test_execution':'passed','browser_execution':'passed','source_credentials':'absent','codex_binary':version,'model_called':False}))
+assert shutil.which('codex') is None
+print(json.dumps({'native_source_mcp':'passed','immutable_source_read':'passed','test_execution':'passed','browser_execution':'passed','source_credentials':'absent','codex_binary':'absent','model_called':False}))
 """.replace("HEAD", repr(head)).replace("BASE", repr(base))
-    return json.loads(command(["docker", "run", "--rm", "--name", agent, *runtime_common,
-                              "--mount", f"type=bind,src={marker},dst=/run/reviewer-auth.json,readonly",
-                              image, "-c", probe], timeout=90))
+    result = json.loads(command(["docker", "run", "--rm", "--name", inspector, *runtime_common,
+                                image, "-c", probe], timeout=90))
+    relayed = json.loads(command(["docker", "exec", source, "python3", "/opt/factory-reviewer/source_server.py",
+                                  "--call-tool", head, base, "diff", "{}"]))
+    assert "counter.py" in json.loads(relayed[0]["text"])
+    result["source_stdio_cli"] = "passed"
+    return result
 
 
 def command(args, timeout=30):
@@ -87,13 +91,10 @@ def main():
     parser.add_argument("--runtime", action="store_true")
     args = parser.parse_args()
     name = "factory-review-fixture-" + uuid.uuid4().hex[:16]
-    agent, source, network = name + "-agent", name + "-source", name + "-net"
-    evidence = {"schema": "factory-reviewer-synthetic-containment-v1", "model_called": False,
+    inspector, source, network = name + "-inspector", name + "-source", name + "-net"
+    evidence = {"schema": "factory-reviewer-source-containment-v2", "model_called": False,
                 "real_credentials_used": False, "production_canary": False}
     with tempfile.TemporaryDirectory(prefix="factory-review-fixture-") as temporary:
-        marker = Path(temporary) / "auth.json"
-        marker.write_text('{"synthetic":"reviewer-only-marker"}')
-        marker.chmod(0o644)
         try:
             command(["docker", "network", "create", "--internal", "--opt",
                      "com.docker.network.bridge.gateway_mode_ipv4=isolated", network])
@@ -113,30 +114,26 @@ except OSError:result['external_network_reachable']=False
 print(json.dumps(result))"""
             evidence["source"] = json.loads(command(["docker", "run", "--rm", "--name", source, *common,
                                                     "--user", "10001:10001", args.image, "-c", probe]))
-            evidence["agent"] = json.loads(command(["docker", "run", "--rm", "--name", agent, *common,
-                                                   "--mount", f"type=bind,src={marker},dst=/run/reviewer-auth.json,readonly",
-                                                   args.image, "-c", probe]))
             metadata = json.loads(command(["docker", "network", "inspect", network]))[0]
             evidence["network"] = {"internal": metadata["Internal"], "ipv6": metadata["EnableIPv6"],
                                    "gateway_mode": metadata["Options"]["com.docker.network.bridge.gateway_mode_ipv4"]}
             assert not any(evidence["source"]["visible"].values())
             assert not evidence["source"]["credential_env_present"]
             assert not evidence["source"]["external_network_reachable"]
-            assert evidence["agent"]["visible"]["/run/reviewer-auth.json"]
-            assert not evidence["agent"]["external_network_reachable"]
             evidence["containment_probe"] = "passed"
             if args.runtime:
                 try:
-                    evidence["runtime"] = runtime_probe(args.image, common, source, agent, temporary, marker)
+                    evidence["runtime"] = runtime_probe(args.image, common, source, inspector, temporary)
                 except Exception:
                     print("Synthetic source startup logs: " + command(["docker", "logs", source])[-4000:])
                     raise
             else:
-                evidence["full_reviewer_capability"] = "unavailable_without_provisioned_codex_playwright_image"
+                evidence["source_runtime_capability"] = "not_requested"
+            evidence["native_sdk_probe"] = "separate_probe_factory_native_reviewer.py_required"
             Path(args.evidence).write_text(json.dumps(evidence, indent=2) + "\n")
             print(json.dumps(evidence))
         finally:
-            for container in [agent, source]:
+            for container in [inspector, source]:
                 subprocess.run(["docker", "rm", "-f", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["docker", "network", "rm", network], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
