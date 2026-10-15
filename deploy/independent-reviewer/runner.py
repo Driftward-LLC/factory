@@ -87,7 +87,7 @@ def run(head: str, base: str, requirements: dict, source: str, hermes: str, sess
         instructions: str) -> dict:
     result = {"head_sha": head, "verdict": "inconclusive", "findings": [], "reason": "review_isolation_unavailable"}
     try:
-        from native_agent import PROPERTIES
+        from native_agent import PROPERTIES, request_frame
         source_args = ["/usr/bin/docker", "exec", source, "python3", "/opt/factory-reviewer/source_server.py",
                        "--call-tool", head, base]
         # Probe through the same credential-free source boundary as every model tool.
@@ -121,10 +121,15 @@ objects with priority (integer 0-3), file (relative path), line (positive intege
 No actionable findings means passed; actionable findings mean changes_requested.
 """
         result["reason"] = "review_backend_unavailable"
+        try:
+            frame = request_frame(session, prompt)
+        except ValueError:
+            result["reason"] = "review_budget_exhausted"
+            return result
         process = subprocess.Popen(native_arguments(hermes, session), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
-            process.stdin.write((json.dumps({"session": session, "prompt": prompt}) + "\n").encode())
+            process.stdin.write(frame)
             process.stdin.flush()
             deadline = time.monotonic() + 570
             assessment = None
@@ -169,6 +174,9 @@ No actionable findings means passed; actionable findings mean changes_requested.
 
 
 if __name__ == "__main__":
+    if sys.argv[1] == "--stop":
+        command(native_arguments(sys.argv[2], sys.argv[3], stop=True), timeout=15)
+        sys.exit(0)
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(subprocess.TimeoutExpired("review", 570)))
     request = json.loads(Path(sys.argv[1]).read_text())
     instructions = Path(sys.argv[2]).read_text() + "\n\n" + Path(sys.argv[3]).read_text()

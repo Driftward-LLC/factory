@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
-import { boundedIndependentReview, inconclusiveReview, IndependentReviewer, reviewIntent, type ReviewIntent } from './independent-review';
+import { boundedIndependentReview, inconclusiveReview, IndependentReviewer, reviewIntent, runIndependentReviewRelay, type ReviewIntent } from './independent-review';
 
 const requirements = { description: 'The counter must increase once per click.', title: 'Fix counter' };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -15,6 +16,48 @@ const intent: ReviewIntent = { review_id: 'review-1', repository: 'Driftward-LLC
   generator_session_id: 'generator-1', pass_number: 1, policy_digest: 'b'.repeat(64) };
 const job = (r = intent) => ({ requested_action: 'read_only_review', branch: r.branch,
   payload: { repo: r.repository, review: r, dry_run: false } }) as unknown as BridgeJob;
+
+test('gateway SIGKILL timeout independently stops exact native process after relay finally is lost', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-relay-timeout-'));
+  const native = path.resolve(__dirname, '../../../../../deploy/independent-reviewer/native_agent.py');
+  const fixture = path.join(directory, 'relay.py');
+  const session = 'factory-reviewer:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const unrelated = spawn('/usr/bin/python3', ['-c', 'import time; time.sleep(30)']);
+  writeFileSync(fixture, `import importlib.util,json,os,pathlib,subprocess,sys,time
+root=pathlib.Path(${JSON.stringify(directory)})
+os.environ['HERMES_HOME']=str(root)
+spec=importlib.util.spec_from_file_location('native',${JSON.stringify(native)})
+native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+session=sys.argv[-1]
+if sys.argv[1]=='--stop':
+ native.stop(session)
+ (root/'gateway-cleanup').write_text('confirmed')
+else:
+ child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)',session],start_new_session=True)
+ profile=native.profile_path(session);profile.mkdir(parents=True)
+ (profile/'invocation.json').write_text(json.dumps({'pid':child.pid,'start_ticks':native.start_ticks(child.pid),'session':session}))
+ (root/'native-pid').write_text(str(child.pid))
+ try:time.sleep(30)
+ finally:(root/'relay-finally').write_text('called')
+`);
+  try {
+    await assert.rejects(runIndependentReviewRelay([fixture, 'synthetic-hermes', session], 1000),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'killed' in error && error.killed));
+    const nativePid = Number(readFileSync(path.join(directory, 'native-pid'), 'utf8'));
+    let state = 'gone';
+    try { state = readFileSync(`/proc/${nativePid}/stat`, 'utf8').split(') ')[1].split(' ')[0]; } catch { /* Reaped. */ }
+    assert.ok(['gone', 'Z'].includes(state), `native child still ${state}`);
+    assert.equal(readFileSync(path.join(directory, 'gateway-cleanup'), 'utf8'), 'confirmed');
+    assert.throws(() => readFileSync(path.join(directory, 'relay-finally')), /ENOENT/);
+    assert.ok(unrelated.pid);
+    assert.equal(process.kill(unrelated.pid!, 0), true);
+    await assert.rejects(runIndependentReviewRelay([fixture, '--stop', 'synthetic-hermes', session], 1000),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'isolationUnknown' in error));
+  } finally {
+    unrelated.kill('SIGKILL');
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('bounded review intent rejects path/command payloads, requirements tampering and wrong identity', () => {
   assert.deepEqual(reviewIntent(job()), intent);

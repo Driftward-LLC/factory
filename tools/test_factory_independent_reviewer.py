@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -77,6 +78,48 @@ class IndependentReviewerTests(unittest.TestCase):
         finally:
             child.kill()
             child.communicate(timeout=5)
+
+    def test_request_frame_unicode_and_byte_limit(self):
+        session = "factory-reviewer:" + "a" * 36
+        for description in ["界" * 12000, "😀" * 6000]:
+            prompt = (RUNNER / "runner.py").read_text() + json.dumps({"title": "😀" * 160,
+                "description": description})
+            frame = native_agent.request_frame(session, prompt)
+            self.assertGreater(len(frame), 64001)
+            self.assertEqual(native_agent.read_request(io.BytesIO(frame))["prompt"], prompt)
+        overhead = len(native_agent.request_frame(session, ""))
+        frame = native_agent.request_frame(session, "a" * (native_agent.REQUEST_LIMIT - overhead))
+        self.assertEqual(len(frame), native_agent.REQUEST_LIMIT)
+        self.assertEqual(len(native_agent.read_request(io.BytesIO(frame))["prompt"]), native_agent.REQUEST_LIMIT - overhead)
+        with self.assertRaises(ValueError):
+            native_agent.request_frame(session, "a" * (native_agent.REQUEST_LIMIT - overhead + 1))
+        with self.assertRaises(ValueError):
+            native_agent.read_request(io.BytesIO(frame[:-1]))
+        probe = [{"type": "text", "text": json.dumps({"head_sha": "a" * 40,
+            "base_sha": "b" * 40, "browser_probe": "passed"})}]
+        with patch.object(runner, "command", return_value=json.dumps(probe)), \
+             patch.object(runner.subprocess, "Popen") as launch:
+            receipt = runner.run("a" * 40, "b" * 40, {"title": "Synthetic", "description": "界" * 12000},
+                                 "source", "hermes", session, "a" * native_agent.REQUEST_LIMIT)
+            self.assertEqual(receipt["reason"], "review_budget_exhausted")
+            launch.assert_not_called()
+
+    def test_delayed_source_checkout_cannot_pass_inspection_before_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            ready = Path(temporary) / "source-ready.json"
+            with patch.object(source_server, "READY", ready), \
+                 patch.object(source_server, "command", return_value="a" * 40) as command, \
+                 patch.object(source_server, "browser_probe") as browser:
+                # The immutable database can already be mounted while startup checkout is pending.
+                with self.assertRaises(FileNotFoundError):
+                    source_server.call_tool("inspect_source", {}, "a" * 40, "b" * 40)
+                command.assert_not_called()
+                browser.assert_not_called()
+                ready.write_text(json.dumps({"head_sha": "a" * 40, "base_sha": "b" * 40}))
+                self.assertEqual(json.loads(source_server.call_tool("inspect_source", {}, "a" * 40,
+                    "b" * 40)[0]["text"])["browser_probe"], "passed")
+                with patch.object(source_server, "command", return_value="c" * 40), self.assertRaises(ValueError):
+                    source_server.call_tool("inspect_source", {}, "a" * 40, "b" * 40)
 
     def test_source_commands_are_credential_free_and_bounded(self):
         self.assertEqual(source_server.checked_argv(["python3", "-m", "unittest"]), ["python3", "-m", "unittest"])

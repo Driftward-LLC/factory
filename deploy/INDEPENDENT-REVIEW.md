@@ -101,8 +101,12 @@ The probe uses only a disposable `/tmp` Hermes root, synthetic client credential
 and blocked network. It checks the installed constructor, exact tools, real
 registry text/image conversion into a Responses request, and denial of model
 drift/local tools. It does not prove real Astra access or OAuth refresh.
-Tests cover partial relay-line timeout, exact process-group termination,
-preservation of unrelated processes, and refusal of mismatched PID/starttime.
+Tests cover partial relay-line timeout, gateway SIGKILL with independent exact
+native termination, preservation of unrelated processes, and refusal of
+mismatched PID/starttime. Source inspection waits for startup checkout/browser
+readiness and checks the actual checkout SHA. Sender/receiver share a 1 MiB
+UTF-8 request-frame limit; full Unicode requirements and verified instruction
+snapshots are measured before SDK launch, and oversized frames fail explicitly.
 
 A real reviewed canary must independently demonstrate exact Astra access through
 native auth, source refresh with the read-only identity, source/browser/tests,
@@ -121,6 +125,10 @@ A hard 540-second native watchdog survives a lost Docker client; the relay has
 its own deadline and confirms termination by exact session argv, PID, process
 start time and group before deleting profile state. Missing/mismatched markers
 or unconfirmed termination fail closed and retain state for operator inspection.
+The gateway independently invokes that exact-session cleanup if the relay is
+killed or fails, outside the exhausted invocation deadline. A completed relay
+already confirms native cleanup; missing markers after a lost relay response
+remain inconclusive rather than authorizing another invocation.
 Never stop shared Hermes to clean one reviewer; never delete reservations to
 retry it. The existing host boundary cleans source containers/bundles/requests.
 Normally only bounded receipts persist; native profile/log/prompt/session state

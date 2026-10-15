@@ -84,6 +84,20 @@ export const reviewerCommand: Command = (file, args, timeout, environment = {}) 
   (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
+/** Gateway-owned cleanup survives SIGKILL of the one-shot relay and its lost finally block. */
+export async function runIndependentReviewRelay(args: string[], timeout: number,
+  command: Command = reviewerCommand, cleanup: Command = command): Promise<string> {
+  try { return await command('/usr/bin/python3', args, timeout); }
+  catch (error) {
+    try {
+      await cleanup('/usr/bin/python3', [args[0], '--stop', args.at(-2)!, args.at(-1)!], 30000);
+    } catch {
+      throw Object.assign(new Error('Native reviewer termination unconfirmed'), { isolationUnknown: true });
+    }
+    throw error;
+  }
+}
+
 type Provisioning = { schema: string; image: string; canary_digest: string; policy_digest: string;
   hermes_image: string;
   review_skill_digest: string; verify_skill_digest: string;
@@ -260,9 +274,9 @@ export class IndependentReviewer {
         '/opt/factory-reviewer/source_server.py', r.head_sha, base], 15000);
       if (!await this.authorize(job, r, 'launch')) return fail('review_policy_changed');
       const assets = '/usr/local/share/driftward-factory/independent-reviewer/deploy/independent-reviewer';
-      const raw = await runCommand('/usr/bin/python3', [path.join(assets, 'runner.py'), requestPath,
+      const raw = await runIndependentReviewRelay([path.join(assets, 'runner.py'), requestPath,
         path.join(this.roots.provisioning, 'review-code.md'), path.join(this.roots.provisioning, 'verify-app.md'),
-        source, 'hermes-driftward-hermes-1', session], 660000);
+        source, 'hermes-driftward-hermes-1', session], 660000, runCommand, this.command);
       const result = JSON.parse(raw);
       if (!result || Object.keys(result).sort().join(',') !== 'findings,head_sha,reason,verdict' || result.head_sha !== r.head_sha) return fail('review_malformed');
       const receipt = { ...fail('review_inconclusive'), verdict: result.verdict, findings: result.findings, reason: result.reason };
@@ -277,6 +291,7 @@ export class IndependentReviewer {
       if (!await this.authorize(job, r, 'complete')) return fail('review_policy_changed');
       return bounded;
     } catch (error) {
+      if (error && typeof error === 'object' && 'isolationUnknown' in error) return fail('review_isolation_unavailable');
       return fail(error && typeof error === 'object' && 'killed' in error && error.killed ? 'review_timeout' : 'review_backend_unavailable');
     } finally {
       // The one-shot host relay confirms exact native SDK termination; its own watchdog is independent.

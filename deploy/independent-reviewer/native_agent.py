@@ -36,6 +36,25 @@ CONFIG = {"model": {"default": MODEL, "provider": "openai-codex"},
           "context": {"engine": "compressor"},
           "compression": {"enabled": False}, "memory": {"enabled": False},
           "agent": {"background_review": {"enabled": False}}}
+REQUEST_LIMIT = 1024 * 1024
+
+
+def request_frame(session: str, prompt: str) -> bytes:
+    frame = (json.dumps({"session": session, "prompt": prompt}, ensure_ascii=False) + "\n").encode("utf-8")
+    if len(frame) > REQUEST_LIMIT:
+        raise ValueError("native review request exceeds byte budget")
+    return frame
+
+
+def read_request(stream) -> dict:
+    frame = stream.readline(REQUEST_LIMIT + 1)
+    if not frame.endswith(b"\n") or len(frame) > REQUEST_LIMIT:
+        raise ValueError("native review request exceeds byte budget")
+    request = json.loads(frame)
+    if (not isinstance(request, dict) or set(request) != {"session", "prompt"}
+            or not isinstance(request["session"], str) or not isinstance(request["prompt"], str)):
+        raise ValueError("invalid native review request")
+    return request
 
 
 def profile_path(session: str) -> Path:
@@ -205,7 +224,7 @@ def main() -> None:
     watchdog = threading.Timer(540, lambda: os.killpg(os.getpid(), signal.SIGKILL))
     watchdog.daemon = True
     watchdog.start()
-    request = json.loads(sys.stdin.readline(64001))
+    request = read_request(sys.stdin.buffer)
     if request["session"] != session:
         raise ValueError("native reviewer identity mismatch")
     channel_in, channel_out = sys.stdin, sys.stdout
