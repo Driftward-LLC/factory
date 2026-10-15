@@ -252,7 +252,9 @@ export class IndependentReviewer {
       // Never expose a mirror's remotes/auth config. This exported Git database is immutable in source/tests.
       await runCommand('/usr/bin/git', ['clone', '--bare', '--no-hardlinks', bundle, snapshot], 60000);
       await runCommand('/usr/bin/git', ['--git-dir', snapshot, 'config', '--remove-section', 'remote.origin'], 15000);
-      persist(requestPath, { head_sha: r.head_sha, expected_base: base, requirements: r.requirements });
+      persist(requestPath, { head_sha: r.head_sha, expected_base: base, requirements: r.requirements,
+        telemetry: { role: 'reviewer', review_id: r.review_id, repository: r.repository,
+          head_sha: r.head_sha, pass_number: r.pass_number } });
       chmodSync(requestPath, 0o444);
       writeFileSync(tokenPath, token, { mode: 0o444, flag: 'wx' });
       const hermes = JSON.parse(await runCommand('/usr/bin/docker', ['inspect', 'hermes-driftward-hermes-1'], 15000));

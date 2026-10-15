@@ -21,8 +21,10 @@ API_FILES = ("run_agent.py", "agent/agent_init.py", "agent/agent_init_fallback.p
              "hermes_cli/auth_codex.py", "hermes_cli/env_loader.py", "hermes_cli/plugins_discovery.py",
              "tools/registry.py", "toolsets.py", "model_tools.py", "tools/tool_search.py",
              "agent/chat_completion_helpers.py", "agent/tool_dispatch_helpers.py",
-             "agent/codex_responses_adapter.py", "agent/vision_message_prep.py")
-API_DIGEST = "88100e8471034d13ef8146701abf1401c3b38144b8ab1e2842a7ac6dab279e6a"
+             "agent/codex_responses_adapter.py", "agent/vision_message_prep.py", "hermes_cli/lifecycle.py",
+             "hermes_cli/plugins.py", "hermes_cli/plugins_dispatch.py", "hermes_cli/plugins_ledger.py",
+             "hermes_cli/plugins_manifest.py", "agent/turn_response_intake.py", "agent/api_request_hooks.py")
+NATIVE_SDK_SHA256 = "27edce8b142617d7feaf3a21ad9884b82a725236700684ff5d5963fb3d385512"
 PROPERTIES = {
     "inspect_source": {}, "read_file": {"path": {"type": "string"}}, "diff": {},
     "run_check": {"argv": {"type": "array", "items": {"type": "string"}}},
@@ -39,8 +41,9 @@ CONFIG = {"model": {"default": MODEL, "provider": "openai-codex"},
 REQUEST_LIMIT = 1024 * 1024
 
 
-def request_frame(session: str, prompt: str) -> bytes:
-    frame = (json.dumps({"session": session, "prompt": prompt}, ensure_ascii=False) + "\n").encode("utf-8")
+def request_frame(session: str, prompt: str, telemetry: dict | None = None) -> bytes:
+    from review_observer import review_metadata
+    frame = (json.dumps({"session": session, "prompt": prompt, "telemetry": review_metadata(telemetry)}, ensure_ascii=False) + "\n").encode("utf-8")
     if len(frame) > REQUEST_LIMIT:
         raise ValueError("native review request exceeds byte budget")
     return frame
@@ -51,7 +54,7 @@ def read_request(stream) -> dict:
     if not frame.endswith(b"\n") or len(frame) > REQUEST_LIMIT:
         raise ValueError("native review request exceeds byte budget")
     request = json.loads(frame)
-    if (not isinstance(request, dict) or set(request) != {"session", "prompt"}
+    if (not isinstance(request, dict) or set(request) != {"session", "prompt", "telemetry"}
             or not isinstance(request["session"], str) or not isinstance(request["prompt"], str)):
         raise ValueError("invalid native review request")
     return request
@@ -107,7 +110,7 @@ def guard(agent) -> None:
         raise RuntimeError("native reviewer capability drift")
 
 
-def review(request: dict, channel_in, channel_out) -> dict:
+def review(request: dict, channel_in, channel_out, telemetry_config: dict | None = None) -> dict:
     # Use Hermes' routed-profile secret scope: its loader skips both default and project dotenv.
     from hermes_constants import set_hermes_home_override
     profile = profile_path(request["session"])
@@ -178,6 +181,9 @@ def review(request: dict, channel_in, channel_out) -> dict:
             quiet_mode=True, save_trajectories=False, verbose_logging=False,
             skip_context_files=True, load_soul_identity=False, skip_memory=True,
             skip_background_review=True, checkpoints_enabled=False, cwd=str(profile))
+        from review_observer import attach_observer
+        observer = attach_observer(request.get("telemetry"), request["session"],
+                                   {PREFIX + name for name in PROPERTIES}, telemetry_config or {})
         try:
             guard(agent)
             result = agent.run_conversation(request["prompt"])
@@ -189,12 +195,27 @@ def review(request: dict, channel_in, channel_out) -> dict:
                 raise ValueError("invalid bounded model result")
             return json.loads(raw)
         finally:
-            agent.close()
+            try:
+                agent.close()
+            finally:
+                if observer is not None:
+                    try:
+                        observer.close()
+                    except Exception:
+                        pass
+
+
+def emit_assessment(request, channel_in, channel_out, telemetry_config) -> None:
+    with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
+        assessment = review(request, channel_in, channel_out, telemetry_config)
+    channel_out.write(json.dumps({"assessment": assessment}) + "\n")
+    channel_out.flush()
 
 
 def main() -> None:
     # Preserve HOME only for Hermes' own root resolution; never import platform/provider environment.
     home = os.environ.get("HOME", "/root")
+    telemetry_config = {name: os.environ[name] for name in ("POSTHOG_API_KEY", "POSTHOG_HOST") if name in os.environ}
     os.environ.clear()
     os.environ.update({"HOME": home, "HERMES_HOME": "/opt/data",
                        "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"})
@@ -207,7 +228,7 @@ def main() -> None:
     for name in API_FILES:
         fingerprint.update(name.encode() + b"\0")
         fingerprint.update((Path("/opt/hermes") / name).read_bytes())
-    if fingerprint.hexdigest() != API_DIGEST:
+    if fingerprint.hexdigest() != NATIVE_SDK_SHA256:
         raise RuntimeError("installed Hermes API differs from reviewed native adapter")
     profile = profile_path(session)
     # A single writer owns a fresh profile; existing profiles can never resume a review.
@@ -227,11 +248,7 @@ def main() -> None:
     request = read_request(sys.stdin.buffer)
     if request["session"] != session:
         raise ValueError("native reviewer identity mismatch")
-    channel_in, channel_out = sys.stdin, sys.stdout
-    with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
-        assessment = review(request, channel_in, channel_out)
-    channel_out.write(json.dumps({"assessment": assessment}) + "\n")
-    channel_out.flush()
+    emit_assessment(request, sys.stdin, sys.stdout, telemetry_config)
     watchdog.cancel()
 
 

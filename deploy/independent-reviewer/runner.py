@@ -41,6 +41,10 @@ def browser_probe() -> None:
 
 def native_arguments(container: str, session: str, *, stop: bool = False) -> list[str]:
     script = Path(__file__).with_name("native_agent.py").read_text()
+    observer = Path(__file__).with_name("review_observer.py").read_text()
+    script = ("import sys,types\nmodule=types.ModuleType('review_observer')\n"
+              "sys.modules['review_observer']=module\nexec(" + repr(observer) + ",module.__dict__)\nexec(compile("
+              + repr(script) + ",'native_agent.py','exec'))")
     return ["/usr/bin/docker", "exec", "-i", "--workdir", "/opt/hermes", container,
             "/opt/hermes/.venv/bin/python", "-c", script, "--stop" if stop else "--review", session]
 
@@ -84,7 +88,7 @@ def model_result(value: object) -> dict:
 
 
 def run(head: str, base: str, requirements: dict, source: str, hermes: str, session: str,
-        instructions: str) -> dict:
+        instructions: str, telemetry: dict | None = None) -> dict:
     result = {"head_sha": head, "verdict": "inconclusive", "findings": [], "reason": "review_isolation_unavailable"}
     try:
         from native_agent import PROPERTIES, request_frame
@@ -122,7 +126,7 @@ No actionable findings means passed; actionable findings mean changes_requested.
 """
         result["reason"] = "review_backend_unavailable"
         try:
-            frame = request_frame(session, prompt)
+            frame = request_frame(session, prompt, telemetry)
         except ValueError:
             result["reason"] = "review_budget_exhausted"
             return result
@@ -181,4 +185,4 @@ if __name__ == "__main__":
     request = json.loads(Path(sys.argv[1]).read_text())
     instructions = Path(sys.argv[2]).read_text() + "\n\n" + Path(sys.argv[3]).read_text()
     print(json.dumps(run(request["head_sha"], request["expected_base"], request["requirements"],
-        sys.argv[4], sys.argv[5], sys.argv[6], instructions), separators=(",", ":")))
+        sys.argv[4], sys.argv[5], sys.argv[6], instructions, request.get("telemetry")), separators=(",", ":")))

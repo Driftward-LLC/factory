@@ -142,6 +142,9 @@ test('long review retains its receipt after launch inspection expires but still 
     const run = async (file: string, args: string[], _timeout: number, env?: NodeJS.ProcessEnv) => {
       commands.push({ file, args });
       if (file.endsWith('/python3')) {
+        const request = JSON.parse(readFileSync(args[1], 'utf8'));
+        assert.deepEqual(request.telemetry, { role: 'reviewer', review_id: path.basename(path.dirname(args[1])),
+          repository: intent.repository, head_sha: intent.head_sha, pass_number: intent.pass_number });
         inspectionAgeSeconds = 480;
         return JSON.stringify({ verdict: 'passed', findings: [], head_sha: intent.head_sha, reason: 'ok' });
       }

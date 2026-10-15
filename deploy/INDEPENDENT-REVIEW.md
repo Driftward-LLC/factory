@@ -27,6 +27,32 @@ serialize OAuth tokens. It preserves the runtime's HOME and root HERMES_HOME;
 only the routed profile home changes. No reviewer `auth.json` is provisioned.
 Default-profile config/model settings are not changed.
 
+Reviewer tracing uses the Factory-owned `review_observer.py`, explicitly attached
+to four native Hermes lifecycle hooks while generic plugin discovery remains
+suppressed. It captures only the existing native runtime's `POSTHOG_API_KEY` and
+optional `POSTHOG_HOST` before environment scrubbing; it does not load dotenv or
+forward telemetry credentials to the host relay, workers, source tests or browser.
+The endpoint must be HTTPS without userinfo, query, fragment or a path prefix;
+redirects are refused. No telemetry credentials are newly provisioned here.
+
+New reviews can export `$ai_generation` and `$ai_span` events with an independent
+UUIDv5 trace scoped to the durable review ID, repository, immutable head and pass.
+Filter by `factory.role=reviewer` and `factory.review_id`; head, pass and repository
+are explicit bounded metadata outside the prompt. A tool span's parent is its
+actual native API request's generation span. This path does not guess generator
+attempt/job relationships or export generator session identifiers. Existing
+reviews are not backfilled, and no production tracing availability is claimed.
+
+Events contain only these identities, fixed model/provider, timing, token counts,
+tool names and bounded status. They exclude prompts, requirements, source,
+completions, findings, tool arguments/results, screenshots, raw errors and
+credentials. Export has a bounded queue and daemon worker; callbacks never wait
+for HTTP. Native cleanup makes a bounded flush attempt before emitting the
+assessment, because the relay then terminates the SDK process. Missing config,
+invalid endpoints and delivery failures do not change the verdict or authorize
+replay. A hard kill, queue overflow or flush timeout can lose events; traces are
+observability evidence rather than completion or authorization receipts.
+
 The host starts one credential-free source container with an immutable Git
 bundle/database, independent checkout, test tools and fresh Playwright browser.
 It has no provider/platform credentials, outbound network, shared Hermes data,
@@ -95,12 +121,17 @@ Run the credential-free SDK compatibility probe and focused tests with:
 ```bash
 python3 tools/probe_factory_native_reviewer.py hermes-driftward-hermes-1
 python3 -m unittest tools.test_factory_independent_reviewer -v
+python3 -m unittest tools.test_factory_reviewer_observer -v
 ```
 
 The probe uses only a disposable `/tmp` Hermes root, synthetic client credentials
 and blocked network. It checks the installed constructor, exact tools, real
 registry text/image conversion into a Responses request, and denial of model
-drift/local tools. It does not prove real Astra access or OAuth refresh.
+drift/local tools. A real native conversation loop with fake provider responses
+also verifies generation/tool hooks, usage counts, parent/request identities,
+metadata-only fake HTTP export and flush-before-assessment ordering. Disabled
+and failing exporters preserve the verdict and the number of model requests.
+It does not prove real Astra access, OAuth refresh or live PostHog delivery.
 Tests cover partial relay-line timeout, gateway SIGKILL with independent exact
 native termination, preservation of unrelated processes, and refusal of
 mismatched PID/starttime. Source inspection waits for startup checkout/browser
@@ -131,6 +162,6 @@ already confirms native cleanup; missing markers after a lost relay response
 remain inconclusive rather than authorizing another invocation.
 Never stop shared Hermes to clean one reviewer; never delete reservations to
 retry it. The existing host boundary cleans source containers/bundles/requests.
-Normally only bounded receipts persist; native profile/log/prompt/session state
+Normally only bounded receipts persist locally; native profile/log/prompt/session state
 is removed after confirmed termination. An unavailable backend's inconclusive
 isolation fields describe the configured boundary, not proof that it ran.
