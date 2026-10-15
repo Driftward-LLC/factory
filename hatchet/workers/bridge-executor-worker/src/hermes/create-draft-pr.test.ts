@@ -162,9 +162,10 @@ test('PR inspection accepts a large bounded diff and classifies overflow without
   try {
     writeFileSync(path.join(commandDirectory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 1 })))});
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 1, headRefOid: 'a'.repeat(40) })))});
+else if (args.includes('repos/Driftward-LLC/capykit/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
+else if (args.some(a => a.includes('/compare/'))) process.stdout.write('diff --git a/tests/cli.test.ts b/tests/cli.test.ts\\nPRIVATE_DIFF_CONTENT'.padEnd(${diffBytes}, '+'));
 else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'tests/cli.test.ts'}) + '\\n');
-else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padEnd(${diffBytes}, '+'));
 else process.exit(1);
 `, { mode: 0o700 });
     process.env.PATH = `${commandDirectory}${path.delimiter}${previousPath || ''}`;
@@ -197,13 +198,14 @@ test('PR inspection includes paths beyond file 100 and rejects incomplete or dup
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 101 })))});
+if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 101, headRefOid: 'a'.repeat(40) })))});
+else if (args.includes('repos/Driftward-LLC/capykit/pulls/61')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
+else if (args.some(a => a.includes('/compare/'))) process.stdout.write('diff --git a/README.md b/README.md\\n'.repeat(101));
 else if (args.includes('api')) {
   const files = Array.from({length:100}, (_,i)=>({path:'src/file-'+i+'.ts'}));
   if (process.env.TEST_FILE_MODE !== 'incomplete') files.push({path:process.env.TEST_FILE_MODE === 'duplicate' ? files[0].path : '.github/workflows/hidden.yml'});
   process.stdout.write(files.map(JSON.stringify).join('\\n')+'\\n');
-} else if (args.includes('diff')) process.stdout.write('diff --git a/README.md b/README.md');
-else process.exit(1);
+} else process.exit(1);
 `, { mode: 0o700 });
     process.env.PATH = `${directory}${path.delimiter}${previous.path || ''}`;
     process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';

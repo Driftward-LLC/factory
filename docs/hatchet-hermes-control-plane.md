@@ -24,6 +24,36 @@ After both PRs merge, publish the host files and the compiled Factory gateway
 using the deployment runbook while execution is idle. No protobuf change,
 PostHog SDK, extra service, or PostHog credentials in Factory containers are needed.
 
+## Complete draft PR diff inspection
+
+The typed executor inspection pins both GitHub base and head commit SHAs and
+fetches the diff through the immutable compare endpoint. The supported CLI view
+fields are joined to REST's exact revisions only when their head SHA and head/base
+branch names agree; this avoids requiring newer CLI JSON fields. Paginated PR filenames
+must match GitHub's changed-file count. A second PR observation rejects changes
+to those revisions or PR identity during inspection; checks use that latest
+observation for the same head.
+
+Only an explicit HTTP 406 diff-size response permits a local Git fallback.
+The fixed reader runs as the executor user, creates a private temporary bare
+repository, fetches those exact SHAs and full ancestry with a blob filter, and
+uses the merge-base diff (including rename and binary-file evidence). It checks
+the complete local filename set against the paginated API evidence. It never
+checks out source or loads global Git configuration, repository hooks, external
+diffs, or text conversion commands. Its process-local credential helper uses
+the executor's existing GitHub CLI authentication; workers receive no credentials.
+
+Inspection shares one deadline across commands (at most 120 seconds). The
+fallback reserves cleanup time, kills its Git process group on failure or timeout,
+and removes temporary source before returning evidence. Output remains bounded
+(2 MiB by default, configurable up to 16 MiB); Git has a 512 MiB address-space
+limit, a 60-second CPU limit, a 256 MiB per-file limit and a polled 256 MiB source
+budget. Oversized history, missing ancestry, mismatched paths, unavailable
+credentials and unrelated API failures stop verification. The existing path,
+reported secret-check, commit and temp-file-content gates still apply. Evidence
+fetch failures report verification evidence unavailable; identity preflight
+failures retain their identity reason, without recording command output.
+
 Status: Draft
 Last reviewed: 2026-08-09
 Linear: ENG-35

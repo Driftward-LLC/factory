@@ -15,9 +15,17 @@ test('real gateway uses the shared bounded PR inspection default', async () => {
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
-if (args.includes('view')) process.stdout.write('{"changedFiles":1}');
+if (args.includes('python3')) { process.stderr.write('PRIVATE_FALLBACK_CONTENT'); process.exit(Number(process.env.TEST_FALLBACK_CODE)); }
+else if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify({changedFiles: 1, headRefOid: 'a'.repeat(40)}))});
+else if (args.includes('repos/Driftward-LLC/capykit/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify({baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40)}))});
+else if (args.some(a => a.includes('/compare/'))) {
+  if (process.env.TEST_DIFF_FAILURE) {
+    process.stderr.write('HTTP ' + process.env.TEST_DIFF_FAILURE + ' Comparison.diff too_large PRIVATE_CONTENT');
+    process.exit(1);
+  }
+  process.stdout.write('diff --git a/README.md b/README.md\\nPRIVATE_DIFF_CONTENT'.padEnd(Number(process.env.TEST_DIFF_BYTES), '+'));
+}
 else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'README.md'}) + '\\n');
-else if (args.includes('diff')) process.stdout.write('PRIVATE_DIFF_CONTENT'.padEnd(Number(process.env.TEST_DIFF_BYTES), '+'));
 else process.exit(1);
 `, { mode: 0o700 });
     for (const diffBytes of [1536 * 1024, 3 * 1024 * 1024]) {
@@ -35,6 +43,22 @@ else process.exit(1);
             return true;
           });
         }
+      }, `unix://${path.join(directory, 'gateway.sock')}`);
+    }
+    for (const [status, fallbackCode] of [[403, 75], [406, 75], [406, 73], [406, 74]]) {
+      await withGateway({ PATH: `${directory}${path.delimiter}${process.env.PATH || ''}`, DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000',
+        TEST_DIFF_FAILURE: String(status), TEST_FALLBACK_CODE: String(fallbackCode) }, async (target) => {
+        process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+        await assert.rejects(inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 77, 5000), (error: unknown) => {
+          assert.ok(error instanceof NonRetryableBridgeExecutionError);
+          assert.equal(error.reasonCode, status === 406 && fallbackCode === 73 ? 'hermes_process_output_limit_exceeded' : 'verification_evidence_unavailable');
+          assert.equal(error.failureDomain, 'verification');
+          assert.equal(error.failureStage, 'verification_checks');
+          assert.equal(error.bufferExceeded, status === 406 && fallbackCode === 73);
+          assert.equal(error.timedOut, status === 406 && fallbackCode === 74);
+          assert.doesNotMatch(JSON.stringify(error) + error.message, /PRIVATE_/);
+          return true;
+        });
       }, `unix://${path.join(directory, 'gateway.sock')}`);
     }
   } finally {

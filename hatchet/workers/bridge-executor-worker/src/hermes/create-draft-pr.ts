@@ -13,6 +13,7 @@ import {
   type BoundedHermesDraftPrReceipt,
 } from './bounded-evidence';
 import { NonRetryableBridgeExecutionError } from './errors';
+import { isGitHubDiffSizeLimit, PINNED_PR_DIFF_QUERY } from './pr-diff';
 import { boundedModelSelection, HERMES_MODEL_SELECTION_QUERY, reportModelSelection, type ModelSelectionObserver } from './model-selection';
 import {
   checkHermesIdentityViaGrpc,
@@ -203,6 +204,7 @@ export type GithubPrView = {
     status?: string | null;
   }> | null;
   headRefOid?: string;
+  baseRefOid?: string;
 };
 
 export type DraftPrStateInspection = {
@@ -783,14 +785,40 @@ async function inspectDraftPullRequest(repo: string, prNumber: number, timeout: 
 }
 
 export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: number, timeout: number, maxBuffer = DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES): Promise<GithubPrView & { diffText: string }> {
-  const view = await execHermesRuntimeJson<GithubPrView & { changedFiles?: number }>(
-    ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,changedFiles,statusCheckRollup'],
-    timeout,
-    maxBuffer
-  );
+  assertSafeGitHubRepo(repo);
+  if (!Number.isSafeInteger(prNumber) || prNumber < 1 || !Number.isSafeInteger(timeout) || timeout < 1
+    || !Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > 16 * 1024 * 1024) {
+    throw new NonRetryableBridgeExecutionError('verification_evidence_malformed', 'PR inspection bounds or reference were invalid');
+  }
+  const deadline = Date.now() + Math.min(timeout, 120_000);
+  const remaining = () => {
+    const milliseconds = deadline - Date.now();
+    if (milliseconds <= 0) throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR inspection exhausted its deadline',
+      { failureDomain: 'verification', failureStage: 'verification_checks', timedOut: true });
+    return milliseconds;
+  };
+  const readView = async () => {
+    const view = await execHermesRuntimeJson<GithubPrView & { changedFiles?: number }>(
+      ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,changedFiles,statusCheckRollup'],
+      remaining(), maxBuffer);
+    // Older supported gh versions expose headRefOid but no baseRefOid in pr view.
+    const revisions = await execHermesRuntimeJson<GithubPrView>(
+      ['gh', 'api', `repos/${repo}/pulls/${prNumber}`, '--jq', '{headRefOid:.head.sha,baseRefOid:.base.sha,headRefName:.head.ref,baseRefName:.base.ref}'],
+      remaining(), maxBuffer);
+    for (const key of ['headRefOid', 'headRefName', 'baseRefName'] as const) {
+      if (revisions[key] !== view[key]) {
+        throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR revisions changed while reading GitHub metadata');
+      }
+    }
+    return { ...view, baseRefOid: revisions.baseRefOid };
+  };
+  const view = await readView();
+  if (!/^[a-f0-9]{40}$/.test(view.headRefOid || '') || !/^[a-f0-9]{40}$/.test(view.baseRefOid || '')) {
+    throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR inspection did not return exact base and head revisions');
+  }
   const fileResponse = await execHermesRuntimeCommand(
     ['gh', 'api', `repos/${repo}/pulls/${prNumber}/files?per_page=100`, '--paginate', '--jq', '.[] | {path:.filename} | tojson'],
-    timeout,
+    remaining(),
     maxBuffer,
   );
   let files: GithubPrView['files'];
@@ -802,13 +830,39 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
   if (!Number.isSafeInteger(view.changedFiles) || files.length !== view.changedFiles) {
     throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'GitHub PR file inspection did not return the complete changed-file set');
   }
-  changedFileNames(files);
-  const diff = await execHermesRuntimeCommand(
-    ['gh', 'pr', 'diff', String(prNumber), '--repo', repo],
-    timeout,
-    maxBuffer
-  );
-  return { ...view, files, diffText: diff.stdout };
+  const paths = changedFileNames(files).sort();
+  let diffText: string;
+  try {
+    // A PR-number diff can race a push; the immutable comparison has the same merge-base semantics.
+    const diff = await execHermesRuntimeCommandRaw(
+      ['gh', 'api', `repos/${repo}/compare/${view.baseRefOid}...${view.headRefOid}`, '-H', 'Accept: application/vnd.github.diff'],
+      remaining(), maxBuffer);
+    diffText = diff.stdout;
+  } catch (error) {
+    if (!isGitHubDiffSizeLimit(error)) throw runtimeCommandFailure(error);
+    const budget = remaining() - 1000;
+    if (budget <= 0) throw runtimeCommandFailure(error);
+    const fallback = await execHermesRuntimeJson<GithubPrView & { diffText?: string }>(
+      ['python3', '-c', PINNED_PR_DIFF_QUERY, repo, view.baseRefOid!, view.headRefOid!, String(maxBuffer), String(budget)],
+      remaining(), maxBuffer);
+    if (!sameStrings(changedFileNames(fallback.files).sort(), paths) || typeof fallback.diffText !== 'string') {
+      throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'Pinned Git diff and GitHub changed-file evidence did not agree');
+    }
+    diffText = fallback.diffText;
+  }
+  if ((diffText.match(/^diff --git /gm) || []).length !== files.length || !files.length) {
+    throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR inspection did not return the complete diff');
+  }
+  const observed = await readView();
+  for (const key of ['headRefOid', 'baseRefOid', 'headRefName', 'baseRefName', 'url', 'changedFiles', 'isDraft', 'body'] as const) {
+    if (observed[key] !== view[key]) {
+      throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR identity or revisions changed during inspection');
+    }
+  }
+  if (observed.author?.login !== view.author?.login) {
+    throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR author changed during inspection');
+  }
+  return { ...observed, files, diffText };
 }
 
 /** A fixed, read-only Hermes action used only for retry artifact fencing. */
@@ -1054,14 +1108,14 @@ export async function assertHermesIdentityViaCommand(
   repo: string,
   expectation: HermesIdentityExpectation = hermesIdentityExpectation(repo)
 ): Promise<HermesIdentityCheck> {
-  const gitAuthorName = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.name'], expectation.timeout)).stdout.trim();
+  const gitAuthorName = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.name'], expectation.timeout, 128 * 1024, 'hermes_runtime_identity_check_failed')).stdout.trim();
   if (gitAuthorName !== expectation.expectedGitAuthorName) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_name_mismatch',
       `expected Git author name ${expectation.expectedGitAuthorName}, got ${gitAuthorName || '<unset>'}`
     );
   }
-  const gitAuthorEmail = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.email'], expectation.timeout)).stdout.trim();
+  const gitAuthorEmail = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.email'], expectation.timeout, 128 * 1024, 'hermes_runtime_identity_check_failed')).stdout.trim();
   if (gitAuthorEmail !== expectation.expectedGitAuthorEmail) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_mismatch',
@@ -1082,7 +1136,7 @@ export async function assertHermesIdentityViaCommand(
   }
 
   const repoApiPath = `repos/${repo}`;
-  const accessibleRepo = (await execHermesRuntimeCommand(['gh', 'api', repoApiPath, '--jq', '.full_name'], expectation.timeout)).stdout.trim();
+  const accessibleRepo = (await execHermesRuntimeCommand(['gh', 'api', repoApiPath, '--jq', '.full_name'], expectation.timeout, 128 * 1024, 'hermes_runtime_identity_check_failed')).stdout.trim();
   if (accessibleRepo !== repo) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_github_app_repo_access_mismatch',
@@ -1142,34 +1196,42 @@ async function execHermesRuntimeJson<T>(args: string[], timeout: number, maxBuff
   }
 }
 
-async function execHermesRuntimeCommand(args: string[], timeout: number, maxBuffer: number = 128 * 1024): Promise<ExecResult> {
+function execHermesRuntimeCommandRaw(args: string[], timeout: number, maxBuffer: number): Promise<ExecResult> {
+  return execFileAsync('docker', hermesRuntimeDockerArgs(args), { timeout, maxBuffer, env: process.env });
+}
+
+async function execHermesRuntimeCommand(args: string[], timeout: number, maxBuffer: number = 128 * 1024,
+  reasonCode: 'verification_evidence_unavailable' | 'hermes_runtime_identity_check_failed' = 'verification_evidence_unavailable'): Promise<ExecResult> {
   try {
-    return await execFileAsync('docker', hermesRuntimeDockerArgs(args), {
-      timeout,
-      maxBuffer,
-      env: process.env
-    });
+    return await execHermesRuntimeCommandRaw(args, timeout, maxBuffer);
   } catch (error) {
-    if (error instanceof NonRetryableBridgeExecutionError) {
-      throw error;
-    }
-    const classified = classifyHermesCommandFailure(error);
-    throw new NonRetryableBridgeExecutionError(
-      classified.bufferExceeded ? 'hermes_process_output_limit_exceeded' : 'hermes_runtime_identity_check_failed',
-      classified.bufferExceeded
-        ? 'The Driftward Hermes runtime command exceeded its bounded output limit'
-        : 'The Driftward Hermes runtime command failed before returning bounded evidence',
-      {
-        failureDomain: classified.failureDomain,
-        failureStage: classified.failureStage,
-        retryable: classified.retryable,
-        processExitCode: classified.processExitCode,
-        processSignal: classified.processSignal,
-        timedOut: classified.timedOut,
-        bufferExceeded: classified.bufferExceeded,
-      },
-    );
+    throw runtimeCommandFailure(error, reasonCode, args[0] === 'python3' && args[1] === '-c' && args[2] === PINNED_PR_DIFF_QUERY);
   }
+}
+
+function runtimeCommandFailure(error: unknown,
+  reasonCode: 'verification_evidence_unavailable' | 'hermes_runtime_identity_check_failed' = 'verification_evidence_unavailable',
+  pinnedDiff = false): NonRetryableBridgeExecutionError {
+  if (error instanceof NonRetryableBridgeExecutionError) return error;
+  const classified = classifyHermesCommandFailure(error);
+  const fallbackCode = pinnedDiff ? (error as { code?: unknown } | null)?.code : null;
+  const bufferExceeded = classified.bufferExceeded || fallbackCode === 73;
+  const timedOut = classified.timedOut || fallbackCode === 74;
+  return new NonRetryableBridgeExecutionError(
+    bufferExceeded ? 'hermes_process_output_limit_exceeded' : reasonCode,
+    bufferExceeded
+      ? 'The Driftward Hermes runtime command exceeded its bounded output limit'
+      : 'The Driftward Hermes runtime command failed before returning bounded evidence',
+    {
+      failureDomain: reasonCode === 'verification_evidence_unavailable' ? 'verification' : classified.failureDomain,
+      failureStage: reasonCode === 'verification_evidence_unavailable' ? 'verification_checks' : classified.failureStage,
+      retryable: classified.retryable,
+      processExitCode: classified.processExitCode,
+      processSignal: classified.processSignal,
+      timedOut,
+      bufferExceeded,
+    },
+  );
 }
 
 function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
