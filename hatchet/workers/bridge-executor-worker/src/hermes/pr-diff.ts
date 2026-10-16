@@ -35,6 +35,17 @@ def source_directory():
         signal.setitimer(signal.ITIMER_REAL, 0)
         temporary.cleanup()
 
+def source_size(directory):
+    size = 0
+    for root, _, files in os.walk(directory):
+        for filename in files:
+            try:
+                size += os.lstat(os.path.join(root, filename)).st_size
+            except FileNotFoundError:
+                # Git can rename or remove lock files between the listing and lstat.
+                pass
+    return size
+
 try:
     with source_directory() as directory:
         git = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
@@ -54,8 +65,7 @@ try:
                     while selected.get_map():
                         if time.monotonic() >= deadline:
                             raise TimeoutError()
-                        if sum(os.lstat(os.path.join(root, f)).st_size for root, _, files in os.walk(directory)
-                               for f in files) > disk_limit:
+                        if source_size(directory) > disk_limit:
                             raise RuntimeError()
                         for key, _ in selected.select(min(.05, max(0, deadline - time.monotonic()))):
                             chunk = os.read(key.fileobj.fileno(), 65536)

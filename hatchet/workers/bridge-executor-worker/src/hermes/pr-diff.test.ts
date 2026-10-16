@@ -21,9 +21,10 @@ test('pinned PR diff inspection uses complete bounded evidence and cleans up run
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
     return git('rev-parse', 'HEAD');
   };
-  const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'TEST_DIFF_DIRECTORY', 'TEST_DIFF_MODE', 'TMPDIR'] as const;
+  const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'TEST_DIFF_DIRECTORY', 'TEST_DIFF_MODE', 'TEST_DIFF_SCAN_PROBE', 'TMPDIR'] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
+    delete process.env.TEST_DIFF_SCAN_PROBE;
     git('init', '-q', '-b', 'main');
     writeFileSync(path.join(source, 'old name.txt'), 'a stable rename\n'.repeat(20));
     writeFileSync(path.join(source, 'README.md'), 'initial\n');
@@ -46,12 +47,39 @@ test('pinned PR diff inspection uses complete bounded evidence and cleans up run
       author: { login: 'factory-hermes[bot]' }, body: 'Refs Linear ENG-161', statusCheckRollup: [] };
     writeFileSync(path.join(directory, 'view.json'), JSON.stringify(view));
     writeFileSync(path.join(directory, 'files.json'), JSON.stringify(files));
+    const diskScanProbe = String.raw`
+import os
+from types import SimpleNamespace
+original_walk, original_lstat = os.walk, os.lstat
+def walk_with_removed_file(directory):
+    for root, directories, files in original_walk(directory):
+        filename = '.factory-disk-scan-probe.lock'
+        candidate = os.path.join(root, filename)
+        with open(candidate, 'w') as output:
+            output.write('temporary lock')
+        files.append(filename)
+        os.unlink(candidate)
+        yield root, directories, files
+def probe_lstat(filename, *args, **kwargs):
+    if filename.endswith('.factory-disk-scan-probe.lock'):
+        with open(os.path.join(os.environ['TEST_DIFF_DIRECTORY'], 'disk-scan-probed'), 'w') as output:
+            output.write('yes')
+        mode = os.environ['TEST_DIFF_SCAN_PROBE']
+        if mode == 'permission-error':
+            raise PermissionError('PRIVATE_DISK_DIAGNOSTIC')
+        if mode == 'disk-limit':
+            return SimpleNamespace(st_size=256 * 1024 * 1024 + 1)
+    return original_lstat(filename, *args, **kwargs)
+os.walk, os.lstat = walk_with_removed_file, probe_lstat
+`;
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const fs = require('node:fs'), cp = require('node:child_process'), path = require('node:path');
 const args = process.argv.slice(2), root = process.env.TEST_DIFF_DIRECTORY, mode = process.env.TEST_DIFF_MODE;
 if (args.includes('python3')) {
   fs.writeFileSync(path.join(root, 'fallback-called'), 'yes');
-  const child = cp.spawnSync('python3', args.slice(args.indexOf('python3') + 1), {stdio: 'inherit'});
+  const readerArgs = args.slice(args.indexOf('python3') + 1);
+  if (process.env.TEST_DIFF_SCAN_PROBE) readerArgs[1] = ${JSON.stringify(diskScanProbe)} + readerArgs[1];
+  const child = cp.spawnSync('python3', readerArgs, {stdio: 'inherit'});
   process.exit(child.status ?? 1);
 }
 if (mode === 'identity-error') { process.stderr.write('PRIVATE_AUTH_DIAGNOSTIC'); process.exit(1); }
@@ -140,6 +168,25 @@ os.execv('/usr/bin/git', ['git'] + args)
       assert.doesNotMatch(observed.diffText, /base-only.txt/);
       assert.equal(findAddedTempFileReference(observed.diffText), '+@/tmp/not-file-content');
       assert.deepEqual(readdirSync(temporary), []);
+    });
+    await t.test('disk scan tolerates removed Git lock files without relaxing its other bounds', async () => {
+      try {
+        process.env.TEST_DIFF_SCAN_PROBE = 'removed-file';
+        reset('too-large');
+        const observed = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 82, 10_000);
+        assert.equal(observed.files?.length, 304);
+        assert.deepEqual(readdirSync(temporary), []);
+        assert.equal(readFileSync(path.join(directory, 'disk-scan-probed'), 'utf8'), 'yes');
+        await failure('hermes_process_output_limit_exceeded', 10_000, 16 * 1024);
+        for (const probe of ['permission-error', 'disk-limit']) {
+          rmSync(path.join(directory, 'disk-scan-probed'));
+          process.env.TEST_DIFF_SCAN_PROBE = probe;
+          await failure();
+          assert.equal(readFileSync(path.join(directory, 'disk-scan-probed'), 'utf8'), 'yes');
+        }
+      } finally {
+        delete process.env.TEST_DIFF_SCAN_PROBE;
+      }
     });
     await t.test('supported CLI fields join exact REST revisions and API success needs no local source', async () => {
       reset('api-success');
