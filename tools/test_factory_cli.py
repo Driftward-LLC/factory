@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import socketserver
@@ -16,6 +17,7 @@ spec.loader.exec_module(cli)
 
 
 class CanonicalCliTests(unittest.TestCase):
+    @unittest.skipUnless(os.geteuid() == 0, 'real Bash operator transport requires root')
     def test_operator_round_trip_uses_private_parsed_credentials_and_cleans_up(self):
         root = Path(__file__).resolve().parents[1]
         sys.path.insert(0, str(root / 'deploy'))
@@ -80,15 +82,32 @@ class CanonicalCliTests(unittest.TestCase):
             value = dict(installation='/srv/factory', installation_id='identity', production_bundle='/srv/bundle')
             path.write_text(json.dumps(value))
             path.chmod(0o600)
-            self.assertEqual(cli.checked_config(path), value)
-            path.chmod(0o644)
-            with self.assertRaises(ValueError):
-                cli.checked_config(path)
-            path.chmod(0o600)
-            value['installation'] = 'relative'
-            path.write_text(json.dumps(value))
-            with self.assertRaises(ValueError):
-                cli.checked_config(path)
+            real_lstat = Path.lstat
+            # Model root ownership only; retain actual file type/mode and content checks.
+            def root_owned(target):
+                return SimpleNamespace(st_mode=real_lstat(target).st_mode, st_uid=0)
+            with patch.object(Path, 'lstat', autospec=True, side_effect=root_owned):
+                self.assertEqual(cli.checked_config(path), value)
+                path.chmod(0o644)
+                with self.assertRaises(ValueError):
+                    cli.checked_config(path)
+                path.chmod(0o600)
+                value['installation'] = 'relative'
+                path.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    cli.checked_config(path)
+            with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=real_lstat(path).st_mode, st_uid=1000)):
+                with self.assertRaisesRegex(ValueError, 'root-owned'):
+                    cli.checked_config(path)
+
+    def test_nonroot_entrypoint_refuses_before_loading_binding(self):
+        with patch.object(cli.os, 'geteuid', return_value=1000), \
+             patch.object(cli, 'checked_config') as binding, \
+             patch.object(cli, 'dispatch') as dispatch, \
+             patch.object(cli.sys, 'stderr'):
+            self.assertEqual(cli.main(), 1)
+            binding.assert_not_called()
+            dispatch.assert_not_called()
 
     def test_logs_are_scoped_and_preserve_arguments(self):
         install = SimpleNamespace(compose=unittest.mock.Mock())

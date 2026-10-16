@@ -84,6 +84,7 @@ jobs:
           cache: npm
           cache-dependency-path: hatchet/workers/package-lock.json
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: '3.11'
           cache: pip
@@ -103,6 +104,8 @@ jobs:
           git diff --exit-code -- hatchet/event-ingress/hatchet_event_ingress/contracts.py hatchet/workers/shared/src/contracts.ts
       - name: Run tool tests
         run: python3 -m unittest discover -s tools -p 'test_*.py'
+      - name: Check root-only CLI transport with disposable Unix sockets
+        run: sudo -- "${{ steps.python.outputs.python-path }}" -m unittest tools.test_factory_cli.CanonicalCliTests.test_operator_round_trip_uses_private_parsed_credentials_and_cleans_up tools.test_factory_operator_cli
       - name: Build and test workers
         run: |
           npm run build --prefix hatchet/workers
