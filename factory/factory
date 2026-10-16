@@ -168,17 +168,43 @@ operator_token() {
   awk -F= '$1 == "HATCHET_FACTORY_OPERATOR_TOKEN" { print $2; exit }' "$OPERATOR_ENV_FILE"
 }
 
-operator_request() {
-  local method="$1" path="$2" data="${3:-}" token
+operator_request() (
+  local method="$1" path="$2" data="${3:-}" token response status=0
   require_root
   token="$(operator_token)"
   [[ -n "$token" && -S "$OPERATOR_SOCKET" ]] || die "factory operator is unavailable"
+  response="$(mktemp)"
+  trap 'rm -f -- "$response"' EXIT
   if [[ "$method" == "GET" ]]; then
-    curl --silent --show-error --fail --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" "http://localhost$path"
+    curl --silent --show-error --fail-with-body --output "$response" --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" "http://localhost$path" || status=$?
   else
-    curl --silent --show-error --fail --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$data" "http://localhost$path"
+    curl --silent --show-error --fail-with-body --output "$response" --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$data" "http://localhost$path" || status=$?
   fi
-}
+  if [[ "$status" == 0 ]]; then
+    cat -- "$response"
+  elif [[ "$status" == 22 ]]; then
+    # Print only the bounded operator error field, never arbitrary response bodies.
+    python3 - "$response" 3<<<"$token" <<'PY' >&2
+import json
+import os
+import sys
+
+try:
+    with os.fdopen(3) as credential:
+        token = credential.read().rstrip("\n")
+    with open(sys.argv[1], encoding="utf-8") as source:
+        body = json.loads(source.read(65537))
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, str):
+        error = error.replace(token, "[redacted]") if token else error
+        error = "".join(char if char.isprintable() else " " for char in error)
+        print("factory operator: " + error[:512])
+except (OSError, ValueError, RecursionError):
+    pass
+PY
+  fi
+  return "$status"
+)
 
 require_jq_for_view() {
   command -v jq >/dev/null 2>&1 || die "jq is required for formatted output; rerun with --json"
