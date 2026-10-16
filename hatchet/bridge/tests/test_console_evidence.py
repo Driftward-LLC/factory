@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from hatchet_hermes_bridge import console, console_evidence, store, work_evidence
+from hatchet_hermes_bridge import console, console_evidence, independent_review, store, work_evidence
 from test_store import original_context, verification_receipt, verifier_payload
 from test_support import connect_migrate
 
@@ -186,13 +186,25 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertFalse(legacy["available"])
         self.assertEqual(legacy["verification"]["result"], "unavailable")
 
-    def review_record(self, state="pending", *, receipt=None):
+    def review_record(self, state="pending", *, receipt=None, legacy=False):
         created = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        requirements = {"title": "Fixture", "description": "private requirements"}
+        request = {"review_id": "fictional-review", "repository": "Driftward-LLC/capykit",
+                   "pr_url": "https://github.com/Driftward-LLC/capykit/pull/801", "head_sha": "a" * 40,
+                   "branch": self.job["branch"], "policy_digest": "b" * 64, "pass_number": 1,
+                   "expected_base": "main", "requirements": requirements,
+                   "requirements_digest": independent_review.requirements_digest(requirements)}
+        if legacy:
+            request["generator_session_id"] = "fictional-generator-session"
+        else:
+            request["generator_execution_id"] = f"factory-execution:{self.attempt['attempt_id']}:{self.job['job_id']}"
+        review_job, _ = store.submit_job(self.conn, {"requested_action": "read_only_review", "idempotency_key": "fictional-review",
+            "payload": {"repo": request["repository"], "review": request, "review_capability": "private-capability-not-for-console", "dry_run": False}}, internal_review=True)
         self.conn.execute("""INSERT INTO factory_independent_reviews
             (review_id,lineage_key,pass_number,source_attempt_id,source_job_id,job_id,repository,pr_url,
              head_sha,policy_digest,capability,state,result_json,result_digest,reason,created_at,updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                "fictional-review", "fictional-lineage", 1, self.attempt["attempt_id"], self.job["job_id"], self.job["job_id"],
+                "fictional-review", "fictional-lineage", 1, self.attempt["attempt_id"], self.job["job_id"], review_job["job_id"],
                 "Driftward-LLC/capykit", "https://github.com/Driftward-LLC/capykit/pull/801", "a" * 40, "b" * 64,
                 "private-capability-not-for-console", state, store.canonical_json(receipt) if receipt else None,
                 store.payload_hash(receipt) if receipt else None, "review_inconclusive" if state == "needs_operator" else None,
@@ -277,6 +289,36 @@ class ConsoleEvidenceTests(unittest.TestCase):
             self.assertEqual(self.evidence()["independent_review"]["status"], "stale")
         self.assertEqual(self.evidence()["verification"]["result"], "passed")
 
+    def test_legacy_review_uses_stored_request_even_with_null_source_session(self):
+        self.commit()
+        self.verify()
+        self.review_record("passed", receipt=self.review_receipt(), legacy=True)
+        self.inspect()
+        self.assertIsNone(store.get_job(self.conn, self.job["job_id"])["hermes_session_id"])
+        self.assertEqual(self.evidence()["independent_review"]["status"], "passed")
+
+    def test_legacy_review_same_session_receipt_remains_unavailable(self):
+        self.commit()
+        self.verify()
+        receipt = {**self.review_receipt(), "reviewer_session_id": "fictional-generator-session"}
+        self.review_record("passed", receipt=receipt, legacy=True)
+        self.inspect()
+        self.assertEqual(self.evidence()["independent_review"]["status"], "unavailable")
+
+    def test_malformed_stored_review_request_is_unavailable_not_an_exception(self):
+        self.commit()
+        self.verify()
+        self.review_record("passed", receipt=self.review_receipt())
+        self.inspect()
+        row = self.conn.execute("SELECT job_id FROM factory_independent_reviews").fetchone()
+        review_job = store.get_job(self.conn, row["job_id"])
+        request = review_job["payload"]["review"]
+        for malformed in (None, [], "invalid", {**request, "generator_session_id": "legacy"},
+                          {**request, "generator_execution_id": "factory-execution:" + "a" * 73}):
+            with self.subTest(request=malformed), patch.object(console_evidence, "get_job", return_value={
+                **review_job, "payload": {**review_job["payload"], "review": malformed}}):
+                self.assertEqual(self.evidence()["independent_review"]["status"], "unavailable")
+
     def test_changes_requested_findings_are_bounded_and_inconsistent_receipt_is_unavailable(self):
         self.commit()
         self.verify()
@@ -305,8 +347,6 @@ class ConsoleReviewLineageTests(unittest.TestCase):
 
     def finish_repair(self, case, repair, job, sha="b" * 40):
         case.finish(job, sha=sha)
-        case.conn.execute("UPDATE bridge_jobs SET hermes_session_id='repair-session' WHERE job_id=?", (job["job_id"],))
-        case.conn.commit()
         case.intent.update(source_attempt_id=repair["attempt_id"], reviewed_head_sha=sha)
         case.inspect()
 

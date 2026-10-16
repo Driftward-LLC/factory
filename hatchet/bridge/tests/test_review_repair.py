@@ -51,11 +51,15 @@ class ReviewRepairTests(unittest.TestCase):
         c.execute("INSERT INTO ingress_events VALUES ('latest','linear','ENG-8',?,1)", (json.dumps(observation(**changes)),))
         c.commit(); c.close()
 
-    def finish(self, job, *, failed=False, sha="a" * 40):
+    def finish(self, job, *, failed=False, sha="a" * 40, executor_receipt=None):
         store.transition_job(self.conn, job["job_id"], state="running")
         claim = store.claim_factory_execution(self.conn, job["job_id"], owner="fixture-executor")["lease"]
         self.assertTrue(store.authorize_factory_effect(self.conn, job["job_id"], claim))
-        store.commit_factory_execution(self.conn, job["job_id"], claim, {"pr_url": PR, "branch": job["branch"], "commit_sha": sha})
+        effect = {"pr_url": PR, "branch": job["branch"], "commit_sha": sha}
+        if executor_receipt is not None:
+            effect = {"pr_url": executor_receipt["prUrl"], "branch": executor_receipt["branch"],
+                      "commit_sha": executor_receipt["commitSha"], "hermes_session_id": executor_receipt["hermesSessionId"]}
+        store.commit_factory_execution(self.conn, job["job_id"], claim, effect)
         pending = store.transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         store.acquire_verification_lease(self.conn, job["job_id"], attempt_id="verifier")
         store.claim_verification_lease(self.conn, job["job_id"], attempt_id="verifier")
@@ -451,9 +455,6 @@ class PolicyReauthorizationTests(unittest.TestCase):
         self.assertEqual(job["payload"]["independent_review_enrollment"], {"policy_digest": independent_review.policy()["digest"]})
         approved = self.authorize_transition(); result = self.confirm(approved["snapshot_digest"])
         self.finish(result["job"], sha="b" * 40)
-        # Synthetic native session receipt, matching the independent-review fixtures.
-        with self.conn:
-            self.conn.execute("UPDATE bridge_jobs SET hermes_session_id='repair-session' WHERE job_id=?", (result["job"]["job_id"],))
         self.intent.update(source_attempt_id=result["attempt"]["attempt_id"], reviewed_head_sha="b" * 40)
         self.inspect()
         row = independent_review.reserve(self.conn, result["job"]["job_id"])

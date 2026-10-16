@@ -22,10 +22,27 @@ change does not silently adopt old work.
 
 Enrolled implementation uses GPT-6.1 Sol; the independent reviewer uses
 GPT-6 Astra. The original task requirements, expected base ref, exact checked
-head, generator session, and policy digest bind the typed review request. The
+head, Factory generator execution, and policy digest bind the typed review request. New
+requests use `generator_execution_id`, the deterministic
+`factory-execution:<source-attempt-uuid>:<source-job-uuid>` reference derived from
+the verified real Factory source. It identifies Factory execution, not a Hermes
+session. Existing requests with `generator_session_id` remain readable; exactly
+one generator identity field is accepted. New bounded execution receipts still
+exclude Hermes session material, and telemetry is not execution authority. The
 reviewer's source loader must pin the base commit in its immutable source
 bundle. Requirements and findings are untrusted content, never commands or
 authority.
+
+Reviewer independence comes from the gateway's fresh native reviewer UUID and
+profile, separate authentication, empty session database, and isolated source and
+browser capabilities. Legacy session identity comparisons remain enforced for
+legacy requests; a Factory execution reference is not a substitute Hermes session.
+
+This change applies only when reserving a new review. It does not rewrite source
+jobs, stored requests/results, or existing `needs_operator` reservations, including
+preflight failures caused by a missing legacy session ID. Those retain their
+original shared PR pass budget. There is no supported retry/rearm command for a
+stopped review; deployment alone does not recover one.
 
 The bridge transaction reserves the pass and its existing accepted-event
 outbox before dispatch. Budget identity is the canonical repository and PR
@@ -69,6 +86,11 @@ findings after pass two retain changes-requested evidence with an operator
 required budget reason. Manual operator decisions never reset this budget.
 
 ## Activation prerequisites
+
+Deploy the compatible typed gateway parser together with the Factory image before
+admitting the new request variant. An older host gateway rejects it; updating only
+the container is not a compatible rollout. No database migration or historical
+record backfill is part of this change.
 
 Before considering activation, approve a deployment of schema version 9 with
 the existing quiesced migration/backup procedure. The new review table and

@@ -10,13 +10,18 @@ export const REVIEW_REASONS = ['ok', 'review_backend_unavailable', 'review_isola
 type ReviewReason = typeof REVIEW_REASONS[number];
 export type ReviewIntent = { review_id: string; repository: string; pr_url: string; branch: string; head_sha: string;
   expected_base: string; requirements: { title: string; description: string }; requirements_digest: string;
-  generator_session_id: string; pass_number: number; policy_digest: string };
-const INTENT_KEYS = 'branch,expected_base,generator_session_id,head_sha,pass_number,policy_digest,pr_url,repository,requirements,requirements_digest,review_id';
+  pass_number: number; policy_digest: string } & (
+    { generator_session_id: string; generator_execution_id?: never }
+    | { generator_execution_id: string; generator_session_id?: never });
+const INTENT_KEYS = ['branch', 'expected_base', 'head_sha', 'pass_number', 'policy_digest', 'pr_url', 'repository', 'requirements', 'requirements_digest', 'review_id'];
+const UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const EXECUTION_ID = new RegExp(`^factory-execution:${UUID_PATTERN}:${UUID_PATTERN}$`);
 
 export function reviewIntent(job: BridgeJob): ReviewIntent {
   const r = job.payload.review as unknown as ReviewIntent;
+  const generatorField = r?.generator_execution_id !== undefined ? 'generator_execution_id' : 'generator_session_id';
   if (String(job.requested_action) !== 'read_only_review' || !r || typeof r !== 'object' || Array.isArray(r)
-    || Object.keys(r).sort().join(',') !== INTENT_KEYS
+    || Object.keys(r).sort().join(',') !== [...INTENT_KEYS, generatorField].sort().join(',')
     || typeof r.review_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(r.review_id)
     || typeof r.repository !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(r.repository)
     || r.repository.split('/').some((s) => s === '.' || s === '..')
@@ -30,7 +35,9 @@ export function reviewIntent(job: BridgeJob): ReviewIntent {
     || isSecretShaped(r.requirements.title) || isSecretShaped(r.requirements.description)
     || createHash('sha256').update(JSON.stringify({ description: r.requirements.description, title: r.requirements.title })).digest('hex') !== r.requirements_digest
     || typeof r.policy_digest !== 'string' || !/^[a-f0-9]{64}$/.test(r.policy_digest)
-    || typeof r.generator_session_id !== 'string' || !r.generator_session_id || r.generator_session_id.length > 200
+    || (generatorField === 'generator_execution_id'
+      ? typeof r.generator_execution_id !== 'string' || r.generator_execution_id !== r.generator_execution_id.trim() || !EXECUTION_ID.test(r.generator_execution_id)
+      : typeof r.generator_session_id !== 'string' || !r.generator_session_id || r.generator_session_id.length > 200)
     || typeof r.branch !== 'string' || !r.branch || r.branch.length > 200 || r.branch.startsWith('-')
     || !Number.isInteger(r.pass_number) || r.pass_number < 1 || r.pass_number > 2
     || job.payload.repo !== r.repository || job.payload.dry_run !== false) {
