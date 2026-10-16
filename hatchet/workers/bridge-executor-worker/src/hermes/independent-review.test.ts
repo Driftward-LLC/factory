@@ -10,11 +10,14 @@ import { boundedIndependentReview, inconclusiveReview, IndependentReviewer, revi
 
 const requirements = { description: 'The counter must increase once per click.', title: 'Fix counter' };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-const intent: ReviewIntent = { review_id: 'review-1', repository: 'Driftward-LLC/demo',
+const legacyIntent: ReviewIntent = { review_id: 'review-1', repository: 'Driftward-LLC/demo',
   pr_url: 'https://github.com/Driftward-LLC/demo/pull/7', branch: 'codex/demo', head_sha: 'a'.repeat(40),
   expected_base: 'main', requirements, requirements_digest: digest(JSON.stringify(requirements)),
   generator_session_id: 'generator-1', pass_number: 1, policy_digest: 'b'.repeat(64) };
-const job = (r = intent) => ({ requested_action: 'read_only_review', branch: r.branch,
+const { generator_session_id: _legacySession, ...commonIntent } = legacyIntent;
+const intent: ReviewIntent = { ...commonIntent,
+  generator_execution_id: 'factory-execution:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' };
+const job = (r: ReviewIntent = intent) => ({ requested_action: 'read_only_review', branch: r.branch,
   payload: { repo: r.repository, review: r, dry_run: false } }) as unknown as BridgeJob;
 
 test('immutable source export is readable under gateway umask while journal stays private', () => {
@@ -79,18 +82,27 @@ else:
 
 test('bounded review intent rejects path/command payloads, requirements tampering and wrong identity', () => {
   assert.deepEqual(reviewIntent(job()), intent);
+  assert.deepEqual(reviewIntent(job(legacyIntent)), legacyIntent);
   for (const r of [{ ...intent, repository: '../demo' }, { ...intent, review_id: '../../escape' },
     { ...intent, requirements_digest: '0'.repeat(64) }, { ...intent, pass_number: 3 },
     { ...intent, command: '/bin/sh' }, { ...intent, head_sha: 'main' }]) assert.throws(() => reviewIntent(job(r)), /Invalid/);
+  for (const identity of [{}, { generator_execution_id: null }, { generator_execution_id: 'job-1' },
+    { generator_execution_id: `${intent.generator_execution_id}\n` },
+    { generator_execution_id: intent.generator_execution_id, generator_session_id: 'generator-1' }]) {
+    assert.throws(() => reviewIntent(job({ ...commonIntent, ...identity } as ReviewIntent)), /Invalid/);
+  }
 });
 
 test('receipts cannot relabel model, head, isolation or pass malformed findings', () => {
   const receipt = inconclusiveReview(intent, 'review_backend_unavailable');
   assert.ok(boundedIndependentReview(intent, receipt));
   for (const change of [{ reviewer_model: 'gpt-6.1-sol' }, { head_sha: 'c'.repeat(40) },
-    { reviewer_session_id: intent.generator_session_id }, { isolation: { write_credentials: true } },
+    { isolation: { write_credentials: true } },
     { verdict: 'passed' }, { verdict: 'changes_requested', reason: 'ok', findings: [] },
     { extra: true }]) assert.equal(boundedIndependentReview(intent, { ...receipt, ...change }), null);
+  const legacyReceipt = inconclusiveReview(legacyIntent, 'review_backend_unavailable');
+  assert.ok(boundedIndependentReview(legacyIntent, legacyReceipt));
+  assert.equal(boundedIndependentReview(legacyIntent, { ...legacyReceipt, reviewer_session_id: legacyIntent.generator_session_id }), null);
 });
 
 test('default-off gate retains unavailable receipt and ambiguous reservations never call backend', async () => {
@@ -103,6 +115,9 @@ test('default-off gate retains unavailable receipt and ambiguous reservations ne
     const result = await adapter.run(job());
     assert.equal(result.reason, 'review_isolation_unavailable');
     assert.deepEqual(await adapter.run(job()), result);
+    const legacyJob = job({ ...legacyIntent, review_id: 'legacy-retained' });
+    const legacyResult = await adapter.run(legacyJob);
+    assert.deepEqual(await new IndependentReviewer(directory, '/nonexistent', async () => { calls++; return ''; }, undefined, async () => true).run(legacyJob), legacyResult);
     assert.equal(calls, 0);
     await assert.rejects(adapter.run(job({ ...intent, head_sha: 'd'.repeat(40) })), /different intent/);
     const reservation = path.join(directory, 'ambiguous');
@@ -195,7 +210,7 @@ test('long review retains its receipt after launch inspection expires but still 
     const receipt = await adapter.run(job());
     assert.equal(receipt.verdict, 'passed');
     assert.equal(receipt.reviewer_model, 'gpt-6-astra');
-    assert.notEqual(receipt.reviewer_session_id, intent.generator_session_id);
+    assert.match(String(receipt.reviewer_session_id), /^factory-reviewer:/);
     assert.equal(inspectionAgeSeconds, 480);
     assert.deepEqual(authorizationPhases, ['launch', 'launch', 'complete']);
     const source = commands.find((c) => c.args[0] === 'run')!.args.join(' ');

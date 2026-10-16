@@ -15,13 +15,29 @@ _SOURCE_POLICY = Path(__file__).resolve().parents[2] / "workers" / "independent-
 POLICY_PATH = _SOURCE_POLICY if _SOURCE_POLICY.is_file() else Path(__file__).resolve().parents[1] / "independent-review-policy.json"
 REASONS = {"ok", "review_backend_unavailable", "review_isolation_unavailable", "review_inconclusive",
            "review_malformed", "review_head_changed", "review_timeout", "review_budget_exhausted", "review_policy_changed", "review_operator_required"}
-REQUEST_FIELDS = {"review_id", "repository", "pr_url", "branch", "head_sha", "generator_session_id", "pass_number", "policy_digest", "expected_base", "requirements", "requirements_digest"}
+REQUEST_FIELDS = {"review_id", "repository", "pr_url", "branch", "head_sha", "pass_number", "policy_digest", "expected_base", "requirements", "requirements_digest"}
+GENERATOR_FIELDS = {"generator_session_id", "generator_execution_id"}
+UUID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+EXECUTION_ID_RE = re.compile(f"factory-execution:{UUID_PATTERN}:{UUID_PATTERN}")
 RECEIPT_FIELDS = {"schema", "review_id", "repository", "pr_url", "head_sha", "verdict", "reviewer_model",
                   "reviewer_session_id", "backend", "isolation", "findings", "reason"}
 
 
 def requirements_digest(value: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def _generator_identity_valid(review: dict[str, Any]) -> bool:
+    if not isinstance(review, dict):
+        return False
+    fields = set(review) & GENERATOR_FIELDS
+    if fields == {"generator_execution_id"}:
+        value = review["generator_execution_id"]
+        return isinstance(value, str) and EXECUTION_ID_RE.fullmatch(value) is not None
+    if fields == {"generator_session_id"}:
+        value = review["generator_session_id"]
+        return isinstance(value, str) and 1 <= len(value) <= 320
+    return False
 
 
 def policy() -> dict[str, Any]:
@@ -47,12 +63,13 @@ def validate_request(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict) or set(payload) != {"repo", "review", "review_capability", "dry_run"}:
         raise store.BridgeValidationError("review request is malformed")
     review = payload["review"]
-    if (payload["dry_run"] is not False or not isinstance(review, dict) or set(review) != REQUEST_FIELDS
+    if (payload["dry_run"] is not False or not isinstance(review, dict) or set(review) - GENERATOR_FIELDS != REQUEST_FIELDS
+            or not _generator_identity_valid(review)
             or review["repository"] != payload["repo"] or not store._canonical_enabled_repo(payload["repo"])
             or type(review["pass_number"]) is not int or review["pass_number"] not in {1, 2}
             or not isinstance(payload["review_capability"], str) or len(payload["review_capability"]) < 20):
         raise store.BridgeValidationError("review request is malformed")
-    for key in ("review_id", "repository", "pr_url", "branch", "generator_session_id"):
+    for key in ("review_id", "repository", "pr_url", "branch"):
         if not isinstance(review[key], str) or not review[key] or len(review[key]) > 320:
             raise store.BridgeValidationError("review request is malformed")
     if not re.fullmatch(r"[0-9a-f]{40}", review["head_sha"]) or not re.fullmatch(r"[0-9a-f]{64}", review["policy_digest"]):
@@ -111,7 +128,7 @@ def reserve(conn, source_job_id: str) -> dict[str, Any] | None:
         attempt = store.get_factory_attempt_for_job(conn, source_job_id)
         if (not attempt or attempt["mode"] != "real" or attempt["status"] != "verified_ready"
                 or job["state"] != "ready_for_human_review" or job["requested_action"] not in store.DRAFT_PR_EFFECT_ACTIONS):
-            raise store.BridgeConflict("review requires a verified real generator session")
+            raise store.BridgeConflict("review requires a verified real generator execution")
         review_repair._source(conn, attempt["work_item_key"], attempt["attempt_id"])
         preflight_reason = None
         recorded = store.get_pr_inspection(conn, job["payload"]["repo"], job["pr_url"], prior_attempt_id=attempt["attempt_id"])
@@ -165,10 +182,9 @@ def reserve(conn, source_job_id: str) -> dict[str, Any] | None:
         if not isinstance(requirements["title"], str) or len(requirements["title"]) > 320 or store._secret_shaped(requirements["title"]):
             requirements["title"] = ""
             preflight_reason = "review_inconclusive"
-        if not job.get("hermes_session_id"):
-            preflight_reason = "review_inconclusive"
         request = {"review_id": review_id, "repository": job["payload"]["repo"], "pr_url": job["pr_url"],
-                   "branch": job["branch"], "head_sha": job["commit_sha"], "generator_session_id": job.get("hermes_session_id") or "unavailable-generator-session",
+                   "branch": job["branch"], "head_sha": job["commit_sha"],
+                   "generator_execution_id": f"factory-execution:{attempt['attempt_id']}:{job['job_id']}",
                    "pass_number": number, "policy_digest": current["digest"], "expected_base": job["payload"]["expected_base"],
                    "requirements": requirements, "requirements_digest": requirements_digest(requirements)}
         review_job, _ = store.submit_job(conn, {"idempotency_key": f"factory:independent-review:{lineage}:{number}",
@@ -258,13 +274,14 @@ def repair_authorized(conn, job: dict[str, Any], attempt_id: str) -> bool:
 
 
 def _receipt(value: Any, request: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != RECEIPT_FIELDS or len(store.canonical_json(value)) > 20000:
+    if (not _generator_identity_valid(request) or not isinstance(value, dict)
+            or set(value) != RECEIPT_FIELDS or len(store.canonical_json(value)) > 20000):
         raise store.BridgeValidationError("review receipt is malformed")
     if (value["schema"] != "factory-independent-review-v1" or any(value[k] != request[k] for k in ("review_id", "repository", "pr_url", "head_sha"))
             or value["verdict"] not in {"passed", "changes_requested", "inconclusive"} or value["reason"] not in REASONS
             or value["reviewer_model"] != "gpt-6-astra" or value["backend"] not in {"isolated_codex", "isolated_hermes"}
             or not isinstance(value["reviewer_session_id"], str) or not 1 <= len(value["reviewer_session_id"]) <= 200
-            or value["reviewer_session_id"] == request["generator_session_id"]):
+            or value["reviewer_session_id"] == request.get("generator_session_id")):
         raise store.BridgeValidationError("review receipt identity is malformed")
     isolation = value["isolation"]
     if (not isinstance(isolation, dict) or set(isolation) != {"separate_session", "isolated_checkout", "isolated_browser", "write_credentials"}

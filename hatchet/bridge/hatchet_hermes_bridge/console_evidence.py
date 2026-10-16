@@ -10,7 +10,7 @@ import sqlite3
 from typing import Any
 
 from . import independent_review, work_evidence
-from .store import BridgeError, get_factory_attempt, get_factory_work_evidence, get_pr_inspection, sanitize_detail
+from .store import BridgeError, get_factory_attempt, get_factory_work_evidence, get_job, get_pr_inspection, sanitize_detail
 
 
 def _time(value: Any) -> datetime | None:
@@ -99,8 +99,12 @@ def project_review(conn: Any, record: dict[str, Any]) -> dict[str, Any]:
             receipt = json.loads(row["result_json"])
             if work_evidence.digest(receipt) != row["result_digest"]:
                 return {**report, "status": "unavailable"}
-            independent_review._receipt(receipt, {"review_id": row["review_id"], "repository": repo, "pr_url": url,
-                                                "head_sha": sha, "generator_session_id": job.get("hermes_session_id")})
+            request = get_job(conn, row["job_id"])["payload"]["review"]
+            if (not isinstance(request, dict)
+                    or any(request.get(key) != row[key] for key in ("review_id", "repository", "pr_url", "head_sha", "policy_digest", "pass_number"))
+                    or ("generator_execution_id" in request and request["generator_execution_id"] != f"factory-execution:{row['source_attempt_id']}:{row['source_job_id']}")):
+                return {**report, "status": "unavailable"}
+            independent_review._receipt(receipt, request)
             if row["state"] in {"passed", "changes_requested"} and receipt["verdict"] != row["state"]:
                 return {**report, "status": "unavailable"}
             report.update(reviewer_model=receipt["reviewer_model"],
