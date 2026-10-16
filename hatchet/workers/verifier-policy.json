@@ -20,7 +20,8 @@
         "Dockerfile.hosted",
         "compose.yaml",
         "deploy/connector-config/.gitkeep",
-        "deploy/init-postgres.sh"
+        "deploy/init-postgres.sh",
+        ".gitleaksignore"
       ],
       "forbidden_changed_paths": [
         ".github/workflows",

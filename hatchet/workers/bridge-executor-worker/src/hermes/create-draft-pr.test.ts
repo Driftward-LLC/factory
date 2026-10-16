@@ -636,11 +636,11 @@ test('GitHub App PR author slug verifies as the configured bot identity', () => 
   assert.equal((verification.receipt.pr_identity as { author: string }).author, 'app/factory-hermes');
 });
 
-test('Capykit deployment reconciliation allows reviewed files without opening neighboring paths', () => {
-  const paths = ['.dockerignore', '.markdownlint.json', 'Dockerfile.connector', 'Dockerfile.hosted', 'compose.yaml', 'deploy/connector-config/.gitkeep', 'deploy/init-postgres.sh'];
+test('Capykit policy allows reviewed files without opening neighboring paths', () => {
+  const paths = ['.dockerignore', '.gitleaksignore', '.markdownlint.json', 'Dockerfile.connector', 'Dockerfile.hosted', 'compose.yaml', 'deploy/connector-config/.gitkeep', 'deploy/init-postgres.sh'];
   const verification = verifyDraftPrEvidence(greenJob(), greenResult(), greenView({ files: paths.map((path) => ({ path })) }));
   assert.deepEqual((verification.receipt.file_policy as { files: string[] }).files, [...paths].sort());
-  for (const path of ['Dockerfile.executor', 'compose.override.yaml', 'deploy/other.sh', 'deploy/connector-config/provider.json', '.env.production']) {
+  for (const path of ['Dockerfile.executor', 'compose.override.yaml', 'deploy/other.sh', 'deploy/connector-config/provider.json', '.env.production', '.gitleaks.toml']) {
     assertFailure(() => verifyDraftPrEvidence(greenJob(), greenResult(), greenView({ files: [{ path }] })), 'verification_changed_file_scope_invalid');
   }
   for (const path of ['.github/workflows/schema.yml', '.env', 'Dockerfile', 'docker-compose.yml']) {
