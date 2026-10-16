@@ -16,6 +16,7 @@ WRITABLE_CALLER_INVENTORY = {
     "hatchet_hermes_bridge.server": "driftward-hatchet-bridge.service",
     "hatchet_hermes_bridge.operator": "driftward-factory-operator.service",
     "hatchet_hermes_bridge.review_repair": "driftward-factory-operator.service",
+    "hatchet_hermes_bridge.review_recovery": "driftward-factory-operator.service",
     "hatchet_hermes_bridge.console_control": "driftward-factory-operator.service",
     "hatchet_hermes_bridge.cli": "operator-cli",
 }

@@ -99,7 +99,7 @@ def project_review(conn: Any, record: dict[str, Any]) -> dict[str, Any]:
             receipt = json.loads(row["result_json"])
             if work_evidence.digest(receipt) != row["result_digest"]:
                 return {**report, "status": "unavailable"}
-            request = get_job(conn, row["job_id"])["payload"]["review"]
+            request = get_job(conn, independent_review._delivery_job_id(conn, row))["payload"]["review"]
             if (not isinstance(request, dict)
                     or any(request.get(key) != row[key] for key in ("review_id", "repository", "pr_url", "head_sha", "policy_digest", "pass_number"))
                     or ("generator_execution_id" in request and request["generator_execution_id"] != f"factory-execution:{row['source_attempt_id']}:{row['source_job_id']}")):

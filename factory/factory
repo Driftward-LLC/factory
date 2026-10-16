@@ -48,6 +48,9 @@ Usage:
   factory retry ENG-X --reason TEXT --request-id ID --snapshot-digest DIGEST [--supersede-pr URL] [--supersede-job JOB-ID] --yes
   factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
   factory retry ENG-X force-absence --attempt-id ATTEMPT-ID --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+  factory review-recovery ENG-X inspect --review REVIEW-ID --source-attempt ATTEMPT-ID --yes
+  factory review-recovery ENG-X preview --review REVIEW-ID --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --reason TEXT
+  factory review-recovery ENG-X confirm --review REVIEW-ID --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory review-repair ENG-X inspect --source-attempt ATTEMPT-ID --yes
   factory review-repair ENG-X preview --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT
   factory review-repair ENG-X confirm --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
@@ -640,6 +643,43 @@ retry_issue() {
   local body
   body="$(jq -cn --arg issue "$issue" --arg mode "$mode" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,mode:$mode,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
   operator_request POST /v1/retry/reserve "$body"
+}
+
+review_recovery() {
+  local issue="${1:-}" phase="${2:-}"; shift 2 || die "review-recovery requires an issue and phase"
+  local review="" source="" repo="" pr="" branch="" head="" reason="" request_id="" digest="" yes="" body
+  [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "review-recovery phase must be inspect, preview or confirm"
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == --yes || $# -ge 2 ]] || die "$1 requires a value"
+    case "$1" in
+      --review) review="$2"; shift 2 ;;
+      --source-attempt) source="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --pr) pr="$2"; shift 2 ;;
+      --branch) branch="$2"; shift 2 ;;
+      --reviewed-head) head="$2"; shift 2 ;;
+      --reason) reason="$2"; shift 2 ;;
+      --request-id) request_id="$2"; shift 2 ;;
+      --snapshot-digest) digest="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
+      *) die "unknown review-recovery option: $1" ;;
+    esac
+  done
+  [[ -n "$review" && -n "$source" ]] || die "review-recovery requires --review and --source-attempt"
+  body="$(jq -cn --arg issue "$issue" --arg review_id "$review" --arg source_attempt_id "$source" '{issue:$issue,review_id:$review_id,source_attempt_id:$source_attempt_id}')"
+  if [[ "$phase" == inspect ]]; then
+    [[ -n "$yes" && -z "$repo$pr$branch$head$reason$request_id$digest" ]] || die "inspect accepts only --review, --source-attempt and --yes"
+  else
+    [[ -n "$repo" && -n "$pr" && -n "$branch" && -n "$head" && -n "$reason" ]] || die "review-recovery requires the exact artifact and reason"
+    body="$(jq -c --arg repository "$repo" --arg pr_url "$pr" --arg branch "$branch" --arg reviewed_head_sha "$head" --arg reason "$reason" '. + {repository:$repository,pr_url:$pr_url,branch:$branch,reviewed_head_sha:$reviewed_head_sha,reason:$reason}' <<<"$body")"
+    if [[ "$phase" == confirm ]]; then
+      [[ -n "$yes" && -n "$request_id" && -n "$digest" ]] || die "confirm requires --yes, --request-id and --snapshot-digest from preview"
+      body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
+    else
+      [[ -z "$yes$request_id$digest" ]] || die "preview does not accept confirmation options"
+    fi
+  fi
+  operator_request POST "/v1/review-recovery/$phase" "$body"
 }
 
 review_repair() {
@@ -1549,6 +1589,10 @@ main() {
     lifecycle)
       shift
       lifecycle "$@"
+      ;;
+    review-recovery)
+      shift
+      review_recovery "$@"
       ;;
     review-repair)
       shift

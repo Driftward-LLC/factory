@@ -200,8 +200,13 @@ def reserve(conn, source_job_id: str) -> dict[str, Any] | None:
         return dict(conn.execute("SELECT * FROM factory_independent_reviews WHERE review_id=?", (review_id,)).fetchone())
 
 
+def _delivery_job_id(conn, row) -> str:
+    delivery = conn.execute("SELECT job_id FROM factory_independent_review_deliveries WHERE review_id=?", (row["review_id"],)).fetchone()
+    return delivery["job_id"] if delivery else row["job_id"]
+
+
 def _row(conn, job_id: str, capability: str):
-    row = conn.execute("SELECT * FROM factory_independent_reviews WHERE job_id=?", (job_id,)).fetchone()
+    row = conn.execute("SELECT r.* FROM factory_independent_reviews r LEFT JOIN factory_independent_review_deliveries d ON d.review_id=r.review_id WHERE COALESCE(d.job_id,r.job_id)=?", (job_id,)).fetchone()
     if not row or not isinstance(capability, str) or capability != row["capability"]:
         raise store.BridgeValidationError("review requires its reserved capability")
     return row
@@ -308,7 +313,7 @@ def _receipt(value: Any, request: dict[str, Any]) -> dict[str, Any]:
 
 def _stop(conn, row, reason: str) -> None:
     conn.execute("UPDATE factory_independent_reviews SET state='needs_operator',reason=?,updated_at=? WHERE review_id=?", (reason, store.utc_now(), row["review_id"]))
-    job = store.get_job(conn, row["job_id"])
+    job = store.get_job(conn, _delivery_job_id(conn, row))
     if job["state"] in {"accepted", "running"}:
         store.transition_job(conn, job["job_id"], state="failed", details={"reason_code": reason})
 
@@ -363,10 +368,11 @@ def _settle_receipt(conn, review_id: str) -> bool:
         conn.execute("UPDATE factory_independent_reviews SET state=?,reason=?,updated_at=? WHERE review_id=?",
             (state, reason, store.utc_now(), row["review_id"]))
         if state == "needs_operator":
-            store.transition_job(conn, row["job_id"], state="failed", details={"reason_code": reason})
+            store.transition_job(conn, _delivery_job_id(conn, row), state="failed", details={"reason_code": reason})
         else:
-            conn.execute("UPDATE bridge_jobs SET state='completed',reason_code=?,updated_at=? WHERE job_id=? AND state='running'", (reason, store.utc_now(), row["job_id"]))
-            store._append_event(conn, job_id=row["job_id"], event_type="independent_review_completed", state="completed", details={"reason_code": reason})
+            job_id = _delivery_job_id(conn, row)
+            conn.execute("UPDATE bridge_jobs SET state='completed',reason_code=?,updated_at=? WHERE job_id=? AND state='running'", (reason, store.utc_now(), job_id))
+            store._append_event(conn, job_id=job_id, event_type="independent_review_completed", state="completed", details={"reason_code": reason})
         store._append_factory_attempt_event(conn, row["source_attempt_id"], "independent_review_completed", {"review_id": row["review_id"], "state": state, "reason": reason, "pass_number": row["pass_number"]})
         return True
 
@@ -376,7 +382,7 @@ def sweep(conn, limit: int = 50) -> dict[str, int]:
     current = policy()
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(timespec="microseconds").replace("+00:00", "Z")
     with conn:
-        for row in conn.execute("SELECT * FROM factory_independent_reviews WHERE state IN ('pending','running','awaiting_inspection') AND created_at<? LIMIT ?", (cutoff, limit)).fetchall():
+        for row in conn.execute("SELECT r.* FROM factory_independent_reviews r LEFT JOIN factory_independent_review_deliveries d ON d.review_id=r.review_id WHERE r.state IN ('pending','running','awaiting_inspection') AND COALESCE(d.created_at,r.created_at)<? LIMIT ?", (cutoff, limit)).fetchall():
             _stop(conn, row, "review_timeout")
     for row in conn.execute("SELECT review_id FROM factory_independent_reviews WHERE state='awaiting_inspection' LIMIT ?", (limit,)).fetchall():
         _settle_receipt(conn, row["review_id"])

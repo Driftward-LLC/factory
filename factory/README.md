@@ -276,6 +276,49 @@ service-specific commands only for
 focused debugging, installer work, or break-glass recovery after `factory`
 identifies the component involved.
 
+## Unstarted independent review recovery
+
+Root can recover the legacy `review_inconclusive` preflight stop caused by
+`unavailable-generator-session` when the source execution has no Hermes session.
+This command requires a verified latest source and the exact open draft head,
+unchanged enabled review/enrollment and verification policies, intact admission
+requirements manifests, and settled execution/verification leases. Held issues,
+started reviews, receipts, ambiguous job events, subsequent passes and a second
+recovery are rejected. It never retries model work or allocates another pass.
+
+```bash
+factory review-recovery ENG-X inspect --review REVIEW-ID \
+  --source-attempt ATTEMPT-ID --yes
+# Wait for the existing typed inspection worker/outbox to record its result.
+factory review-recovery ENG-X preview --review REVIEW-ID \
+  --source-attempt ATTEMPT-ID --repo OWNER/REPO \
+  --pr https://github.com/OWNER/REPO/pull/N --branch EXISTING-BRANCH \
+  --reviewed-head FULL-40-HEX-SHA --reason "reviewed unstarted preflight recovery"
+factory review-recovery ENG-X confirm --review REVIEW-ID \
+  --source-attempt ATTEMPT-ID --repo OWNER/REPO \
+  --pr https://github.com/OWNER/REPO/pull/N --branch EXISTING-BRANCH \
+  --reviewed-head FULL-40-HEX-SHA --reason "reviewed unstarted preflight recovery" \
+  --request-id STABLE-REQUEST-ID --snapshot-digest DIGEST-FROM-PREVIEW --yes
+```
+
+Preview is read-only and binds the root principal, exact intent, original
+failure evidence, current eligibility and a typed inspection at most 120 seconds
+old. Confirm checks again under the ledger write lock and appends one delivery
+job, approval/failure snapshot, audit event and existing accepted outbox. The
+original failed job, request, events and outbox remain unchanged. The logical
+review retains its ID, source, pass, policy, head, capability and creation time;
+the new delivery starts its own bounded dispatch deadline. The failed delivery
+loses claim, authorization and completion authority. Identical request IDs and
+approval snapshots return the existing delivery; changed intent conflicts.
+
+Native reviewer journals are never removed or reset. If one already exists for
+an incompatible intent or ambiguous invocation, the gateway still fails closed.
+The same logical review trace scope applies to the first native invocation;
+recovery approval alone does not prove a trace or model invocation exists.
+
+This requires an explicitly deployed schema-10 release; see the
+[schema deployment boundary](../docs/factory-release-runbook.md#bridge-schema-10).
+
 ## Exact-head review repairs
 
 After an independent review, root can authorize one repair of a Factory-owned

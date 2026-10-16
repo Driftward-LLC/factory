@@ -25,7 +25,7 @@ from . import work_evidence
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
 # identity also binds the transitive source closure that implements these
@@ -284,6 +284,7 @@ def _require_runtime_schema(conn: sqlite3.Connection) -> None:
         "reconciliation_scan_state",
         "factory_issue_controls", "factory_issue_control_commands",
         "factory_independent_reviews",
+        "factory_independent_review_deliveries",
     }
     found = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= found:
@@ -528,6 +529,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(source_attempt_id) REFERENCES factory_attempts(attempt_id),
             FOREIGN KEY(job_id) REFERENCES bridge_jobs(job_id)
         );
+        CREATE TABLE IF NOT EXISTS factory_independent_review_deliveries (
+            review_id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE,
+            request_id TEXT NOT NULL UNIQUE, approval_json TEXT NOT NULL,
+            evidence_json TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(review_id) REFERENCES factory_independent_reviews(review_id),
+            FOREIGN KEY(job_id) REFERENCES bridge_jobs(job_id)
+        );
         CREATE TABLE IF NOT EXISTS factory_recovery_requests (
             request_key TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE, job_id TEXT NOT NULL,
             evidence_json TEXT NOT NULL, evidence_digest TEXT NOT NULL, result_json TEXT,
@@ -594,6 +602,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_delete BEFORE DELETE ON factory_independent_reviews BEGIN SELECT RAISE(ABORT, 'review budget is durable'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_identity BEFORE UPDATE ON factory_independent_reviews WHEN NEW.review_id!=OLD.review_id OR NEW.lineage_key!=OLD.lineage_key OR NEW.pass_number!=OLD.pass_number OR NEW.source_attempt_id!=OLD.source_attempt_id OR NEW.source_job_id!=OLD.source_job_id OR NEW.job_id!=OLD.job_id OR NEW.repository!=OLD.repository OR NEW.pr_url!=OLD.pr_url OR NEW.head_sha!=OLD.head_sha OR NEW.policy_digest!=OLD.policy_digest OR NEW.capability!=OLD.capability OR (OLD.result_json IS NOT NULL AND (NEW.result_json IS NOT OLD.result_json OR NEW.result_digest IS NOT OLD.result_digest)) BEGIN SELECT RAISE(ABORT, 'review identity and receipt are immutable'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_replace BEFORE INSERT ON factory_independent_reviews WHEN EXISTS (SELECT 1 FROM factory_independent_reviews WHERE review_id=NEW.review_id OR (lineage_key=NEW.lineage_key AND pass_number=NEW.pass_number) OR source_job_id=NEW.source_job_id) BEGIN SELECT RAISE(ABORT, 'review budget is durable'); END")
+        for operation in ("UPDATE", "DELETE"):
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_review_delivery_{operation.lower()} BEFORE {operation} ON factory_independent_review_deliveries BEGIN SELECT RAISE(ABORT, 'review delivery history is append-only'); END")
+        conn.execute("CREATE TRIGGER IF NOT EXISTS protect_review_delivery_replace BEFORE INSERT ON factory_independent_review_deliveries WHEN EXISTS (SELECT 1 FROM factory_independent_review_deliveries WHERE review_id=NEW.review_id OR job_id=NEW.job_id OR request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT, 'review delivery history is append-only'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_issue_control_commands_replace BEFORE INSERT ON factory_issue_control_commands WHEN EXISTS (SELECT 1 FROM factory_issue_control_commands WHERE request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT, 'issue control history is append-only'); END")
         for table in ("factory_execution_manifests", "factory_work_checkpoints"):
             for operation in ("UPDATE", "DELETE"):
@@ -602,7 +613,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             # REPLACE otherwise bypasses DELETE triggers when recursive_triggers is off.
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_{table}_replace BEFORE INSERT ON {table} WHEN EXISTS (SELECT 1 FROM {table} WHERE {identity}=NEW.{identity} OR (attempt_id=NEW.attempt_id AND {kind}=NEW.{kind})) BEGIN SELECT RAISE(ABORT, 'work evidence is append-only'); END")
         _migration_failpoint("after-ddl")
-        # Schema 9 adds only review storage; rerunning old backfills would
+        # Schema 9/10 add only review storage; rerunning old backfills would
         # refresh historical inspections and dispatch work during this upgrade.
         if previous_version < 8:
             _migrate_bridge_verification_columns(conn)
