@@ -27,6 +27,7 @@ from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidation
 from .store import get_factory_work_evidence
 from . import interrupted_resolution
 from . import review_repair
+from . import review_recovery
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -640,6 +641,23 @@ class OperatorHandler(BaseHTTPRequestHandler):
             if path == "/v1/lifecycle/dead-letters/archive" and set(body) == {"outbox_key", "reason", "snapshot_digest"}:
                 self._reply(200, archive_lifecycle_dead_letter(_operator_lifecycle_path(), actor=self._actor(), **body)); return
             bridge_db, ingress_db, routes, policy = self._paths()
+            recovery_path = re.fullmatch(r"/v1/review-recovery/(inspect|preview|confirm)", path)
+            if recovery_path and not urlparse(self.path).query:
+                phase = recovery_path.group(1)
+                fields = {"issue", "review_id", "source_attempt_id"} if phase == "inspect" else set(review_recovery.FIELDS)
+                if phase == "confirm": fields |= {"request_id", "snapshot_digest"}
+                if set(body) != fields:
+                    raise OperatorError("unsupported review recovery fields")
+                if phase == "inspect":
+                    conn = connect_runtime(bridge_db)
+                    try: result = review_recovery.inspect(conn, actor=self._actor(), **body)
+                    finally: conn.close()
+                else:
+                    operation = review_recovery.preview if phase == "preview" else review_recovery.confirm
+                    result = operation(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes,
+                                       policy_path=policy, actor=self._actor(), **body)
+                self._reply(201 if result.get("created") else 200, result)
+                return
             review_path = re.fullmatch(r"/v1/review-repair/(inspect|preview|confirm)", path)
             if review_path and not urlparse(self.path).query:
                 phase = review_path.group(1)

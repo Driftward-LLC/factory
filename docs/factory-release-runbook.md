@@ -182,6 +182,31 @@ docker compose --env-file /etc/driftward/hatchet.env \
 image revision label and that live Hatchet workflows/workers conform to the
 checked-in desired state.
 
+## Bridge schema 10
+
+Building or merging a release does not migrate the live ledger or authorize an
+unstarted-review recovery. Schema 10 adds an empty, append-only independent
+review delivery table; its migration preserves all historical review, job,
+event and outbox rows. It does not rearm reviews or dispatch work.
+
+Deploy this schema in a separately reviewed maintenance window. Quiesce intake,
+bridge/operator/dispatcher consumers and workers, confirm no active executions
+or unsettled leases/deliveries, and retain a cold, restorable backup of the
+ledger and release configuration. Run the explicit installer migration and
+its disposable-copy, integrity and historical-row preservation checks before
+starting all consumers from the same schema-10 release. Runtime and read-only
+connections perform no DDL and refuse schema 9 until migration completes.
+Follow the existing [bridge migration procedure](../hatchet/bridge/README.md#legacy-publication-and-migration-boundary)
+for the supported migration gates; do not apply ad hoc SQL against live state.
+
+After deployment, a root operator must separately inspect, preview and confirm
+each eligible unstarted review using `factory review-recovery`. Neither the
+migration nor a background sweep performs that approval.
+
+Schema 9 binaries cannot open a schema-10 ledger. A rollback across this boundary
+requires a reviewed restore/migration plan and quiescence; preserve any work
+recorded after the backup. Do not point the old image at the upgraded ledger.
+
 ## Rollback The Existing VPS Deployment
 
 Rollback is a deployment of the previous known-good tag:

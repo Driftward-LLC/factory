@@ -259,7 +259,7 @@ def reserve_policy_repair(conn, review: dict[str, Any], authorized_policy: dict[
     result = __import__("json").loads(current["result_json"])
     source_attempt = store.get_factory_attempt(conn, current["source_attempt_id"])
     source_job = store.get_job(conn, current["source_job_id"])
-    independent_review._receipt(result, store.get_job(conn, current["job_id"])["payload"]["review"])
+    independent_review._receipt(result, store.get_job(conn, independent_review._delivery_job_id(conn, current))["payload"]["review"])
     feedback = "\n".join(f"P{f['priority']} {f['file']}:{f['line']} {f['title']}: {f['body']}" for f in result["findings"])
     # Truncating findings would silently broaden/invalidate the authorized repair.
     if len(feedback) > 2000:

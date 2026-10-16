@@ -280,7 +280,7 @@ class IndependentReviewTests(unittest.TestCase):
         before = contents()
         self.assertGreater(len(before["factory_inspection_requests"]), 0)
         store.init_db(self.conn)
-        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 9)
+        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], store.SCHEMA_VERSION)
         self.assertEqual(contents(), {**before, "factory_independent_reviews": []})
         self.assertEqual(self.conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(self.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -298,7 +298,7 @@ class IndependentReviewTests(unittest.TestCase):
 
     def test_future_or_malformed_schema_version_is_rejected_before_ddl(self):
         self.conn.execute("DROP TABLE factory_independent_reviews")
-        for version in (10, "future", -1, 8.5):
+        for version in (store.SCHEMA_VERSION + 1, "future", -1, 8.5):
             with self.subTest(version=version):
                 self.conn.execute("UPDATE bridge_schema_meta SET schema_version=?", (version,))
                 self.conn.commit()
