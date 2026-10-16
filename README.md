@@ -41,6 +41,9 @@ Factory Docker volumes during the standalone deployment cutover.
 
 ## Common Commands
 
+For source-free managed installations, use the [canonical CLI binding](deploy/CLI.md)
+so `factory` follows the active installation and image, including review recovery.
+
 ```bash
 factory status
 factory console

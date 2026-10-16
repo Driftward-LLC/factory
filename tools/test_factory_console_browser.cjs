@@ -300,10 +300,11 @@ async function main() {
     assert.equal(await page.locator('#hatchet-link').isVisible(), false);
     assert.equal(await page.locator('#active-attempts tr').count(), 3);
     assert.match(await page.locator('#active-attempts tr').first().textContent(), /ENG-104/);
-    for (const state of ['pending', 'running', 'changes_requested', 'needs_operator', 'stale']) {
+    for (const [state, reviewLabel] of Object.entries({ pending: 'Pending', running: 'Running', changes_requested: 'Changes requested', needs_operator: 'Needs operator', stale: 'Stale' })) {
       reviewOnlyState = state;
       await page.locator('#refresh-button').click();
-      await page.waitForFunction(() => document.querySelector('#nav-work-count').textContent === '9');
+      await page.locator('#active-attempts tr').filter({ hasText: 'ENG-108' })
+        .getByText('Independent review: ' + reviewLabel, { exact: true }).waitFor();
       assert.equal(await page.locator('#active-attempts tr').count(), 4, 'Review-only terminal attempt remains visible: ' + state);
       assert.match(await page.locator('#active-attempts').textContent(), /ENG-108/);
       assert.equal(await page.locator('#queue-attention').textContent(), ['pending', 'running'].includes(state) ? '1' : '2');
