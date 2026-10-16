@@ -646,7 +646,8 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 actor = self._actor()
                 fields = {"issue", "source_attempt_id"} if phase == "inspect" else set(review_repair.FIELDS)
                 if phase == "confirm": fields |= {"request_id", "snapshot_digest"}
-                if set(body) != fields:
+                optional = review_repair.OPTIONAL_FIELDS if phase != "inspect" else set()
+                if not fields <= set(body) or set(body) - fields - optional:
                     raise OperatorError("unsupported review repair fields")
                 if phase == "inspect":
                     conn = connect_runtime(bridge_db)

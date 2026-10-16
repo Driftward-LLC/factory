@@ -51,6 +51,7 @@ Usage:
   factory review-repair ENG-X inspect --source-attempt ATTEMPT-ID --yes
   factory review-repair ENG-X preview --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT
   factory review-repair ENG-X confirm --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+    Optional on preview/confirm: --from-policy-digest OLD --to-policy-digest CURRENT (Capykit .gitleaksignore addition only)
   factory lifecycle ENG-X [--json] [--limit N]
   factory lifecycle dead-letters list [--json] [--limit N]
   factory lifecycle dead-letters preview OUTBOX-KEY
@@ -643,7 +644,7 @@ retry_issue() {
 
 review_repair() {
   local issue="${1:-}" phase="${2:-}"; shift 2 || die "review-repair requires an issue and phase"
-  local source="" repo="" pr="" branch="" head="" feedback="" reason="" request_id="" digest="" yes=""
+  local source="" repo="" pr="" branch="" head="" feedback="" reason="" request_id="" digest="" yes="" from_policy="" to_policy=""
   [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "review-repair phase must be inspect, preview or confirm"
   while [[ $# -gt 0 ]]; do
     [[ "$1" == --yes || $# -ge 2 ]] || die "$1 requires a value"
@@ -657,6 +658,8 @@ review_repair() {
       --reason) reason="$2"; shift 2 ;;
       --request-id) request_id="$2"; shift 2 ;;
       --snapshot-digest) digest="$2"; shift 2 ;;
+      --from-policy-digest) from_policy="$2"; shift 2 ;;
+      --to-policy-digest) to_policy="$2"; shift 2 ;;
       --yes) yes=1; shift ;;
       *) die "unknown review-repair option: $1" ;;
     esac
@@ -665,11 +668,15 @@ review_repair() {
   local body
   if [[ "$phase" == inspect ]]; then
     [[ -n "$yes" ]] || die "inspect queues one read-only artifact inspection; use --yes"
-    [[ -z "$repo$pr$branch$head$feedback$reason$request_id$digest" ]] || die "inspect accepts only --source-attempt and --yes"
+    [[ -z "$repo$pr$branch$head$feedback$reason$request_id$digest$from_policy$to_policy" ]] || die "inspect accepts only --source-attempt and --yes"
     body="$(jq -cn --arg issue "$issue" --arg source_attempt_id "$source" '{issue:$issue,source_attempt_id:$source_attempt_id}')"
   else
     [[ -n "$repo" && -n "$pr" && -n "$branch" && -n "$head" && -n "$feedback" && -n "$reason" ]] || die "review-repair requires the exact artifact, feedback and reason"
     body="$(jq -cn --arg issue "$issue" --arg source_attempt_id "$source" --arg repository "$repo" --arg pr_url "$pr" --arg branch "$branch" --arg reviewed_head_sha "$head" --arg feedback "$feedback" --arg reason "$reason" '{issue:$issue,source_attempt_id:$source_attempt_id,repository:$repository,pr_url:$pr_url,branch:$branch,reviewed_head_sha:$reviewed_head_sha,feedback:$feedback,reason:$reason}')"
+    if [[ -n "$from_policy$to_policy" ]]; then
+      [[ "$from_policy" =~ ^[0-9a-f]{64}$ && "$to_policy" =~ ^[0-9a-f]{64}$ ]] || die "policy reauthorization requires both full policy digests"
+      body="$(jq -c --arg source_digest "$from_policy" --arg target_digest "$to_policy" '. + {policy_reauthorization:{source_digest:$source_digest,target_digest:$target_digest}}' <<<"$body")"
+    fi
     if [[ "$phase" == confirm ]]; then
       [[ -n "$yes" && -n "$request_id" && -n "$digest" ]] || die "confirm requires --yes, --request-id and --snapshot-digest from preview"
       body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"

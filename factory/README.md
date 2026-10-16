@@ -324,6 +324,18 @@ An authorized, unknown or unreleased execution can never use this recovery path.
 No automatic repairs follow this operator repair, even when the deployment's
 automatic verifier-repair budget is high. Automatic repair defaults are unchanged.
 
+For the reviewed Capykit policy change that adds only `.gitleaksignore` to
+`allowed_changed_paths`, root can explicitly reauthorize an existing source by
+adding `--from-policy-digest OLD-DIGEST --to-policy-digest CURRENT-DIGEST` to both
+`preview` and `confirm`. Both full digests and the old/current policies bind the
+snapshot. Any other policy difference fails closed. The new attempt uses the
+current verifier policy and inherits the original independent-review enrollment;
+the source attempt, policy, enrollment and shared PR review budget remain intact.
+This permits the file path, not arbitrary secret exclusions: the reviewed repair
+feedback must name exact false-positive fingerprints, and normal secret checks
+and independent review still apply. It grants no permission to change scanner
+configuration, CI checks, forbidden paths or execution capabilities.
+
 The worker mechanically reinspects the exact draft before the effect gate, and
 the credential-bearing invocation repeats that check before starting Hermes.
 The full expected head is carried to Hermes, with a descendant-only normal

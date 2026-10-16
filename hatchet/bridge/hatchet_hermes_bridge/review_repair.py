@@ -8,11 +8,12 @@ from typing import Any
 from . import interrupted_resolution, store
 
 FIELDS = {"issue", "source_attempt_id", "repository", "pr_url", "branch", "reviewed_head_sha", "feedback", "reason"}
+OPTIONAL_FIELDS = {"policy_reauthorization"}
 
 
 def _intent(value: dict[str, Any]) -> dict[str, Any]:
     from . import operator
-    if set(value) != FIELDS:
+    if not FIELDS <= set(value) or set(value) - FIELDS - OPTIONAL_FIELDS:
         raise operator.OperatorError("review repair requires exact issue, source, artifact and feedback fields")
     result = dict(value)
     for field, limit in (("issue", 80), ("source_attempt_id", 200), ("repository", 200),
@@ -23,7 +24,28 @@ def _intent(value: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result["reviewed_head_sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", result["reviewed_head_sha"]):
         raise operator.OperatorError("review repair requires the full reviewed head SHA")
     store._parse_pr_reference(result["repository"], result["pr_url"])
+    if "policy_reauthorization" in result:
+        transition = result["policy_reauthorization"]
+        if (not isinstance(transition, dict) or set(transition) != {"source_digest", "target_digest"}
+                or any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in transition.values())):
+            raise operator.OperatorError("review repair requires both full policy reauthorization digests")
     return result
+
+
+def _reauthorize_policy(source: Any, target: dict[str, Any], intent: dict[str, Any]) -> None:
+    """Only the reviewed Capykit ignore-file addition can cross a policy epoch."""
+    transition = intent.get("policy_reauthorization")
+    if transition is None and source == target:
+        return
+    previous = copy.deepcopy(target)
+    paths = previous.get("allowed_changed_paths", [])
+    if ".gitleaksignore" in paths:
+        paths.remove(".gitleaksignore")
+    previous["digest"] = store.payload_hash({key: value for key, value in previous.items() if key not in {"digest", "catalog_version"}})
+    if (not transition or target["repo"] != "Driftward-LLC/capykit"
+            or ".gitleaksignore" not in target["allowed_changed_paths"] or source != previous
+            or transition != {"source_digest": previous["digest"], "target_digest": target["digest"]}):
+        raise store.BridgeConflict("review repair source artifact or policy changed; explicit compatible policy reauthorization required")
 
 
 def _source_record(conn, issue: str, attempt_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -130,9 +152,9 @@ def _preview(conn, *, ingress_db: str, registry_path: str, policy_path: str, act
     attempt, job, inherited = _source(conn, issue, intent["source_attempt_id"])
     if (repo != intent["repository"] or job["payload"].get("repo") != repo
             or inherited["pr_url"] != intent["pr_url"] or inherited["branch"] != intent["branch"]
-            or inherited["head_sha"] != intent["reviewed_head_sha"]
-            or job["payload"].get("verification_policy") != policy):
+            or inherited["head_sha"] != intent["reviewed_head_sha"]):
         raise store.BridgeConflict("review repair source artifact or policy changed")
+    _reauthorize_policy(job["payload"].get("verification_policy"), policy, intent)
     recorded = store.get_pr_inspection(conn, repo, inherited["pr_url"], prior_attempt_id=attempt["attempt_id"])
     if not recorded or recorded["state"] != "completed" or not recorded["fresh"] or not operator._inspection_fresh(recorded):
         raise operator.OperatorError("review repair requires a fresh typed artifact inspection")
@@ -153,6 +175,8 @@ def _preview(conn, *, ingress_db: str, registry_path: str, policy_path: str, act
                "next_generation": generation, "review_round": round_number, "input": source, "routing_version": version,
                "policy": policy, "control_digest": control["snapshot_digest"], "artifact_lineage": inherited,
                "inspection": {k: recorded[k] for k in ("request_key", "job_id", "result_digest", "observed_at")}}
+    if intent.get("policy_reauthorization"):
+        context["source_policy"] = job["payload"]["verification_policy"]
     return {"eligible": True, "action": "repair_draft_pr", "snapshot_digest": store.payload_hash(context), "context": context}
 
 
@@ -190,6 +214,10 @@ def confirm(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path:
             context = approved["context"]
             attempt, source_job, _artifact_identity = _source(conn, intent["issue"], intent["source_attempt_id"])
             payload = copy.deepcopy(source_job["payload"])
+            if intent.get("policy_reauthorization"):
+                payload["verification_policy"] = copy.deepcopy(context["policy"])
+                for key in ("expected_base", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command"):
+                    payload[key] = copy.deepcopy(context["policy"][key])
             # A prior closed/absence fence belongs to admission of the old source.
             payload.pop("factory_absence_retry", None)
             payload["factory_artifact_fence"] = {"kind": "operator_review_repair_v1", "repository": intent["repository"],
@@ -209,7 +237,8 @@ def confirm(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path:
                 repair_payload=payload, request_id=request_id, reason=intent["reason"], actor=actor)
             store._append_factory_attempt_event(conn, new_attempt["attempt_id"], "operator_review_repair_authorized",
                 {"actor": actor, "source_attempt_id": attempt["attempt_id"], "reviewed_head_sha": intent["reviewed_head_sha"],
-                 "review_round": context["review_round"], "snapshot_digest": snapshot_digest})
+                 "review_round": context["review_round"], "snapshot_digest": snapshot_digest,
+                 **({"policy_reauthorization": intent["policy_reauthorization"]} if intent.get("policy_reauthorization") else {})})
             return {"created": created, "attempt": new_attempt, "job": job}
     finally:
         conn.close()
