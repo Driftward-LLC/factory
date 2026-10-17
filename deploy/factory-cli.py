@@ -109,6 +109,7 @@ def deploy_dispatch(binding, args):
         print(json.dumps(result, sort_keys=True, allow_nan=False))
     else:
         for label, key in (('Installation', 'installation'), ('Phase', 'phase'), ('Deployment enabled', 'enabled'),
+                           ('Rollout phase', 'rollout_phase'),
                            ('Blocked reason', 'blocked_reason'), ('Current image', 'current_image'),
                            ('Target commit', 'target_commit'), ('CI run', 'run_id'), ('Preview', 'preview'),
                            ('Artifact digest', 'artifact_digest'),

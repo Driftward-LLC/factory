@@ -43,10 +43,28 @@ class DeployPolicyTests(unittest.TestCase):
             command = ['runuser', '-u', 'nobody', '--', sys.executable]
         else:
             command = [sys.executable]
-        result = subprocess.run([*command, str(ROOT / 'deploy/factory-cli.py'), 'deploy', 'status', '--json'], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            readable = Path(directory)
+            readable.chmod(0o755)
+            launcher = readable / 'factory'
+            launcher.write_bytes((ROOT / 'deploy/factory-cli.py').read_bytes())
+            launcher.chmod(0o644)
+            result = subprocess.run([*command, str(launcher), 'deploy', 'status', '--json'],
+                                    capture_output=True, text=True, timeout=10)
+        diagnostic = ''.join(char if char.isprintable() else ' ' for char in result.stderr)[:512]
+        self.assertEqual(result.returncode, 1, diagnostic)
         self.assertEqual(result.stdout, '')
-        self.assertIn('command refused', result.stderr)
+        self.assertTrue('command refused' in result.stderr, diagnostic)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'requires root to model inaccessible checkout and run nobody')
+    def test_nonroot_refusal_fixture_handles_inaccessible_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            checkout.chmod(0o700)
+            (checkout / 'deploy').mkdir()
+            (checkout / 'deploy/factory-cli.py').write_bytes((ROOT / 'deploy/factory-cli.py').read_bytes())
+            with patch.dict(globals(), ROOT=checkout):
+                self.test_real_nonroot_entrypoint_refuses_operations()
 
     def test_invalid_arguments_never_echo_supplied_secrets(self):
         result = subprocess.run([sys.executable, str(ROOT / 'deploy/factory-cli.py'), 'deploy', 'status', '--secret-private-token'],
@@ -248,6 +266,38 @@ class AuditedDeploymentTests(unittest.TestCase):
             self.assertEqual(cli.deploy_dispatch(self.binding, ['status']), 0)
         for text in ('Deployment enabled: False', 'prior_deployment_requires_operator', 'recovery review'):
             self.assertIn(text, output.getvalue())
+
+    def test_canonical_status_blocks_nonterminal_automatic_rollout_with_or_without_latest(self):
+        identifier = self.preview(); self.call('approve', preview=identifier)
+        modules = {'auto_deploy_artifact': policy, 'factory_cli_auto_deploy': auto, 'factory_cli_deploy_operator': manual}
+        latest = self.work / 'operator-deploy' / 'latest.json'
+        with patch.object(cli, 'checked_config', return_value=self.binding), patch.object(cli, 'trusted_file'), \
+             patch.object(cli, 'installed_module', side_effect=lambda name, _: modules[name]):
+            for has_latest in (True, False):
+                if not has_latest:
+                    latest.unlink()
+                for phase in ('quiescing', 'backing_up', 'upgrading', 'starting'):
+                    self.save(self.work / 'status.json', {'phase': phase})
+                    with self.subTest(latest=has_latest, rollout_phase=phase):
+                        for machine_output in (True, False):
+                            output = io.StringIO()
+                            argv = ['factory', 'deploy', 'status'] + (['--json'] if machine_output else [])
+                            with patch.object(sys, 'argv', argv), redirect_stdout(output):
+                                self.assertEqual(cli.main(), 0)
+                            rendered = output.getvalue()
+                            if machine_output:
+                                result = json.loads(rendered)
+                                self.assertEqual(result['phase'], 'blocked')
+                                self.assertEqual(result['rollout_phase'], phase)
+                                self.assertFalse(result['eligible'])
+                                self.assertEqual(result['blocked_reason'], 'prior_deployment_requires_operator')
+                                self.assertNotIn('apply', result['next_command'])
+                                self.assertIn('recovery review', result['next_step'])
+                            else:
+                                self.assertIn('Phase: blocked', rendered)
+                                self.assertIn('Rollout phase: ' + phase, rendered)
+                                self.assertIn('recovery review', rendered)
+                                self.assertNotIn('factory deploy apply', rendered)
 
     def test_changed_target_after_approval_cannot_import_or_consume(self):
         identifier = self.preview(); self.call('approve', preview=identifier)

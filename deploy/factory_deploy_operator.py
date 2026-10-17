@@ -302,16 +302,20 @@ def run(auto, binding, args, installed):
                 result = report(latest_value)
                 result.update(current_identity(auto, install))
                 result['enabled'] = config['enabled']
-                result['rollout_phase'] = phase
             else:
                 result = {'phase': phase or 'idle', 'installation': config['installation'], 'enabled': config['enabled'],
                           **current_identity(auto, install), 'next_command': 'factory deploy preview --run RUN_ID'}
+            result['rollout_phase'] = phase
+            automatic_blocked = phase not in {None, 'complete', 'blocked'}
+            requires_recovery = automatic_blocked
             try:
                 auto.assert_manual_idle(Path(config['work_directory']))
             except auto.Refusal as error:
                 if str(error) != 'prior_deployment_requires_operator':
                     raise
-                result.update(phase=result['phase'] if result['phase'] in {'failed', 'consumed'} else 'blocked',
+                requires_recovery = True
+            if requires_recovery:
+                result.update(phase=result['phase'] if not automatic_blocked and result['phase'] in {'failed', 'consumed'} else 'blocked',
                               blocked_reason='prior_deployment_requires_operator', eligible=False,
                               next_command='factory deploy status',
                               next_step='Preserve the cold backup and audit records for an explicit recovery review.')
