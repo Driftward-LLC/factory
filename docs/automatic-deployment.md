@@ -125,3 +125,11 @@ plan supports it; host authorization checks do not depend on those features.
 
 Acceptance of a merge is authorization for routine, compatible image deployment,
 not permission to clear held issues, migrate state or change executor identity.
+
+The canonical CLI also provides an [audited single-release deployment flow](../deploy/CLI.md#audited-deployment-commands):
+`factory deploy status`, `preview --run RUN_ID`, `approve --preview DIGEST --reason TEXT --yes`,
+and `apply --preview DIGEST --yes`. It uses separately reviewed root-installed
+helpers and the existing rollout checks. Its closed CLI/docs/CI review scope
+cannot authorize migrations, executor changes, or unknown protected surfaces.
+It does not promote the compatibility baseline. Failed or interrupted manual
+deployments also latch the automatic path; there is no hidden retry or restore.

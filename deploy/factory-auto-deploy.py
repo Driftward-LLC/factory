@@ -48,8 +48,43 @@ def api(path):
 def private_json(path):
     info = path.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o600
-            and info.st_nlink == 1, 'unsafe_private_configuration')
-    return json.loads(path.read_text())
+            and info.st_nlink == 1 and info.st_size <= 1024 * 1024, 'unsafe_private_configuration')
+    def unique(items):
+        value = {}
+        for key, item in items:
+            require(key not in value, 'invalid_private_json')
+            value[key] = item
+        return value
+    return json.loads(path.read_text(), object_pairs_hook=unique,
+                      parse_constant=lambda _: require(False, 'invalid_private_json'))
+
+
+def assert_manual_idle(work):
+    """An interrupted operator rollout also fences the automatic deployment path."""
+    directory = work / 'operator-deploy'
+    if not directory.exists() and not directory.is_symlink():
+        return
+    info = directory.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o700,
+            'unsafe_manual_deployment_journal')
+    require(not list(directory.glob('*.pending')), 'prior_deployment_requires_operator')
+    for path in directory.iterdir():
+        require(path.suffix == '.json', 'unsafe_manual_deployment_journal')
+        value = private_json(path)
+        require(isinstance(value, dict), 'unsafe_manual_deployment_journal')
+        if path.name == 'latest.json':
+            require(set(value) == {'digest', 'updated_at'} and re.fullmatch(DIGEST, str(value.get('digest')))
+                    and (directory / (value['digest'] + '.json')).is_file(), 'unsafe_manual_deployment_journal')
+        elif path.name == 'baseline-anchor.json':
+            require(value.get('format') == 1 and re.fullmatch(SHA, str(value.get('commit')))
+                    and re.fullmatch(DIGEST, str(value.get('compatibility'))), 'unsafe_manual_deployment_journal')
+        else:
+            require(re.fullmatch(DIGEST + r'\.json', path.name) and value.get('format') == 1
+                    and value.get('digest') == path.stem and isinstance(value.get('snapshot'), dict)
+                    and hashlib.sha256(json.dumps(value['snapshot'], sort_keys=True, separators=(',', ':'),
+                                                 allow_nan=False).encode()).hexdigest() == path.stem,
+                    'unsafe_manual_deployment_journal')
+            require(value.get('phase') in {'preview', 'approved', 'complete'}, 'prior_deployment_requires_operator')
 
 
 def record(path, value):
@@ -109,14 +144,16 @@ def unpack(archive, directory):
     return json.loads((directory / 'deployment.json').read_text())
 
 
-def get_image(run_id, commit, config, directory):
+def source_entries(commit):
     # Use the root-installed policy and GitHub's source tree, not the build's
     # self-reported fingerprint: a changed CI script cannot approve itself.
     tree = api(f'git/trees/{commit}?recursive=1')
     require(tree.get('truncated') is False, 'incomplete_source_tree')
-    entries = [f"{item['mode']} {item['type']} {item['sha']}\t{item['path']}".encode()
-               for item in tree['tree'] if item['type'] != 'tree']
-    require(compatibility_entries(entries) == config['compatibility'], 'compatibility_review_required')
+    return [f"{item['mode']} {item['type']} {item['sha']}\t{item['path']}".encode()
+            for item in tree['tree'] if item['type'] != 'tree']
+
+
+def deployment_artifact(run_id, commit):
     artifacts = api(f'actions/runs/{run_id}/artifacts?per_page=100')
     matches = [item for item in artifacts['artifacts'] if item['name'] == 'factory-production-' + commit]
     require(len(matches) == 1 and artifacts['total_count'] <= 100, 'deployment_artifact_missing_or_ambiguous')
@@ -125,6 +162,15 @@ def get_image(run_id, commit, config, directory):
             and re.fullmatch('sha256:' + DIGEST, str(artifact.get('digest')))
             and artifact['workflow_run']['id'] == run_id
             and artifact['workflow_run']['head_sha'] == commit, 'invalid_artifact_provenance')
+    return {**{key: artifact[key] for key in ('id', 'name', 'expired', 'size_in_bytes', 'digest')},
+            'workflow_run': {key: artifact['workflow_run'][key] for key in ('id', 'head_sha')}}
+
+
+def get_image(run_id, commit, config, directory, *, expected_artifact=None):
+    require(compatibility_entries(source_entries(commit)) == config['compatibility'], 'compatibility_review_required')
+    artifact = deployment_artifact(run_id, commit)
+    if expected_artifact is not None:
+        require(artifact == expected_artifact, 'deployment_artifact_changed')
     archive = directory / 'artifact.zip'
     with archive.open('xb') as handle:
         command('gh', 'api', f'repos/{REPO}/actions/artifacts/{artifact["id"]}/zip', output=handle)
@@ -215,6 +261,7 @@ def deploy(config, run_id, commit):
     with production.portable.installation_lock(Path(config['installation'])):
         install = production.Production(Path(config['installation']))
         with production.portable.installation_lock(Path('/tmp') / ('factory-tenant-' + install.tenant)):
+            assert_manual_idle(work)
             install.preflight()
             validate_run(api(f'actions/runs/{run_id}'), api('actions/workflows/hatchet-quality.yml'), run_id, commit)
             current_main(commit)
