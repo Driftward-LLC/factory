@@ -26,10 +26,15 @@ PROVISION = Path('/etc/driftward/factory-reviewer.json')
 DROPIN = Path('/etc/systemd/system/driftward-hermes-factory-gateway.service.d/factory-profile.conf')
 SERVICE = 'driftward-hermes-factory-gateway.service'
 TERMINAL = ('completed', 'failed', 'verified_ready', 'canceled', 'canceled_after_effect', 'superseded', 'legacy_completed')
+REVIEW_SKILL_DIGESTS = {
+    'engineering/review-code.md': ('review_skill_digest', '913ab9cd76bfa6403357dd5f8f423a663986eb1b6a9663f425a7ac1a873c660b'),
+    'engineering/verify-app.md': ('verify_skill_digest', '43455f2cb5b5d810c58569e3a02be8e140291a44b3198f4bd1291693ac2dfd84'),
+}
 PUBLIC_ASSETS = {
     'gateway/hermes-gateway-server.js': Path('/usr/local/share/driftward-factory/hermes-gateway/hermes-gateway-server.js'),
     **{'independent-reviewer/' + name: Path('/usr/local/share/driftward-factory/independent-reviewer/deploy/independent-reviewer') / name
        for name in ('native_agent.py', 'runner.py', 'review_observer.py')},
+    **{name: Path('/etc/driftward/factory-reviewer') / Path(name).name for name in REVIEW_SKILL_DIGESTS},
 }
 
 
@@ -399,10 +404,14 @@ def activate(install, wrapper):
         content = source.read_bytes()
         if not content:
             raise ValueError('public role artifact is empty')
-        marker = (b'DRIFTWARD_HERMES_PROFILE' if relative.startswith('gateway/')
-                  else b'auth_root' if relative.endswith('runner.py') else b'factory-independent-reviewer')
-        if marker not in content:
-            raise ValueError('public role artifact lacks named-profile support')
+        if relative in REVIEW_SKILL_DIGESTS:
+            if hashlib.sha256(content).hexdigest() != REVIEW_SKILL_DIGESTS[relative][1]:
+                raise ValueError('reviewer skill snapshot differs from pinned engineering release')
+        else:
+            marker = (b'DRIFTWARD_HERMES_PROFILE' if relative.startswith('gateway/')
+                      else b'auth_root' if relative.endswith('runner.py') else b'factory-independent-reviewer')
+            if marker not in content:
+                raise ValueError('public role artifact lacks named-profile support')
         assets.append((relative, destination, content, destination.read_bytes(), stat.S_IMODE(destination.stat().st_mode)))
     volume = install.project + '-bridge-data'
     rows = json.loads(subprocess.run(['docker', 'volume', 'inspect', volume], capture_output=True,
@@ -438,6 +447,9 @@ def activate(install, wrapper):
         run_native(wrapper, 'move-auth', {})
         moved = True
         provisioning['auth_root'] = target
+        for relative, (field, digest) in REVIEW_SKILL_DIGESTS.items():
+            if relative in PUBLIC_ASSETS:
+                provisioning[field] = digest
         changed = True
         write_private(PROVISION, (json.dumps(provisioning, sort_keys=True, indent=2) + '\n').encode())
         write_private(DROPIN, expected_dropin)

@@ -87,6 +87,12 @@ The matching compiled gateway artifact must also be staged beside the helper at
 and the three public reviewer files (`native_agent.py`, `runner.py`,
 `review_observer.py`) after draining and stopping the gateway, retaining their
 previous bytes for exact rollback.
+The bundle also includes `engineering/review-code.md` and `engineering/verify-app.md`
+from the pinned engineering archive. Activation verifies their fixed release
+digests, refreshes only the existing private reviewer skill snapshots under
+`/etc/driftward/factory-reviewer`, and updates both provisioning digests in the
+same guarded cutover. Rollback restores their exact bytes and modes. Generic
+reviewer plugins remain disabled.
 
 ```bash
 factory profiles configure --plugin-source /path/to/reviewed/driftward-engineering

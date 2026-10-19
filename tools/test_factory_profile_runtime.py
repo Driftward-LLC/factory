@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import importlib.util
 import io
 import json
@@ -103,6 +104,13 @@ class ProfileRuntimeTests(unittest.TestCase):
                 source = helper.parent / 'gateway/hermes-gateway-server.js'
                 source.parent.mkdir(parents=True)
                 source.write_bytes(b'new public DRIFTWARD_HERMES_PROFILE support')
+                skill_source = helper.parent / 'engineering/review-code.md'
+                skill_source.parent.mkdir()
+                skill_source.write_bytes(b'pinned reviewer skill bytes\n')
+                skill_destination = root / 'review-code.md'
+                skill_destination.write_bytes(b'previous skill bytes\n')
+                skill_destination.chmod(0o600)
+                digest = hashlib.sha256(skill_source.read_bytes()).hexdigest()
                 destination = root / 'installed.js'
                 destination.write_bytes(b'previous public bytes\n')
                 destination.chmod(0o644)
@@ -114,7 +122,9 @@ class ProfileRuntimeTests(unittest.TestCase):
                     if fail and args[0] == 'is-active':
                         raise RuntimeError('health failure')
                 with patch.object(runtime, '__file__', str(helper)), \
-                     patch.object(runtime, 'PUBLIC_ASSETS', {'gateway/hermes-gateway-server.js': destination}), \
+                     patch.object(runtime, 'PUBLIC_ASSETS', {'gateway/hermes-gateway-server.js': destination,
+                                                            'engineering/review-code.md': skill_destination}), \
+                     patch.object(runtime, 'REVIEW_SKILL_DIGESTS', {'engineering/review-code.md': ('review_skill_digest', digest)}), \
                      patch.object(runtime, 'PROVISION', provision), patch.object(runtime, 'DROPIN', root / 'dropin/profile.conf'), \
                      patch.object(runtime, 'run_native', side_effect=native), patch.object(runtime, 'systemctl', side_effect=ctl), \
                      patch.object(runtime.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps([{'Name': 'factory-fixture-bridge-data', 'Mountpoint': str(root)}]))):
@@ -125,7 +135,29 @@ class ProfileRuntimeTests(unittest.TestCase):
                         runtime.activate(install, '/wrapper')
                 self.assertEqual(destination.read_bytes(), b'previous public bytes\n' if fail else source.read_bytes())
                 self.assertEqual(destination.stat().st_mode & 0o777, 0o644)
+                self.assertEqual(skill_destination.read_bytes(), b'previous skill bytes\n' if fail else skill_source.read_bytes())
+                self.assertEqual(skill_destination.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(json.loads(provision.read_text()).get('review_skill_digest'), None if fail else digest)
                 self.assertEqual((root / 'profile-cutover-public-backup/0').read_bytes(), b'previous public bytes\n')
+
+    def test_unpinned_reviewer_snapshot_refused_before_cutover(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provision, database, install, status = self.activation_fixture(root)
+            helper = root / 'bundle/helper.py'
+            source = helper.parent / 'engineering/review-code.md'
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b'not the pinned release')
+            destination = root / 'review-code.md'
+            destination.write_bytes(b'previous')
+            with patch.object(runtime, '__file__', str(helper)), \
+                 patch.object(runtime, 'PUBLIC_ASSETS', {'engineering/review-code.md': destination}), \
+                 patch.object(runtime, 'PROVISION', provision), patch.object(runtime, 'DROPIN', root / 'missing'), \
+                 patch.object(runtime, 'run_native', return_value=status), patch.object(runtime, 'systemctl') as ctl:
+                with self.assertRaisesRegex(ValueError, 'pinned engineering release'):
+                    runtime.activate(install, '/wrapper')
+            install.compose.assert_not_called()
+            ctl.assert_not_called()
 
     def test_active_guard_does_not_stop_workers_or_gateway(self):
         with tempfile.TemporaryDirectory() as temporary:
