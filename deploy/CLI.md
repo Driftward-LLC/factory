@@ -80,8 +80,8 @@ For the existing shared-Hermes deployment, the optional root-protected
 `profile_runtime` binding enables the reviewed role cutover helper. Install it
 with its matching `factory-observers/posthog/{__init__.py,plugin.yaml}` and
 `independent-reviewer/review_observer.py` public assets, preserving their paths
-relative to the helper. Deploy matching gateway/reviewer application artifacts
-before activation; the CLI does not publish application code.
+relative to the helper. Stage matching reviewed gateway/reviewer application
+artifacts in this bundle before activation.
 The matching compiled gateway artifact must also be staged beside the helper at
 `gateway/hermes-gateway-server.js`. Activation publishes only this gateway file
 and the three public reviewer files (`native_agent.py`, `runner.py`,

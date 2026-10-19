@@ -277,7 +277,7 @@ def canary(payload):
         module = ModuleType('factory_canary_review_observer')
         exec(base64.b64decode(payload['review_observer'], validate=True), module.__dict__)
         metadata = {'role': 'reviewer', 'review_id': 'profile-canary-' + identifier,
-                    'head_sha': COMMIT, 'pass_number': 1, 'repository': 'Driftward-LLC/factory'}
+                    'head_sha': COMMIT, 'pass_number': 1, 'repository': 'Driftward-LLC/driftward-engineering'}
         observer = module.attach_observer(metadata, session, set(), telemetry)
         if not observer or not observer.enabled:
             raise ValueError('reviewer PostHog observer unavailable')
