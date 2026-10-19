@@ -13,6 +13,10 @@ import tempfile
 
 CONFIG = Path('/etc/driftward/factory-cli.json')
 OPERATOR_COMMANDS = {'analytics', 'retry', 'lifecycle', 'attempts', 'review-recovery', 'review-repair'}
+PROFILES = {
+    'factory-executor': 'Factory executor; provisioned separately from execution routing.',
+    'factory-independent-reviewer': 'Factory independent reviewer; provisioned separately from review routing.',
+}
 
 
 def checked_config(path):
@@ -20,10 +24,81 @@ def checked_config(path):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
         raise ValueError('CLI binding must be a root-owned regular file with mode 0600')
     value = json.loads(path.read_text())
-    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url'} or not all(
+    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url', 'hermes_wrapper'} or not all(
             isinstance(value.get(key), str) and Path(value[key]).is_absolute()
             for key in ('installation', 'production_bundle')):
         raise ValueError('invalid CLI binding')
+    if 'hermes_wrapper' in value:
+        checked_hermes_wrapper(value['hermes_wrapper'])
+    return value
+
+
+def checked_hermes_wrapper(value):
+    if not isinstance(value, str) or not Path(value).is_absolute():
+        raise ValueError('Hermes wrapper requires an absolute path')
+    path = Path(value)
+    # Validate parents too: a protected executable in a writable directory can
+    # be replaced without writing the executable itself.
+    for part in (*reversed(path.parents), path):
+        info = part.lstat()
+        if (info.st_uid != 0 or info.st_mode & 0o022
+                or not (stat.S_ISDIR(info.st_mode) if part != path else stat.S_ISREG(info.st_mode))):
+            raise ValueError('Hermes wrapper path must be root-owned and protected')
+    if not os.access(path, os.X_OK):
+        raise ValueError('Hermes wrapper must be executable')
+    return path
+
+
+def hermes_profiles(wrapper, create):
+    # The wrapper owns the runtime location. No ambient root/profile, Python,
+    # Docker, or Compose settings may retarget this operation.
+    environment = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                   'HOME': '/root', 'LANG': 'C.UTF-8', 'NO_COLOR': '1', 'TERM': 'dumb'}
+    # Fixed native API calls give structured inventory without reading/printing
+    # profile configs. Native create owns staging and does not change defaults.
+    script = '''import contextlib, io, json, os, re, sys
+sys.path.insert(0, '/opt/hermes')
+from hermes_cli.profiles import list_profile_names, get_active_profile_name, create_profile, _get_profiles_root
+profiles = json.loads(PROFILE_DEFINITIONS)
+try:
+    with os.scandir(_get_profiles_root()) as entries:
+        list(entries)
+except FileNotFoundError:
+    pass
+before = set(list_profile_names())
+active = get_active_profile_name()
+if not isinstance(active, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", active):
+    raise RuntimeError("invalid active profile")
+results = []
+for name, description in profiles.items():
+    existed = name in before
+    if CREATE_PROFILES and not existed:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            create_profile(name, no_alias=True, no_skills=True, description=description)
+    results.append({"name": name, "existed": existed, "created": CREATE_PROFILES and not existed})
+after = set(list_profile_names())
+if get_active_profile_name() != active or (CREATE_PROFILES and not set(profiles).issubset(after)):
+    raise RuntimeError("profile creation verification failed")
+for result in results:
+    result["present"] = result["name"] in after
+print(json.dumps({"profiles": results, "active_profile": active,
+                  "routing": "unchanged", "credentials": "not_provisioned_by_factory"}))
+'''.replace('PROFILE_DEFINITIONS', repr(json.dumps(PROFILES))).replace('CREATE_PROFILES', repr(create))
+    result = subprocess.run([str(wrapper), 'shell', '-c', 'exec python3 -'], input=script, env=environment,
+                            capture_output=True, text=True, timeout=60, check=True)
+    value = json.loads(result.stdout)
+    if (not isinstance(value, dict) or set(value) != {'profiles', 'active_profile', 'routing', 'credentials'}
+            or value['routing'] != 'unchanged' or value['credentials'] != 'not_provisioned_by_factory'
+            or not isinstance(value['active_profile'], str)
+            or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value['active_profile'])
+            or not isinstance(value['profiles'], list) or len(value['profiles']) != len(PROFILES)):
+        raise ValueError('invalid native profile inventory')
+    for row, name in zip(value['profiles'], PROFILES):
+        if (not isinstance(row, dict) or set(row) != {'name', 'existed', 'created', 'present'}
+                or row['name'] != name or any(type(row[key]) is not bool for key in ('existed', 'created', 'present'))
+                or row['created'] != (create and not row['existed'])
+                or row['present'] != (create or row['existed'])):
+            raise ValueError('invalid native profile inventory')
     return value
 
 
@@ -79,7 +154,7 @@ def cli_image(install):
 
 
 def dispatch(config, args):
-    if args and args[0] in OPERATOR_COMMANDS:
+    if args and args[0] in OPERATOR_COMMANDS | {'profiles'}:
         production = production_module(config)
         with production.portable.installation_lock(Path(config['installation'])):
             return dispatch_bound(config, args)
@@ -89,7 +164,12 @@ def dispatch(config, args):
 def dispatch_bound(config, args):
     install = installation(config)
     command = args[0] if args else 'help'
-    if command == 'status' and len(args) == 1:
+    if command == 'profiles':
+        if args not in (['profiles', 'status'], ['profiles', 'list'], ['profiles', 'create']):
+            raise ValueError('usage: factory profiles status | list | create')
+        wrapper = checked_hermes_wrapper(config.get('hermes_wrapper'))
+        print(json.dumps(hermes_profiles(wrapper, args[1] == 'create'), sort_keys=True))
+    elif command == 'status' and len(args) == 1:
         install.status()
     elif command == 'logs':
         # Compose validates service names; options remain a deliberately small CLI surface.
@@ -159,6 +239,7 @@ def dispatch_bound(config, args):
             return subprocess.run(['bash', str(cli), *args], env=env).returncode
     elif command in ('help', '-h', '--help'):
         print('factory status | console | version | logs [target] [-f] [-n N] | mode\n'
+              'factory profiles status | list | create\n'
               'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair [arguments]\n'
               'Operator command arguments and approval gates are provided by the active image.\n'
               'Mode changes and doctor are unavailable for managed installations.')

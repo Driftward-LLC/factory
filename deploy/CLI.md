@@ -14,6 +14,7 @@ production operations bundle:
   "installation": "/srv/factory-candidate",
   "installation_id": "COPY THE installation_id FROM THE INSTALLATION MARKER",
   "production_bundle": "/srv/factory-bundles/REVIEWED-BUNDLE/deploy",
+  "hermes_wrapper": "/usr/local/bin/driftward-hermes",
   "console_url": "https://YOUR-FACTORY-CONSOLE"
 }
 ```
@@ -49,6 +50,25 @@ unsupported by this launcher: they require a separately reviewed managed
 installation operation. Operator commands (`attempts`, `retry`, `lifecycle`,
 `analytics`, `review-repair`, `review-recovery`) retain the active image's
 arguments. `factory version` shows the installation, project and active image.
+
+`factory profiles status` (or `list`) reports whether the native Hermes profiles
+`factory-executor` and `factory-independent-reviewer` exist. `factory profiles
+create` creates missing profiles with native Hermes profile provisioning, without
+aliases, bundled skills, cloning, or changing the active default. Existing
+profiles are retained unchanged; a partial failure can be retried. These commands
+require the optional `hermes_wrapper` binding above, pointing to a root-owned
+executable regular file whose path components are protected from group/world
+writes. The bound Factory installation is validated and locked before calling
+the wrapper. Ambient Hermes/Docker/Compose overrides are not forwarded.
+
+Provisioning does not route Factory execution or independent reviews to these
+profiles, migrate credentials, activate plugins, or establish credential
+isolation: Hermes may still have default-profile authentication fallback until
+separately configured. The existing reviewer auth and per-review isolation stay
+in place. Only bounded profile inventory is returned; profile configs, native
+command output, credentials, and error details are never displayed. The launcher
+extension can be installed as reviewed host tooling without rebuilding Factory's
+image; it does not change the production operations bundle.
 
 For recovery, use `factory review-recovery ENG-X preview --review REVIEW-ID
 --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH
