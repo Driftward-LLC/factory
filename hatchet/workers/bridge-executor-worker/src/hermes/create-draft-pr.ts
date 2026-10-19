@@ -1238,7 +1238,8 @@ export function hermesProfileArguments(): string[] {
   const profile = process.env.DRIFTWARD_HERMES_PROFILE;
   if (!profile) return [];
   if (profile !== 'factory-executor') throw new NonRetryableBridgeExecutionError('hermes_profile_invalid', 'Factory executor profile must be factory-executor');
-  return ['--profile', profile];
+  return ['--profile', profile, '--skills',
+    'driftward-engineering:implement-change,driftward-engineering:verify-app,driftward-engineering:prepare-pr'];
 }
 
 export function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {

@@ -7,7 +7,8 @@ test('executor profile selects native command and metadata runtime consistently'
     delete process.env.DRIFTWARD_HERMES_PROFILE;
     assert.deepEqual(hermesProfileArguments(), []);
     process.env.DRIFTWARD_HERMES_PROFILE = 'factory-executor';
-    assert.deepEqual(hermesProfileArguments(), ['--profile', 'factory-executor']);
+    assert.deepEqual(hermesProfileArguments(), ['--profile', 'factory-executor', '--skills',
+      'driftward-engineering:implement-change,driftward-engineering:verify-app,driftward-engineering:prepare-pr']);
     const previousUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
     process.env.DRIFTWARD_HERMES_RUNTIME_USER = '1000:1000';
     try {
