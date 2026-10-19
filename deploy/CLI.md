@@ -15,6 +15,7 @@ production operations bundle:
   "installation_id": "COPY THE installation_id FROM THE INSTALLATION MARKER",
   "production_bundle": "/srv/factory-bundles/REVIEWED-BUNDLE/deploy",
   "hermes_wrapper": "/usr/local/bin/driftward-hermes",
+  "profile_runtime": "/usr/local/share/driftward-factory/profile-runtime/deploy/factory-profile-runtime.py",
   "console_url": "https://YOUR-FACTORY-CONSOLE"
 }
 ```
@@ -74,6 +75,66 @@ in place. Only bounded profile inventory is returned; profile configs, native
 command output, credentials, and error details are never displayed. The launcher
 extension can be installed as reviewed host tooling without rebuilding Factory's
 image; it does not change the production operations bundle.
+
+For the existing shared-Hermes deployment, the optional root-protected
+`profile_runtime` binding enables the reviewed role cutover helper. Install it
+with its matching `factory-observers/posthog/{__init__.py,plugin.yaml}` and
+`independent-reviewer/review_observer.py` public assets, preserving their paths
+relative to the helper. Deploy matching gateway/reviewer application artifacts
+before activation; the CLI does not publish application code.
+The matching compiled gateway artifact must also be staged beside the helper at
+`gateway/hermes-gateway-server.js`. Activation publishes only this gateway file
+and the three public reviewer files (`native_agent.py`, `runner.py`,
+`review_observer.py`) after draining and stopping the gateway, retaining their
+previous bytes for exact rollback.
+
+```bash
+factory profiles configure --plugin-source /path/to/reviewed/driftward-engineering
+factory profiles status
+factory profiles activate
+factory profiles canary executor
+factory profiles canary reviewer
+```
+
+Configure reads only Git's tracked archive at engineering commit
+`db14524356cfebd132833ed06a7c8a097ef5c11c` (`0.1.0-rc.6`). It retains immutable
+releases under the executor profile's own `factory-managed/releases` directory
+and enables that package plus the metadata-only PostHog observer for the
+executor. Existing default-profile files and shared release stores are not
+modified. The named reviewer keeps generic plugins disabled and uses its native
+review observer. Both observers use existing runtime PostHog configuration;
+ingestion keys are not placed in profile files. Models are selected only in
+these named role profiles (Sol executor, Astra reviewer).
+Executor MCP/browser/terminal/tool configuration is preserved through an explicit
+capability allowlist from the existing default config. Inline credential fields
+are refused; only references to already available runtime environment variables
+are accepted for those fields. Identity, authentication, channels, memories and
+sessions are not migrated. Status reports capability parity and MCP server names
+without config values. Activation refuses missing parity or blocked capability
+settings. The reviewer does not inherit executor capability configuration.
+Configure is an initial cutover operation; changing an already activated role
+requires a separately reviewed upgrade.
+
+Activate supports the fixed shared-runtime host paths documented here: the
+gateway service `driftward-hermes-factory-gateway.service` and private reviewer
+provisioning `/etc/driftward/factory-reviewer.json`. It requires no active or
+unresolved Factory attempts/jobs/leases, pauses previously running execution
+writers, stops the gateway, and checks native processes before moving the
+existing dedicated review sign-in from `/opt/data/factory-reviewer-auth/auth.json`
+to the named reviewer profile. It uses an atomic same-filesystem rename and
+refuses an existing destination. Other reviewer state stays in place. A fixed
+systemd drop-in selects the executor profile; reviewer provisioning selects the
+named auth root. Previously exited workers remain exited. The private
+`profile-cutover.json` receipt records completion, rollback, or required operator
+recovery. Recovery restores only this cutover's exact files/auth location;
+incomplete recovery leaves execution writers paused.
+
+Canaries perform one bounded native SDK generation with no tools and a fixed
+prompt. They return role/profile/session/trace identifiers, never prompt output
+or credentials. The reviewer uses a fresh isolated child profile and its native
+observer. A completed model run does not verify a complete repository review or
+server ingestion: query PostHog for the returned trace identifiers to confirm
+both roles' actual generation events arrived.
 
 For recovery, use `factory review-recovery ENG-X preview --review REVIEW-ID
 --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH

@@ -24,12 +24,14 @@ def checked_config(path):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
         raise ValueError('CLI binding must be a root-owned regular file with mode 0600')
     value = json.loads(path.read_text())
-    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url', 'hermes_wrapper'} or not all(
+    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url', 'hermes_wrapper', 'profile_runtime'} or not all(
             isinstance(value.get(key), str) and Path(value[key]).is_absolute()
             for key in ('installation', 'production_bundle')):
         raise ValueError('invalid CLI binding')
     if 'hermes_wrapper' in value:
         checked_hermes_wrapper(value['hermes_wrapper'])
+    if 'profile_runtime' in value:
+        checked_hermes_wrapper(value['profile_runtime'])
     return value
 
 
@@ -181,10 +183,19 @@ def dispatch_bound(config, args):
     install = installation(config)
     command = args[0] if args else 'help'
     if command == 'profiles':
-        if args not in (['profiles', 'status'], ['profiles', 'list'], ['profiles', 'create']):
-            raise ValueError('usage: factory profiles status | list | create')
+        if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['canary', 'executor'], ['canary', 'reviewer'])
+                or (len(args) == 4 and args[1:3] == ['configure', '--plugin-source'])):
+            raise ValueError('usage: factory profiles status | list | create | configure --plugin-source REPO | activate | canary executor|reviewer')
         wrapper = checked_hermes_wrapper(config.get('hermes_wrapper'))
-        print(json.dumps(hermes_profiles(wrapper, args[1] == 'create'), sort_keys=True))
+        if args in (['profiles', 'create'], ['profiles', 'list']) or (args == ['profiles', 'status'] and 'profile_runtime' not in config):
+            result = hermes_profiles(wrapper, args[1] == 'create')
+        else:
+            helper = checked_hermes_wrapper(config.get('profile_runtime'))
+            spec = importlib.util.spec_from_file_location('factory_profile_runtime', helper)
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+            result = backend.dispatch(install, config, wrapper, args[1:])
+        print(json.dumps(result, sort_keys=True))
     elif command == 'status' and len(args) == 1:
         install.status()
     elif command == 'logs':
@@ -256,6 +267,7 @@ def dispatch_bound(config, args):
     elif command in ('help', '-h', '--help'):
         print('factory status | console | version | logs [target] [-f] [-n N] | mode\n'
               'factory profiles status | list | create\n'
+              'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
               'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair [arguments]\n'
               'Operator command arguments and approval gates are provided by the active image.\n'
               'Mode changes and doctor are unavailable for managed installations.')
