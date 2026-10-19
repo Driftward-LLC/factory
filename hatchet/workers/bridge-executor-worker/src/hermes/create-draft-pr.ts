@@ -635,7 +635,7 @@ export async function runHermesCreateDraftPrViaCommand(
 
   let result: ExecResult;
   try {
-    result = await execFileAsync(command, [...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], {
+    result = await execFileAsync(command, [...hermesProfileArguments(), ...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], {
       timeout,
       maxBuffer,
       env: {
@@ -1234,8 +1234,16 @@ function runtimeCommandFailure(error: unknown,
   );
 }
 
-function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
+export function hermesProfileArguments(): string[] {
+  const profile = process.env.DRIFTWARD_HERMES_PROFILE;
+  if (!profile) return [];
+  if (profile !== 'factory-executor') throw new NonRetryableBridgeExecutionError('hermes_profile_invalid', 'Factory executor profile must be factory-executor');
+  return ['--profile', profile];
+}
+
+export function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
   const root = process.env.DRIFTWARD_HERMES_ROOT || '/docker/driftward/hermes';
+  const profile = hermesProfileArguments()[1];
   return [
     'compose',
     '--project-directory',
@@ -1249,6 +1257,7 @@ function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
     '--user',
     hermesRuntimeUser(),
     'hermes',
+    ...(profile ? ['env', `HERMES_HOME=/opt/data/profiles/${profile}`] : []),
     ...commandArgs
   ];
 }

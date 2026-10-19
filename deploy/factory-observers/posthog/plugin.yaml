@@ -1,0 +1,11 @@
+name: posthog
+version: "1.1.0"
+description: "Metadata-only PostHog generation and tool spans with optional Factory correlation."
+author: Driftward
+requires_env:
+  - POSTHOG_API_KEY
+hooks:
+  - pre_api_request
+  - post_api_request
+  - api_request_error
+  - post_tool_call

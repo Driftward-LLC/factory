@@ -39,14 +39,16 @@ def browser_probe() -> None:
     command(["node", "/opt/factory-reviewer/browser_probe.cjs"])
 
 
-def native_arguments(container: str, session: str, *, stop: bool = False) -> list[str]:
+def native_arguments(container: str, session: str, *, stop: bool = False, auth_root: str | None = None) -> list[str]:
+    from native_agent import AUTH_ROOT, validated_auth_root
+    root = str(validated_auth_root(auth_root or str(AUTH_ROOT)))
     script = Path(__file__).with_name("native_agent.py").read_text()
     observer = Path(__file__).with_name("review_observer.py").read_text()
     script = ("import sys,types\nmodule=types.ModuleType('review_observer')\n"
               "sys.modules['review_observer']=module\nexec(" + repr(observer) + ",module.__dict__)\nexec(compile("
               + repr(script) + ",'native_agent.py','exec'))")
     return ["/usr/bin/docker", "exec", "-i", "--workdir", "/opt/hermes", container,
-            "/opt/hermes/.venv/bin/python", "-c", script, "--stop" if stop else "--review", session]
+            "/opt/hermes/.venv/bin/python", "-c", script, "--stop" if stop else "--review", root, session]
 
 
 def relay_line(stream, pending: bytearray, deadline: float, limit: int = 4 * 1024 * 1024) -> bytes:
@@ -88,7 +90,7 @@ def model_result(value: object) -> dict:
 
 
 def run(head: str, base: str, requirements: dict, source: str, hermes: str, session: str,
-        instructions: str, telemetry: dict | None = None) -> dict:
+        instructions: str, telemetry: dict | None = None, auth_root: str | None = None) -> dict:
     result = {"head_sha": head, "verdict": "inconclusive", "findings": [], "reason": "review_isolation_unavailable"}
     try:
         from native_agent import PROPERTIES, request_frame
@@ -130,7 +132,7 @@ No actionable findings means passed; actionable findings mean changes_requested.
         except ValueError:
             result["reason"] = "review_budget_exhausted"
             return result
-        process = subprocess.Popen(native_arguments(hermes, session), stdin=subprocess.PIPE,
+        process = subprocess.Popen(native_arguments(hermes, session, auth_root=auth_root), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             process.stdin.write(frame)
@@ -162,7 +164,7 @@ No actionable findings means passed; actionable findings mean changes_requested.
         finally:
             # The Docker client is not the native SDK process. Confirm exact native termination first.
             try:
-                command(native_arguments(hermes, session, stop=True), timeout=15)
+                command(native_arguments(hermes, session, stop=True, auth_root=auth_root), timeout=15)
             finally:
                 process.kill()
                 process.communicate(timeout=10)
@@ -179,10 +181,12 @@ No actionable findings means passed; actionable findings mean changes_requested.
 
 if __name__ == "__main__":
     if sys.argv[1] == "--stop":
-        command(native_arguments(sys.argv[2], sys.argv[3], stop=True), timeout=15)
+        command(native_arguments(sys.argv[-2], sys.argv[-1], stop=True,
+            auth_root=sys.argv[2] if len(sys.argv) == 5 else None), timeout=15)
         sys.exit(0)
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(subprocess.TimeoutExpired("review", 570)))
     request = json.loads(Path(sys.argv[1]).read_text())
     instructions = Path(sys.argv[2]).read_text() + "\n\n" + Path(sys.argv[3]).read_text()
     print(json.dumps(run(request["head_sha"], request["expected_base"], request["requirements"],
-        sys.argv[4], sys.argv[5], sys.argv[6], instructions, request.get("telemetry")), separators=(",", ":")))
+        sys.argv[4], sys.argv[5], sys.argv[6], instructions, request.get("telemetry"),
+        sys.argv[7] if len(sys.argv) == 8 else None), separators=(",", ":")))

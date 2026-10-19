@@ -23,6 +23,19 @@ import native_agent
 
 
 class IndependentReviewerTests(unittest.TestCase):
+    def test_auth_root_is_finite_and_both_native_modes_select_it(self):
+        root = "/opt/data/profiles/factory-independent-reviewer"
+        self.assertEqual(native_agent.validated_auth_root(root), Path(root))
+        for invalid in ["/opt/data", root + "/", "/tmp/reviewer", root + "/../other"]:
+            with self.assertRaises(ValueError):
+                native_agent.validated_auth_root(invalid)
+        with patch.object(Path, "is_symlink", return_value=True):
+            with self.assertRaises(ValueError):
+                native_agent.validated_auth_root(root)
+        for stop in [True, False]:
+            args = runner.native_arguments("runtime", "factory-reviewer:" + "a" * 36, stop=stop, auth_root=root)
+            self.assertEqual(args[-3:], ["--stop" if stop else "--review", root, "factory-reviewer:" + "a" * 36])
+
     def test_model_role_has_no_shell_and_uses_exact_astra(self):
         args = runner.native_arguments("hermes-driftward-hermes-1", "factory-reviewer:" + "a" * 36)
         self.assertEqual(args[:5], ["/usr/bin/docker", "exec", "-i", "--workdir", "/opt/hermes"])

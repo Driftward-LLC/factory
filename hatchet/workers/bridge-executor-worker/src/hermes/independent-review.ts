@@ -97,7 +97,7 @@ export async function runIndependentReviewRelay(args: string[], timeout: number,
   try { return await command('/usr/bin/python3', args, timeout); }
   catch (error) {
     try {
-      await cleanup('/usr/bin/python3', [args[0], '--stop', args.at(-2)!, args.at(-1)!], 30000);
+      await cleanup('/usr/bin/python3', [args[0], '--stop', ...(args[7] ? [args[7], args[5], args[6]] : args.slice(-2))], 30000);
     } catch {
       throw Object.assign(new Error('Native reviewer termination unconfirmed'), { isolationUnknown: true });
     }
@@ -107,6 +107,7 @@ export async function runIndependentReviewRelay(args: string[], timeout: number,
 
 type Provisioning = { schema: string; image: string; canary_digest: string; policy_digest: string;
   hermes_image: string;
+  auth_root?: '/opt/data/factory-reviewer-auth' | '/opt/data/profiles/factory-independent-reviewer';
   review_skill_digest: string; verify_skill_digest: string;
   repositories: Record<string, { base_ref: string }> };
 
@@ -216,6 +217,7 @@ export class IndependentReviewer {
       privatePath(this.configPath, false);
       config = JSON.parse(readFileSync(this.configPath, 'utf8'));
       if (config.schema !== 'factory-hermes-reviewer-provisioning-v2' || !/^.+@sha256:[a-f0-9]{64}$/.test(config.image)
+        || config.auth_root !== undefined && !['/opt/data/factory-reviewer-auth', '/opt/data/profiles/factory-independent-reviewer'].includes(config.auth_root)
         || !/^sha256:[a-f0-9]{64}$/.test(config.hermes_image)
         || !/^[a-f0-9]{64}$/.test(config.canary_digest) || !/^[a-f0-9]{64}$/.test(config.policy_digest)
         || !config.repositories?.[r.repository] || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(config.repositories[r.repository].base_ref)) throw new Error();
@@ -299,7 +301,7 @@ export class IndependentReviewer {
       const assets = '/usr/local/share/driftward-factory/independent-reviewer/deploy/independent-reviewer';
       const raw = await runIndependentReviewRelay([path.join(assets, 'runner.py'), requestPath,
         path.join(this.roots.provisioning, 'review-code.md'), path.join(this.roots.provisioning, 'verify-app.md'),
-        source, 'hermes-driftward-hermes-1', session], 660000, runCommand, this.command);
+        source, 'hermes-driftward-hermes-1', session, config.auth_root || '/opt/data/factory-reviewer-auth'], 660000, runCommand, this.command);
       const result = JSON.parse(raw);
       if (!result || Object.keys(result).sort().join(',') !== 'findings,head_sha,reason,verdict' || result.head_sha !== r.head_sha) return fail('review_malformed');
       const receipt = { ...fail('review_inconclusive'), verdict: result.verdict, findings: result.findings, reason: result.reason };
