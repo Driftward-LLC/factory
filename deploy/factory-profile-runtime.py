@@ -121,20 +121,34 @@ def default_capabilities(validate=True):
     from hermes_cli.config import read_user_config_raw
     config = read_user_config_raw(checked(ROOT / 'config.yaml'))
     selected = {name: copy.deepcopy(config[name]) for name in CAPABILITIES if name in config}
-    def reject_inline(value):
+    harmless_literals = {
+        'nodeenv': {'production', 'development', 'test'},
+        'loglevel': {'trace', 'debug', 'info', 'warn', 'warning', 'error', 'critical'},
+    }
+    mime_types = {'application/json', 'text/event-stream', 'text/plain', 'application/octet-stream', '*/*'}
+    def harmless(name, item, context):
+        if not isinstance(item, str):
+            return False
+        if context in {'env', 'environment'}:
+            return item in harmless_literals.get(name, set())
+        return name in {'accept', 'contenttype'} and all(part.strip() in mime_types for part in item.split(','))
+    def reject_inline(value, context=''):
         if isinstance(value, dict):
             for name, item in value.items():
                 normalized = re.sub(r'[^a-z0-9]', '', str(name).lower())
-                if normalized.endswith(('apikey', 'token', 'password', 'secret', 'authorization')) and item:
+                sensitive = normalized.endswith(('apikey', 'token', 'password', 'secret', 'authorization',
+                                                  'privatekey', 'accesskey', 'accesskeyid', 'credential', 'credentials'))
+                transport = context in {'env', 'environment', 'headers', 'httpheaders'}
+                if item and (sensitive or (transport and not harmless(normalized, item, context))):
                     if not isinstance(item, str) or not re.fullmatch(r'(?:Bearer )?\$\{[A-Za-z_][A-Za-z0-9_]*\}', item):
                         raise ValueError('executor capability settings contain inline credentials')
                     variable = item[item.index('${') + 2:-1]
                     if not os.environ.get(variable):
                         raise ValueError('executor capability credential environment reference is unavailable')
-                reject_inline(item)
+                reject_inline(item, normalized)
         elif isinstance(value, list):
             for item in value:
-                reject_inline(item)
+                reject_inline(item, context)
     if validate:
         reject_inline(selected)
     return selected

@@ -264,6 +264,34 @@ class ProfileRuntimeTests(unittest.TestCase):
                 with patch.dict(os.environ, {'EXAMPLE_RUNTIME_KEY': ''}), self.assertRaisesRegex(ValueError, 'unavailable'):
                     runtime.default_capabilities()
 
+    def test_mcp_transport_requires_runtime_refs_except_harmless_standard_literals(self):
+        module = ModuleType('hermes_cli.config')
+        module.read_user_config_raw = lambda path: json.loads(path.read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'config.yaml'
+            with patch.object(runtime, 'ROOT', root), patch.dict(sys.modules, {'hermes_cli.config': module}), \
+                 patch.dict(os.environ, {'RUNTIME_CREDENTIAL': 'private-runtime-value'}):
+                for context, key in (('env', 'AWS_SECRET_ACCESS_KEY'), ('env', 'GITHUB_APP_PRIVATE_KEY'),
+                                     ('env', 'AWS_ACCESS_KEY_ID'), ('env', 'CUSTOM_AUTH'),
+                                     ('headers', 'X-Custom-Auth'), ('options', 'apiKey'),
+                                     ('options', 'private_key'), ('options', 'access-key')):
+                    with self.subTest(context=context, key=key):
+                        source.write_text(json.dumps({'mcp_servers': {'example': {context: {key: 'private-inline'}}}}))
+                        with self.assertRaisesRegex(ValueError, 'inline credentials'):
+                            runtime.default_capabilities()
+                        source.write_text(json.dumps({'mcp_servers': {'example': {context: {key: '${RUNTIME_CREDENTIAL}'}}}}))
+                        selected = runtime.default_capabilities()
+                        self.assertEqual(selected['mcp_servers']['example'][context][key], '${RUNTIME_CREDENTIAL}')
+                        self.assertNotIn('private-runtime-value', json.dumps(selected))
+                safe = {'mcp_servers': {'example': {'env': {'NODE_ENV': 'production', 'LOG_LEVEL': 'info'},
+                         'headers': {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}}}}
+                source.write_text(json.dumps(safe))
+                self.assertEqual(runtime.default_capabilities(), safe)
+                source.write_text(json.dumps({'mcp_servers': {'example': {'env': {'NODE_ENV': 'private-inline'}}}}))
+                with self.assertRaisesRegex(ValueError, 'inline credentials'):
+                    runtime.default_capabilities()
+
     def test_active_attempts_prevent_activation(self):
         connection = sqlite3.connect(':memory:')
         connection.executescript('CREATE TABLE factory_attempts(status TEXT); CREATE TABLE factory_execution_leases(released_at TEXT); CREATE TABLE bridge_jobs(state TEXT);')
