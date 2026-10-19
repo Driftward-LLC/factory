@@ -76,11 +76,17 @@ class CanonicalCliTests(unittest.TestCase):
             names.add(name)
             print('native output must be suppressed')
         module.create_profile = create_profile
+        module.launch_model_seed = lambda value: value
+        config = types.ModuleType('hermes_cli.config')
+        config.read_user_config_raw = lambda source: {'model': {'default': 'configured-model'}}
+        constants = types.ModuleType('hermes_constants')
+        constants.get_hermes_home = lambda: Path(tempfile.gettempdir()) / 'absent-fixture-profile'
         def run(args, **kwargs):
             import contextlib
             import io
             output = io.StringIO()
-            with patch.dict(sys.modules, {'hermes_cli.profiles': module}), contextlib.redirect_stdout(output):
+            with patch.dict(sys.modules, {'hermes_cli.profiles': module, 'hermes_cli.config': config,
+                                         'hermes_constants': constants}), contextlib.redirect_stdout(output):
                 exec(kwargs['input'], {})
             return SimpleNamespace(stdout=output.getvalue())
         with patch.object(cli.subprocess, 'run', side_effect=run):
@@ -103,11 +109,61 @@ class CanonicalCliTests(unittest.TestCase):
         def fail(*args, **kwargs):
             raise RuntimeError('native creation failed')
         module.create_profile = fail
+        module.launch_model_seed = lambda value: value
+        config = types.ModuleType('hermes_cli.config')
+        config.read_user_config_raw = lambda source: {}
+        constants = types.ModuleType('hermes_constants')
+        constants.get_hermes_home = lambda: Path(tempfile.gettempdir()) / 'absent-fixture-profile'
         def run(args, **kwargs):
-            with patch.dict(sys.modules, {'hermes_cli.profiles': module}), contextlib.redirect_stdout(io.StringIO()):
+            with patch.dict(sys.modules, {'hermes_cli.profiles': module, 'hermes_cli.config': config,
+                                         'hermes_constants': constants}), contextlib.redirect_stdout(io.StringIO()):
                 exec(kwargs['input'], {})
         with patch.object(cli.subprocess, 'run', side_effect=run), self.assertRaises(RuntimeError):
             cli.hermes_profiles(Path('/fixture'), True)
+
+    def test_native_seed_inline_credentials_refuse_before_any_creation(self):
+        import contextlib
+        import io
+        import types
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'config.yaml').write_text('fixture')
+            names = {'default'}
+            module = types.ModuleType('hermes_cli.profiles')
+            module._get_profiles_root = lambda: root
+            module.list_profile_names = lambda: sorted(names)
+            module.get_active_profile_name = lambda: 'default'
+            module.create_profile = unittest.mock.Mock()
+            module.launch_model_seed = lambda value: value
+            config = types.ModuleType('hermes_cli.config')
+            constants = types.ModuleType('hermes_constants')
+            constants.get_hermes_home = lambda: root
+            def run(args, **kwargs):
+                output = io.StringIO()
+                with patch.dict(sys.modules, {'hermes_cli.profiles': module, 'hermes_cli.config': config,
+                                             'hermes_constants': constants}), contextlib.redirect_stdout(output):
+                    exec(kwargs['input'], {})
+                return SimpleNamespace(stdout=output.getvalue())
+            with patch.object(cli.subprocess, 'run', side_effect=run):
+                for key in ('api_key', 'API-Key', 'apiKey', 'Token', 'access_token', 'refresh-token',
+                            'password', 'CLIENT_SECRET', 'Authorization'):
+                    with self.subTest(key=key):
+                        config.read_user_config_raw = lambda source: {'providers': {'selected': {'headers': {key: 'private-fixture'}}}}
+                        with self.assertRaisesRegex(RuntimeError, 'inline credentials') as error:
+                            cli.hermes_profiles(Path('/fixture'), True)
+                        self.assertNotIn('private-fixture', str(error.exception))
+                        module.create_profile.assert_not_called()
+                config.read_user_config_raw = lambda source: {'model': {'default': 'configured-model'},
+                                                              'providers': {'selected': {'api_key': ''}}}
+                module.create_profile.side_effect = lambda name, **kwargs: names.add(name)
+                created = cli.hermes_profiles(Path('/fixture'), True)
+                self.assertTrue(all(row['created'] for row in created['profiles']))
+                self.assertEqual(module.create_profile.call_count, 2)
+                config.read_user_config_raw = unittest.mock.Mock(side_effect=AssertionError('must not inspect config'))
+                cli.hermes_profiles(Path('/fixture'), False)
+                names.update(cli.PROFILES)
+                cli.hermes_profiles(Path('/fixture'), True)
+                config.read_user_config_raw.assert_not_called()
 
     def test_profile_errors_never_relay_native_output(self):
         for error in (subprocess.TimeoutExpired(['fixture'], 60, output='secret', stderr='secret'),

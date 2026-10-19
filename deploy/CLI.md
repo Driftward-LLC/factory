@@ -56,6 +56,11 @@ arguments. `factory version` shows the installation, project and active image.
 create` creates missing profiles with native Hermes profile provisioning, without
 aliases, bundled skills, cloning, or changing the active default. Existing
 profiles are retained unchanged; a partial failure can be retried. These commands
+privately inspect the native model/provider seed before any creation and refuse
+nonempty inline credential fields, because native fresh profiles can inherit
+that seed even without cloning. Status and an existing-profile create/no-op do
+not inspect the source config. No source configuration is edited.
+These commands
 require the optional `hermes_wrapper` binding above, pointing to a root-owned
 executable regular file whose path components are protected from group/world
 writes. The bound Factory installation is validated and locked before calling

@@ -54,8 +54,8 @@ def hermes_profiles(wrapper, create):
     # Docker, or Compose settings may retarget this operation.
     environment = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                    'HOME': '/root', 'LANG': 'C.UTF-8', 'NO_COLOR': '1', 'TERM': 'dumb'}
-    # Fixed native API calls give structured inventory without reading/printing
-    # profile configs. Native create owns staging and does not change defaults.
+    # Fixed native API calls return inventory only. Config is inspected privately
+    # because native fresh-profile creation can seed inline provider credentials.
     script = '''import contextlib, io, json, os, re, sys
 sys.path.insert(0, '/opt/hermes')
 from hermes_cli.profiles import list_profile_names, get_active_profile_name, create_profile, _get_profiles_root
@@ -69,6 +69,22 @@ before = set(list_profile_names())
 active = get_active_profile_name()
 if not isinstance(active, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", active):
     raise RuntimeError("invalid active profile")
+if CREATE_PROFILES and set(profiles) - before:
+    from hermes_cli.profiles import launch_model_seed
+    from hermes_cli.config import read_user_config_raw
+    from hermes_constants import get_hermes_home
+    def reject_credentials(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if normalized.endswith(("apikey", "token", "password", "secret", "authorization")) and item:
+                    raise RuntimeError("native profile model seed contains inline credentials")
+                reject_credentials(item)
+        elif isinstance(value, list):
+            for item in value:
+                reject_credentials(item)
+    source = get_hermes_home() / 'config.yaml'
+    reject_credentials(launch_model_seed(read_user_config_raw(source)) if source.is_file() else {})
 results = []
 for name, description in profiles.items():
     existed = name in before
