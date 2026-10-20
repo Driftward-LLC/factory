@@ -122,6 +122,14 @@ bytes, owner, mode or inode. Status remains read-only. Native reviewer execution
 uses a fresh child home so Hermes resolves the named reviewer's own auth domain.
 These profiles do not provide Unix-user isolation.
 
+Profile status also reports bounded gateway service health and the last cutover
+phase, failed stage and rollback stage. Receipts use fixed stage names and never
+retain subprocess output or exception text. A rollback is marked `requires_operator`
+if the gateway health check fails. The managed gateway unit and activation
+drop-in ask systemd to create its runtime directory before applying filesystem
+namespaces, preserving that directory across stops/restarts so existing worker
+socket-directory bind mounts retain the same inode.
+
 The credential-free mixed-UID native regression can be run with
 `python3 tools/check_factory_profile_runtime_native.py --plugin-source REVIEWED_GIT_REPO`.
 It uses the pinned Hermes image, disposable tmpfs data, no network and no host

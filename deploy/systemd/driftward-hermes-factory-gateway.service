@@ -7,6 +7,8 @@ Documentation=file:__SOURCE_ROOT__/deploy/README.md
 
 [Service]
 Type=simple
+RuntimeDirectory=driftward-hermes-factory
+RuntimeDirectoryPreserve=yes
 WorkingDirectory=__FACTORY_SHARE_DIR__/hermes-gateway
 Environment=NODE_ENV=production
 Environment=HATCHET_VERIFIER_POLICY_PATH=__FACTORY_SHARE_DIR__/verifier-policy.json

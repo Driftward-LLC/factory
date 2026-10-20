@@ -25,6 +25,12 @@ CAPABILITIES = ('mcp_servers', 'browser', 'terminal', 'tools', 'toolsets', 'enab
 PROVISION = Path('/etc/driftward/factory-reviewer.json')
 DROPIN = Path('/etc/systemd/system/driftward-hermes-factory-gateway.service.d/factory-profile.conf')
 SERVICE = 'driftward-hermes-factory-gateway.service'
+PROFILE_DROPIN = (b'[Service]\nEnvironment=DRIFTWARD_HERMES_PROFILE=factory-executor\n'
+                  b'RuntimeDirectory=driftward-hermes-factory\nRuntimeDirectoryPreserve=yes\n')
+CUTOVER_STAGES = {'not_started', 'unknown', 'quiescence', 'workers_stop', 'gateway_stop', 'native_idle',
+                  'public_backup', 'public_publish', 'auth_move', 'routing_publish', 'daemon_reload',
+                  'gateway_restart', 'gateway_health', 'workers_restore', 'complete', 'workers_restop',
+                  'routing_restore', 'auth_restore', 'public_restore'}
 TERMINAL = ('completed', 'failed', 'verified_ready', 'canceled', 'canceled_after_effect', 'superseded', 'legacy_completed')
 REVIEW_SKILL_DIGESTS = {
     'engineering/review-code.md': ('review_skill_digest', '913ab9cd76bfa6403357dd5f8f423a663986eb1b6a9663f425a7ac1a873c660b'),
@@ -430,6 +436,33 @@ def systemctl(*args):
     subprocess.run(['systemctl', *args], capture_output=True, check=True, timeout=90)
 
 
+def gateway_status():
+    result = subprocess.run(['systemctl', 'show', '--property=ActiveState,SubState,Result,ExecMainStatus', SERVICE],
+                            capture_output=True, text=True, check=True, timeout=15)
+    values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    bounded = {}
+    for key in ('ActiveState', 'SubState', 'Result'):
+        value = values.get(key, '')
+        bounded[key] = value if re.fullmatch(r'[a-z][a-z-]{0,39}', value) else 'unknown'
+    status = values.get('ExecMainStatus', '')
+    bounded['ExecMainStatus'] = int(status) if re.fullmatch(r'[0-9]{1,3}', status) else None
+    return bounded
+
+
+def cutover_status(install):
+    receipt = install.directory / 'profile-cutover.json'
+    if not receipt.exists() and not receipt.is_symlink():
+        return {'phase': 'not_started', 'stage': 'not_started'}
+    checked(receipt)
+    if receipt.stat().st_mode & 0o077 or receipt.stat().st_size > 65536:
+        raise ValueError('unsafe profile cutover receipt')
+    value = json.loads(receipt.read_text())
+    phases = {'preparing', 'complete', 'rolled_back', 'requires_operator'}
+    return {'phase': value.get('phase') if value.get('phase') in phases else 'unknown',
+            **{key: value.get(key) if value.get(key) in CUTOVER_STAGES else 'unknown'
+               for key in ('stage', 'rollback_stage')}}
+
+
 def activate(install, wrapper):
     # The canonical launcher holds the installation lock across this operation.
     checked(PROVISION)
@@ -440,7 +473,7 @@ def activate(install, wrapper):
     if not isinstance(provisioning, dict) or provisioning.get('schema') != 'factory-hermes-reviewer-provisioning-v2':
         raise ValueError('unsupported reviewer provisioning')
     target = str(ROOT / 'profiles' / ROLES['reviewer'])
-    expected_dropin = b'[Service]\nEnvironment=DRIFTWARD_HERMES_PROFILE=factory-executor\n'
+    expected_dropin = PROFILE_DROPIN
     if provisioning.get('auth_root') == target:
         if DROPIN.is_symlink() or not DROPIN.is_file() or DROPIN.read_bytes() != expected_dropin:
             raise ValueError('profile activation state differs')
@@ -482,50 +515,69 @@ def activate(install, wrapper):
     moved = changed = gateway_stopped = workers_touched = False
     published = []
     receipt = install.directory / 'profile-cutover.json'
-    write_private(receipt, json.dumps({'phase': 'preparing', 'services': services}).encode())
+    stage = 'quiescence'
+    def record(next_stage):
+        nonlocal stage
+        stage = next_stage
+        write_private(receipt, json.dumps({'phase': 'preparing', 'stage': stage, 'services': services}).encode())
+    record(stage)
     try:
         with sqlite3.connect(database.as_uri() + '?mode=rw', uri=True, timeout=5) as connection:
             connection.execute('BEGIN IMMEDIATE')
             assert_quiescent(connection)
             if services:
+                record('workers_stop')
                 workers_touched = True
                 install.compose('stop', '--timeout', '60', *services, private=True)
             connection.rollback()
+        record('gateway_stop')
         gateway_stopped = True
         systemctl('stop', SERVICE)
+        record('native_idle')
         run_native(wrapper, 'idle', {})
+        record('public_backup')
         backup = install.directory / 'profile-cutover-public-backup'
         if backup.exists():
             raise ValueError('prior public cutover backup requires operator inspection')
         backup.mkdir(mode=0o700)
+        record('public_publish')
         for index, (relative, destination, content, previous, mode) in enumerate(assets):
             write_private(backup / str(index), previous)
             published.append((destination, previous, mode))
             write_private(destination, content, mode)
+        record('auth_move')
         run_native(wrapper, 'move-auth', {})
         moved = True
         provisioning['auth_root'] = target
         for relative, (field, digest) in REVIEW_SKILL_DIGESTS.items():
             if relative in PUBLIC_ASSETS:
                 provisioning[field] = digest
+        record('routing_publish')
         changed = True
         write_private(PROVISION, (json.dumps(provisioning, sort_keys=True, indent=2) + '\n').encode())
         write_private(DROPIN, expected_dropin)
+        record('daemon_reload')
         systemctl('daemon-reload')
+        record('gateway_restart')
         systemctl('restart', SERVICE)
+        record('gateway_health')
         systemctl('is-active', '--quiet', SERVICE)
         if services:
+            record('workers_restore')
             install.compose('up', '-d', '--no-build', '--pull', 'never', *services, private=True)
-        write_private(receipt, json.dumps({'phase': 'complete', 'services': services, 'auth_root': target,
+        write_private(receipt, json.dumps({'phase': 'complete', 'stage': 'complete', 'services': services, 'auth_root': target,
                       'public_assets': {relative: hashlib.sha256(content).hexdigest() for relative, _, content, _, _ in assets},
                       'public_backup': str(backup)}).encode())
         return {'activated': True, 'changed': True, 'reviewer_auth': 'moved', 'receipt': str(receipt)}
     except BaseException:
         # Roll back only these exact artifacts; never restore broad runtime data.
+        failed_stage = stage
+        rollback_stage = 'workers_restop'
         try:
             if services and workers_touched:
                 install.compose('stop', '--timeout', '60', *services, private=True)
             if changed:
+                rollback_stage = 'routing_restore'
                 systemctl('stop', SERVICE)
                 write_private(PROVISION, original)
                 if DROPIN.exists():
@@ -534,18 +586,26 @@ def activate(install, wrapper):
                         raise ValueError('gateway profile drop-in changed during cutover')
                     DROPIN.unlink()
             if moved:
+                rollback_stage = 'auth_restore'
                 run_native(wrapper, 'rollback-auth', {})
+            rollback_stage = 'public_restore'
             for destination, previous, mode in reversed(published):
                 write_private(destination, previous, mode)
             if gateway_stopped:
+                rollback_stage = 'gateway_restart'
                 systemctl('daemon-reload')
                 systemctl('restart', SERVICE)
             if services and workers_touched:
+                rollback_stage = 'workers_restore'
                 install.compose('up', '-d', '--no-build', '--pull', 'never', *services, private=True)
+            rollback_stage = 'gateway_health'
+            systemctl('is-active', '--quiet', SERVICE)
+            rollback_stage = 'complete'
             phase = 'rolled_back'
         except BaseException:
             phase = 'requires_operator'
-        write_private(receipt, json.dumps({'phase': phase, 'services': services}).encode())
+        write_private(receipt, json.dumps({'phase': phase, 'stage': failed_stage,
+                                          'rollback_stage': rollback_stage, 'services': services}).encode())
         raise ValueError('profile cutover failed; inspect private cutover receipt') from None
 
 
@@ -557,6 +617,8 @@ def dispatch(install, config, wrapper, args):
         environment = subprocess.run(['systemctl', 'show', '--property=Environment', '--value', SERVICE],
                                      capture_output=True, text=True, check=True, timeout=15).stdout
         result['gateway_executor_profile_selected'] = 'DRIFTWARD_HERMES_PROFILE=factory-executor' in environment.split()
+        result['gateway_service'] = gateway_status()
+        result['cutover'] = cutover_status(install)
         return result
     if len(args) == 3 and args[:2] == ['configure', '--plugin-source']:
         if DROPIN.exists() or DROPIN.is_symlink():

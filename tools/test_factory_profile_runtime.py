@@ -105,12 +105,15 @@ class ProfileRuntimeTests(unittest.TestCase):
             original = provision.read_bytes()
             dropin = root / 'dropin/factory-profile.conf'
             calls = []
+            health_checks = []
             def native(wrapper, command, payload):
                 calls.append(command)
                 return status if command == 'status' else {}
             def ctl(*args):
                 if args[0] == 'is-active':
-                    raise RuntimeError('health failure')
+                    health_checks.append(args)
+                    if len(health_checks) == 1:
+                        raise RuntimeError('health failure')
             with patch.object(runtime, 'PROVISION', provision), patch.object(runtime, 'DROPIN', dropin), \
                  patch.object(runtime, 'PUBLIC_ASSETS', {}), \
                  patch.object(runtime, 'run_native', side_effect=native), patch.object(runtime, 'systemctl', side_effect=ctl), \
@@ -121,6 +124,51 @@ class ProfileRuntimeTests(unittest.TestCase):
             self.assertFalse(dropin.exists())
             self.assertIn('rollback-auth', calls)
             self.assertEqual(json.loads((root / 'profile-cutover.json').read_text())['phase'], 'rolled_back')
+
+    def test_failure_stage_is_sanitized_and_failed_gateway_is_not_healthy_rollback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provision, database, install, status = self.activation_fixture(root)
+            install.compose.side_effect = [RuntimeError('SECRET private diagnostic'), None, None]
+            def ctl(*args):
+                if args[0] == 'is-active':
+                    raise RuntimeError('SECRET gateway diagnostic')
+            with patch.object(runtime, 'PROVISION', provision), patch.object(runtime, 'DROPIN', root/'dropin'), \
+                 patch.object(runtime, 'PUBLIC_ASSETS', {}), patch.object(runtime, 'systemctl', side_effect=ctl), \
+                 patch.object(runtime, 'run_native', return_value=status), \
+                 patch.object(runtime.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps([{'Name': 'factory-fixture-bridge-data', 'Mountpoint': str(root)}]))):
+                with self.assertRaises(ValueError):
+                    runtime.activate(install, '/wrapper')
+            receipt = (root/'profile-cutover.json').read_text()
+            self.assertNotIn('SECRET', receipt)
+            self.assertEqual(json.loads(receipt), {'phase':'requires_operator','stage':'workers_stop',
+                                                  'rollback_stage':'gateway_health','services':['execution-dispatch-worker']})
+
+    def test_status_returns_bounded_cutover_and_gateway_health_without_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            provision=root/'reviewer.json'
+            provision.write_text('{}')
+            receipt=root/'profile-cutover.json'
+            receipt.write_text(json.dumps({'phase':'rolled_back','stage':'native_idle','secret':'never expose'}))
+            receipt.chmod(0o600)
+            before={p:p.read_bytes() for p in (provision,receipt)}
+            outputs=[SimpleNamespace(stdout='DRIFTWARD_HERMES_PROFILE=factory-executor'),
+                     SimpleNamespace(stdout='ActiveState=activating\nSubState=auto-restart\nResult=exit-code\nExecMainStatus=226\nSecret=never expose')]
+            with patch.object(runtime, 'PROVISION', provision), patch.object(runtime, 'run_native', return_value={}), \
+                 patch.object(runtime.subprocess, 'run', side_effect=outputs), patch.object(runtime, 'write_private') as write:
+                result=runtime.dispatch(SimpleNamespace(directory=root),{},'/wrapper',['status'])
+            self.assertEqual(result['cutover'],{'phase':'rolled_back','stage':'native_idle','rollback_stage':'unknown'})
+            self.assertEqual(result['gateway_service'],{'ActiveState':'activating','SubState':'auto-restart','Result':'exit-code','ExecMainStatus':226})
+            self.assertNotIn('never expose',json.dumps(result))
+            self.assertEqual(before,{p:p.read_bytes() for p in before})
+            write.assert_not_called()
+
+    def test_gateway_runtime_directory_is_created_before_service_namespace(self):
+        source=(ROOT/'deploy/systemd/driftward-hermes-factory-gateway.service').read_text()
+        for directive in ('RuntimeDirectory=driftward-hermes-factory','RuntimeDirectoryPreserve=yes'):
+            self.assertIn(directive,source)
+            self.assertIn(directive.encode(),runtime.PROFILE_DROPIN)
 
     def test_public_artifacts_publish_only_after_idle_and_restore_byte_exact(self):
         for fail in (False, True):
@@ -199,7 +247,7 @@ class ProfileRuntimeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     runtime.activate(install, '/wrapper')
             install.compose.assert_not_called()
-            ctl.assert_not_called()
+            ctl.assert_called_once_with('is-active', '--quiet', runtime.SERVICE)
 
     def test_archive_rejects_links_devices_and_escape(self):
         for name, kind in (('../escape', tarfile.REGTYPE), ('/escape', tarfile.REGTYPE),
