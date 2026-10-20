@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fixed-host, image-only deployment. Install separately; never self-update."""
 from contextlib import closing
+import base64
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -34,8 +35,8 @@ def require(condition, reason):
         raise Refusal(reason)
 
 
-def command(*args, output=None, input=None, env=None):
-    result = subprocess.run(args, input=input, stdout=output or subprocess.PIPE, stderr=subprocess.PIPE,
+def command(*args, output=None, env=None):
+    result = subprocess.run(args, stdout=output or subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=1200, env={**os.environ, 'GH_PROMPT_DISABLED': '1', **(env or {})})
     require(result.returncode == 0, Path(args[0]).name + '_failed')
     return result.stdout.decode().strip() if output is None else ''
@@ -137,8 +138,12 @@ def get_image(run_id, commit, config, directory, run_attempt, credentials):
     docker_config.mkdir(mode=0o700)
     env = {'DOCKER_CONFIG': str(docker_config)}
     try:
-        command('docker', 'login', 'ghcr.io', '--username', credentials['username'], '--password-stdin',
-                input=credentials['token'].encode(), env=env)
+        # A nonempty auths map disables Docker's native credential-helper
+        # autodetection; never let a temporary token reach the host keychain.
+        auth = base64.b64encode((credentials['username'] + ':' + credentials['token']).encode()).decode()
+        descriptor = os.open(docker_config / 'config.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w') as handle:
+            json.dump({'auths': {'ghcr.io': {'auth': auth}}}, handle)
         reference = manifest['image']
         registry_manifest = json.loads(command('docker', 'manifest', 'inspect', reference, env=env))
         require(registry_manifest.get('schemaVersion') == 2 and 'manifests' not in registry_manifest

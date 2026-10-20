@@ -1,5 +1,6 @@
 """Deployment trust, compatibility, archive and execution-stop boundaries."""
 from contextlib import contextmanager
+import base64
 import importlib.util
 import hashlib
 import io
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -128,16 +130,50 @@ class DeploymentTests(unittest.TestCase):
                 'size_in_bytes': source.stat().st_size, 'digest': 'sha256:' + auto.sha256(source),
                 'workflow_run': {'id': 34, 'head_sha': COMMIT}}
         credentials = {'username': 'octocat', 'token': 'synthetic_token'}
-        for failure in ['archive', 'config', 'pull', 'repo_digest', 'id', 'revision', 'platform', 'classic', None]:
+        helpers = self.directory / 'helpers'
+        helpers.mkdir()
+        marker = self.directory / 'credential-helper-called'
+        for name in ['docker-credential-pass', 'docker-credential-secretservice']:
+            helper = helpers / name
+            helper.write_text('#!/bin/sh\nprintf called >> "$CREDENTIAL_HELPER_PROBE"\ncat >/dev/null\n')
+            helper.chmod(0o700)
+        probe_env = {**os.environ, 'PATH': str(helpers) + ':' + os.environ['PATH'],
+                     'CREDENTIAL_HELPER_PROBE': str(marker)}
+        docker = shutil.which('docker')
+        self.assertIsNotNone(docker, 'Docker CLI is required for the credential-store regression')
+        empty_config = self.directory / 'empty-config'
+        empty_config.mkdir(mode=0o700)
+        # Prove the helpers are discoverable: the former empty configuration
+        # routes even logout through an external native helper.
+        result = subprocess.run([docker, 'logout', 'ghcr.io'],
+                                env={**probe_env, 'DOCKER_CONFIG': str(empty_config)},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists(), 'native helper probe must be effective')
+        marker.unlink()
+        for failure in ['archive', 'config', 'pull', 'repo_digest', 'id', 'revision', 'platform', 'classic', 'native_helper', None]:
             calls = []
-            def command(*args, output=None, input=None, env=None):
+            def command(*args, output=None, env=None):
                 calls.append(args)
                 if args[0] == 'gh':
                     output.write(source.read_bytes()); return ''
                 self.assertEqual(env, {'DOCKER_CONFIG': str(Path(output_dir) / 'docker-config')})
-                if args[:2] == ('docker', 'login'):
-                    self.assertEqual(input, b'synthetic_token'); return ''
+                self.assertNotIn('synthetic_token', str(args))
+                config_dir = Path(env['DOCKER_CONFIG'])
+                self.assertEqual(config_dir.stat().st_mode & 0o777, 0o700)
                 if args[:3] == ('docker', 'manifest', 'inspect'):
+                    auth_file = config_dir / 'config.json'
+                    self.assertEqual(auth_file.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(json.loads(auth_file.read_text()), {'auths': {'ghcr.io': {
+                        'auth': base64.b64encode(b'octocat:synthetic_token').decode()}}})
+                    if failure == 'native_helper':
+                        # A real Docker CLI must select its file store even
+                        # when native credential helpers are discoverable.
+                        result = subprocess.run([docker, 'logout', 'ghcr.io'],
+                                                env={**probe_env, **env}, capture_output=True, text=True, timeout=10)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn('synthetic_token', result.stdout + result.stderr)
+                        self.assertFalse(marker.exists())
                     return json.dumps({'schemaVersion': 2, 'config': {'digest':
                         IMAGE if failure == 'config' else manifest['image_config']}})
                 if args[:3] == ('docker', 'image', 'pull'):
@@ -155,7 +191,7 @@ class DeploymentTests(unittest.TestCase):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory(dir=self.directory) as output_dir, \
                     patch.object(auto, 'api', side_effect=[tree, {'total_count': 1, 'artifacts': [metadata]}]), \
                     patch.object(auto, 'command', side_effect=command):
-                if failure not in (None, 'classic'):
+                if failure not in (None, 'classic', 'native_helper'):
                     with self.assertRaises(auto.Refusal):
                         auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output_dir), 2, credentials)
                     if failure == 'archive':

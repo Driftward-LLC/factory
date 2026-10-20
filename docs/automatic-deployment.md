@@ -36,9 +36,11 @@ the tested local image without another large artifact transfer. Trusted same-rep
 PR jobs therefore have that capability, while login/publication are guarded to
 same-repo main pushes and fork tokens remain read-only. The deployment job has
 only `packages: read` and sends its short-lived `GITHUB_TOKEN` and actor name over
-the existing SSH stdin. The host validates the bounded envelope, logs in through
-password stdin using a temporary mode-0700 Docker configuration, and removes that
-configuration before rollout (including on pull failure). The token never enters
+the existing SSH stdin. The host validates the bounded envelope and writes only
+its GHCR auth entry into a mode-0600 file in a temporary mode-0700 Docker
+configuration directory. The nonempty auth map disables Docker's native
+credential-helper autodetection; no login command or host keychain is used.
+The host removes that configuration before rollout (including on pull failure). The token never enters
 arguments, logs, application configuration or worker environments. Host `gh`
 authorization for source/Actions reads remains separate; it needs no package scope.
 
