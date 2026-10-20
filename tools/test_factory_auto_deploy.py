@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import importlib.util
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,13 +61,22 @@ class DeploymentTests(unittest.TestCase):
         with patch.object(auto, 'api', return_value={'object': {'sha': 'c' * 40}}), self.assertRaisesRegex(auto.Refusal, 'superseded'):
             auto.current_main(COMMIT)
 
+    def manifest(self, compatibility='d' * 64):
+        return {'format': 2, 'commit': COMMIT, 'image': artifact.REGISTRY_IMAGE + '@' + IMAGE,
+                'image_config': 'sha256:' + 'c' * 64, 'compatibility': compatibility, 'run_id': 34, 'run_attempt': 2}
+
     def test_compatibility_changes_require_operator_review(self):
-        good = {'format': 1, 'commit': COMMIT, 'image': IMAGE, 'compatibility': 'd' * 64, 'archive_sha256': 'e' * 64}
-        self.assertEqual(auto.checked_manifest(good, COMMIT, 'd' * 64), good)
+        good = self.manifest()
+        self.assertEqual(auto.checked_manifest(good, COMMIT, 'd' * 64, 34, 2), good)
         for change in ({'compatibility': 'f' * 64}, {'commit': 'c' * 40}, {'image': 'factory:latest'},
-                       {'archive_sha256': 'wrong'}, {'command': 'do not execute'}, {'format': 2}):
+                       {'image': 'ghcr.io/foreign/repo@' + IMAGE}, {'image_config': 'wrong'},
+                       {'command': 'do not execute'}, {'format': 1}, {'run_id': 35},
+                       {'run_attempt': 1}, {'run_id': True}):
             with self.subTest(change=change), self.assertRaises(auto.Refusal):
-                auto.checked_manifest({**good, **change}, COMMIT, 'd' * 64)
+                auto.checked_manifest({**good, **change}, COMMIT, 'd' * 64, 34, 2)
+        for key in good:
+            with self.subTest(missing=key), self.assertRaises(auto.Refusal):
+                auto.checked_manifest({k: v for k, v in good.items() if k != key}, COMMIT, 'd' * 64, 34, 2)
         for name in ['deploy/Dockerfile', 'deploy/factory-auto-deploy.py', '.github/workflows/hatchet-quality.yml',
                      'hatchet/bridge/hatchet_hermes_bridge/store.py', 'hatchet/event-ingress/hatchet_event_ingress/store.py',
                      'hatchet/factory-lifecycle-writer/factory_lifecycle_writer/outbox.py',
@@ -89,7 +100,6 @@ class DeploymentTests(unittest.TestCase):
         for bad in ['../outside', '/absolute', 'deployment.json', 'symlink', 'oversized']:
             archive = self.directory / 'artifact.zip'
             with zipfile.ZipFile(archive, 'w') as bundle:
-                bundle.writestr('factory-image.tar', b'synthetic image')
                 if bad == 'symlink':
                     item = zipfile.ZipInfo('deployment.json'); item.external_attr = 0o120777 << 16
                     bundle.writestr(item, b'target')
@@ -108,57 +118,59 @@ class DeploymentTests(unittest.TestCase):
 
     def test_download_digest_and_image_provenance_checked_before_rollout(self):
         source = self.directory / 'source.zip'
-        image_bytes = b'synthetic image archive'
         tree = {'truncated': False, 'tree': [
-            {'mode': '040000', 'type': 'tree', 'sha': 'c' * 40, 'path': 'deploy'},
             {'mode': '100644', 'type': 'blob', 'sha': 'd' * 40, 'path': 'deploy/Dockerfile'}]}
         compatibility = artifact.compatibility_entries([b'100644 blob ' + b'd' * 40 + b'\tdeploy/Dockerfile'])
-        manifest = {'format': 1, 'commit': COMMIT, 'image': IMAGE, 'compatibility': compatibility,
-                    'archive_sha256': hashlib.sha256(image_bytes).hexdigest()}
+        manifest = self.manifest(compatibility)
         with zipfile.ZipFile(source, 'w') as bundle:
-            bundle.writestr('factory-image.tar', image_bytes)
             bundle.writestr('deployment.json', json.dumps(manifest))
         item = {'id': 56, 'name': 'factory-production-' + COMMIT, 'expired': False,
                 'size_in_bytes': source.stat().st_size, 'digest': 'sha256:' + auto.sha256(source),
                 'workflow_run': {'id': 34, 'head_sha': COMMIT}}
-        loaded = []
-        # CI uses classic Docker; the production containerd store returns a
-        # different content-addressed ID for that exact imported archive.
-        imported_image = 'sha256:' + 'c' * 64
-        load_result = 'Loaded image ID: ' + imported_image
-        def command(*args, output=None):
-            if args[0] == 'gh':
-                output.write(source.read_bytes()); return ''
-            if args[:3] == ('docker', 'image', 'load'):
-                loaded.append(args); return load_result
-            self.assertEqual(args, ('docker', 'image', 'inspect', imported_image))
-            return json.dumps([{'Id': imported_image, 'Architecture': 'amd64', 'Os': 'linux', 'Config': {'Labels': {
-                'org.opencontainers.image.revision': COMMIT, 'org.opencontainers.image.source': 'https://github.com/' + auto.REPO}}}])
-        for corrupted in [True, False]:
-            metadata = {**item, 'digest': 'sha256:' + '0' * 64} if corrupted else item
-            with tempfile.TemporaryDirectory(dir=self.directory) as output, patch.object(auto, 'api', side_effect=[tree, {'total_count': 1, 'artifacts': [metadata]}]), patch.object(auto, 'command', side_effect=command):
-                if corrupted:
-                    with self.assertRaisesRegex(auto.Refusal, 'artifact_digest_mismatch'):
-                        auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output))
-                    self.assertEqual(loaded, [])
+        credentials = {'username': 'octocat', 'token': 'synthetic_token'}
+        for failure in ['archive', 'config', 'pull', 'repo_digest', 'id', 'revision', 'platform', 'classic', None]:
+            calls = []
+            def command(*args, output=None, input=None, env=None):
+                calls.append(args)
+                if args[0] == 'gh':
+                    output.write(source.read_bytes()); return ''
+                self.assertEqual(env, {'DOCKER_CONFIG': str(Path(output_dir) / 'docker-config')})
+                if args[:2] == ('docker', 'login'):
+                    self.assertEqual(input, b'synthetic_token'); return ''
+                if args[:3] == ('docker', 'manifest', 'inspect'):
+                    return json.dumps({'schemaVersion': 2, 'config': {'digest':
+                        IMAGE if failure == 'config' else manifest['image_config']}})
+                if args[:3] == ('docker', 'image', 'pull'):
+                    if failure == 'pull':
+                        raise auto.Refusal('docker_failed')
+                    return 'synthetic pull result'
+                self.assertEqual(args, ('docker', 'image', 'inspect', manifest['image']))
+                return json.dumps([{'Id': 'sha256:' + 'f' * 64 if failure == 'id' else
+                    manifest['image_config'] if failure == 'classic' else IMAGE,
+                    'RepoDigests': [] if failure == 'repo_digest' else [manifest['image']],
+                    'Architecture': 'arm64' if failure == 'platform' else 'amd64', 'Os': 'linux',
+                    'Config': {'Labels': {'org.opencontainers.image.revision': 'e' * 40 if failure == 'revision' else COMMIT,
+                        'org.opencontainers.image.source': 'https://github.com/' + auto.REPO}}}])
+            metadata = {**item, 'digest': 'sha256:' + '0' * 64} if failure == 'archive' else item
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(dir=self.directory) as output_dir, \
+                    patch.object(auto, 'api', side_effect=[tree, {'total_count': 1, 'artifacts': [metadata]}]), \
+                    patch.object(auto, 'command', side_effect=command):
+                if failure not in (None, 'classic'):
+                    with self.assertRaises(auto.Refusal):
+                        auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output_dir), 2, credentials)
+                    if failure == 'archive':
+                        self.assertEqual(len(calls), 1)
                 else:
-                    self.assertEqual(auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output)), imported_image)
-                    self.assertEqual(len(loaded), 1)
-
-        for load_result in ['', 'Loaded image: factory:latest',
-                            'Loaded image ID: ' + IMAGE + '\nLoaded image ID: ' + imported_image]:
-            with tempfile.TemporaryDirectory(dir=self.directory) as output, patch.object(auto, 'api', side_effect=[tree, {'total_count': 1, 'artifacts': [item]}]), patch.object(auto, 'command', side_effect=command):
-                with self.assertRaisesRegex(auto.Refusal, 'ambiguous_image_import'):
-                    auto.get_image(34, COMMIT, {'compatibility': compatibility}, Path(output))
-
-        # Even an artifact claiming the approved fingerprint cannot approve a
-        # changed protected source file; reject before downloading/loading it.
-        changed = {'truncated': False, 'tree': [dict(tree['tree'][1], sha='e' * 40)]}
+                    self.assertEqual(auto.get_image(34, COMMIT, {'compatibility': compatibility},
+                                                   Path(output_dir), 2, credentials),
+                                     manifest['image_config'] if failure == 'classic' else IMAGE)
+                self.assertFalse((Path(output_dir) / 'docker-config').exists())
+        changed = {'truncated': False, 'tree': [dict(tree['tree'][0], sha='e' * 40)]}
         for rejected, reason in [(changed, 'compatibility_review_required'),
                                  ({**tree, 'truncated': True}, 'incomplete_source_tree')]:
             with patch.object(auto, 'api', return_value=rejected) as api, patch.object(auto, 'command') as run:
                 with self.assertRaisesRegex(auto.Refusal, reason):
-                    auto.get_image(34, COMMIT, {'compatibility': compatibility}, self.directory)
+                    auto.get_image(34, COMMIT, {'compatibility': compatibility}, self.directory, 2, credentials)
                 api.assert_called_once_with(f'git/trees/{COMMIT}?recursive=1')
                 run.assert_not_called()
 
@@ -177,6 +189,109 @@ class DeploymentTests(unittest.TestCase):
                 with self.subTest(table=table, value=value), self.assertRaisesRegex(auto.Refusal, 'active_or_unresolved'):
                     auto.assert_quiescent(conn)
                 conn.execute(f'DELETE FROM {table} WHERE {column} IS ?', (value,))
+
+    def test_publisher_requires_private_linked_package_without_changing_visibility(self):
+        with patch.dict(os.environ, {'GH_TOKEN': 'synthetic_token'}):
+            for visibility, repository in [('public', auto.REPO), ('internal', auto.REPO), ('private', 'foreign/repo'),
+                                           ('private', auto.REPO)]:
+                response = Mock()
+                response.__enter__ = Mock(return_value=io.StringIO(json.dumps({
+                    'visibility': visibility, 'repository': {'full_name': repository}})))
+                response.__exit__ = Mock(return_value=False)
+                with patch.object(artifact, 'urlopen', return_value=response) as request:
+                    if visibility == 'private' and repository == auto.REPO:
+                        artifact.private_package()
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            artifact.private_package()
+                    self.assertEqual(request.call_args.args[0].get_method(), 'GET')
+            for code in [403, 404, 500]:
+                with patch.object(artifact, 'urlopen', side_effect=HTTPError('synthetic', code, 'error', {}, None)):
+                    with self.assertRaises(RuntimeError):
+                        artifact.private_package()
+                    if code == 404:
+                        artifact.private_package(allow_missing=True)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            artifact.private_package(allow_missing=True)
+
+    def test_publisher_records_exact_tested_single_platform_digest_without_image_tar(self):
+        for local_id in [IMAGE, 'sha256:' + 'c' * 64]:
+            with self.subTest(local_id=local_id), tempfile.TemporaryDirectory(dir=self.directory) as output_dir:
+                output = Path(output_dir) / 'metadata'
+                def check_output(args, **kwargs):
+                    if args[0] == 'git':
+                        return COMMIT
+                    if args[:3] == ['docker', 'image', 'inspect']:
+                        return json.dumps([{'Id': local_id, 'Architecture': 'amd64', 'Os': 'linux', 'Config': {'Labels': {
+                            'org.opencontainers.image.revision': COMMIT,
+                            'org.opencontainers.image.source': 'https://github.com/' + auto.REPO}}}])
+                    if args[:3] == ['docker', 'image', 'push']:
+                        self.assertIn('--platform', args)
+                        return 'run-34-2: digest: ' + IMAGE + ' size: 1234'
+                    self.assertEqual(args, ['docker', 'manifest', 'inspect', artifact.REGISTRY_IMAGE + '@' + IMAGE])
+                    return json.dumps({'schemaVersion': 2, 'config': {'digest': 'sha256:' + 'c' * 64}})
+                with patch.dict(os.environ, {'GITHUB_RUN_ID': '34', 'GITHUB_RUN_ATTEMPT': '2'}), \
+                        patch.object(artifact.subprocess, 'check_output', side_effect=check_output), \
+                        patch.object(artifact.subprocess, 'run') as command, \
+                        patch.object(artifact, 'compatibility', return_value='d' * 64), \
+                        patch.object(artifact, 'private_package') as private:
+                    artifact.package(self.directory, output, 'tested:ci')
+                self.assertEqual(list(output.iterdir()), [output / 'deployment.json'])
+                self.assertEqual(json.loads((output / 'deployment.json').read_text()), self.manifest())
+                command.assert_called_once_with(['docker', 'image', 'tag', local_id,
+                                                artifact.REGISTRY_IMAGE + ':run-34-2'], check=True)
+                self.assertEqual(private.call_args_list, [unittest.mock.call(allow_missing=True), unittest.mock.call()])
+
+    def test_real_privileged_entrypoint_reads_bounded_credentials_and_keeps_command_grammar(self):
+        # Execute main in a separate interpreter with synthetic configuration;
+        # no production bundle, registry, sudo or host configuration is touched.
+        program = """
+import json, runpy, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+scope = runpy.run_path(sys.argv[1])
+scope['main'].__globals__['private_json'] = lambda _: {'enabled': True}
+scope['main'].__globals__['os'].geteuid = lambda: 0
+def deploy(config, run_id, commit, credentials):
+    assert run_id == 34 and commit == 'a' * 40
+    assert credentials == {'username': 'octocat', 'token': 'synthetic_token'}
+    print('validated credentials; no rollout')
+scope['main'].__globals__['deploy'] = deploy
+sys.argv = [sys.argv[1], sys.argv[2]]
+try:
+    scope['main']()
+except Exception:
+    sys.exit(2)
+"""
+        valid = json.dumps({'username': 'octocat', 'token': 'synthetic_token'})
+        for command, envelope, success in [('deploy 34 ' + COMMIT, valid, True),
+                                         ('status', '', True), ('deploy 34 ' + COMMIT, '', False),
+                                         ('deploy 34 ' + COMMIT, valid + ' ' * 8193, False),
+                                         ('deploy 34 ' + COMMIT, valid.replace('octocat', '--bad'), False),
+                                         ('deploy 34 ' + COMMIT, valid.replace('synthetic_token', 'bad token'), False),
+                                         ('deploy 34 main', valid, False)]:
+            result = subprocess.run([sys.executable, '-c', program, str(ROOT / 'deploy/factory-auto-deploy.py'), command],
+                                    input=envelope, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode == 0, success, result.stderr)
+            self.assertNotIn('synthetic_token', result.stdout + result.stderr)
+
+    def test_ssh_entrypoint_preserves_stdin_through_fixed_sudo_command(self):
+        program = """
+import os, runpy, sys
+def execv(path, args):
+    assert path == '/usr/bin/sudo'
+    assert args == ['sudo', '-n', '/usr/local/libexec/factory-auto-deploy', 'deploy 34 ' + 'a' * 40]
+    assert sys.stdin.read() == 'synthetic envelope\\n'
+    print('fixed command and EOF preserved')
+os.execv = execv
+runpy.run_path(sys.argv[1])
+"""
+        result = subprocess.run([sys.executable, '-c', program, str(ROOT / 'deploy/factory-deploy-ssh.py')],
+                                env={'SSH_ORIGINAL_COMMAND': 'deploy 34 ' + COMMIT},
+                                input='synthetic envelope\n', capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('EOF preserved', result.stdout)
 
     def rollout_fixture(self):
         self.database()

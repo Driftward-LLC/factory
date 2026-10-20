@@ -1,24 +1,46 @@
 # Automatic production deployment
 
-`Hatchet Quality` uploads the exact Docker image it tested, only for pushes to
-`main`. `Factory Deploy` runs after that **entire** workflow succeeds (including
+`Hatchet Quality` pushes the exact Docker image it tested to the **private** GHCR
+package `ghcr.io/driftward-llc/factory-production`, only for same-repository pushes
+to `main` after its validation gates. The separate release workflow's package is
+unchanged. CI refuses an existing public, internal, unlinked or unverifiable
+production package; a missing package is created with GHCR's private default and
+its visibility/repository link is checked again after publication. No visibility
+settings are changed. `Factory Deploy` runs after that **entire** workflow succeeds (including
 browser checks). It requests an image-only rollout through a deployment-only SSH
 account. No general-purpose GitHub runner, application credentials, or Docker
 socket is added to Factory containers. Hermes stays running and is not the
 deployment scheduler; GitHub Actions owns this deterministic release sequence.
 
 The host independently verifies the repository, successful workflow identity,
-push event, branch, current `main` SHA, immutable artifact digest, image archive
-checksum, OCI revision and platform. It loads an image saved by ID, not a mutable
-production tag. Old/superseded revisions cannot be deployed. GitHub concurrency
+push event, branch, current `main` SHA, immutable metadata-artifact digest, exact
+registry manifest and config digests, OCI revision and platform. Old/superseded
+revisions cannot be deployed. GitHub concurrency
 and the existing installation/tenant locks serialize deployments with operators.
 The protected-tree fingerprint is independently computed from GitHub's complete
 source tree using the root-installed policy, before downloading the artifact.
 Changing the CI packager cannot approve its own policy changes.
-The pinned image ID is the single immutable ID returned by the verified archive
-import. Classic Docker and containerd stores can assign different IDs to the
-same archive; the CI-side ID is metadata, not a portable lookup key. Tagged or
-multiple-image import results are rejected, and labels/platform are rechecked.
+The Actions artifact contains only bounded `deployment.json` metadata (format 2),
+binding the image digest to the commit, run ID, run attempt and compatibility
+fingerprint. No image tarball is uploaded. CI uses a run/attempt tag for retention;
+the host pulls only the recorded digest. Tag movement cannot retarget deployment.
+Single-platform Linux/amd64 manifests are required. The registry config digest
+must match CI's metadata, and Docker's local repository digest must match the
+requested reference. Classic Docker uses the config digest as its local ID;
+containerd can use the manifest digest. Only those two verified local IDs are
+accepted, and the existing production wrapper and canonical CLI continue to use
+the immutable local ID. A rerun changing the attempt during download is refused.
+
+The validation job has static `packages: write` permission because it must publish
+the tested local image without another large artifact transfer. Trusted same-repo
+PR jobs therefore have that capability, while login/publication are guarded to
+same-repo main pushes and fork tokens remain read-only. The deployment job has
+only `packages: read` and sends its short-lived `GITHUB_TOKEN` and actor name over
+the existing SSH stdin. The host validates the bounded envelope, logs in through
+password stdin using a temporary mode-0700 Docker configuration, and removes that
+configuration before rollout (including on pull failure). The token never enters
+arguments, logs, application configuration or worker environments. Host `gh`
+authorization for source/Actions reads remains separate; it needs no package scope.
 
 ## What runs automatically
 
@@ -109,6 +131,28 @@ policy baseline, SSH forced-command restriction, negative cases and safety gates
 have been verified. Environment/branch protection can be added when the GitHub
 plan supports it; host authorization checks do not depend on those features.
 
+### Migrating an existing archive deployment
+
+This is a reviewed host compatibility change, not a routine image rollout.
+Format-1 image archives are deliberately rejected by the new helper, and the old
+helper cannot consume format-2 metadata. Before enabling requests, install the
+reviewed helper/shared policy together, validate the ephemeral credential path
+through the forced command and sudo, confirm Docker supports `image push
+--platform` in CI and private digest pulls on the host, and approve the new
+protected-tree baseline against the actual installed runtime. Verify the new
+package is private, linked to this repository, and readable by its deployment
+workflow token without changing the host's existing credentials. Keep any
+operator execution hold in effect; this change does not authorize a live rollout.
+
+The tiny metadata artifact still uses Actions storage. If legacy image archives
+have exhausted its quota, publication alone cannot make a run deployable: wait
+for an approved cleanup/expiry and a successful metadata upload before activation.
+No deletion or retention-policy change is included here. GHCR versions and local
+images are not automatically pruned; retain current/previous pins for recovery.
+Pending operator snapshot work (PR #79) uses the old archive/get-image interface;
+it must acquire equivalent short-lived package credentials and adopt this
+manifest/run-attempt contract before integration. No archive fallback is allowed.
+
 ## Operation
 
 - In GitHub Actions, `Factory Deploy` is the operator-facing deployment result.
@@ -118,6 +162,9 @@ plan supports it; host authorization checks do not depend on those features.
   `backup-<commit>-<run-id>/` retains the cold backup. Never publish its contents.
 - Active/ambiguous work requires the existing reviewed recovery procedure. Once
   resolved, rerun the deploy workflow job if that SHA is still current `main`.
+  If retrying `Hatchet Quality`, rerun **all jobs**: retrying only a failed browser
+  job advances GitHub's run attempt without republishing the validation job's
+  metadata. The host intentionally refuses that stale producer attempt.
   New commits trigger new checks; blocked runs are not retried in a hidden loop.
 - Disable `FACTORY_AUTO_DEPLOY_ENABLED` **and** host `enabled` to suspend future
   requests. Revoking the dedicated authorized key immediately removes ingress.

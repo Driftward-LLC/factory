@@ -2,9 +2,31 @@
 """Package the already-tested image; keep compatibility policy conservative."""
 import hashlib
 import json
+import os
+import re
 from pathlib import Path
 import subprocess
 import sys
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+REGISTRY_IMAGE = 'ghcr.io/driftward-llc/factory-production'
+
+
+def private_package(*, allow_missing=False):
+    request = Request('https://api.github.com/orgs/Driftward-LLC/packages/container/factory-production',
+                      headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                               'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+    try:
+        with urlopen(request, timeout=30) as response:
+            package = json.load(response)
+    except HTTPError as error:
+        if allow_missing and error.code == 404:
+            return
+        raise RuntimeError('Cannot verify private production package') from None
+    if (package.get('visibility') != 'private'
+            or package.get('repository', {}).get('full_name') != 'Driftward-LLC/factory'):
+        raise RuntimeError('Production package must be private and linked to this repository')
 
 
 def routine_path(name):
@@ -29,11 +51,6 @@ def compatibility(root):
     return compatibility_entries(entries.split(b'\0'))
 
 
-def sha256(path):
-    with path.open('rb') as handle:
-        return hashlib.file_digest(handle, 'sha256').hexdigest()
-
-
 def package(root, output, image):
     commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     info = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image], text=True))[0]
@@ -41,12 +58,25 @@ def package(root, output, image):
     assert info['Config']['Labels']['org.opencontainers.image.source'] == 'https://github.com/Driftward-LLC/factory'
     assert info['Architecture'] == 'amd64' and info['Os'] == 'linux'
     output.mkdir(parents=True, exist_ok=False)
-    archive = output / 'factory-image.tar'
-    # Save by immutable ID: loading cannot replace a production tag.
-    subprocess.run(['docker', 'image', 'save', '--output', str(archive), info['Id']], check=True)
+    run_id, attempt = int(os.environ['GITHUB_RUN_ID']), int(os.environ['GITHUB_RUN_ATTEMPT'])
+    assert run_id > 0 and attempt > 0
+    tag = f'{REGISTRY_IMAGE}:run-{run_id}-{attempt}'
+    private_package(allow_missing=True)
+    subprocess.run(['docker', 'image', 'tag', info['Id'], tag], check=True)
+    # Publish only this platform, never an index containing untested platforms.
+    pushed = subprocess.check_output(['docker', 'image', 'push', '--platform', 'linux/amd64', tag], text=True)
+    digests = re.findall(r'digest: (sha256:[0-9a-f]{64})\b', pushed)
+    assert len(digests) == 1
+    reference = REGISTRY_IMAGE + '@' + digests[0]
+    manifest = json.loads(subprocess.check_output(['docker', 'manifest', 'inspect', reference], text=True))
+    assert manifest['schemaVersion'] == 2 and 'manifests' not in manifest
+    config = manifest['config']['digest']
+    assert re.fullmatch(r'sha256:[0-9a-f]{64}', config)
+    assert info['Id'] in {config, digests[0]}
+    private_package()
     (output / 'deployment.json').write_text(json.dumps({
-        'format': 1, 'commit': commit, 'image': info['Id'],
-        'compatibility': compatibility(root), 'archive_sha256': sha256(archive),
+        'format': 2, 'commit': commit, 'image': reference, 'image_config': config,
+        'compatibility': compatibility(root), 'run_id': run_id, 'run_attempt': attempt,
     }, sort_keys=True) + '\n')
 
 

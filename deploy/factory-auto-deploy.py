@@ -15,13 +15,13 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from auto_deploy_artifact import compatibility_entries
+from auto_deploy_artifact import compatibility_entries, REGISTRY_IMAGE
 
 REPO = 'Driftward-LLC/factory'
 CONFIG = Path('/etc/driftward/factory-auto-deploy.json')
 SHA = r'[0-9a-f]{40}'
 DIGEST = r'[0-9a-f]{64}'
-MAX_ARCHIVE = 4 * 1024**3
+MAX_ARCHIVE = 64 * 1024
 TERMINAL = ('completed', 'failed', 'verified_ready', 'canceled', 'canceled_after_effect', 'superseded', 'legacy_completed')
 
 
@@ -34,9 +34,9 @@ def require(condition, reason):
         raise Refusal(reason)
 
 
-def command(*args, output=None):
-    result = subprocess.run(args, stdout=output or subprocess.PIPE, stderr=subprocess.PIPE,
-                            timeout=1200, env={**os.environ, 'GH_PROMPT_DISABLED': '1'})
+def command(*args, output=None, input=None, env=None):
+    result = subprocess.run(args, input=input, stdout=output or subprocess.PIPE, stderr=subprocess.PIPE,
+                            timeout=1200, env={**os.environ, 'GH_PROMPT_DISABLED': '1', **(env or {})})
     require(result.returncode == 0, Path(args[0]).name + '_failed')
     return result.stdout.decode().strip() if output is None else ''
 
@@ -86,11 +86,14 @@ def current_main(commit):
     require(api('git/ref/heads/main')['object']['sha'] == commit, 'superseded_commit')
 
 
-def checked_manifest(value, commit, compatibility):
-    require(set(value) == {'format', 'commit', 'image', 'compatibility', 'archive_sha256'}
-            and value['format'] == 1 and value['commit'] == commit
-            and re.fullmatch('sha256:' + DIGEST, str(value['image']))
-            and re.fullmatch(DIGEST, str(value['archive_sha256']))
+def checked_manifest(value, commit, compatibility, run_id, run_attempt):
+    require(isinstance(value, dict)
+            and set(value) == {'format', 'commit', 'image', 'image_config', 'compatibility', 'run_id', 'run_attempt'}
+            and value['format'] == 2 and value['commit'] == commit
+            and re.fullmatch(re.escape(REGISTRY_IMAGE) + '@sha256:' + DIGEST, str(value['image']))
+            and re.fullmatch('sha256:' + DIGEST, str(value['image_config']))
+            and type(value['run_id']) is int and value['run_id'] == run_id
+            and type(value['run_attempt']) is int and value['run_attempt'] == run_attempt
             and value['compatibility'] == compatibility, 'compatibility_review_required')
     return value
 
@@ -99,17 +102,17 @@ def unpack(archive, directory):
     # Never extract a supplied path, symlink, script or secret into the host.
     with zipfile.ZipFile(archive) as bundle:
         entries = bundle.infolist()
-        require(len(entries) == 2 and {item.filename for item in entries} == {'factory-image.tar', 'deployment.json'},
+        require(len(entries) == 1 and entries[0].filename == 'deployment.json',
                 'unexpected_artifact_members')
         for item in entries:
-            require(item.file_size <= (MAX_ARCHIVE if item.filename == 'factory-image.tar' else 4096)
+            require(item.file_size <= 4096
                     and not stat.S_ISLNK(item.external_attr >> 16), 'unsafe_artifact_member')
             with bundle.open(item) as source, (directory / item.filename).open('xb') as target:
                 shutil.copyfileobj(source, target, 1024 * 1024)
     return json.loads((directory / 'deployment.json').read_text())
 
 
-def get_image(run_id, commit, config, directory):
+def get_image(run_id, commit, config, directory, run_attempt, credentials):
     # Use the root-installed policy and GitHub's source tree, not the build's
     # self-reported fingerprint: a changed CI script cannot approve itself.
     tree = api(f'git/trees/{commit}?recursive=1')
@@ -129,21 +132,31 @@ def get_image(run_id, commit, config, directory):
     with archive.open('xb') as handle:
         command('gh', 'api', f'repos/{REPO}/actions/artifacts/{artifact["id"]}/zip', output=handle)
     require(archive.stat().st_size <= MAX_ARCHIVE and 'sha256:' + sha256(archive) == artifact['digest'], 'artifact_digest_mismatch')
-    manifest = checked_manifest(unpack(archive, directory), commit, config['compatibility'])
-    require(sha256(directory / 'factory-image.tar') == manifest['archive_sha256'], 'image_archive_digest_mismatch')
-    # Classic Docker and containerd stores can assign different image IDs to
-    # the same archive. Bind inspection/pinning to this verified import result,
-    # never a tag or a search of preexisting images with matching labels.
-    loaded = re.fullmatch('Loaded image ID: (sha256:' + DIGEST + ')',
-                          command('docker', 'image', 'load', '--input', str(directory / 'factory-image.tar')))
-    require(loaded is not None, 'ambiguous_image_import')
-    image = loaded[1]
-    info = json.loads(command('docker', 'image', 'inspect', image))[0]
-    labels = info['Config'].get('Labels') or {}
-    require(info['Id'] == image and info['Architecture'] == 'amd64' and info['Os'] == 'linux'
-            and labels.get('org.opencontainers.image.revision') == commit
-            and labels.get('org.opencontainers.image.source') == 'https://github.com/' + REPO, 'image_provenance_mismatch')
-    return image
+    manifest = checked_manifest(unpack(archive, directory), commit, config['compatibility'], run_id, run_attempt)
+    docker_config = directory / 'docker-config'
+    docker_config.mkdir(mode=0o700)
+    env = {'DOCKER_CONFIG': str(docker_config)}
+    try:
+        command('docker', 'login', 'ghcr.io', '--username', credentials['username'], '--password-stdin',
+                input=credentials['token'].encode(), env=env)
+        reference = manifest['image']
+        registry_manifest = json.loads(command('docker', 'manifest', 'inspect', reference, env=env))
+        require(registry_manifest.get('schemaVersion') == 2 and 'manifests' not in registry_manifest
+                and registry_manifest.get('config', {}).get('digest') == manifest['image_config'], 'registry_config_mismatch')
+        command('docker', 'image', 'pull', '--platform', 'linux/amd64', reference, env=env)
+        info = json.loads(command('docker', 'image', 'inspect', reference, env=env))[0]
+        # Classic Docker IDs are config digests; containerd IDs can be manifest
+        # digests. Pin the local ID only after verifying the exact repository digest.
+        image = info['Id']
+        labels = info['Config'].get('Labels') or {}
+        require(re.fullmatch('sha256:' + DIGEST, image) and reference in info.get('RepoDigests', [])
+                and image in {manifest['image_config'], reference.split('@')[1]}
+                and info['Architecture'] == 'amd64' and info['Os'] == 'linux'
+                and labels.get('org.opencontainers.image.revision') == commit
+                and labels.get('org.opencontainers.image.source') == 'https://github.com/' + REPO, 'image_provenance_mismatch')
+        return image
+    finally:
+        shutil.rmtree(docker_config)
 
 
 def assert_quiescent(conn):
@@ -203,7 +216,7 @@ def rollout(production, install, image, commit, run_id, work):
     print('Deployment healthy; exact image active and cold backup retained.')
 
 
-def deploy(config, run_id, commit):
+def deploy(config, run_id, commit, credentials):
     require(config.get('enabled') is True, 'automatic_deployment_disabled')
     bundle = Path(config['production_bundle'])
     sys.path.insert(0, str(bundle))
@@ -216,13 +229,18 @@ def deploy(config, run_id, commit):
         install = production.Production(Path(config['installation']))
         with production.portable.installation_lock(Path('/tmp') / ('factory-tenant-' + install.tenant)):
             install.preflight()
-            validate_run(api(f'actions/runs/{run_id}'), api('actions/workflows/hatchet-quality.yml'), run_id, commit)
+            run = api(f'actions/runs/{run_id}')
+            validate_run(run, api('actions/workflows/hatchet-quality.yml'), run_id, commit)
+            attempt = run.get('run_attempt')
+            require(type(attempt) is int and attempt > 0, 'invalid_run_attempt')
             current_main(commit)
             require(shutil.disk_usage(work).free >= 12 * 1024**3, 'insufficient_backup_space')
             with tempfile.TemporaryDirectory(prefix='artifact-', dir=work) as temporary:
-                image = get_image(run_id, commit, config, Path(temporary))
+                image = get_image(run_id, commit, config, Path(temporary), attempt, credentials)
                 # A rerun must not replace the successful check while downloading.
-                validate_run(api(f'actions/runs/{run_id}'), api('actions/workflows/hatchet-quality.yml'), run_id, commit)
+                after = api(f'actions/runs/{run_id}')
+                validate_run(after, api('actions/workflows/hatchet-quality.yml'), run_id, commit)
+                require(after.get('run_attempt') == attempt, 'ci_run_attempt_changed')
                 rollout(production, install, image, commit, run_id, work)
 
 
@@ -236,7 +254,15 @@ def main():
         return
     match = re.fullmatch(r'deploy ([1-9][0-9]{0,19}) (' + SHA + ')', sys.argv[1])
     require(match is not None, 'invalid_deployment_command')
-    deploy(config, int(match[1]), match[2])
+    envelope = sys.stdin.buffer.read(8193)
+    require(len(envelope) <= 8192, 'invalid_registry_credentials')
+    credentials = json.loads(envelope)
+    require(isinstance(credentials, dict) and set(credentials) == {'username', 'token'}
+            and isinstance(credentials['username'], str)
+            and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?', credentials['username'])
+            and isinstance(credentials['token'], str) and 1 <= len(credentials['token']) <= 4096
+            and re.fullmatch(r'[A-Za-z0-9_]+', credentials['token']), 'invalid_registry_credentials')
+    deploy(config, int(match[1]), match[2], credentials)
 
 
 if __name__ == '__main__':
