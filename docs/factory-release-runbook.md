@@ -76,6 +76,18 @@ HATCHET_POSTGRES_PASSWORD=ci-postgres-password \
 For changes touching bridge, ingress, lifecycle writer, or worker behavior, run
 the targeted tests named in `AGENTS.md` before release.
 
+## CI artifact retention
+
+Hatchet Quality retains routine UI evidence (`driftward-ui-storybook` and
+`factory-console-fixtures`) for seven days. Production image bundles
+(`factory-production-<commit>`) are separate deployment artifacts with their own
+existing seven-day retention; GitHub release assets are separate again.
+
+Changing workflow retention affects only newly uploaded artifacts. Cleanup of
+existing artifacts is a manual, audited operation against an explicit allowlist
+of artifact IDs and names. Do not delete workflows or workflow runs to clean up
+artifacts; preserve their logs and check history.
+
 ## Create The Release
 
 Pick the next tag and run the GitHub release workflow from `main`:

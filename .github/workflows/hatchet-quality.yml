@@ -60,12 +60,14 @@ jobs:
         with:
           name: driftward-ui-storybook
           path: factory/console/storybook-static/
+          retention-days: 7
           include-hidden-files: true
       - name: Upload fixture screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: factory-console-fixtures
+          retention-days: 7
           path: |
             /tmp/factory-dashboard-*.png
             /tmp/factory-control-*.png
