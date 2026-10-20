@@ -44,12 +44,44 @@ def no_symlinks(path):
             raise ValueError('managed profile paths cannot contain symlinks')
 
 
-def checked(path: Path, *, directory=False):
+def checked(path: Path, *, directory=False, owner=None):
     no_symlinks(path)
     info = path.stat()
-    if info.st_uid != os.geteuid() or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+    if info.st_uid != (os.geteuid() if owner is None else owner) or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
         raise ValueError('managed profile ownership or file type differs')
     return path
+
+
+def runtime_identity():
+    no_symlinks(ROOT)
+    info = ROOT.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022:
+        raise ValueError('unsafe runtime identity directory')
+    return info.st_uid, info.st_gid
+
+
+def normalize_factory_configs():
+    """Make only the Factory reviewer auth parent private; never change runtime secrets."""
+    uid, gid = runtime_identity()
+    for role, name in ROLES.items():
+        profile = ROOT / 'profiles' / name
+        no_symlinks(profile)
+        info = profile.stat()
+        target_uid, target_gid = (os.geteuid(), os.getegid()) if role == 'reviewer' else (uid, gid)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in {uid, target_uid} or info.st_mode & 0o022:
+            raise ValueError('unmanaged Factory profile directory')
+        path = profile / 'config.yaml'
+        no_symlinks(path)
+        config = path.stat()
+        if not stat.S_ISREG(config.st_mode) or config.st_uid != os.geteuid() or config.st_mode & 0o022:
+            raise ValueError('unmanaged Factory profile config')
+        # Authentication is never copied, chmodded or chowned by configuration.
+        if info.st_uid != target_uid:
+            if role != 'reviewer' or (profile / 'auth.json').exists() or (profile / 'auth.json').is_symlink():
+                raise ValueError('profile identity migration is not safe')
+            os.chown(profile, target_uid, target_gid)
+        if role == 'reviewer' and stat.S_IMODE(info.st_mode) != 0o700:
+            profile.chmod(0o700)
 
 
 def archive_files(archive: bytes):
@@ -119,7 +151,7 @@ def link_release(path, release):
 
 def default_capabilities(validate=True):
     from hermes_cli.config import read_user_config_raw
-    config = read_user_config_raw(checked(ROOT / 'config.yaml'))
+    config = read_user_config_raw(checked(ROOT / 'config.yaml', owner=runtime_identity()[0]))
     selected = {name: copy.deepcopy(config[name]) for name in CAPABILITIES if name in config}
     harmless_literals = {
         'nodeenv': {'production', 'development', 'test'},
@@ -156,12 +188,15 @@ def default_capabilities(validate=True):
 
 def configure(payload):
     from hermes_cli.config import read_user_config_raw, atomic_config_write
-    profiles = {role: checked(ROOT / 'profiles' / name, directory=True) for role, name in ROLES.items()}
     capabilities = default_capabilities()
     files = archive_files(base64.b64decode(payload['engineering'], validate=True))
     observer = {name: base64.b64decode(data, validate=True) for name, data in payload['observer'].items()}
     if set(observer) != {'__init__.py', 'plugin.yaml'}:
         raise ValueError('observer package differs')
+    normalize_factory_configs()
+    profiles = {role: checked(ROOT / 'profiles' / name, directory=True,
+                              owner=runtime_identity()[0] if role == 'executor' else os.geteuid())
+                for role, name in ROLES.items()}
     executor = profiles['executor']
     releases = executor / 'factory-managed' / 'releases'
     engineering = immutable_release(releases / 'driftward-engineering', COMMIT, files)
@@ -203,7 +238,12 @@ def inventory():
     except ValueError:
         ready = False
     for role, name in ROLES.items():
-        profile = checked(ROOT / 'profiles' / name, directory=True)
+        profile = ROOT / 'profiles' / name
+        owner = runtime_identity()[0] if role == 'executor' else os.geteuid()
+        # Before configure, the native-created reviewer directory has runtime ownership.
+        if role == 'reviewer' and profile.stat().st_uid == runtime_identity()[0] and not (profile / 'auth.json').exists():
+            owner = runtime_identity()[0]
+        checked(profile, directory=True, owner=owner)
         config = read_user_config_raw(checked(profile / 'config.yaml'))
         enabled = config.get('plugins', {}).get('enabled', [])
         result[role] = {'profile': name, 'engineering_enabled': 'driftward-engineering' in enabled,
@@ -227,7 +267,7 @@ def idle_runtime():
         try:
             arguments = (entry / 'cmdline').read_bytes().split(b'\0')
             environment = (entry / 'environ').read_bytes().split(b'\0')
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
         except PermissionError:
             # Other runtime identities are outside this profile's execution role.
@@ -257,7 +297,8 @@ def canary(payload):
     role = payload['role']
     if role not in ROLES:
         raise ValueError('unsupported canary role')
-    profile = checked(ROOT / 'profiles' / ROLES[role], directory=True)
+    profile = checked(ROOT / 'profiles' / ROLES[role], directory=True,
+                      owner=runtime_identity()[0] if role == 'executor' else os.geteuid())
     telemetry = {key: os.environ[key] for key in ('POSTHOG_API_KEY', 'POSTHOG_HOST') if key in os.environ}
     if not telemetry.get('POSTHOG_API_KEY'):
         raise ValueError('PostHog runtime configuration unavailable')
@@ -267,13 +308,16 @@ def canary(payload):
     scratch = None
     if role == 'reviewer':
         no_symlinks(profile / 'profiles')
-        checked(profile / 'auth.json')
+        auth = checked(profile / 'auth.json')
+        if profile.stat().st_mode & 0o077 or auth.stat().st_mode & 0o077:
+            raise ValueError('reviewer authentication state must be private')
         os.environ['HERMES_HOME'] = str(profile)
     from hermes_constants import set_hermes_home_override
     if role == 'reviewer':
         (profile / 'profiles').mkdir(mode=0o700, exist_ok=True)
         scratch = tempfile.TemporaryDirectory(prefix='factory-canary-', dir=profile / 'profiles')
         isolated = Path(scratch.name)
+        os.environ['HERMES_HOME'] = str(isolated)
         (isolated / 'config.yaml').write_text(json.dumps({'model': {'default': 'gpt-6-astra', 'provider': 'openai-codex'},
             'auth': {'adopt_external_logins': False}, 'plugins': {'enabled': []}, 'fallback_providers': [],
             'tools': {'tool_search': {'enabled': 'off'}, 'connectors': {'enabled': False}}, 'mcp_servers': {}}))

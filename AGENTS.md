@@ -59,6 +59,12 @@ browser state, and Hermes session retention.
 
 ## Validation
 
+When changing relevant Factory runtime paths, incorporate existing PostHog
+tracing and bounded metadata where useful. Verify ingestion by exact trace,
+session, job or attempt IDs when safe. Telemetry is not the lifecycle or audit
+source of truth. Never export prompts, outputs or credentials, and do not set up
+new production telemetry unless requested.
+
 Before changing Factory contracts, workers, bridge, ingress, lifecycle writer,
 or CLI behavior, run the focused checks that fit the touched area. Useful
 defaults:

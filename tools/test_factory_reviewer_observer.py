@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -26,6 +27,16 @@ class Response:
 
 
 class ReviewerObserverTests(unittest.TestCase):
+    def test_named_profile_metadata_survives_native_child_home(self):
+        named = '/opt/data/profiles/factory-independent-reviewer'
+        for home, expected in [(named, True), (named+'/profiles/factory-reviewer-'+str(uuid.uuid4()), True),
+                               (named+'/profiles/factory-canary-ab12cd34', True),
+                               ('/opt/data/factory-reviewer-auth/profiles/factory-reviewer-'+str(uuid.uuid4()), False),
+                               (named+'/profiles/../other', False), (named+'/profiles/unrelated', False)]:
+            with self.subTest(home=home), patch.dict(os.environ, {'HERMES_HOME': home}):
+                observer = telemetry.ReviewObserver(METADATA, SESSION, TOOLS, {})
+                self.assertEqual(observer.profile, 'factory-independent-reviewer' if expected else None)
+
     def test_review_trace_deterministic_separate_pass_head_and_generator(self):
         trace = telemetry.trace_id(METADATA)
         self.assertEqual(uuid.UUID(trace).version, 5)

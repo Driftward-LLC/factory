@@ -95,8 +95,9 @@ def dedicated_auth() -> None:
     from hermes_constants import get_hermes_home
     from hermes_cli.auth import _global_auth_file_path, get_codex_auth_status
     from agent.credential_sources import adopt_external_logins_enabled
-    root = Path(os.environ["HERMES_HOME"])
-    if (root != validated_auth_root(str(root))
+    home = Path(get_hermes_home())
+    root = validated_auth_root(str(home.parent.parent))
+    if (Path(os.environ['HERMES_HOME']) != home
             or Path(get_hermes_home()).parent != root / "profiles"
             or _global_auth_file_path() != root / "auth.json"
             or adopt_external_logins_enabled()):
@@ -157,6 +158,9 @@ def review(request: dict, channel_in, channel_out, telemetry_config: dict | None
     # Use Hermes' routed-profile secret scope: its loader skips both default and project dotenv.
     from hermes_constants import set_hermes_home_override
     profile = profile_path(request["session"])
+    # Native root discovery treats <root>/profiles/<child> as the auth domain.
+    # The named auth root itself is also a profile, so point it at this child.
+    os.environ['HERMES_HOME'] = str(profile)
     set_hermes_home_override(profile)
     from agent.secret_scope import set_multiplex_context, set_secret_scope
     set_multiplex_context(True)

@@ -60,7 +60,10 @@ def number(value: object, maximum: float) -> float:
 class ReviewObserver:
     def __init__(self, metadata: dict, session: str, tools: set[str], config: dict):
         self.metadata = review_metadata(metadata)
-        self.profile = "factory-independent-reviewer" if os.environ.get("HERMES_HOME") == "/opt/data/profiles/factory-independent-reviewer" else None
+        home = os.environ.get('HERMES_HOME', '')
+        named = '/opt/data/profiles/factory-independent-reviewer'
+        child = re.fullmatch(re.escape(named) + r'/profiles/(?:factory-reviewer-[a-f0-9-]{36}|factory-canary-[a-z0-9_]{8})', home)
+        self.profile = 'factory-independent-reviewer' if home == named or child else None
         self.session, self.tools = session, tools
         self.key = config.get("POSTHOG_API_KEY", "").strip()
         self.url = endpoint(config.get("POSTHOG_HOST") or "https://us.i.posthog.com") if self.key else ""

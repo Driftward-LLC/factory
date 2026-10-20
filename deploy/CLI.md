@@ -111,6 +111,23 @@ modified. The named reviewer keeps generic plugins disabled and uses its native
 review observer. Both observers use existing runtime PostHog configuration;
 ingestion keys are not placed in profile files. Models are selected only in
 these named role profiles (Sol executor, Astra reviewer).
+
+The existing Hermes wrapper runs native operations as container root. The helper
+validates the runtime-owned default config and executor directory against the
+owner of `/opt/data`, while Factory-managed configs and releases retain the
+calling identity's strict ownership checks. Configure changes only the named
+reviewer directory to root ownership and mode 0700, preparing its private auth
+parent; it does not recursively change runtime files or change any secret's
+bytes, owner, mode or inode. Status remains read-only. Native reviewer execution
+uses a fresh child home so Hermes resolves the named reviewer's own auth domain.
+These profiles do not provide Unix-user isolation.
+
+The credential-free mixed-UID native regression can be run with
+`python3 tools/check_factory_profile_runtime_native.py --plugin-source REVIEWED_GIT_REPO`.
+It uses the pinned Hermes image, disposable tmpfs data, no network and no host
+runtime mounts. It verifies status, configure/idempotence, auth inode preservation,
+native reviewer auth boundaries and executor skill preload/zero-tool construction;
+it does not prove provider calls or PostHog ingestion.
 Executor MCP/browser/terminal/tool configuration is preserved through an explicit
 capability allowlist from the existing default config. Inline credential fields
 are refused; only references to already available runtime environment variables

@@ -33,6 +33,33 @@ def plugin_archive(extra=None):
 
 
 class ProfileRuntimeTests(unittest.TestCase):
+    def test_explicit_runtime_owner_does_not_relax_managed_artifact_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'config.yaml'
+            path.write_text('synthetic')
+            actual = path.stat().st_uid
+            with patch.object(runtime.os, 'geteuid', return_value=actual + 1):
+                with self.assertRaises(ValueError):
+                    runtime.checked(path)
+                self.assertEqual(runtime.checked(path, owner=actual), path)
+            link = Path(temporary) / 'link'
+            link.symlink_to(path)
+            with self.assertRaises(ValueError):
+                runtime.checked(link, owner=actual)
+
+    def test_runtime_identity_rejects_writable_directory_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'data'
+            root.mkdir(mode=0o777)
+            root.chmod(0o777)
+            with patch.object(runtime, 'ROOT', root), self.assertRaises(ValueError):
+                runtime.runtime_identity()
+            root.chmod(0o755)
+            link = Path(temporary) / 'alias'
+            link.symlink_to(root)
+            with patch.object(runtime, 'ROOT', link), self.assertRaises(ValueError):
+                runtime.runtime_identity()
+
     def activation_fixture(self, root):
         provision = root / 'reviewer.json'
         provision.write_text(json.dumps({'schema': 'factory-hermes-reviewer-provisioning-v2', 'unrelated': 'preserve'}))
@@ -189,6 +216,7 @@ class ProfileRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             default = root / 'config.yaml'
+            (root / 'factory-reviewer-auth').mkdir(mode=0o700)
             default_config = json.dumps({'mcp_servers': {'example': {'command': 'example'}},
                                          'browser': {'provider': 'remote'}, 'identity': 'default-sentinel'})
             default.write_text(default_config)

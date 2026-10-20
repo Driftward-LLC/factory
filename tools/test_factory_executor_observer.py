@@ -13,7 +13,10 @@ class ExecutorObserverTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / "deploy/factory-observers/posthog/__init__.py"
         spec = importlib.util.spec_from_file_location("factory_executor_observer", source)
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        # Identity/payload filtering does not exercise HTTP delivery. Keep that
+        # external boundary explicit so repo unit tests need no Hermes SDK deps.
+        with patch.dict(sys.modules, {'requests': SimpleNamespace()}):
+            spec.loader.exec_module(module)
         attempt = "11111111-2222-4333-8444-555555555555"
         with patch.dict(os.environ, {"FACTORY_OBSERVABILITY_ATTEMPT_ID": attempt}, clear=True):
             for home, role in [("/opt/data", False), ("/opt/data/profiles/factory-executor", True)]:
