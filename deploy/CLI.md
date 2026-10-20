@@ -102,6 +102,52 @@ factory profiles canary executor
 factory profiles canary reviewer
 ```
 
+An old, accepted read-only PR inspection can block profile activation even when
+its 120-second inspection capability has expired. The root-only CLI supports a
+bounded recovery for one untouched inspection with exactly one pending linked
+request and one outbox row, no execution/workflow/artifact/result evidence, no
+live delivery lease, no other unresolved execution, and a terminal prior attempt
+when linked. This is not recovery for an executing or effect-producing job.
+Existing `stale_active_bridge_job` reconciliation annotations are retained;
+their stable finding key and kind are bound to consent, while harmless warning
+counter/timestamp refreshes do not invalidate it. Other finding kinds are refused.
+
+```bash
+factory profiles recover-inspection JOB_UUID preview
+factory profiles recover-inspection JOB_UUID apply \
+  --snapshot-digest DIGEST_FROM_PREVIEW \
+  --reason 'Expire abandoned inspection before profile activation' \
+  --request-id NEW_UUID --yes
+factory profiles recover-inspection JOB_UUID status
+```
+
+Preview and status are read-only and return bounded metadata. Apply revalidates
+the digest under an immediate SQLite transaction after stopping/rechecking the
+writers and gateway and checking native execution is idle. It expires the
+request and unacknowledged delivery authority, retains an acknowledged outbox
+unchanged, marks the job failed with `inspection_capability_expired`, and appends
+an `inspection_expired` bridge audit event with root identity, operator reason,
+request UUID and digests. It never deletes history or creates an inspection
+result, success or cancellation receipt. Repeating the exact apply is idempotent;
+changing its intent or recovered state is refused.
+
+The recovery requires `bridge-executor-worker` already exited and keeps it
+exited: legacy images could still perform a read-only GitHub inspection from an
+already queued event after expiry. Deploy the source terminal-inspection guard
+before enabling that consumer again. Other originally running writers are
+restored with no dependencies started. A pre-existing failing gateway may still
+fail restoration after the ledger transaction commits. `status` reports that
+committed outcome and fixed restoration-error tokens; inspect it before retrying
+or proceeding with the already-reviewed profile activation. No output claims the
+baseline gateway is healthy. `profiles status` additionally reports
+`gateway_socket_listening`, a bounded local Unix socket connection probe, not a
+gRPC or model readiness check.
+
+Use bridge ledger/audit records as recovery evidence. PostHog absence does not
+establish that a job never ran. Do not export capability, payload, prompts,
+outputs or credentials; observability checks use exact bounded job/attempt/session
+or trace identifiers only.
+
 Configure reads only Git's tracked archive at engineering commit
 `db14524356cfebd132833ed06a7c8a097ef5c11c` (`0.1.0-rc.6`). It retains immutable
 releases under the executor profile's own `factory-managed/releases` directory

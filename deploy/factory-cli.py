@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -184,8 +185,9 @@ def dispatch_bound(config, args):
     command = args[0] if args else 'help'
     if command == 'profiles':
         if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['canary', 'executor'], ['canary', 'reviewer'])
-                or (len(args) == 4 and args[1:3] == ['configure', '--plugin-source'])):
-            raise ValueError('usage: factory profiles status | list | create | configure --plugin-source REPO | activate | canary executor|reviewer')
+                or (len(args) == 4 and args[1:3] == ['configure', '--plugin-source'])
+                or (len(args) >= 4 and args[1] == 'recover-inspection')):
+            raise ValueError('usage: factory profiles status | list | create | configure --plugin-source REPO | activate | canary executor|reviewer | recover-inspection JOB preview|status|apply [approval arguments]')
         wrapper = checked_hermes_wrapper(config.get('hermes_wrapper'))
         if args in (['profiles', 'create'], ['profiles', 'list']) or (args == ['profiles', 'status'] and 'profile_runtime' not in config):
             result = hermes_profiles(wrapper, args[1] == 'create')
@@ -268,6 +270,7 @@ def dispatch_bound(config, args):
         print('factory status | console | version | logs [target] [-f] [-n N] | mode\n'
               'factory profiles status | list | create\n'
               'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
+              'factory profiles recover-inspection JOB preview|status|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
               'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair [arguments]\n'
               'Operator command arguments and approval gates are provided by the active image.\n'
               'Mode changes and doctor are unavailable for managed installations.')
@@ -281,7 +284,7 @@ def main():
         if os.geteuid() != 0:
             raise ValueError('canonical Factory CLI requires root')
         return dispatch(checked_config(CONFIG), sys.argv[1:])
-    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.SubprocessError):
         # Validation and private subprocess exceptions can contain credentials.
         print('factory: command refused; check the root-owned CLI binding, installation, and active deployment. '
               'Managed mode changes and doctor are unsupported; run factory help.', file=sys.stderr)

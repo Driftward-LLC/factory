@@ -16,6 +16,8 @@ import tarfile
 import tempfile
 import uuid
 import sqlite3
+import socket
+from datetime import datetime, timezone
 
 ROOT = Path('/opt/data')
 COMMIT = 'db14524356cfebd132833ed06a7c8a097ef5c11c'
@@ -432,6 +434,244 @@ def assert_quiescent(connection):
         raise ValueError('active or unresolved Factory execution')
 
 
+def bridge_database(install):
+    volume = install.project + '-bridge-data'
+    rows = json.loads(subprocess.run(['docker', 'volume', 'inspect', volume], capture_output=True,
+                                     text=True, check=True, timeout=30).stdout)
+    if len(rows) != 1 or rows[0]['Name'] != volume:
+        raise ValueError('bridge volume identity differs')
+    return checked(Path(rows[0]['Mountpoint']) / 'bridge.db')
+
+
+def recovery_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def inspection_snapshot(connection, job_id):
+    """Private snapshot: only its digest and bounded facts may leave this helper."""
+    connection.row_factory = sqlite3.Row
+    job = connection.execute('SELECT * FROM bridge_jobs WHERE job_id=?', (job_id,)).fetchone()
+    if not job:
+        raise ValueError('inspection job not found')
+    result = {'job': dict(job)}
+    for name in ('factory_inspection_requests', 'factory_inspection_outbox'):
+        result[name] = [dict(row) for row in connection.execute(f'SELECT * FROM {name} WHERE job_id=? LIMIT 3', (job_id,))]
+    result['prior_attempts'] = [dict(row) for row in connection.execute(
+        'SELECT * FROM factory_attempts WHERE attempt_id IN (SELECT prior_attempt_id FROM factory_inspection_requests WHERE job_id=?)', (job_id,))]
+    result['events'] = [dict(row) for row in connection.execute('SELECT * FROM bridge_events WHERE job_id=? ORDER BY event_id LIMIT 3', (job_id,))]
+    # Check all schema-declared job references, including future evidence tables.
+    links = {}
+    tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    # Stale-job warnings are observations, not execution authority. Their
+    # counters/timestamps may refresh while an operator reviews the preview.
+    result['diagnostic_findings'] = [dict(row) for row in connection.execute(
+        'SELECT finding_key,job_id,kind FROM reconciliation_findings WHERE job_id=? ORDER BY finding_key LIMIT 11', (job_id,))] if 'reconciliation_findings' in tables else []
+    for table in tables:
+        if not re.fullmatch(r'[a-z_]+', table) or table in {'bridge_jobs', 'bridge_events', 'factory_inspection_requests', 'factory_inspection_outbox', 'reconciliation_findings'}:
+            continue
+        columns = [row[1] for row in connection.execute(f'PRAGMA table_info({table})')
+                   if row[1] in {'job_id', 'source_job_id', 'prior_job_id'}]
+        if columns:
+            links[table] = connection.execute(f'SELECT count(*) FROM {table} WHERE ' + ' OR '.join(f'{column}=?' for column in columns),
+                                              [job_id] * len(columns)).fetchone()[0]
+    result['links'] = links
+    marks = ','.join('?' for _ in TERMINAL)
+    result['guards'] = [connection.execute(f'SELECT count(*) FROM factory_attempts WHERE status NOT IN ({marks})', TERMINAL).fetchone()[0],
+                        connection.execute('SELECT count(*) FROM factory_execution_leases WHERE released_at IS NULL').fetchone()[0],
+                        connection.execute("SELECT count(*) FROM bridge_jobs WHERE job_id!=? AND state NOT IN ('completed','ready_for_human_review','failed')", (job_id,)).fetchone()[0]]
+    return result
+
+
+def eligible_inspection(snapshot):
+    job = snapshot['job']
+    requests = snapshot['factory_inspection_requests']
+    outboxes = snapshot['factory_inspection_outbox']
+    if (job['state'] != 'accepted' or job['requested_action'] != 'inspect_draft_pr_state'
+            or any(snapshot['links'].values()) or any(snapshot['guards'])
+            or len(snapshot['diagnostic_findings']) > 10
+            or any(row['kind'] != 'stale_active_bridge_job' for row in snapshot['diagnostic_findings'])
+            or len(requests) != 1 or len(outboxes) != 1
+            or len(snapshot['events']) != 1 or snapshot['events'][0]['event_type'] != 'accepted'
+            or snapshot['events'][0]['state'] != 'accepted'):
+        raise ValueError('only an untouched, linked expired inspection without execution evidence can be recovered')
+    if any(value for key, value in job.items() if key not in {
+            'job_id', 'idempotency_key', 'state', 'requested_action', 'payload_json', 'payload_hash', 'branch', 'created_at', 'updated_at'}):
+        raise ValueError('inspection has workflow, execution, artifact or result evidence')
+    payload = json.loads(job['payload_json'])
+    if not isinstance(payload, dict):
+        raise ValueError('inspection payload is unsupported')
+    request, outbox = requests[0], outboxes[0]
+    inspection = payload.get('inspection', {})
+    if (set(payload) != {'repo', 'inspection', 'inspection_request_key', 'inspection_capability', 'dry_run'}
+            or payload['dry_run'] is not False or request['state'] != 'pending'
+            or any(request[key] for key in ('result_json', 'result_digest', 'observed_at', 'reason'))
+            or request['request_key'] != job['idempotency_key'] or payload['inspection_request_key'] != request['request_key']
+            or payload['inspection_capability'] != request['capability']
+            or not isinstance(payload['inspection_capability'], str) or len(payload['inspection_capability']) < 20
+            or payload['repo'] != request['repository']
+            or inspection != {key: request[key] for key in ('repository', 'number', 'url')}
+            or outbox['request_key'] != request['request_key']
+            or outbox['delivery_lease_id'] or outbox['delivery_lease_expires_at']):
+        raise ValueError('inspection linkage, result or delivery evidence is unsupported')
+    prior = snapshot['prior_attempts']
+    if request['prior_attempt_id'] and (len(prior) != 1 or prior[0]['status'] not in TERMINAL
+            or prior[0]['work_item_key'] != request['work_item_key'] or prior[0]['job_id'] == job['job_id']):
+        raise ValueError('inspection prior attempt is unresolved or mismatched')
+    for value in (job['created_at'], request['created_at']):
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(value.replace('Z', '+00:00'))).total_seconds()
+        if age <= 120:
+            raise ValueError('inspection capability has not expired')
+    return request
+
+
+def recover_inspection(install, wrapper, args):
+    import argparse
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise ValueError('invalid inspection recovery arguments')
+    parser = Parser(prog='factory profiles recover-inspection', add_help=False)
+    parser.add_argument('job_id')
+    parser.add_argument('operation', choices=('preview', 'apply', 'status'))
+    parser.add_argument('--snapshot-digest')
+    parser.add_argument('--reason')
+    parser.add_argument('--request-id')
+    parser.add_argument('--yes', action='store_true')
+    options = parser.parse_args(args)
+    if str(uuid.UUID(options.job_id)) != options.job_id:
+        raise ValueError('canonical job UUID required')
+    database = bridge_database(install)
+    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=5) as connection:
+        snapshot = inspection_snapshot(connection, options.job_id)
+    if options.operation == 'status':
+        if any((options.snapshot_digest, options.reason, options.request_id, options.yes)):
+            raise ValueError('status does not accept approval arguments')
+        receipt = install.directory / 'inspection-recovery.json'
+        summary = {'phase': 'not_started', 'committed': False, 'errors': []}
+        if receipt.exists() or receipt.is_symlink():
+            checked(receipt)
+            if receipt.stat().st_mode & 0o077 or receipt.stat().st_size > 65536:
+                raise ValueError('unsafe inspection recovery receipt')
+            value = json.loads(receipt.read_text())
+            if value.get('job_id') == options.job_id:
+                summary = {'phase': value.get('phase') if value.get('phase') in {'preparing', 'complete', 'requires_operator'} else 'unknown',
+                           'committed': value.get('committed') is True,
+                           'errors': [token for token in ('writers_stop', 'gateway_stop', 'native_idle', 'transaction', 'gateway_restore', 'writers_restore')
+                                      if token in value.get('errors', [])]}
+        bounded_states = {'accepted', 'running', 'failed', 'completed', 'pending', 'expired', 'acknowledged', 'delivering', 'retrying'}
+        def state(row):
+            return row['state'] if row['state'] in bounded_states else 'unknown'
+        audited = any(event['event_type'] == 'inspection_expired' and event['state'] == 'failed'
+                      and json.loads(event['details_json']).get('actor') == 'root'
+                      and 'intent_digest' in json.loads(event['details_json']) for event in snapshot['events'])
+        return {'job_id': options.job_id, 'state': state(snapshot['job']),
+                'inspection_states': [state(row) for row in snapshot['factory_inspection_requests']],
+                'outbox_states': [state(row) for row in snapshot['factory_inspection_outbox']],
+                'recovery_audit_present': audited, 'recovery': summary, 'read_only': True}
+    if options.operation == 'preview':
+        if any((options.snapshot_digest, options.reason, options.request_id, options.yes)):
+            raise ValueError('preview does not accept approval arguments')
+        eligible_inspection(snapshot)
+        return {'job_id': options.job_id, 'action': 'expire_incomplete_inspection', 'state': 'accepted',
+                'snapshot_digest': recovery_digest(snapshot), 'inspection_expired': True,
+                'execution_evidence': False, 'read_only': True}
+    if (not options.yes or not re.fullmatch(r'[0-9a-f]{64}', options.snapshot_digest or '')
+            or not options.reason or not 8 <= len(options.reason) <= 300
+            or not all(character.isprintable() for character in options.reason)
+            or not options.request_id or str(uuid.UUID(options.request_id)) != options.request_id):
+        raise ValueError('apply requires exact digest, reason, request UUID and --yes')
+    intent = recovery_digest({'job_id': options.job_id, 'snapshot_digest': options.snapshot_digest,
+                              'reason': options.reason, 'request_id': options.request_id})
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'factory:inspection-recovery:' + options.request_id))
+    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=5) as connection:
+        previous = connection.execute('SELECT job_id,details_json FROM bridge_events WHERE event_id=?', (event_id,)).fetchone()
+    if previous:
+        details = json.loads(previous[1])
+        persisted = {key: value for key, value in snapshot.items() if key != 'events'}
+        if previous[0] != options.job_id or details.get('intent_digest') != intent or details.get('result_digest') != recovery_digest(persisted):
+            raise ValueError('recovery request reuse or recovered state drift')
+        return {'job_id': options.job_id, 'recovered': True, 'changed': False, 'state': 'failed'}
+    eligible_inspection(snapshot)
+    if recovery_digest(snapshot) != options.snapshot_digest:
+        raise ValueError('inspection recovery snapshot changed')
+    # The old executor image has no terminal inspection guard. Keep an already
+    # stopped executor stopped until that separately reviewed image is installed.
+    rows = install.service_rows()
+    if [row.get('State') for row in rows if row['Service'] == 'bridge-executor-worker'] != ['exited']:
+        raise ValueError('inspection recovery requires the executor already exited')
+    writers = {'bridge', 'factory-operator', 'outbox-dispatcher', 'intake-worker', 'execution-dispatch-worker',
+               'pr-event-worker', 'reconciliation-worker'}
+    services = [row['Service'] for row in rows if row['Service'] in writers and row.get('State') == 'running']
+    if any(row['Service'] in writers and row.get('State') not in {'running', 'exited'} for row in rows):
+        raise ValueError('inspection writer service state is unresolved')
+    receipt = install.directory / 'inspection-recovery.json'
+    gateway_before = gateway_status()
+    stopped = gateway_stopped = False
+    errors = []
+    committed = False
+    stage = 'writers_stop'
+    write_private(receipt, json.dumps({'phase': 'preparing', 'stage': stage, 'job_id': options.job_id,
+                                     'request_id': options.request_id, 'services': services, 'gateway_before': gateway_before}).encode())
+    try:
+        if services:
+            stopped = True
+            install.compose('stop', '--timeout', '60', *services, private=True)
+        stage = 'gateway_stop'
+        gateway_stopped = True
+        systemctl('stop', SERVICE)
+        if gateway_status()['ActiveState'] not in {'inactive', 'failed'}:
+            raise ValueError('gateway is not stopped')
+        current = install.service_rows()
+        if any(row['Service'] in writers | {'bridge-executor-worker'} and row.get('State') != 'exited' for row in current):
+            raise ValueError('inspection writer did not stop')
+        stage = 'native_idle'
+        run_native(wrapper, 'idle', {})
+        stage = 'transaction'
+        with sqlite3.connect(database.as_uri() + '?mode=rw', uri=True, timeout=5) as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            snapshot = inspection_snapshot(connection, options.job_id)
+            eligible_inspection(snapshot)
+            if recovery_digest(snapshot) != options.snapshot_digest:
+                raise ValueError('inspection recovery snapshot changed')
+            now = datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+            # Match the existing inspection expiry domain: retain every row and
+            # close delivery authority; never invent an inspection result.
+            connection.execute("UPDATE factory_inspection_requests SET state='expired',reason='inspection_capability_expired',updated_at=? WHERE job_id=?", (now, options.job_id))
+            connection.execute("UPDATE factory_inspection_outbox SET state='expired',acknowledged_at=COALESCE(acknowledged_at,?),delivery_lease_id=NULL,delivery_lease_expires_at=NULL,updated_at=? WHERE job_id=? AND acknowledged_at IS NULL", (now, now, options.job_id))
+            connection.execute("UPDATE bridge_jobs SET state='failed',reason_code='inspection_capability_expired',error='inspection capability expired before completion',updated_at=? WHERE job_id=?", (now, options.job_id))
+            persisted = inspection_snapshot(connection, options.job_id)
+            details = {'reason_code': 'inspection_capability_expired', 'actor': 'root', 'reason': options.reason,
+                       'request_id': options.request_id, 'snapshot_digest': options.snapshot_digest,
+                       'intent_digest': intent, 'result_digest': recovery_digest({key: value for key, value in persisted.items() if key != 'events'})}
+            connection.execute('INSERT INTO bridge_events VALUES (?,?,?,?,?,?)',
+                               (event_id, options.job_id, 'inspection_expired', 'failed', json.dumps(details, sort_keys=True), now))
+        committed = True
+    except BaseException:
+        errors.append(stage)
+    finally:
+        # Restore each owned service independently, including when a broken
+        # baseline gateway cannot restart. Never call it a healthy rollback.
+        if gateway_stopped and gateway_before['ActiveState'] in {'active', 'activating', 'reloading'}:
+            try:
+                systemctl('start', SERVICE)
+            except BaseException:
+                errors.append('gateway_restore')
+        if stopped:
+            try:
+                install.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', *services, private=True)
+                restored = {row['Service']: row.get('State') for row in install.service_rows()}
+                if any(restored.get(service) != 'running' for service in services) or restored.get('bridge-executor-worker') != 'exited':
+                    raise ValueError('writer restoration differs')
+            except BaseException:
+                errors.append('writers_restore')
+        write_private(receipt, json.dumps({'phase': 'requires_operator' if errors else 'complete', 'errors': errors,
+                      'committed': committed, 'job_id': options.job_id, 'request_id': options.request_id,
+                      'services': services, 'gateway_before': gateway_before}).encode())
+    if errors:
+        raise ValueError('inspection recovery requires operator inspection of private receipt')
+    return {'job_id': options.job_id, 'recovered': True, 'changed': True, 'state': 'failed',
+            'receipt': str(receipt), 'executor': 'remains_exited'}
+
+
 def systemctl(*args):
     subprocess.run(['systemctl', *args], capture_output=True, check=True, timeout=90)
 
@@ -447,6 +687,20 @@ def gateway_status():
     status = values.get('ExecMainStatus', '')
     bounded['ExecMainStatus'] = int(status) if re.fullmatch(r'[0-9]{1,3}', status) else None
     return bounded
+
+
+def gateway_socket_listening():
+    path = Path('/run/driftward-hermes-factory/hermes.sock')
+    try:
+        no_symlinks(path)
+        if not stat.S_ISSOCK(path.stat().st_mode):
+            return False
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(0.5)
+            client.connect(str(path))
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def cutover_status(install):
@@ -504,12 +758,7 @@ def activate(install, wrapper):
             if marker not in content:
                 raise ValueError('public role artifact lacks named-profile support')
         assets.append((relative, destination, content, destination.read_bytes(), stat.S_IMODE(destination.stat().st_mode)))
-    volume = install.project + '-bridge-data'
-    rows = json.loads(subprocess.run(['docker', 'volume', 'inspect', volume], capture_output=True,
-                                     text=True, check=True, timeout=30).stdout)
-    if len(rows) != 1 or rows[0]['Name'] != volume:
-        raise ValueError('bridge volume identity differs')
-    database = checked(Path(rows[0]['Mountpoint']) / 'bridge.db')
+    database = bridge_database(install)
     services = [row['Service'] for row in install.service_rows()
                 if row.get('State') == 'running' and row['Service'] in {'execution-dispatch-worker', 'bridge-executor-worker'}]
     moved = changed = gateway_stopped = workers_touched = False
@@ -610,6 +859,8 @@ def activate(install, wrapper):
 
 
 def dispatch(install, config, wrapper, args):
+    if args and args[0] == 'recover-inspection':
+        return recover_inspection(install, wrapper, args[1:])
     if args == ['status']:
         result = run_native(wrapper, 'status', {})
         provisioning = json.loads(checked(PROVISION).read_text())
@@ -618,6 +869,7 @@ def dispatch(install, config, wrapper, args):
                                      capture_output=True, text=True, check=True, timeout=15).stdout
         result['gateway_executor_profile_selected'] = 'DRIFTWARD_HERMES_PROFILE=factory-executor' in environment.split()
         result['gateway_service'] = gateway_status()
+        result['gateway_socket_listening'] = gateway_socket_listening()
         result['cutover'] = cutover_status(install)
         return result
     if len(args) == 3 and args[:2] == ['configure', '--plugin-source']:
