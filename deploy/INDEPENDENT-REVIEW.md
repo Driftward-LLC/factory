@@ -80,17 +80,24 @@ change credentials or inherit terminal session exports or working directory;
 provide `workdir` explicitly. Input is noninteractive (empty stdin by default),
 with a 1 MiB character limit, 256 arguments / 262,144 total characters, a
 1–180 second timeout, and 100,000 captured bytes per output stream. Timeout or
-excess output kills the dedicated process group. Normal stdout/stderr/exit code
+excess output kills the dedicated process group. Native per-thread interruption
+is checked before launch and at most every 100 ms during stream and process
+waits; an interrupt kills and reaps that group. Normal stdout/stderr/exit code
 remain in the local tool result and are never exported to PostHog.
 
 The actual CLI execution produces a `$ai_span` child of the native tool span,
 which is itself a child of its generation. `github.observation=cli_invocation`,
 `github.cli_operation` (fixed allowlist, `help_or_version`, or `unknown`),
 `github.cli_status` (`success`, `nonzero_exit`, `timeout`, `output_limit`, or
-`spawn_error`), `github.process_started`, and optional integer `github.exit_code`
+`spawn_error`, `interrupted_before_spawn`, or `interrupted`),
+`github.process_started`, and optional integer `github.exit_code`
 describe the local process only. `github.effect_status=unverified` always:
 successful CLI exit is not evidence of a particular HTTP request or remote
-mutation. Arguments, endpoints, resource names, stdin, outputs and raw exception
+mutation. Interruption before launch reports `process_started=false`; interruption
+after launch reports `true` and the reaped process exit code. Help/version labels
+recognize standalone commands or flags in simple command positions; ambiguous
+later help flags fall back to `unknown`, and body/title values are not commands.
+Arguments, endpoints, resource names, stdin, outputs and raw exception
 text never enter this child event. Native approval denial or unavailable guards
 returns before spawning; missing native middleware identity also fails closed.
 

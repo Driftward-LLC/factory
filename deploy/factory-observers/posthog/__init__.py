@@ -58,8 +58,19 @@ def _tool_span_id(kwargs: dict[str, Any], call_id: str) -> str:
 
 def _github_operation(args: list[str]) -> str:
     # These label CLI invocations, never inferred remote effects or resource names.
-    if any(item in {"--help", "-h", "help", "--version", "version"} for item in args):
+    help_flags = {"--help", "-h", "--version"}
+    if args and args[0] in help_flags | {"help", "version"}:
         return "help_or_version"
+    if args and (args[0] in _GITHUB_COMMANDS or args[0] == "api"):
+        if len(args) > 1 and args[1] in help_flags:
+            return "help_or_version"
+        if (len(args) > 2 and args[2] in help_flags
+                and (args[1] in _GITHUB_COMMANDS.get(args[0], set())
+                     or (args[0] == "api" and not args[1].startswith("-")))):
+            return "help_or_version"
+    # Later flags might be option payloads; do not attempt to parse all gh options.
+    if any(item in help_flags for item in args[3:]):
+        return "unknown"
     if args and args[0] == "api":
         return "api.graphql" if len(args) > 1 and args[1] == "graphql" else "api"
     if len(args) > 1 and args[1] in _GITHUB_COMMANDS.get(args[0], set()):
@@ -107,7 +118,7 @@ def _github_event(context: dict[str, Any], operation: str, status: str, exit_cod
         "hermes.tool_call_id": call_id,
         "github.cli_operation": operation, "github.cli_status": status,
         "github.observation": "cli_invocation",
-        "github.process_started": status != "spawn_error",
+        "github.process_started": status not in {"spawn_error", "interrupted_before_spawn"},
         "github.effect_status": "unverified", "github.coverage": "controlled_tool_only",
         "$process_person_profile": False, **_factory_properties(),
     }
@@ -117,6 +128,7 @@ def _github_event(context: dict[str, Any], operation: str, status: str, exit_cod
         properties.update({"$ai_is_error": True, "$ai_error": {
             "nonzero_exit": "GitHubCliExit", "timeout": "GitHubCliTimeout", "spawn_error": "GitHubCliSpawnError",
             "output_limit": "GitHubCliOutputLimit",
+            "interrupted": "GitHubCliInterrupted", "interrupted_before_spawn": "GitHubCliInterrupted",
         }[status]})
     return {"event": "$ai_span", "distinct_id": "driftward-hermes",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "properties": properties}
@@ -124,6 +136,9 @@ def _github_event(context: dict[str, Any], operation: str, status: str, exit_cod
 
 def _run_github(argv: list[str], stdin: str, workdir: str | None, timeout: int, environment: dict[str, str]) -> tuple[dict[str, Any], str]:
     """Bound both captured streams while preserving their bytes below the limit."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "GitHub CLI interrupted before launch; no process started.", "exit_code": None}, "interrupted_before_spawn"
     output = {"stdout": bytearray(), "stderr": bytearray()}
     response: dict[str, Any] = {"stdout_truncated": False, "stderr_truncated": False}
     status = "success"
@@ -147,6 +162,9 @@ def _run_github(argv: list[str], stdin: str, workdir: str | None, timeout: int, 
                     process.stdin.close()
                 deadline = time.monotonic() + timeout
                 while selector.get_map():
+                    if is_interrupted():
+                        status = "interrupted"
+                        break
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         status = "timeout"
@@ -174,11 +192,19 @@ def _run_github(argv: list[str], stdin: str, workdir: str | None, timeout: int, 
                             break
                     if status != "success":
                         break
-                if status == "success":
-                    try:
-                        process.wait(timeout=max(0, deadline - time.monotonic()))
-                    except subprocess.TimeoutExpired:
+                while status == "success":
+                    if is_interrupted():
+                        status = "interrupted"
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         status = "timeout"
+                        break
+                    try:
+                        process.wait(timeout=min(remaining, 0.1))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         finally:
             if status != "success" or process.poll() is None:
                 try:
@@ -193,6 +219,8 @@ def _run_github(argv: list[str], stdin: str, workdir: str | None, timeout: int, 
         response["error"] = "GitHub CLI exited unsuccessfully; remote effect is unknown."
     if status in {"timeout", "output_limit"}:
         response["error"] = "GitHub CLI stopped at its time or output limit; remote effect is unknown."
+    if status == "interrupted":
+        response["error"] = "GitHub CLI interrupted; remote effect is unknown."
     return response, status
 
 

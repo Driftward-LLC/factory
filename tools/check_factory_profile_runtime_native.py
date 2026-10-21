@@ -163,6 +163,45 @@ def executor_probe():
     assert child['github.effect_status']=='unverified' and child['github.cli_operation']=='pr.create'
     assert tool['hermes.tool_status']=='error' and tool['factory.external_operation_coverage']=='controlled_github_cli'
     assert 'PRIVATE_' not in json.dumps(events), events
+    import threading, time
+    from tools.interrupt import set_interrupt
+    set_interrupt(True)
+    try:
+        response,status=observer._run_github([sys.executable,'-c','raise RuntimeError("must not run")'],'','/tmp',30,{})
+        assert status=='interrupted_before_spawn' and response['exit_code'] is None
+        before=observer._github_event(ids,'pr.create',status,None,time.monotonic())['properties']
+        assert before['github.process_started'] is False
+    finally:
+        set_interrupt(False)
+    for close_pipes in (False,True):
+        ready=Path('/tmp/github-interrupt-ready-'+str(close_pipes))
+        action=Path('/tmp/github-interrupt-action-'+str(close_pipes))
+        delayed='import time; from pathlib import Path; time.sleep(1); Path('+repr(str(action))+').touch()'
+        code=('import os,sys,time,subprocess; from pathlib import Path; '
+            'subprocess.Popen([sys.executable,"-c",'+repr(delayed)+'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); '
+            'Path('+repr(str(ready))+').touch(); '+('os.close(1);os.close(2); ' if close_pipes else '')+'time.sleep(2)')
+        outcome=[]
+        worker=threading.Thread(target=lambda:outcome.append(observer._run_github([sys.executable,'-c',code],'','/tmp',30,{})))
+        worker.start()
+        try:
+            deadline=time.monotonic()+2
+            while not ready.exists() and time.monotonic()<deadline:
+                time.sleep(0.01)
+            assert ready.exists(), 'synthetic interrupt child did not start'
+            stopped_at=time.monotonic()
+            set_interrupt(True,worker.ident)
+            worker.join(1)
+            assert not worker.is_alive() and time.monotonic()-stopped_at<1, 'native stop did not promptly finish'
+            response,status=outcome[0]
+            assert status=='interrupted' and response['exit_code']==-9, outcome
+            after=observer._github_event(ids,'pr.create',status,response['exit_code'],stopped_at)['properties']
+            assert after['github.process_started'] is True and after['github.effect_status']=='unverified'
+            time.sleep(1.1)
+            assert not action.exists(), 'interrupted subprocess group performed delayed action'
+        finally:
+            set_interrupt(True,worker.ident)
+            worker.join(2)
+            set_interrupt(False,worker.ident)
     from types import SimpleNamespace
     from hermes_constants import set_hermes_home_override
     for unrelated in (root, root/'profiles'/ROLES['reviewer']):
@@ -178,7 +217,8 @@ def executor_probe():
     prompt,loaded,missing=build_preloaded_skills_prompt(names)
     assert not missing and len(loaded)==3 and len(prompt)>1000, missing
     return {'uid':os.geteuid(),'native_constructor':True,'preloaded_skills':loaded,
-            'github_catalog_dispatch_parent_tree':'passed','github_subprocess_fixture':'passed'}
+            'github_catalog_dispatch_parent_tree':'passed','github_subprocess_fixture':'passed',
+            'github_native_thread_interrupt_and_group_cleanup':'passed'}
 def debug_probe():
     try:
         return executor_probe()

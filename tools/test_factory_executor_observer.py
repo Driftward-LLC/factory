@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -23,7 +25,8 @@ class ExecutorObserverTests(unittest.TestCase):
         self.guards = SimpleNamespace(_check_all_guards=lambda *args: {"approved": True})
         self.environments = SimpleNamespace(build_subprocess_env=lambda **kwargs: {"FIXTURE": "scoped"})
         self.native = patch.dict(sys.modules, {"tools.terminal_tool": self.guards,
-                                              "tools.environments.local": self.environments})
+                                              "tools.environments.local": self.environments,
+                                              "tools.interrupt": SimpleNamespace(is_interrupted=lambda: False)})
         self.native.start()
         self.addCleanup(self.native.stop)
 
@@ -126,10 +129,48 @@ class ExecutorObserverTests(unittest.TestCase):
                 self.assertIn("error", json.loads(observer._github_tool(args)))
             run.assert_not_called()
         for args, expected in [(["pr", "create", "--help"], "help_or_version"), (["--version"], "help_or_version"),
+                               (["issue", "create", "--title", "help"], "issue.create"),
+                               (["pr", "create", "--body", "version"], "pr.create"),
+                               (["pr", "view", "help"], "pr.view"), (["help", "pr"], "help_or_version"),
+                               (["version"], "help_or_version"), (["pr", "--help"], "help_or_version"),
+                               (["api", "--help"], "help_or_version"),
+                               (["api", "graphql", "--help"], "help_or_version"),
+                               (["api", "repos/PRIVATE/PRIVATE", "--help"], "help_or_version"),
+                               (["pr", "create", "--body", "--help"], "unknown"),
+                               (["pr", "create", "--title", "value", "--help"], "unknown"),
                                (["--repo", "SECRET", "pr", "merge"], "unknown"), (["alias", "SECRET"], "unknown"),
                                (["pr", "SECRET"], "unknown"), (["api", "graphql"], "api.graphql"),
                                (["api", "repos/SECRET/SECRET"], "api")]:
             self.assertEqual(observer._github_operation(args), expected)
+
+    def test_interrupt_before_spawn_and_during_both_wait_paths(self):
+        observer = load_observer()
+        stopped = threading.Event()
+        with patch.dict(sys.modules, {"tools.interrupt": SimpleNamespace(is_interrupted=stopped.is_set)}):
+            stopped.set()
+            with patch.object(observer.subprocess, "Popen") as spawn:
+                response, status = observer._run_github(["gh", "pr", "create"], "", "/tmp", 10, {})
+                self.assertEqual((status, response["exit_code"]), ("interrupted_before_spawn", None))
+                spawn.assert_not_called()
+            for close_pipes in (False, True):
+                stopped.clear()
+                outcome = []
+                script = "import os,time; " + ("os.close(1);os.close(2); " if close_pipes else "") + "time.sleep(2);os._exit(7)"
+                worker = threading.Thread(target=lambda: outcome.append(observer._run_github([sys.executable, "-c", script], "", "/tmp", 10, {})))
+                started = time.monotonic()
+                worker.start()
+                time.sleep(0.2)
+                stopped.set()
+                worker.join(1)
+                self.assertFalse(worker.is_alive())
+                self.assertLess(time.monotonic() - started, 1.2)
+                response, status = outcome[0]
+                self.assertEqual((status, response["exit_code"]), ("interrupted", -9))
+                with patch.object(observer, "_factory_properties", return_value={}):
+                    properties = observer._github_event({"tool_call_id": "call"}, "pr.create", status, response["exit_code"], started)["properties"]
+                self.assertTrue(properties["github.process_started"])
+                self.assertEqual(properties["github.effect_status"], "unverified")
+                self.assertTrue(properties["$ai_is_error"])
 
     def test_native_guard_denial_and_failure_do_not_spawn(self):
         observer = load_observer()
