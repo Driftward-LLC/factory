@@ -237,10 +237,10 @@ class ArtifactRoutineTests(unittest.TestCase):
         original = runtime.routine_snapshot
         for drift_call in (2, 3):
             count = 0
-            def drift(before):
+            def drift(before, runs=None):
                 nonlocal count
                 count += 1
-                result = original(before)
+                result = original(before, runs)
                 if count == drift_call:
                     result['protected_artifacts'] = []
                 return result
@@ -262,6 +262,48 @@ class ArtifactRoutineTests(unittest.TestCase):
         with patch.object(runtime, 'atomic', side_effect=OSError('fsync failed')), self.assertRaises(OSError):
             self.prune()
         self.assertEqual(self.deleted, [])
+
+    def test_api_calls_are_bounded_and_other_runs_cached_only_within_operation(self):
+        self.items = []
+        self.runs = {}
+        for artifact_id in range(1, 101):
+            self.add(artifact_id, 'main', '2026-10-01T00:00:00Z')
+        view = self.preview()
+        with patch.object(runtime, 'gh', side_effect=self.api) as api:
+            result = self.prune(view['snapshot_digest'])
+        self.assertEqual(len(result['artifact_ids']), 99)
+        run_calls = [call for call in api.call_args_list if call.args[0].startswith('actions/runs/')]
+        list_calls = [call for call in api.call_args_list if call.args[0].startswith('actions/artifacts?')]
+        self.assertEqual(len(run_calls), 100 + 99)
+        self.assertEqual(len(list_calls), 1 + 99)
+        self.assertEqual(api.call_count, 398)  # Includes 99 explicit deletions.
+
+    def test_current_candidate_run_is_fresh_and_drift_stops_before_deletion(self):
+        for field, value in [('run_attempt', 2), ('status', 'in_progress'), ('updated_at', '2026-10-20T00:00:00Z')]:
+            original = runtime.routine_snapshot
+            calls = 0
+            def change(before, runs=None):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    self.runs[1001][field] = value
+                return original(before, runs)
+            initial = self.runs[1001][field]
+            view = self.preview()
+            with self.subTest(field=field), patch.object(runtime, 'routine_snapshot', side_effect=change), \
+                 self.assertRaises(runtime.Refusal):
+                self.prune(view['snapshot_digest'])
+            self.runs[1001][field] = initial
+            self.assertEqual(self.deleted, [])
+
+    def test_fixed_batch_bound_reports_remaining_and_actual_deleted_bytes(self):
+        with patch.object(runtime, 'MAX_ROUTINE_DELETES', 1):
+            view = self.preview()
+            self.assertEqual(view['delete_limit'], 1)
+            result = self.prune(view['snapshot_digest'])
+        self.assertEqual(result['artifact_ids'], [1])
+        self.assertEqual(result['remaining_count'], 1)
+        self.assertEqual(result['total_bytes'], 100)
 
 
 class ArtifactRuntimeTests(unittest.TestCase):

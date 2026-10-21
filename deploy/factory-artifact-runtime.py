@@ -27,6 +27,7 @@ MAX_ZIP = 1024 ** 3
 MAX_IMAGE = 4 * 1024 ** 3
 HEADROOM = 12 * 1024 ** 3
 MAX_PAGES = 10
+MAX_ROUTINE_DELETES = 100
 ROUTINE_NAMES = ('driftward-ui-storybook', 'factory-console-fixtures')
 
 
@@ -136,11 +137,13 @@ def inventory():
             'groups': sorted(groups.values(), key=lambda group: (-group['total_bytes'], group['name'])), 'artifacts': rows}
 
 
-def routine_snapshot(before):
+def routine_snapshot(before, runs=None):
     cutoff = stamp(before)
     require(cutoff <= datetime.now(timezone.utc) - timedelta(days=7), 'routine cutoff must be at least seven days old')
     items = [item for item in artifact_listing() if item['name'] in ROUTINE_NAMES]
-    runs, trusted, protected_rows = {}, [], []
+    if runs is None:
+        runs = {}
+    trusted, protected_rows = [], []
     for item in items:
         run_id = item['workflow_run']['id']
         if run_id not in runs:
@@ -207,18 +210,21 @@ def routine_snapshot(before):
             continue
         protected_rows.append(row | {'reason': reason})
     result = {'repository': REPO, 'policy': 'routine-ui-evidence-seven-days-v1', 'before': before,
+              'delete_limit': MAX_ROUTINE_DELETES,
               'artifacts': sorted(selected, key=lambda row: row['id']),
               'protected_artifacts': sorted(protected_rows, key=lambda row: row['id'])}
     return result | {'snapshot_digest': digest(result), 'total_bytes': sum(row['size_in_bytes'] for row in selected)}
 
 
-def routine_prune(view):
+def routine_prune(view, runs):
     receipt = ROOT / f"routine-{view['snapshot_digest']}.json"
     require(not receipt.exists() and not receipt.is_symlink(), 'routine cleanup audit already exists; inspect it and preview again')
     audit = {'snapshot': view, 'events': []}
     completed = []
-    for row in view['artifacts']:
-        fresh = routine_snapshot(view['before'])
+    for row in view['artifacts'][:MAX_ROUTINE_DELETES]:
+        # Reuse only this operation's source checks; the current run is always fresh.
+        runs.pop(row['run_id'], None)
+        fresh = routine_snapshot(view['before'], runs)
         require(fresh['artifacts'] == [item for item in view['artifacts'] if item['id'] not in completed]
                 and fresh['protected_artifacts'] == view['protected_artifacts'],
                 'routine artifact snapshot changed during pruning')
@@ -235,7 +241,8 @@ def routine_prune(view):
         atomic(receipt, audit)
         completed.append(row['id'])
     return {'action': 'routine_prune', 'snapshot_digest': view['snapshot_digest'], 'artifact_ids': completed,
-            'total_bytes': view['total_bytes'], 'archive_root': str(ROOT)}
+            'total_bytes': sum(row['size_in_bytes'] for row in view['artifacts'] if row['id'] in completed),
+            'remaining_count': len(view['artifacts']) - len(completed), 'archive_root': str(ROOT)}
 
 
 def snapshot(before):
@@ -469,6 +476,7 @@ def dispatch(args):
         return routine_snapshot(options.before) if routine else snapshot(options.before)
     require(options.yes and re.fullmatch(HEX, options.snapshot_digest or ''), 'snapshot digest and --yes required')
     with archive_lock(create=routine or options.action == 'preserve'):
-        view = routine_snapshot(options.before) if routine else snapshot(options.before)
+        runs = {}
+        view = routine_snapshot(options.before, runs) if routine else snapshot(options.before)
         require(view['snapshot_digest'] == options.snapshot_digest, 'artifact snapshot changed; preview again')
-        return routine_prune(view) if routine else operate(options.action, view)
+        return routine_prune(view, runs) if routine else operate(options.action, view)

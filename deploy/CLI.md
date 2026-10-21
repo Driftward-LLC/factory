@@ -293,8 +293,16 @@ artifacts with reasons. Cleanup does not change upload retention settings.
 
 Review the preview before providing its exact digest and `--yes`. The digest
 binds the cutoff, policy, selected artifact/run metadata and protected UI set.
-Prune uses the shared root lock and revalidates the full remaining UI snapshot
-before each explicit artifact-ID deletion. It persists intent before deletion
+Prune uses the shared root lock and deletes at most the first 100 selected IDs
+per invocation, reporting remaining count and bytes actually deleted. Review a
+fresh preview for each further batch. It fetches complete live artifact metadata
+and rechecks the current candidate's source run before each deletion. Other
+source-run metadata is cached only within that invocation; each candidate's run
+is checked fresh when its turn arrives. New or changed UI artifacts or protected
+sets stop pruning. With unchanged inventory, the 1,000-artifact and 100-deletion
+bounds permit at most 2,210 GitHub calls per prune, including explicit deletions,
+rather than reloading every source run for each artifact.
+It persists intent before deletion
 and result afterward in a separate private
 `/srv/factory-artifact-archive/routine-<digest>.json` audit; legacy ZIPs and
 receipts are untouched. Any drift, durability failure or API failure stops the
