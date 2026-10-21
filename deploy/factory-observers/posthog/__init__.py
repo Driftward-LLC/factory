@@ -5,10 +5,17 @@ The observer never exports prompts, completions, tool arguments, or tool results
 from __future__ import annotations
 
 import atexit
+import contextvars
+import json
 import logging
 import os
 import queue
 import re
+import selectors
+import shlex
+import shutil
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -24,6 +31,210 @@ _LOCK = threading.Lock()
 _EVENTS: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
 _WORKER_STARTED = False
 _PROCESS_TRACE = str(uuid.uuid4())
+_TOOL_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("factory_github_tool", default={})
+_GITHUB_COMMANDS = {
+    "pr": {"checks", "checkout", "close", "comment", "create", "diff", "edit", "list", "merge", "ready", "reopen", "review", "status", "view"},
+    "issue": {"close", "comment", "create", "delete", "edit", "list", "reopen", "status", "view"},
+    "repo": {"clone", "create", "fork", "list", "sync", "view"},
+    "run": {"cancel", "download", "list", "rerun", "view", "watch"},
+    "workflow": {"disable", "enable", "list", "run", "view"},
+    "release": {"create", "delete", "download", "edit", "list", "upload", "view"},
+}
+_GITHUB_SCHEMA = {
+    "name": "factory_github",
+    "description": "Run the existing local gh CLI without a shell. Use for GitHub CLI/API operations; returns exit_code, stdout and stderr (100,000 bytes each; larger output stops the process). Native command approval applies. Noninteractive; remote effects are not verified by telemetry. Set workdir explicitly; terminal session exports/cwd are not inherited.",
+    "parameters": {"type": "object", "properties": {
+        "args": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "string", "maxLength": 65536}, "description": "gh arguments, e.g. [pr, view, 123]; never include the gh executable. At most 262,144 characters total."},
+        "stdin": {"type": "string", "maxLength": 1048576, "description": "Optional literal standard input; never exported to telemetry."},
+        "workdir": {"type": "string", "maxLength": 4096},
+        "timeout": {"type": "integer", "minimum": 1, "maximum": 180, "default": 60},
+    }, "required": ["args"], "additionalProperties": False},
+}
+
+
+def _tool_span_id(kwargs: dict[str, Any], call_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:tool:{_request_key(kwargs)}:{call_id}"))
+
+
+def _github_operation(args: list[str]) -> str:
+    # These label CLI invocations, never inferred remote effects or resource names.
+    if any(item in {"--help", "-h", "help", "--version", "version"} for item in args):
+        return "help_or_version"
+    if args and args[0] == "api":
+        return "api.graphql" if len(args) > 1 and args[1] == "graphql" else "api"
+    if len(args) > 1 and args[1] in _GITHUB_COMMANDS.get(args[0], set()):
+        return f"{args[0]}.{args[1]}"
+    return "unknown"
+
+
+def _github_available() -> bool:
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config_readonly
+        from gateway.session_context import get_session_env
+        return (str(get_hermes_home()) == "/opt/data/profiles/factory-executor"
+                and (load_config_readonly() or {}).get("terminal", {}).get("backend", "local") == "local"
+                and get_session_env("TERMINAL_ENV", "local") == "local"
+                and shutil.which("gh") is not None)
+    except Exception:
+        # Optional tool discovery must not disable the existing generation/tool observer.
+        return False
+
+
+def _github_context(*, tool_name: str, args: dict[str, Any], next_call: Any, **kwargs: Any) -> Any:
+    if tool_name != "factory_github":
+        return next_call(args)
+    token = _TOOL_CONTEXT.set({key: kwargs.get(key) for key in
+                               ("session_id", "task_id", "turn_id", "api_request_id", "tool_call_id")})
+    try:
+        return next_call(args)
+    finally:
+        _TOOL_CONTEXT.reset(token)
+
+
+def _github_event(context: dict[str, Any], operation: str, status: str, exit_code: int | None,
+                  started: float) -> dict[str, Any]:
+    call_id = str(context.get("tool_call_id") or "")
+    properties = {
+        "$ai_trace_id": _trace_id(context), "$ai_span_id": str(uuid.uuid4()),
+        "$ai_parent_id": _tool_span_id(context, call_id), "$ai_span_name": f"github.{operation}",
+        "$ai_session_id": str(context.get("session_id") or ""),
+        "$ai_latency": round(max(0, time.monotonic() - started), 3),
+        "hermes.session_id": str(context.get("session_id") or ""),
+        "hermes.task_id": str(context.get("task_id") or ""),
+        "hermes.turn_id": str(context.get("turn_id") or ""),
+        "hermes.request_id": str(context.get("api_request_id") or ""),
+        "hermes.tool_call_id": call_id,
+        "github.cli_operation": operation, "github.cli_status": status,
+        "github.observation": "cli_invocation",
+        "github.process_started": status != "spawn_error",
+        "github.effect_status": "unverified", "github.coverage": "controlled_tool_only",
+        "$process_person_profile": False, **_factory_properties(),
+    }
+    if exit_code is not None:
+        properties["github.exit_code"] = exit_code
+    if status != "success":
+        properties.update({"$ai_is_error": True, "$ai_error": {
+            "nonzero_exit": "GitHubCliExit", "timeout": "GitHubCliTimeout", "spawn_error": "GitHubCliSpawnError",
+            "output_limit": "GitHubCliOutputLimit",
+        }[status]})
+    return {"event": "$ai_span", "distinct_id": "driftward-hermes",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "properties": properties}
+
+
+def _run_github(argv: list[str], stdin: str, workdir: str | None, timeout: int, environment: dict[str, str]) -> tuple[dict[str, Any], str]:
+    """Bound both captured streams while preserving their bytes below the limit."""
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    response: dict[str, Any] = {"stdout_truncated": False, "stderr_truncated": False}
+    status = "success"
+    try:
+        process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   shell=False, cwd=workdir, env=environment, start_new_session=True)
+    except OSError:
+        return {"error": "GitHub CLI process could not start.", "exit_code": None}, "spawn_error"
+    with process:
+        try:
+            with selectors.DefaultSelector() as selector:
+                for name in ("stdout", "stderr"):
+                    stream = getattr(process, name)
+                    os.set_blocking(stream.fileno(), False)
+                    selector.register(stream, selectors.EVENT_READ, name)
+                pending = memoryview(stdin.encode("utf-8"))
+                if pending:
+                    os.set_blocking(process.stdin.fileno(), False)
+                    selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+                else:
+                    process.stdin.close()
+                deadline = time.monotonic() + timeout
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        status = "timeout"
+                        break
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        if key.data == "stdin":
+                            try:
+                                written = os.write(key.fd, pending[:65536])
+                                pending = pending[written:]
+                            except BrokenPipeError:
+                                pending = memoryview(b"")
+                            if not pending:
+                                selector.unregister(key.fileobj)
+                                key.fileobj.close()
+                            continue
+                        data = os.read(key.fd, 32768)
+                        if not data:
+                            selector.unregister(key.fileobj)
+                            continue
+                        available = 100000 - len(output[key.data])
+                        output[key.data].extend(data[:available])
+                        if len(data) > available:
+                            response[f"{key.data}_truncated"] = True
+                            status = "output_limit"
+                            break
+                    if status != "success":
+                        break
+                if status == "success":
+                    try:
+                        process.wait(timeout=max(0, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        status = "timeout"
+        finally:
+            if status != "success" or process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        response["exit_code"] = process.returncode
+    response.update({name: value.decode("utf-8", "replace") for name, value in output.items()})
+    if status == "success" and response["exit_code"] != 0:
+        status = "nonzero_exit"
+        response["error"] = "GitHub CLI exited unsuccessfully; remote effect is unknown."
+    if status in {"timeout", "output_limit"}:
+        response["error"] = "GitHub CLI stopped at its time or output limit; remote effect is unknown."
+    return response, status
+
+
+def _github_tool(args: dict[str, Any], **kwargs: Any) -> str:
+    argv = args.get("args")
+    timeout = args.get("timeout", 60)
+    if (not isinstance(argv, list) or not 1 <= len(argv) <= 256
+            or not all(isinstance(item, str) and "\0" not in item and len(item) <= 65536 for item in argv)
+            or sum(len(item) for item in argv) > 262144
+            or type(timeout) is not int or not 1 <= timeout <= 180
+            or not isinstance(args.get("stdin", ""), str) or len(args.get("stdin", "")) > 1048576
+            or ("workdir" in args and (not isinstance(args["workdir"], str)
+                                      or "\0" in args["workdir"] or len(args["workdir"]) > 4096))):
+        return json.dumps({"error": "Invalid factory_github arguments; no process started."})
+    try:
+        if sum(len(item.encode("utf-8")) for item in argv) > 262144 or len(args.get("stdin", "").encode("utf-8")) > 1048576:
+            raise ValueError
+    except (UnicodeError, ValueError):
+        return json.dumps({"error": "GitHub CLI arguments/input exceed UTF-8 byte limits; no process started."})
+    if not _github_available():
+        return json.dumps({"error": "factory_github requires the existing local terminal backend and gh executable."})
+    context = _TOOL_CONTEXT.get()
+    if not context.get("tool_call_id"):
+        return json.dumps({"error": "factory_github requires native tool execution context; no process started."})
+    try:
+        # Match the local terminal's native approval and scoped secret-scrub policy.
+        from tools.terminal_tool import _check_all_guards
+        from tools.environments.local import build_subprocess_env
+        decision = _check_all_guards(shlex.join(["gh", *argv]), "local")
+        if not decision.get("approved"):
+            return json.dumps({"error": "GitHub CLI blocked by native command approval; no process started."})
+        environment = build_subprocess_env(strip_launch_profile=True)
+    except Exception:
+        return json.dumps({"error": "GitHub CLI native execution guards unavailable; no process started."})
+    started = time.monotonic()
+    response, status = _run_github(["gh", *argv], args.get("stdin", ""), args.get("workdir"), timeout, environment)
+    try:
+        _enqueue(_github_event(context, _github_operation(argv), status, response["exit_code"], started))
+    except Exception:
+        # Telemetry must neither retry an operation nor change its returned result.
+        logger.debug("GitHub CLI telemetry unavailable")
+    return json.dumps(response)
 
 
 def _enabled() -> bool:
@@ -209,7 +420,7 @@ def on_post_tool_call(**kwargs: Any) -> None:
     status = status if status in {"ok", "error", "blocked"} else "unknown"
     properties: dict[str, Any] = {
         "$ai_trace_id": trace_id,
-        "$ai_span_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:tool:{_request_key(kwargs)}:{call_id}")),
+        "$ai_span_id": _tool_span_id(kwargs, call_id),
         "$ai_parent_id": _span_id(kwargs) if kwargs.get("api_request_id") else trace_id,
         "$ai_span_name": tool_name,
         "$ai_session_id": str(kwargs.get("session_id") or ""),
@@ -220,6 +431,7 @@ def on_post_tool_call(**kwargs: Any) -> None:
         "hermes.request_id": str(kwargs.get("api_request_id") or ""),
         "hermes.tool_call_id": call_id,
         "hermes.tool_status": status,
+        "factory.external_operation_coverage": "controlled_github_cli" if tool_name == "factory_github" else "unknown",
         "$process_person_profile": False,
         **_factory_properties(),
     }
@@ -240,6 +452,16 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("api_request_error", on_api_request_error)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    if _github_available():
+        ctx.register_tool(name="factory_github", toolset="terminal", schema=_GITHUB_SCHEMA,
+                          handler=_github_tool, check_fn=_github_available)
+        ctx.register_middleware("tool_execution", _github_context)
+        ctx.register_system_prompt_section("factory-github", (
+            "For GitHub CLI/API operations, prefer factory_github with an argv array and explicit workdir. "
+            "Existing permissions and approval requirements still apply. Telemetry observes only this "
+            "tool's local gh invocation and exit, and never confirms remote effects. GitHub calls through "
+            "terminal, execute_code, scripts, direct HTTP, git or alternate executables have unknown coverage."
+        ), max_chars=1024)
 
 
 atexit.register(_flush_at_exit)

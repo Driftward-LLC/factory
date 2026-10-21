@@ -69,6 +69,49 @@ invalid endpoints and delivery failures do not change the verdict or authorize
 replay. A hard kill, queue overflow or flush timeout can lose events; traces are
 observability evidence rather than completion or authorization receipts.
 
+The executor's `observability/posthog` plugin also registers `factory_github` in
+the existing `terminal` toolset, only in the named `factory-executor` profile
+with a local terminal backend and an existing `gh` executable. New session
+prompts prefer this tool for GitHub CLI/API work. For example, use
+`{"args":["pr","view","123"],"workdir":"/path/to/checkout"}`. It executes an
+argv array without a shell, runs the native terminal command approval guard,
+and builds a native profile-scoped, scrubbed child environment. It does not
+change credentials or inherit terminal session exports or working directory;
+provide `workdir` explicitly. Input is noninteractive (empty stdin by default),
+with a 1 MiB character limit, 256 arguments / 262,144 total characters, a
+1–180 second timeout, and 100,000 captured bytes per output stream. Timeout or
+excess output kills the dedicated process group. Normal stdout/stderr/exit code
+remain in the local tool result and are never exported to PostHog.
+
+The actual CLI execution produces a `$ai_span` child of the native tool span,
+which is itself a child of its generation. `github.observation=cli_invocation`,
+`github.cli_operation` (fixed allowlist, `help_or_version`, or `unknown`),
+`github.cli_status` (`success`, `nonzero_exit`, `timeout`, `output_limit`, or
+`spawn_error`), `github.process_started`, and optional integer `github.exit_code`
+describe the local process only. `github.effect_status=unverified` always:
+successful CLI exit is not evidence of a particular HTTP request or remote
+mutation. Arguments, endpoints, resource names, stdin, outputs and raw exception
+text never enter this child event. Native approval denial or unavailable guards
+returns before spawning; missing native middleware identity also fails closed.
+
+Outer tool spans include `factory.external_operation_coverage`:
+`controlled_github_cli` for `factory_github`, otherwise `unknown`. Inner GitHub
+calls in `terminal`, `execute_code`, `process`, arbitrary scripts, direct HTTP,
+`git`, alternate executables or remote terminal backends are not observed by this
+boundary. Queue drops, process termination and delivery failures can also leave
+gaps; these fields do not promise a complete external-action ledger. No old
+events are backfilled. Installing this source requires a separately reviewed
+profile upgrade; the existing guarded deployment/blob gates remain in force.
+
+`tools/check_factory_profile_runtime_native.py` exercises the pinned Hermes
+catalog and real dispatcher offline with a synthetic `gh` subprocess, checking
+the generation → tool → CLI parent IDs and output secrecy. It does not prove
+PostHog ingestion. After an approved profile upgrade, an operator can use a
+synthetic native invocation such as `factory_github({"args":["--version"]})`,
+record its exact session/request/tool-call IDs and verify the associated trace,
+tool parent and `help_or_version` child server-side. This needs no GitHub API
+write; it still requires separate activation and delivery verification.
+
 The host starts one credential-free source container with an immutable Git
 bundle/database, independent checkout, test tools and fresh Playwright browser.
 It has no provider/platform credentials, outbound network, shared Hermes data,
