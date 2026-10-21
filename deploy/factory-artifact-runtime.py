@@ -221,10 +221,18 @@ def routine_prune(view, runs):
     require(not receipt.exists() and not receipt.is_symlink(), 'routine cleanup audit already exists; inspect it and preview again')
     audit = {'snapshot': view, 'events': []}
     completed = []
+    anchors = {row['run_id'] for row in view['protected_artifacts']
+               if row['reason'] == 'latest_global_or_main_evidence'}
+    require(len(anchors) <= 4, 'too many routine evidence anchors')
+    anchor_digests = {run_id: digest(runs[run_id]) for run_id in anchors}
     for row in view['artifacts'][:MAX_ROUTINE_DELETES]:
-        # Reuse only this operation's source checks; the current run is always fresh.
-        runs.pop(row['run_id'], None)
+        # Original retained anchors and the current candidate must always be fresh.
+        for run_id in anchors | {row['run_id']}:
+            runs.pop(run_id, None)
         fresh = routine_snapshot(view['before'], runs)
+        require(all(run_id in runs and digest(runs[run_id]) == original
+                    for run_id, original in anchor_digests.items()),
+                'retained evidence source run changed; preview again')
         require(fresh['artifacts'] == [item for item in view['artifacts'] if item['id'] not in completed]
                 and fresh['protected_artifacts'] == view['protected_artifacts'],
                 'routine artifact snapshot changed during pruning')
@@ -458,19 +466,31 @@ def archive_lock(create=False):
 
 
 def dispatch(args):
-    if args == ['status']:
-        return status()
-    if args == ['inventory']:
-        return inventory()
+    if args[:1] in (['status'], ['inventory']):
+        action = args[0]
+        parser = argparse.ArgumentParser(prog='factory artifacts ' + action,
+                                         description='Read-only Factory repository artifact metadata.' if action == 'inventory'
+                                         else 'Read-only verification of retained local image ZIPs and receipts.')
+        parser.parse_args(args[1:])
+        return status() if action == 'status' else inventory()
     routine = args[:1] == ['routine']
     if routine:
         args = args[1:]
-    parser = argparse.ArgumentParser(prog='factory artifacts')
-    parser.add_argument('action', choices=('preview', 'prune') if routine else ('preview', 'preserve', 'prune'))
+    parser = argparse.ArgumentParser(
+        prog='factory artifacts' + (' routine' if routine else ''),
+        usage='%(prog)s COMMAND [arguments]',
+        description='Fixed Factory repository only. Routine UI cleanup requires evidence at least seven days old '
+                    'and deletes at most 100 artifacts per approved invocation.',
+        epilog='inventory: current remote metadata; status: verified local archive; '
+               'routine preview|prune: UI evidence; preview|preserve|prune: legacy production images. '
+               'Pruning requires a reviewed preview digest and --yes.')
+    parser.add_argument('action', choices=('preview', 'prune') if routine else
+                        ('inventory', 'status', 'routine', 'preview', 'preserve', 'prune'))
     parser.add_argument('--before', required=True)
     parser.add_argument('--snapshot-digest')
     parser.add_argument('--yes', action='store_true')
     options = parser.parse_args(args)
+    require(options.action in ('preview', 'preserve', 'prune'), 'unsupported artifact command arguments')
     if options.action == 'preview':
         require(not options.yes and options.snapshot_digest is None, 'preview takes no approval arguments')
         return routine_snapshot(options.before) if routine else snapshot(options.before)

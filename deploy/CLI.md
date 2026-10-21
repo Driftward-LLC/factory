@@ -266,6 +266,7 @@ reporting IDs, byte counts and deletion status even after remote pruning.
 ## Current CI storage and routine evidence cleanup
 
 ```bash
+factory artifacts --help
 factory artifacts inventory
 factory artifacts routine preview --before 2026-10-14T00:00:00Z
 factory artifacts routine prune --before 2026-10-14T00:00:00Z --snapshot-digest PREVIEW_DIGEST --yes
@@ -296,14 +297,14 @@ binds the cutoff, policy, selected artifact/run metadata and protected UI set.
 Prune uses the shared root lock and deletes at most the first 100 selected IDs
 per invocation, reporting remaining count and bytes actually deleted. Review a
 fresh preview for each further batch. It fetches complete live artifact metadata
-and rechecks the current candidate's source run before each deletion. Other
-source-run metadata is cached only within that invocation; each candidate's run
-is checked fresh when its turn arrives. New or changed UI artifacts or protected
-sets stop pruning. With unchanged inventory, the 1,000-artifact and 100-deletion
-bounds permit at most 2,210 GitHub calls per prune, including explicit deletions,
-rather than reloading every source run for each artifact.
-It persists intent before deletion
-and result afterward in a separate private
+and rechecks the current candidate's source run plus up to four original retained
+global/main anchor runs before each deletion. Any original anchor run change
+aborts for a new preview. Other source-run metadata is cached only within that
+invocation; each candidate's run is checked fresh when its turn arrives. New or
+changed UI artifacts or protected sets stop pruning. With unchanged inventory,
+the 1,000-artifact and 100-deletion bounds permit at most 2,610 GitHub calls per
+prune, including explicit deletions. It persists intent before deletion and
+result afterward in a separate private
 `/srv/factory-artifact-archive/routine-<digest>.json` audit; legacy ZIPs and
 receipts are untouched. Any drift, durability failure or API failure stops the
 operation. An interrupted intent or `delete_failed_or_unknown` means the remote

@@ -1,4 +1,5 @@
 import hashlib
+from copy import deepcopy
 from datetime import datetime, timezone
 import importlib.util
 import io
@@ -17,6 +18,36 @@ spec.loader.exec_module(runtime)
 spec = importlib.util.spec_from_file_location('artifact_cli', BASE / 'deploy/factory-cli.py')
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
+
+
+def simulate_archive_root_owner(test, root):
+    # Fixture files may belong to the nonroot CI account; preserve every real
+    # mode/type/link check and substitute ownership only inside this archive.
+    original = Path.lstat
+    def metadata(path):
+        result = original(path)
+        if path == root or root in path.parents:
+            fields = list(result)
+            fields[4] = 0
+            return os.stat_result(fields)
+        return result
+    ownership = patch.object(Path, 'lstat', new=metadata)
+    ownership.start()
+    test.addCleanup(ownership.stop)
+
+
+class ArtifactHelpTests(unittest.TestCase):
+    def test_all_help_is_discoverable_and_performs_no_api_or_archive_access(self):
+        for args in (['--help'], ['inventory', '--help'], ['status', '--help'], ['routine', '--help'],
+                     ['routine', 'preview', '--help'], ['prune', '--help']):
+            with self.subTest(args=args), patch.object(runtime, 'gh', side_effect=AssertionError('API access')), \
+                 patch.object(runtime, 'root_checked', side_effect=AssertionError('archive access')), \
+                 patch('sys.stdout', new_callable=io.StringIO) as output, self.assertRaises(SystemExit) as result:
+                runtime.dispatch(args)
+            self.assertEqual(result.exception.code, 0)
+            if args == ['--help']:
+                for command in ('inventory', 'status', 'routine', 'preview', 'preserve', 'prune', 'seven days', '100'):
+                    self.assertIn(command, output.getvalue())
 
 
 class ArtifactInventoryTests(unittest.TestCase):
@@ -84,6 +115,7 @@ class ArtifactRoutineTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.root.chmod(0o700)
+        simulate_archive_root_owner(self, self.root)
         self.before = '2026-10-10T00:00:00Z'
         self.items = []
         self.runs = {}
@@ -130,9 +162,9 @@ class ArtifactRoutineTests(unittest.TestCase):
             return None
         if endpoint.startswith('actions/artifacts?'):
             rows = [item for item in self.items if item['id'] not in self.deleted]
-            return {'total_count': len(rows), 'artifacts': rows}
+            return deepcopy({'total_count': len(rows), 'artifacts': rows})
         if endpoint.startswith('actions/runs/'):
-            return self.runs[int(endpoint.rsplit('/', 1)[1])]
+            return deepcopy(self.runs[int(endpoint.rsplit('/', 1)[1])])
         self.fail(endpoint)
 
     def preview(self):
@@ -274,9 +306,30 @@ class ArtifactRoutineTests(unittest.TestCase):
         self.assertEqual(len(result['artifact_ids']), 99)
         run_calls = [call for call in api.call_args_list if call.args[0].startswith('actions/runs/')]
         list_calls = [call for call in api.call_args_list if call.args[0].startswith('actions/artifacts?')]
-        self.assertEqual(len(run_calls), 100 + 99)
+        self.assertEqual(len(run_calls), 100 + 2 * 99)
         self.assertEqual(len(list_calls), 1 + 99)
-        self.assertEqual(api.call_count, 398)  # Includes 99 explicit deletions.
+        self.assertEqual(api.call_count, 497)  # Includes one original anchor refresh per deletion.
+
+    def test_original_retained_anchor_rerun_or_metadata_change_aborts_without_deleting(self):
+        for anchor_id in (1002, 1004):
+            for changes in ({'status': 'in_progress', 'run_attempt': 2}, {'run_attempt': 2},
+                            {'head_sha': 'f' * 40}, {'updated_at': '2026-10-20T00:00:00Z'}):
+                original = runtime.routine_snapshot
+                count = 0
+                saved = deepcopy(self.runs[anchor_id])
+                def change(before, runs=None):
+                    nonlocal count
+                    count += 1
+                    if count == 2:
+                        self.runs[anchor_id].update(changes)
+                    return original(before, runs)
+                view = self.preview()
+                with self.subTest(anchor_id=anchor_id, changes=changes), \
+                     patch.object(runtime, 'routine_snapshot', side_effect=change), self.assertRaises(runtime.Refusal):
+                    self.prune(view['snapshot_digest'])
+                self.runs[anchor_id] = saved
+                self.assertEqual(self.deleted, [])
+                self.assertEqual(list(self.root.glob('routine-*.json')), [])
 
     def test_current_candidate_run_is_fresh_and_drift_stops_before_deletion(self):
         for field, value in [('run_attempt', 2), ('status', 'in_progress'), ('updated_at', '2026-10-20T00:00:00Z')]:
@@ -312,6 +365,7 @@ class ArtifactRuntimeTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.root.chmod(0o700)
+        simulate_archive_root_owner(self, self.root)
         self.patch = patch.object(runtime, 'ROOT', self.root)
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -482,6 +536,7 @@ class ArtifactRuntimeTests(unittest.TestCase):
         production = type('Production', (), {'portable': type('Portable', (), {'installation_lock': lock})})
         config = {'installation': '/fixture', 'artifact_runtime': str(BASE / 'deploy/factory-artifact-runtime.py')}
         with patch.object(cli, 'production_module', return_value=production), \
+             patch.object(cli.os, 'geteuid', return_value=0), \
              patch.object(cli, 'installation', return_value=object()), \
              patch.object(cli, 'checked_hermes_wrapper', side_effect=lambda path: Path(path)), \
              patch.object(cli.importlib.util, 'module_from_spec', return_value=runtime), \
@@ -493,6 +548,27 @@ class ArtifactRuntimeTests(unittest.TestCase):
             self.assertEqual(cli.main(), 0)
         self.assertEqual(events, ['locked', 'unlocked'])
         self.assertEqual(json.loads(output.getvalue())['artifacts'], [self.row])
+
+    def test_canonical_cli_refuses_nonroot_before_reading_binding(self):
+        with patch.object(cli.os, 'geteuid', return_value=65534), \
+             patch.object(cli, 'checked_config', side_effect=AssertionError('binding read')), \
+             patch('sys.stderr', new_callable=io.StringIO):
+            self.assertEqual(cli.main(), 1)
+
+    def test_wrong_archive_owner_refused_without_weakening_real_permissions(self):
+        self.preserve()
+        target = self.root / '1.zip'
+        original = Path.lstat
+        def wrong_owner(path):
+            result = original(path)
+            if path == target:
+                fields = list(result)
+                fields[4] = 65534
+                return os.stat_result(fields)
+            return result
+        with patch.object(Path, 'lstat', new=wrong_owner), self.assertRaises(runtime.Refusal):
+            self.command('prune')
+        self.assertEqual(self.deleted, [])
 
     def test_cli_reports_only_safe_artifact_refusals(self):
         with patch.object(cli, 'installation'), \
