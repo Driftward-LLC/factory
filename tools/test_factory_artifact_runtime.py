@@ -24,13 +24,14 @@ class ArtifactRuntimeTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.root.chmod(0o700)
-        # Model only this fixture's root ownership; retain modes/types/link counts.
+        self.fixture_uid = 0
+        # Simulate ownership only inside this fixture; preserve real modes/types/link counts.
         actual_lstat = Path.lstat
         def fixture_lstat(path):
             info = actual_lstat(path)
             if path == self.root or self.root in path.parents:
                 fields = list(info)
-                fields[4] = 0
+                fields[4] = self.fixture_uid
                 return os.stat_result(fields)
             return info
         ownership = patch.object(Path, 'lstat', new=fixture_lstat)
@@ -140,6 +141,13 @@ class ArtifactRuntimeTests(unittest.TestCase):
             self.command('prune')
         path.unlink()
         path.symlink_to(self.root / 'absent')
+        with self.assertRaises(ValueError):
+            self.command('prune')
+        self.assertEqual(self.deleted, [])
+
+    def test_wrong_owner_refused_before_delete(self):
+        self.preserve()
+        self.fixture_uid = 12345
         with self.assertRaises(ValueError):
             self.command('prune')
         self.assertEqual(self.deleted, [])
