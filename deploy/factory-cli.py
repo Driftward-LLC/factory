@@ -281,7 +281,8 @@ def dispatch_bound(config, args):
             return subprocess.run(['bash', str(cli), *args], env=env).returncode
     elif command in ('help', '-h', '--help'):
         print('factory status | console | version | logs [target] [-f] [-n N] | mode\n'
-              'factory artifacts status | preview|preserve|prune --before ISO [--snapshot-digest DIGEST --yes]\n'
+              'factory artifacts inventory | status | [routine] preview|prune --before ISO [--snapshot-digest DIGEST --yes]\n'
+              'factory artifacts preserve --before ISO --snapshot-digest DIGEST --yes\n'
               'factory profiles status | list | create\n'
               'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
               'factory profiles recover-inspection JOB preview|status|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'

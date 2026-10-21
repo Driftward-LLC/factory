@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   deploy:
+    permissions:
+      contents: read
+      packages: read
     if: >-
       vars.FACTORY_AUTO_DEPLOY_ENABLED == 'true' &&
       github.event.workflow_run.event == 'push' &&
@@ -27,6 +30,7 @@ jobs:
       - name: Request deployment of the successful main revision
         env:
           GH_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.event.workflow_run.head_sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
@@ -48,6 +52,7 @@ jobs:
           trap 'rm -f "$key_dir/key" "$key_dir/known_hosts"; rmdir "$key_dir"' EXIT
           printf '%s\n' "$DEPLOY_KEY" > "$key_dir/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$key_dir/known_hosts"
+          python3 -c 'import json,os; print(json.dumps({"username":os.environ["REGISTRY_USER"],"token":os.environ["GH_TOKEN"]}))' | \
           ssh -T -i "$key_dir/key" -o IdentitiesOnly=yes -o BatchMode=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$key_dir/known_hosts" \
             -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
