@@ -249,6 +249,37 @@ class ArtifactRuntimeTests(unittest.TestCase):
             self.command('prune', snapshot_digest)
         self.assertEqual(self.deleted, [])
 
+    def test_parent_is_synced_after_validation_for_new_and_existing_root(self):
+        events = []
+        original_lstat = Path.lstat
+        def metadata(path):
+            if path == self.root:
+                events.append('root_validated')
+                return original_lstat(path)
+            return type('Metadata', (), {'st_mode': 0o040755, 'st_uid': 0})()
+        with patch.object(Path, 'lstat', autospec=True, side_effect=metadata), \
+             patch.object(runtime, 'sync_directory', side_effect=lambda path: events.append(('fsync', path))):
+            self.root.rmdir()
+            runtime.root_checked(create=True, durable=True)
+            self.assertEqual(events, ['root_validated', ('fsync', self.root.parent)])
+            events.clear()
+            runtime.root_checked(create=False, durable=True)
+            self.assertEqual(events, ['root_validated', ('fsync', self.root.parent)])
+            events.clear()
+            runtime.root_checked()
+            self.assertEqual(events, ['root_validated'])
+
+    def test_mutations_require_parent_durability_before_download_or_delete(self):
+        for action in ('preserve', 'prune'):
+            with self.subTest(action=action), \
+                 patch.object(runtime, 'root_checked', side_effect=OSError('parent fsync failed')) as check:
+                with self.assertRaises(OSError):
+                    runtime.dispatch([action, '--before', self.before,
+                                      '--snapshot-digest', self.view()['snapshot_digest'], '--yes'])
+                check.assert_called_once_with(create=action == 'preserve', durable=True)
+                self.assertEqual(self.downloads, 0)
+                self.assertEqual(self.deleted, [])
+
 
 if __name__ == '__main__':
     unittest.main()

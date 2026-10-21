@@ -128,7 +128,7 @@ def protected(path, directory=False):
             'archive path must be root owned, private and regular')
 
 
-def root_checked(create=False):
+def root_checked(create=False, durable=False):
     for parent in reversed(ROOT.parents):
         info = parent.lstat()
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
@@ -136,6 +136,9 @@ def root_checked(create=False):
     if create:
         ROOT.mkdir(mode=0o700, exist_ok=True)
     protected(ROOT, True)
+    if durable:
+        # Recover durability even if an earlier creation stopped before its parent fsync.
+        sync_directory(ROOT.parent)
 
 
 def validate(path, row):
@@ -179,13 +182,13 @@ def atomic(path, value):
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
-        sync_root()
+        sync_directory(ROOT)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
-def sync_root():
-    fd = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY)
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
     finally:
@@ -223,7 +226,7 @@ def operate(action, view):
                     os.fsync(target.fileno())
                 validate(Path(temporary), row)
                 os.replace(temporary, path)
-                sync_root()
+                sync_directory(ROOT)
             finally:
                 Path(temporary).unlink(missing_ok=True)
         metadata = validate(path, row)
@@ -291,7 +294,7 @@ def dispatch(args):
         require(not options.yes and options.snapshot_digest is None, 'preview takes no approval arguments')
         return snapshot(options.before)
     require(options.yes and re.fullmatch(HEX, options.snapshot_digest or ''), 'snapshot digest and --yes required')
-    root_checked(create=options.action == 'preserve')
+    root_checked(create=options.action == 'preserve', durable=True)
     lock = ROOT / '.lock'
     if not lock.exists():
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
