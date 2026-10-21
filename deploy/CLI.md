@@ -218,3 +218,43 @@ For recovery, use `factory review-recovery ENG-X preview --review REVIEW-ID
 --reviewed-head SHA --reason TEXT`. Confirm only after reviewing that preview,
 adding `--request-id ID --snapshot-digest DIGEST --yes` and changing `preview`
 to `confirm`. Inspection is separately gated by the image CLI's explicit `--yes`.
+
+## Legacy production artifact preservation
+
+The optional `artifact_runtime` binding points to a reviewed executable copy of
+`deploy/factory-artifact-runtime.py`, under root-owned directories protected from
+group/world writes. Add this key without replacing existing installation,
+profile runtime or Hermes bindings. The helper uses existing host `gh`
+authentication with the fixed `Driftward-LLC/factory` repository on github.com.
+
+```bash
+factory artifacts preview --before 2026-10-20T22:35:06Z
+factory artifacts preserve --before 2026-10-20T22:35:06Z --snapshot-digest PREVIEW_DIGEST --yes
+factory artifacts prune --before 2026-10-20T22:35:06Z --snapshot-digest PREVIEW_DIGEST --yes
+factory artifacts status
+```
+
+Preview is read-only. Its digest binds the cutoff and exact nonexpired legacy
+`factory-production-<commit>` inventory. The cutoff cannot exceed the format-1
+retirement boundary above. Only successful main-push runs of
+`hatchet-quality.yml` in this repository qualify. Preservation downloads in
+expiry order and verifies GitHub's ZIP digest, CRCs, the two exact regular ZIP
+members, format-1 metadata and image archive content hash. It never extracts or
+loads the image. Format-2 metadata and unrelated artifacts are refused.
+
+Verified ZIPs and audit receipts remain under `/srv/factory-artifact-archive`
+(root-owned directories `0700`, regular files `0600`). Preservation requires
+12 GiB free headroom in addition to selected compressed bytes; downloads are
+limited to 1 GiB each and image content to 4 GiB. Existing verified copies are
+reused. There is no automatic expiry or local backup deletion.
+
+Prune requires the same fresh snapshot digest and all verified local copies and
+receipts before deleting any remote artifact. It rechecks remaining remote
+inventory before each explicit artifact-ID deletion, and persists a private
+intent and result per deletion. A failure stops the operation; retain receipts,
+preview the remaining inventory again, and preserve it before using its new
+digest. Never delete a remote archive to make room for its backup. These commands
+lock the bound installation and shared archive, and never touch runtime
+databases, Docker, services, workflow runs, logs or packages.
+`status` verifies every retained local ZIP and receipt without network access,
+reporting IDs, byte counts and deletion status even after remote pruning.

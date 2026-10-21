@@ -25,7 +25,7 @@ def checked_config(path):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
         raise ValueError('CLI binding must be a root-owned regular file with mode 0600')
     value = json.loads(path.read_text())
-    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url', 'hermes_wrapper', 'profile_runtime'} or not all(
+    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url', 'hermes_wrapper', 'profile_runtime', 'artifact_runtime'} or not all(
             isinstance(value.get(key), str) and Path(value[key]).is_absolute()
             for key in ('installation', 'production_bundle')):
         raise ValueError('invalid CLI binding')
@@ -33,6 +33,8 @@ def checked_config(path):
         checked_hermes_wrapper(value['hermes_wrapper'])
     if 'profile_runtime' in value:
         checked_hermes_wrapper(value['profile_runtime'])
+    if 'artifact_runtime' in value:
+        checked_hermes_wrapper(value['artifact_runtime'])
     return value
 
 
@@ -173,7 +175,7 @@ def cli_image(install):
 
 
 def dispatch(config, args):
-    if args and args[0] in OPERATOR_COMMANDS | {'profiles'}:
+    if args and args[0] in OPERATOR_COMMANDS | {'profiles', 'artifacts'}:
         production = production_module(config)
         with production.portable.installation_lock(Path(config['installation'])):
             return dispatch_bound(config, args)
@@ -183,7 +185,18 @@ def dispatch(config, args):
 def dispatch_bound(config, args):
     install = installation(config)
     command = args[0] if args else 'help'
-    if command == 'profiles':
+    if command == 'artifacts':
+        helper = checked_hermes_wrapper(config.get('artifact_runtime'))
+        spec = importlib.util.spec_from_file_location('factory_artifact_runtime', helper)
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+        try:
+            result = backend.dispatch(args[1:])
+        except backend.Refusal as error:
+            print('factory artifacts: ' + str(error), file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True))
+    elif command == 'profiles':
         if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['canary', 'executor'], ['canary', 'reviewer'])
                 or (len(args) == 4 and args[1:3] == ['configure', '--plugin-source'])
                 or (len(args) >= 4 and args[1] == 'recover-inspection')):
@@ -268,6 +281,7 @@ def dispatch_bound(config, args):
             return subprocess.run(['bash', str(cli), *args], env=env).returncode
     elif command in ('help', '-h', '--help'):
         print('factory status | console | version | logs [target] [-f] [-n N] | mode\n'
+              'factory artifacts status | preview|preserve|prune --before ISO [--snapshot-digest DIGEST --yes]\n'
               'factory profiles status | list | create\n'
               'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
               'factory profiles recover-inspection JOB preview|status|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
