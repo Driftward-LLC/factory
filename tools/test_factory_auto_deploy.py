@@ -226,21 +226,35 @@ class DeploymentTests(unittest.TestCase):
                     auto.assert_quiescent(conn)
                 conn.execute(f'DELETE FROM {table} WHERE {column} IS ?', (value,))
 
-    def test_publisher_requires_private_linked_package_without_changing_visibility(self):
+    def test_publisher_requires_private_expected_package_without_changing_visibility(self):
+        expected = {'visibility': 'private', 'name': 'factory-production', 'package_type': 'container'}
         with patch.dict(os.environ, {'GH_TOKEN': 'synthetic_token'}):
-            for visibility, repository in [('public', auto.REPO), ('internal', auto.REPO), ('private', 'foreign/repo'),
-                                           ('private', auto.REPO)]:
+            for changes, success in [({}, True), ({'repository': None}, True),
+                                     ({'repository': {'full_name': auto.REPO}}, True),
+                                     ({'repository': {'full_name': 'foreign/repo'}}, False),
+                                     ({'repository': {}}, False), ({'repository': 'invalid'}, False),
+                                     ({'owner': {'login': 'Driftward-LLC'}}, True),
+                                     ({'visibility': 'public'}, False), ({'visibility': 'internal'}, False),
+                                     ({'name': 'foreign'}, False), ({'package_type': 'npm'}, False),
+                                     ({'owner': None}, True), ({'owner': {'login': 'foreign'}}, False)]:
                 response = Mock()
-                response.__enter__ = Mock(return_value=io.StringIO(json.dumps({
-                    'visibility': visibility, 'repository': {'full_name': repository}})))
+                response.__enter__ = Mock(return_value=io.StringIO(json.dumps(expected | changes)))
                 response.__exit__ = Mock(return_value=False)
                 with patch.object(artifact, 'urlopen', return_value=response) as request:
-                    if visibility == 'private' and repository == auto.REPO:
+                    if success:
                         artifact.private_package()
                     else:
                         with self.assertRaises(RuntimeError):
                             artifact.private_package()
                     self.assertEqual(request.call_args.args[0].get_method(), 'GET')
+            for body in ['[]', 'null', '{invalid secret response']:
+                response = Mock()
+                response.__enter__ = Mock(return_value=io.StringIO(body))
+                response.__exit__ = Mock(return_value=False)
+                with patch.object(artifact, 'urlopen', return_value=response):
+                    with self.assertRaises(RuntimeError) as failure:
+                        artifact.private_package()
+                    self.assertNotIn('secret', str(failure.exception))
             for code in [403, 404, 500]:
                 with patch.object(artifact, 'urlopen', side_effect=HTTPError('synthetic', code, 'error', {}, None)):
                     with self.assertRaises(RuntimeError):
@@ -267,7 +281,9 @@ class DeploymentTests(unittest.TestCase):
                         return 'run-34-2: digest: ' + IMAGE + ' size: 1234'
                     self.assertEqual(args, ['docker', 'manifest', 'inspect', artifact.REGISTRY_IMAGE + '@' + IMAGE])
                     return json.dumps({'schemaVersion': 2, 'config': {'digest': 'sha256:' + 'c' * 64}})
-                with patch.dict(os.environ, {'GITHUB_RUN_ID': '34', 'GITHUB_RUN_ATTEMPT': '2'}), \
+                with patch.dict(os.environ, {'GITHUB_RUN_ID': '34', 'GITHUB_RUN_ATTEMPT': '2',
+                                            'GITHUB_REPOSITORY': auto.REPO, 'GITHUB_EVENT_NAME': 'push',
+                                            'GITHUB_REF': 'refs/heads/main'}), \
                         patch.object(artifact.subprocess, 'check_output', side_effect=check_output), \
                         patch.object(artifact.subprocess, 'run') as command, \
                         patch.object(artifact, 'compatibility', return_value='d' * 64), \
@@ -278,6 +294,54 @@ class DeploymentTests(unittest.TestCase):
                 command.assert_called_once_with(['docker', 'image', 'tag', local_id,
                                                 artifact.REGISTRY_IMAGE + ':run-34-2'], check=True)
                 self.assertEqual(private.call_args_list, [unittest.mock.call(allow_missing=True), unittest.mock.call()])
+                # A final API/privacy/identity refusal must not leave deployable metadata.
+                for refusal in ['HTTP 403', 'expected private', 'unexpected repository']:
+                    refused = Path(output_dir) / ('refused-' + refusal.replace(' ', '-'))
+                    with patch.dict(os.environ, {'GITHUB_RUN_ID': '34', 'GITHUB_RUN_ATTEMPT': '2',
+                                                'GITHUB_REPOSITORY': auto.REPO, 'GITHUB_EVENT_NAME': 'push',
+                                                'GITHUB_REF': 'refs/heads/main'}), \
+                            patch.object(artifact.subprocess, 'check_output', side_effect=check_output), \
+                            patch.object(artifact.subprocess, 'run'), \
+                            patch.object(artifact, 'private_package', side_effect=[None, RuntimeError(refusal)]):
+                        with self.assertRaises(RuntimeError):
+                            artifact.package(self.directory, refused, 'tested:ci')
+                    self.assertFalse((refused / 'deployment.json').exists())
+
+    def test_publisher_rejects_untrusted_context_before_writes(self):
+        trusted = {'GITHUB_REPOSITORY': auto.REPO, 'GITHUB_EVENT_NAME': 'push',
+                   'GITHUB_REF': 'refs/heads/main'}
+        for key, value in [('GITHUB_REPOSITORY', 'foreign/repo'), ('GITHUB_EVENT_NAME', 'pull_request'),
+                           ('GITHUB_REF', 'refs/heads/feature')]:
+            output = self.directory / 'refused-metadata'
+            with patch.dict(os.environ, trusted | {key: value}), \
+                    patch.object(artifact.subprocess, 'check_output') as command:
+                with self.assertRaises(RuntimeError):
+                    artifact.package(self.directory, output, 'tested:ci')
+                command.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_read_only_package_cli_uses_get_without_docker_or_metadata(self):
+        program = """
+import io, json, os, runpy, sys
+from unittest.mock import MagicMock, patch
+script = sys.argv[1]
+sys.argv = [script, '--verify-package']
+response = MagicMock()
+response.__enter__.return_value = io.StringIO(json.dumps({
+    'visibility': 'private', 'name': 'factory-production', 'package_type': 'container'}))
+with patch.dict(os.environ, {'GH_TOKEN': 'synthetic_token'}), \\
+        patch('urllib.request.urlopen', return_value=response) as request, \\
+        patch('subprocess.check_output') as command, patch('pathlib.Path.write_text') as write:
+    runpy.run_path(script, run_name='__main__')
+    assert request.call_args.args[0].get_method() == 'GET'
+    command.assert_not_called()
+    write.assert_not_called()
+"""
+        result = subprocess.run([sys.executable, '-c', program, str(ROOT / 'deploy/auto_deploy_artifact.py')],
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('repository=omitted', result.stdout)
+        self.assertNotIn('synthetic_token', result.stdout + result.stderr)
 
     def test_real_privileged_entrypoint_reads_bounded_credentials_and_keeps_command_grammar(self):
         # Execute main in a separate interpreter with synthetic configuration;

@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 import subprocess
 import sys
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REGISTRY_IMAGE = 'ghcr.io/driftward-llc/factory-production'
@@ -23,10 +23,28 @@ def private_package(*, allow_missing=False):
     except HTTPError as error:
         if allow_missing and error.code == 404:
             return
-        raise RuntimeError('Cannot verify private production package') from None
-    if (package.get('visibility') != 'private'
-            or package.get('repository', {}).get('full_name') != 'Driftward-LLC/factory'):
-        raise RuntimeError('Production package must be private and linked to this repository')
+        raise RuntimeError(f'Production package API verification failed: HTTP {error.code}') from None
+    except (ValueError, URLError, TimeoutError):
+        raise RuntimeError('Production package API verification failed: invalid response or transport') from None
+    if not isinstance(package, dict):
+        raise RuntimeError('Production package API verification failed: expected object')
+    if package.get('visibility') != 'private':
+        raise RuntimeError('Production package privacy verification failed: expected private')
+    if package.get('name') != 'factory-production' or package.get('package_type') != 'container':
+        raise RuntimeError('Production package identity verification failed: expected name/type')
+    owner = package.get('owner')
+    if owner is not None and (not isinstance(owner, dict) or owner.get('login') != 'Driftward-LLC'):
+        raise RuntimeError('Production package owner verification failed: unexpected owner')
+    # GitHub's package schema permits absent/null repository; provenance also binds
+    # the trusted publisher context and tested OCI source/revision/config digest.
+    repository = package.get('repository')
+    if repository is not None and (not isinstance(repository, dict)
+                                  or repository.get('full_name') != 'Driftward-LLC/factory'):
+        raise RuntimeError('Production package repository verification failed: unexpected repository')
+    print('Production package verified: private container; owner=' +
+          ('matching' if owner is not None else 'null' if 'owner' in package else 'omitted') +
+          '; repository=' + ('matching' if repository is not None else
+                            'null' if 'repository' in package else 'omitted'))
 
 
 def routine_path(name):
@@ -52,6 +70,10 @@ def compatibility(root):
 
 
 def package(root, output, image):
+    if (os.environ.get('GITHUB_REPOSITORY') != 'Driftward-LLC/factory'
+            or os.environ.get('GITHUB_EVENT_NAME') != 'push'
+            or os.environ.get('GITHUB_REF') != 'refs/heads/main'):
+        raise RuntimeError('Production publication requires this repository main-push workflow context')
     commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     info = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image], text=True))[0]
     assert info['Config']['Labels']['org.opencontainers.image.revision'] == commit
@@ -81,4 +103,7 @@ def package(root, output, image):
 
 
 if __name__ == '__main__':
-    package(Path(__file__).resolve().parents[1], Path(sys.argv[1]), sys.argv[2])
+    if sys.argv[1:] == ['--verify-package']:
+        private_package()
+    else:
+        package(Path(__file__).resolve().parents[1], Path(sys.argv[1]), sys.argv[2])
