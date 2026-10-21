@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Credential-free, offline native acceptance against the deployed Hermes image."""
+import argparse
+import base64
+import json
+from pathlib import Path
+import subprocess
+
+IMAGE = 'sha256:6b0171bdfd5a0c03489ced7d0c527c6c305cb3660ac83ed6ac468805289ad9c3'
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--plugin-source', required=True, type=Path)
+    args = parser.parse_args()
+    archive = subprocess.check_output(['git', '-C', str(args.plugin_source), 'archive', '--format=tar',
+                                       'db14524356cfebd132833ed06a7c8a097ef5c11c'])
+    payload = {'engineering': base64.b64encode(archive).decode(), 'observer': {
+        name: base64.b64encode((ROOT / 'deploy/factory-observers/posthog' / name).read_bytes()).decode()
+        for name in ('__init__.py', 'plugin.yaml')}}
+    script = (ROOT / 'deploy/factory-profile-runtime.py').read_text()
+    reviewer = (ROOT / 'deploy/independent-reviewer/native_agent.py').read_text()
+    review_observer = (ROOT / 'deploy/independent-reviewer/review_observer.py').read_bytes()
+    probe = r'''
+import contextlib, io, sys
+sys.path.insert(0, '/opt/hermes')
+root = ROOT
+root.chmod(0o755)
+os.chown(root, 10000, 987)
+(root / 'config.yaml').write_text(json.dumps({'model': {'default':'gpt-6.1-sol','provider':'openai-codex'},
+    'mcp_servers': {'fixture': {'command': 'true', 'env': {'API_KEY':'${FIXTURE_KEY}'}}}}))
+os.chown(root / 'config.yaml',10000,987)
+from hermes_cli.profiles import create_profile
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    for name in ROLES.values():
+        create_profile(name,no_alias=True,no_skills=True)
+        os.chown(root / 'profiles' / name,10000,987)
+        for directory in ('audio_cache','cron','hooks','image_cache','logs','memories','pairing','sessions','skills'):
+            target=root/'profiles'/name/directory
+            if target.exists():
+                os.chown(target,10000,987)
+os.chown(root / 'profiles',10000,987)
+legacy = root / 'factory-reviewer-auth'
+legacy.mkdir(mode=0o700)
+(legacy / 'auth.json').write_text('SYNTHETIC_AUTH_ONLY')
+(legacy / 'auth.json').chmod(0o600)
+def snapshot(path):
+    st=path.stat()
+    return (path.read_bytes(), st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode), st.st_ino)
+protected = [root/'config.yaml', legacy/'auth.json']
+(root/'.env').write_text('SYNTHETIC_DEFAULT_ENV=never-adopt\n')
+(root/'.env').chmod(0o600)
+protected.append(root/'.env')
+for name in ROLES.values():
+    env=root/'profiles'/name/'.env'
+    env.write_text('SYNTHETIC_ENV_SENTINEL=never-copy\n')
+    env.chmod(0o600)
+    protected.append(env)
+before={p:snapshot(p) for p in protected}
+inventory_before={p:(p.stat().st_uid,p.stat().st_gid,stat.S_IMODE(p.stat().st_mode),p.stat().st_ino)
+                  for p in root.rglob('*')}
+assert not inventory()['profiles']['executor']['engineering_enabled']
+assert inventory_before=={p:(p.stat().st_uid,p.stat().st_gid,stat.S_IMODE(p.stat().st_mode),p.stat().st_ino)
+                         for p in root.rglob('*')}
+configured=configure(PAYLOAD)
+assert configure(PAYLOAD)==configured
+assert all(snapshot(p)==value for p,value in before.items())
+assert inventory()['profiles']['executor']['capabilities_match_default']
+assert (root/'profiles'/ROLES['executor']/'config.yaml').stat().st_uid==0
+assert (root/'profiles'/ROLES['reviewer']).stat().st_mode & 0o077 == 0
+move_auth()
+named=root/'profiles'/ROLES['reviewer']/'auth.json'
+assert snapshot(named)==before[legacy/'auth.json']
+review_home=named.parent/'profiles'/'fixture'
+review_home.mkdir(parents=True,mode=0o700)
+reviewer_source=REVIEWER_SOURCE
+auth_probe="""import sys,os
+sys.path.insert(0,'/opt/hermes')
+namespace={'__name__':'native_reviewer_fixture'}
+""" + 'exec(' + repr(reviewer_source) + ',namespace)\n' + """
+from pathlib import Path
+import json
+home=Path(os.environ['HERMES_HOME'])/'profiles'/'fixture'
+os.environ['HERMES_HOME']=str(home)
+(home/'config.yaml').write_text(json.dumps(namespace['CONFIG']))
+from hermes_constants import set_hermes_home_override
+set_hermes_home_override(home)
+from agent.secret_scope import set_multiplex_context,set_secret_scope
+set_multiplex_context(True)
+set_secret_scope({},profile_home=str(home))
+import hermes_cli.auth
+hermes_cli.auth.get_codex_auth_status=lambda:{'logged_in':True,'auth_mode':'chatgpt','base_url':'https://chatgpt.com/backend-api/codex'}
+namespace['dedicated_auth']()
+from hermes_cli.plugins_discovery import suppress_plugin_discovery
+with suppress_plugin_discovery():
+    from run_agent import AIAgent
+    agent=AIAgent(model='fixture',provider='openai',api_mode='chat_completions',api_key='SYNTHETIC_ONLY',
+        base_url='https://example.invalid/v1',enabled_toolsets=[],fallback_model=[],max_iterations=1,
+        quiet_mode=True,session_db=None,skip_context_files=True,load_soul_identity=False,skip_memory=True,
+        skip_background_review=True,checkpoints_enabled=False,save_trajectories=False,verbose_logging=False)
+    assert not agent.tools and not agent.valid_tool_names and not agent._fallback_chain
+    assert not os.environ.get('SYNTHETIC_DEFAULT_ENV') and not os.environ.get('SYNTHETIC_ENV_SENTINEL')
+    agent.close()
+"""
+auth_result=subprocess.run([sys.executable,'-c',auth_probe],capture_output=True,text=True,
+               env={**os.environ,'HERMES_HOME':str(named.parent)})
+assert auth_result.returncode==0, auth_result.stderr[-1500:]
+move_auth(True)
+assert snapshot(legacy/'auth.json')==before[legacy/'auth.json']
+def executor_probe():
+    assert os.geteuid()==0 and os.getegid()==0
+    assert os.environ['FIXTURE_KEY']=='SYNTHETIC_REFERENCE_ONLY'
+    import run_agent
+    RealAgent=run_agent.AIAgent
+    class ConstructorProbe(RealAgent):
+        def __init__(self,**kwargs):
+            kwargs.update(provider='openai',api_mode='chat_completions',api_key='SYNTHETIC_ONLY',base_url='https://example.invalid/v1')
+            super().__init__(**kwargs)
+        def run_conversation(self,*args,**kwargs):
+            return {'final_response':'fixture constructor; no request'}
+    run_agent.AIAgent=ConstructorProbe
+    result=canary({'role':'executor','id':str(uuid.uuid4())})
+    from agent.skill_commands import build_preloaded_skills_prompt
+    names=['driftward-engineering:'+name for name in ('implement-change','verify-app','prepare-pr')]
+    prompt,loaded,missing=build_preloaded_skills_prompt(names)
+    assert not missing and len(loaded)==3 and len(prompt)>1000, missing
+    return {'uid':os.geteuid(),'native_constructor':True,'preloaded_skills':loaded}
+def debug_probe():
+    try:
+        return executor_probe()
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        raise
+result=debug_probe()
+move_auth()
+review_result=canary({'role':'reviewer','id':str(uuid.uuid4()),'review_observer':REVIEW_OBSERVER})
+assert review_result['role']=='reviewer'
+move_auth(True)
+assert all(snapshot(p)==value for p,value in before.items())
+print(json.dumps({'mixed_uid_configure':'passed','configure_idempotent':True,'auth_inode_owner_mode_preserved':True,
+    'secrets_unchanged':True,'executor':result,'reviewer_dedicated_auth':'passed','reviewer_native_constructor':True,
+    'provider_calls':0,'posthog_delivery':'not_tested_offline'}))
+'''.replace('PAYLOAD', repr(payload)).replace('REVIEWER_SOURCE', repr(reviewer)).replace('REVIEW_OBSERVER',repr(base64.b64encode(review_observer).decode()))
+    result = subprocess.run(['docker', 'run', '--rm', '-i', '--user', '0:0', '--network', 'none', '--read-only',
+        '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--cap-add', 'DAC_OVERRIDE',
+        '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw', '--tmpfs', '/opt/data:rw',
+        '--env', 'HERMES_HOME=/opt/data', '--env', 'FIXTURE_KEY=SYNTHETIC_REFERENCE_ONLY',
+        '--env', 'POSTHOG_API_KEY=SYNTHETIC_ONLY', '--env', 'HERMES_BUNDLED_PLUGINS=/tmp/no-plugins',
+        '--entrypoint', '/opt/hermes/.venv/bin/python', IMAGE, '-'], input=script+probe,
+        text=True, capture_output=True, timeout=180)
+    print(result.stdout[-4000:])
+    print(result.stderr[-4000:])
+    raise SystemExit(result.returncode)
+
+
+if __name__ == '__main__':
+    main()

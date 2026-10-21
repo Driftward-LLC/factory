@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import math
+import os
 import queue
 import re
 import threading
@@ -59,6 +60,10 @@ def number(value: object, maximum: float) -> float:
 class ReviewObserver:
     def __init__(self, metadata: dict, session: str, tools: set[str], config: dict):
         self.metadata = review_metadata(metadata)
+        home = os.environ.get('HERMES_HOME', '')
+        named = '/opt/data/profiles/factory-independent-reviewer'
+        child = re.fullmatch(re.escape(named) + r'/profiles/(?:factory-reviewer-[a-f0-9-]{36}|factory-canary-[a-z0-9_]{8})', home)
+        self.profile = 'factory-independent-reviewer' if home == named or child else None
         self.session, self.tools = session, tools
         self.key = config.get("POSTHOG_API_KEY", "").strip()
         self.url = endpoint(config.get("POSTHOG_HOST") or "https://us.i.posthog.com") if self.key else ""
@@ -101,6 +106,8 @@ class ReviewObserver:
         properties = {"$ai_trace_id": self.trace, "$ai_session_id": self.session,
             "$process_person_profile": False, **{"factory." + k: v for k, v in self.metadata.items()},
             "hermes.request_id": request}
+        if self.profile:
+            properties["factory.profile"] = self.profile
         if hook == "post_tool_call":
             name, call = value.get("tool_name"), value.get("tool_call_id")
             if name not in self.tools or not isinstance(call, str) or not 1 <= len(call) <= 240:

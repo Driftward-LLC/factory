@@ -16,6 +16,18 @@ import time
 
 MODEL = "gpt-6-astra"
 AUTH_ROOT = Path("/opt/data/factory-reviewer-auth")
+NAMED_AUTH_ROOT = Path("/opt/data/profiles/factory-independent-reviewer")
+
+
+def validated_auth_root(value: str) -> Path:
+    root = Path(value)
+    if value not in {str(AUTH_ROOT), str(NAMED_AUTH_ROOT)}:
+        raise ValueError("invalid dedicated reviewer authentication root")
+    # Check every existing ancestor, including the profiles parent, before writes.
+    if any(p.is_symlink() for p in (root, *root.parents)) or root.resolve() != root:
+        raise ValueError("symlinked dedicated reviewer authentication root")
+    return root
+
 TOOLSET = "factory-review-source"
 PREFIX = "factory_source_"
 API_FILES = ("run_agent.py", "agent/agent_init.py", "agent/agent_init_fallback.py", "agent/secret_scope.py",
@@ -68,7 +80,10 @@ def read_request(stream) -> dict:
 def profile_path(session: str) -> Path:
     if not re.fullmatch(r"factory-reviewer:[a-f0-9-]{36}", session):
         raise ValueError("invalid native reviewer identity")
-    return Path(os.environ["HERMES_HOME"]) / "profiles" / session.replace(":", "-")
+    profile = Path(os.environ["HERMES_HOME"]) / "profiles" / session.replace(":", "-")
+    if profile.is_symlink() or profile.parent.is_symlink():
+        raise ValueError("symlinked native reviewer profile")
+    return profile
 
 
 def start_ticks(pid: int) -> str:
@@ -80,8 +95,9 @@ def dedicated_auth() -> None:
     from hermes_constants import get_hermes_home
     from hermes_cli.auth import _global_auth_file_path, get_codex_auth_status
     from agent.credential_sources import adopt_external_logins_enabled
-    root = Path(os.environ["HERMES_HOME"])
-    if (root != AUTH_ROOT or root.resolve() != AUTH_ROOT
+    home = Path(get_hermes_home())
+    root = validated_auth_root(str(home.parent.parent))
+    if (Path(os.environ['HERMES_HOME']) != home
             or Path(get_hermes_home()).parent != root / "profiles"
             or _global_auth_file_path() != root / "auth.json"
             or adopt_external_logins_enabled()):
@@ -142,6 +158,9 @@ def review(request: dict, channel_in, channel_out, telemetry_config: dict | None
     # Use Hermes' routed-profile secret scope: its loader skips both default and project dotenv.
     from hermes_constants import set_hermes_home_override
     profile = profile_path(request["session"])
+    # Native root discovery treats <root>/profiles/<child> as the auth domain.
+    # The named auth root itself is also a profile, so point it at this child.
+    os.environ['HERMES_HOME'] = str(profile)
     set_hermes_home_override(profile)
     from agent.secret_scope import set_multiplex_context, set_secret_scope
     set_multiplex_context(True)
@@ -245,8 +264,9 @@ def main() -> None:
     # Preserve HOME, but use a separate native auth root; no generator/CLI login adoption.
     home = os.environ.get("HOME", "/root")
     telemetry_config = {name: os.environ[name] for name in ("POSTHOG_API_KEY", "POSTHOG_HOST") if name in os.environ}
+    auth_root = validated_auth_root(sys.argv[2] if len(sys.argv) == 4 else str(AUTH_ROOT))
     os.environ.clear()
-    os.environ.update({"HOME": home, "HERMES_HOME": str(AUTH_ROOT),
+    os.environ.update({"HOME": home, "HERMES_HOME": str(auth_root),
                        "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"})
     sys.path.insert(0, "/opt/hermes")
     session = sys.argv[-1]

@@ -74,6 +74,11 @@ jobs:
             /tmp/factory-storybook-*.png
           if-no-files-found: ignore
   validate:
+    permissions:
+      contents: read
+      # Permissions are static per job; trusted same-repo PR jobs have this
+      # capability, but only main pushes can run the publisher. Forks are read-only.
+      packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -153,10 +158,23 @@ jobs:
           echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum --check -
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           /tmp/gitleaks git --redact --verbose .
-      - name: Package the tested production image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Verify production package read-only for internal pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'Driftward-LLC/factory' && github.repository == 'Driftward-LLC/factory'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/auto_deploy_artifact.py --verify-package
+      - name: Authenticate private production image publication
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Driftward-LLC/factory'
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+      - name: Publish the tested production image and package metadata
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Driftward-LLC/factory'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 deploy/auto_deploy_artifact.py "$RUNNER_TEMP/factory-production" driftward/factory:ci
-      - name: Retain immutable production image
+      - name: Retain immutable production image metadata
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
