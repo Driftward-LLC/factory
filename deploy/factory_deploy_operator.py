@@ -169,18 +169,24 @@ def locked(auto, binding):
             yield config, prod, install
 
 
+def sync_parent(directory):
+    private_directory(directory.parent)
+    descriptor = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def records_directory(config, *, create=True):
     directory = Path(config['work_directory']) / 'operator-deploy'
     if not exists(directory):
         if not create:
             return directory
         directory.mkdir(mode=0o700)
-        descriptor = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
     private_directory(directory)
+    if create:
+        sync_parent(directory)
     require(not list(directory.glob('*.pending')), 'interrupted_deployment_record')
     return directory
 
@@ -391,6 +397,7 @@ def execution_run(auto, binding, args, installed, readiness):
         if not exists(directory):
             directory.mkdir(mode=0o700)
         private_directory(directory)
+        sync_parent(directory)
         path = directory / 'receipt.json'
         if exists(path):
             previous = private_json(path)

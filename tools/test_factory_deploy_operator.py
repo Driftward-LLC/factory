@@ -241,6 +241,28 @@ class AuditedDeploymentTests(unittest.TestCase):
                 manual.execution_snapshot(auto, self.binding, self.config, self.install, self.installed, readiness)
         readiness.assert_not_called()
 
+    def test_record_directory_parent_is_synced_on_creation_and_recovery_but_not_status(self):
+        with patch.object(manual, 'sync_parent') as sync:
+            directory = manual.records_directory(self.config)
+            manual.records_directory(self.config)
+            self.assertEqual(sync.call_args_list, [((directory,),), ((directory,),)])
+            sync.reset_mock()
+            manual.records_directory(self.config, create=False)
+            sync.assert_not_called()
+
+    def test_execution_parent_sync_failure_refuses_before_receipt_or_start(self):
+        self.save(self.work / 'status.json', {'phase': 'complete'})
+        snap = {'installation': str(self.installation), 'paused_execution': ['bridge-executor-worker']}
+        args = SimpleNamespace(action='resume', snapshot_digest=manual.digest(snap), reason='reviewed', yes=True)
+        self.install.compose = Mock()
+        with patch.object(manual, 'execution_snapshot', return_value=snap), \
+             patch.object(manual, 'sync_parent', side_effect=OSError('synthetic sync failure')):
+            for _ in range(2):
+                with self.assertRaises(OSError):
+                    manual.execution_run(auto, self.binding, args, self.installed, Mock())
+        self.assertFalse((self.work / 'operator-execution' / 'receipt.json').exists())
+        self.install.compose.assert_not_called()
+
     def test_fast_ci_callback_can_finish_before_dispatch_returns_without_lost_receipt(self):
         identifier = self.preview(); self.call('approve', preview=identifier)
         args = SimpleNamespace(action='apply', preview=identifier, yes=True)
