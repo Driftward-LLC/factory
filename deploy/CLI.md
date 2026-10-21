@@ -1,5 +1,38 @@
 # Canonical CLI for a managed installation
 
+## Audited deployment and execution
+
+Use `factory deploy status --json`, `factory deploy preview --run RUN_ID --json`,
+`factory deploy approve --preview DIGEST --reason TEXT --yes`, then
+`factory deploy apply --preview DIGEST --yes`. Install matching root-protected
+copies of `factory-auto-deploy`, `auto_deploy_artifact.py`,
+`factory_deploy_operator.py`, and the launcher before using these commands.
+Preview binds the installation/image, successful main CI attempt, exact format-2
+artifact, installed helper bytes, configuration, and protected source changes.
+Approval covers one release; it never adopts a new compatibility baseline.
+Only the checked-in immutable activation blob map and byte-matched installed
+helpers may cross the protected-change boundary; unknown changes stay refused.
+
+Apply reruns one uniquely identified completed Factory Deploy workflow for the
+approved head. Its existing fixed SSH callback supplies ephemeral package
+credentials. Queueing does not consume approval or prove deployment. Under the
+installation/tenant locks, the callback checks the exact approved producer run,
+commit, artifact, and configuration before consuming approval. A duplicate or
+uncertain dispatch stays latched for review through `factory deploy status --json`.
+No workflow, SSH grammar, credential grants, or automatic compatibility policy
+changes are involved. The cold backup and actual rollout receipt remain retained.
+
+A stopped bridge executor stays stopped across automatic and audited deployment.
+Use `factory execution preview --json`, then `factory execution resume
+--snapshot-digest DIGEST --reason TEXT --yes --json`. The preview binds the image,
+installation, successful trusted CI and rollout receipt, exact reviewed terminal
+inspection guard source in the immutable image, quiescence, named role readiness,
+reviewer sign-in, and gateway listener. Resume consumes a root receipt under the
+same locks and a SQLite writer barrier, starts only the executor, and checks
+health. Failure stops that executor and retains the failed receipt for review.
+`factory execution status --json` is read-only. These commands do not migrate
+state or change execution, repair, merge, or authentication policies.
+
 The legacy `install-docker.sh` CLI assumes `/docker/driftward/factory`. For a
 source-free production installation, publish `deploy/factory-cli.py` as the
 canonical `factory` command after reviewing its explicit binding. This is a

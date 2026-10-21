@@ -24,6 +24,18 @@ class ArtifactRuntimeTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.root.chmod(0o700)
+        # Model only this fixture's root ownership; retain modes/types/link counts.
+        actual_lstat = Path.lstat
+        def fixture_lstat(path):
+            info = actual_lstat(path)
+            if path == self.root or self.root in path.parents:
+                fields = list(info)
+                fields[4] = 0
+                return os.stat_result(fields)
+            return info
+        ownership = patch.object(Path, 'lstat', new=fixture_lstat)
+        ownership.start()
+        self.addCleanup(ownership.stop)
         self.patch = patch.object(runtime, 'ROOT', self.root)
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -199,6 +211,7 @@ class ArtifactRuntimeTests(unittest.TestCase):
              patch.object(cli.importlib.util, 'module_from_spec', return_value=runtime), \
              patch.object(cli.importlib.util, 'spec_from_file_location') as loader, \
              patch.object(cli, 'checked_config', return_value=config), \
+             patch.object(cli.os, 'geteuid', return_value=0), \
              patch.object(cli.sys, 'argv', ['factory', 'artifacts', 'preview', '--before', self.before]), \
              patch('sys.stdout', new_callable=io.StringIO) as output:
             loader.return_value.loader.exec_module.side_effect = lambda module: None

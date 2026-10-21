@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Canonical CLI for an explicitly bound, source-free Factory installation."""
 import importlib.util
+from importlib.machinery import SourceFileLoader
+import argparse
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,140 @@ PROFILES = {
     'factory-independent-reviewer': 'Factory independent reviewer; provisioned separately from review routing.',
 }
 
+
+DEPLOY_HELPER = Path('/usr/local/libexec/factory-auto-deploy')
+DEPLOY_POLICY = Path('/usr/local/libexec/auto_deploy_artifact.py')
+DEPLOY_OPERATOR = Path('/usr/local/libexec/factory_deploy_operator.py')
+
+
+class DeployRefusal(ValueError):
+    pass
+
+
+class DeployArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, 'factory deploy: invalid arguments; use the command --help for required flags.\n')
+
+
+def deploy_parser(args):
+    parser = DeployArgumentParser(prog='factory deploy', description='Review and apply one exact verified release. No migrations or automatic recovery.')
+    commands = parser.add_subparsers(dest='action', required=True)
+    for name, description in (
+            ('status', 'Show the bound installation and audited deployment phase.'),
+            ('preview', 'Save a release snapshot without changing runtime configuration or services.'),
+            ('approve', 'Record root approval for one unchanged, eligible preview.'),
+            ('apply', 'Consume approval once, cold-back up, deploy, and verify health.')):
+        command = commands.add_parser(name, help=description, description=description)
+        command.add_argument('--json', action='store_true', help='Emit a machine-readable result.')
+        if name == 'preview':
+            command.add_argument('--run', required=True, type=int, help='Successful current-main Hatchet Quality run ID.')
+            command.epilog = 'Example: factory deploy preview --run 123456 --json'
+        elif name in {'approve', 'apply'}:
+            command.add_argument('--preview', required=True, help='Exact SHA-256 printed by preview.')
+            command.add_argument('--yes', required=True, action='store_true', help='Explicitly confirm this operation.')
+            if name == 'approve':
+                command.add_argument('--reason', required=True, help='Why the exact listed changes were reviewed (1–512 printable characters).')
+            command.epilog = 'Example: factory deploy ' + name + ' --preview DIGEST ' + ('--reason "Reviewed CLI release" ' if name == 'approve' else '') + '--yes'
+    parsed = parser.parse_args(args)
+    if parsed.action == 'preview' and not 0 < parsed.run < 10**20:
+        parser.error('--run must be a positive run ID')
+    return parsed
+
+
+def trusted_file(path):
+    for parent in reversed(path.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise DeployRefusal('unsafe_installed_deployment_helper')
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o022:
+        raise DeployRefusal('unsafe_installed_deployment_helper')
+
+
+def installed_module(name, path):
+    trusted_file(path)
+    spec = importlib.util.spec_from_loader(name, SourceFileLoader(name, str(path)))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def execution_parser(args):
+    parser = DeployArgumentParser(prog='factory execution')
+    parser.add_argument('action', choices=('status', 'preview', 'resume'))
+    parser.add_argument('--snapshot-digest')
+    parser.add_argument('--reason')
+    parser.add_argument('--yes', action='store_true')
+    parser.add_argument('--json', action='store_true')
+    return parser.parse_args(args)
+
+
+def profile_readiness(binding, install):
+    helper = checked_hermes_wrapper(binding.get('profile_runtime'))
+    wrapper = checked_hermes_wrapper(binding.get('hermes_wrapper'))
+    backend = installed_module('factory_execution_profiles', helper)
+    return backend.dispatch(install, binding, wrapper, ['status'])
+
+
+def deploy_dispatch(binding, args, *, execution=False):
+    parsed = execution_parser(args) if execution else deploy_parser(args)
+    safe_refusals = (DeployRefusal,)
+    try:
+        installed = {'deploy/factory-auto-deploy.py': DEPLOY_HELPER,
+                     'deploy/auto_deploy_artifact.py': DEPLOY_POLICY,
+                     'deploy/factory_deploy_operator.py': DEPLOY_OPERATOR,
+                     'deploy/factory-cli.py': Path(__file__).absolute()}
+        for key, name in (('profile_runtime', 'deploy/factory-profile-runtime.py'),
+                          ('artifact_runtime', 'deploy/factory-artifact-runtime.py')):
+            if key in binding:
+                installed[name] = checked_hermes_wrapper(binding[key])
+        for path in installed.values():
+            try:
+                trusted_file(path)
+            except FileNotFoundError:
+                raise DeployRefusal('installed_deployment_helper_update_required') from None
+        bundle = Path(binding['production_bundle'])
+        for path in bundle.iterdir():
+            if path.suffix in {'.py', '.yml'}:
+                trusted_file(path)
+        installed_module('auto_deploy_artifact', DEPLOY_POLICY)
+        auto = installed_module('factory_cli_auto_deploy', DEPLOY_HELPER)
+        manual = installed_module('factory_cli_deploy_operator', DEPLOY_OPERATOR)
+        if getattr(manual, 'API_VERSION', None) != 1 or not all(hasattr(auto, name) for name in ('source_entries', 'deployment_artifact')):
+            raise DeployRefusal('installed_deployment_helper_update_required')
+        safe_refusals = (DeployRefusal, auto.Refusal, manual.Refusal)
+        result = (manual.execution_run(auto, binding, parsed, installed, profile_readiness)
+                  if execution else manual.run(auto, binding, parsed, installed))
+    except Exception as error:
+        reason = str(error)
+        if isinstance(error, safe_refusals) and re.fullmatch(r'[a-z][a-z0-9_]{0,95}', reason):
+            raise DeployRefusal(reason) from None
+        if isinstance(error, ValueError) and reason == 'another operation is using this installation':
+            raise DeployRefusal('deployment_operation_in_progress') from None
+        raise DeployRefusal('deployment_evidence_unavailable') from None
+    if parsed.json:
+        print(json.dumps(result, sort_keys=True, allow_nan=False))
+    else:
+        for label, key in (('Installation', 'installation'), ('Phase', 'phase'), ('Deployment enabled', 'enabled'),
+                           ('Rollout phase', 'rollout_phase'),
+                           ('Blocked reason', 'blocked_reason'), ('Current image', 'current_image'),
+                           ('Target commit', 'target_commit'), ('CI run', 'run_id'), ('Preview', 'preview'),
+                           ('Artifact digest', 'artifact_digest'),
+                           ('Restart impact', 'restart_impact')):
+            if key in result:
+                print(f'{label}: {result[key]}')
+        for change in result.get('protected_changes', []):
+            print('Protected change: ' + change['path'])
+        if result.get('blocked_paths'):
+            print('Blocked: protected changes require a separate operation review.')
+        if 'baseline_adoption' in result:
+            print('Compatibility baseline: unchanged; this approves one release only.')
+        if result.get('next_step'):
+            print(result['next_step'])
+        print('Next: ' + result['next_command'])
+    return 2 if result.get('blocked_paths') else 0
 
 def checked_config(path):
     info = path.lstat()
@@ -175,6 +311,10 @@ def cli_image(install):
 
 
 def dispatch(config, args):
+    if args and args[0] == 'execution':
+        return deploy_dispatch(config, args[1:], execution=True)
+    if args and args[0] == 'deploy':
+        return deploy_dispatch(config, args[1:])
     if args and args[0] in OPERATOR_COMMANDS | {'profiles', 'artifacts'}:
         production = production_module(config)
         with production.portable.installation_lock(Path(config['installation'])):
@@ -295,9 +435,19 @@ def dispatch_bound(config, args):
 
 def main():
     try:
+        if len(sys.argv) > 1 and sys.argv[1] == 'deploy':
+            deploy_parser(sys.argv[2:])
+        if len(sys.argv) > 1 and sys.argv[1] == 'execution':
+            execution_parser(sys.argv[2:])
+        if sys.argv[1:] in ([], ['help'], ['-h'], ['--help']):
+            print('factory status | profiles | artifacts | deploy status|preview|approve|apply (factory deploy --help)')
+            return 0
         if os.geteuid() != 0:
             raise ValueError('canonical Factory CLI requires root')
         return dispatch(checked_config(CONFIG), sys.argv[1:])
+    except DeployRefusal as error:
+        print('factory deploy: ' + str(error) + '. Next: factory deploy status; use factory deploy --help.', file=sys.stderr)
+        return 1
     except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.SubprocessError):
         # Validation and private subprocess exceptions can contain credentials.
         print('factory: command refused; check the root-owned CLI binding, installation, and active deployment. '

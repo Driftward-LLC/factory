@@ -358,6 +358,8 @@ def deploy(config, run_id, commit, credentials):
     assert credentials == {'username': 'octocat', 'token': 'synthetic_token'}
     print('validated credentials; no rollout')
 scope['main'].__globals__['deploy'] = deploy
+import factory_deploy_operator
+factory_deploy_operator.forced_deployment = lambda *args: False
 sys.argv = [sys.argv[1], sys.argv[2]]
 try:
     scope['main']()
@@ -396,7 +398,7 @@ runpy.run_path(sys.argv[1])
     def rollout_fixture(self):
         self.database()
         calls = []
-        install = SimpleNamespace(project='synthetic', directory=self.directory, images={'factory': IMAGE}, services=['bridge'])
+        install = SimpleNamespace(project='synthetic', directory=self.directory, images={'factory': IMAGE}, services=['bridge'], service_rows=lambda: [])
         def compose(*args, **kwargs):
             calls.append(args)
             if args[0] == 'stop':
@@ -413,7 +415,7 @@ runpy.run_path(sys.argv[1])
     def test_rollout_serializes_authorization_backup_pin_and_resume(self):
         install, production, command, calls = self.rollout_fixture()
         with patch.object(auto, 'healthy'), patch.object(auto, 'command', side_effect=command), patch.object(auto, 'current_main'), \
-                patch.object(auto, 'resume', side_effect=lambda _: calls.append(('resume',))):
+                patch.object(auto, 'resume', side_effect=lambda _, paused: calls.append(('resume',))):
             auto.rollout(production, install, IMAGE, COMMIT, 34, self.directory)
         self.assertEqual([call[0] for call in calls], ['stop', 'backup', 'record-upgrade', 'resume'])
         self.assertEqual(json.loads((self.directory / 'status.json').read_text())['phase'], 'complete')

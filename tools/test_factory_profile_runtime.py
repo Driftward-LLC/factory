@@ -261,6 +261,9 @@ class ProfileRuntimeTests(unittest.TestCase):
         config_module = ModuleType('hermes_cli.config')
         config_module.read_user_config_raw = lambda path: json.loads(path.read_text())
         config_module.atomic_config_write = lambda path, value: path.write_text(json.dumps(value))
+        auth_module = ModuleType('hermes_cli.auth')
+        auth_module.get_codex_auth_status = lambda: {'logged_in': True, 'auth_mode': 'chatgpt',
+                                                   'base_url': 'https://chatgpt.com/backend-api/codex'}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             default = root / 'config.yaml'
@@ -278,7 +281,7 @@ class ProfileRuntimeTests(unittest.TestCase):
             payload = {'engineering': base64.b64encode(plugin_archive()).decode(),
                        'observer': {name: base64.b64encode(content).decode() for name, content in
                                     {'__init__.py': b'public observer', 'plugin.yaml': b'name: posthog'}.items()}}
-            with patch.object(runtime, 'ROOT', root), patch.dict(sys.modules, {'hermes_cli.config': config_module}):
+            with patch.object(runtime, 'ROOT', root), patch.dict(sys.modules, {'hermes_cli.config': config_module, 'hermes_cli.auth': auth_module}):
                 first = runtime.configure(payload)
                 self.assertEqual(runtime.configure(payload), first)
                 inventory = runtime.inventory()
