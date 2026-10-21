@@ -226,6 +226,10 @@ The optional `artifact_runtime` binding points to a reviewed executable copy of
 group/world writes. Add this key without replacing existing installation,
 profile runtime or Hermes bindings. The helper uses existing host `gh`
 authentication with the fixed `Driftward-LLC/factory` repository on github.com.
+Update this helper by installing the reviewed revision in a new root-owned,
+immutable revision directory and atomically updating only `artifact_runtime` in
+the private CLI binding. Preserve every other binding and previous helper for
+rollback; an artifact-helper update does not require an application deployment.
 
 ```bash
 factory artifacts preview --before 2026-10-20T22:35:06Z
@@ -258,3 +262,44 @@ lock the bound installation and shared archive, and never touch runtime
 databases, Docker, services, workflow runs, logs or packages.
 `status` verifies every retained local ZIP and receipt without network access,
 reporting IDs, byte counts and deletion status even after remote pruning.
+
+## Current CI storage and routine evidence cleanup
+
+```bash
+factory artifacts inventory
+factory artifacts routine preview --before 2026-10-14T00:00:00Z
+factory artifacts routine prune --before 2026-10-14T00:00:00Z --snapshot-digest PREVIEW_DIGEST --yes
+```
+
+Inventory is read-only and reports artifact IDs, sanitized names, sizes, dates,
+run IDs, branch labels and commit SHAs, with byte totals grouped by artifact
+name. It covers only `Driftward-LLC/factory`, not organization billing or shared
+storage quota (which may include other repositories and packages). Complete
+pagination is required, bounded to 1,000 artifacts; missing/changing counts,
+duplicate IDs and truncated responses refuse the operation instead of reporting
+partial totals. No artifact contents or download URLs are returned.
+
+Routine cleanup selects only the exact `driftward-ui-storybook` and
+`factory-console-fixtures` names. The explicit UTC cutoff must be at least seven
+days old. Artifact creation/update and run update must all predate it. The run
+must be completed Hatchet Quality from this repository's exact
+`hatchet-quality.yml`, with matching repository IDs, branch and commit metadata,
+and either a main push or same-repository pull request. Failed-run evidence can
+qualify, but the latest completed evidence globally and on main for each name
+is retained. Active runs, fork/untrusted sources, expired or digestless artifacts
+are protected; production images, deployment/recovery metadata and every other
+name are excluded. Preview includes the selected IDs/bytes and protected UI
+artifacts with reasons. Cleanup does not change upload retention settings.
+
+Review the preview before providing its exact digest and `--yes`. The digest
+binds the cutoff, policy, selected artifact/run metadata and protected UI set.
+Prune uses the shared root lock and revalidates the full remaining UI snapshot
+before each explicit artifact-ID deletion. It persists intent before deletion
+and result afterward in a separate private
+`/srv/factory-artifact-archive/routine-<digest>.json` audit; legacy ZIPs and
+receipts are untouched. Any drift, durability failure or API failure stops the
+operation. An interrupted intent or `delete_failed_or_unknown` means the remote
+result needs investigation; retain the audit and inspect fresh inventory before
+reviewing another preview. An existing routine audit is never overwritten by
+restarting the same digest. No scheduled deletion or archive-file cleanup is
+installed.

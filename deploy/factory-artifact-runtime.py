@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Preserve verified legacy CI image ZIPs before explicit GitHub artifact pruning."""
+"""Inspect Factory CI storage and explicitly prune narrowly approved artifacts."""
 import argparse
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 from itertools import islice
@@ -25,6 +26,8 @@ HEX = r'[0-9a-f]{64}'
 MAX_ZIP = 1024 ** 3
 MAX_IMAGE = 4 * 1024 ** 3
 HEADROOM = 12 * 1024 ** 3
+MAX_PAGES = 10
+ROUTINE_NAMES = ('driftward-ui-storybook', 'factory-console-fixtures')
 
 
 class Refusal(ValueError):
@@ -80,6 +83,159 @@ def gh(endpoint, target=None, method='GET'):
                 process.kill()
             process.wait()
         return json.loads(b''.join(chunks)) if not target and method == 'GET' else None
+
+
+def artifact_listing():
+    """Require a complete bounded listing before reporting totals or choosing deletions."""
+    rows, total = [], None
+    for page in range(1, MAX_PAGES + 1):
+        value = gh(f'actions/artifacts?per_page=100&page={page}')
+        require(isinstance(value, dict) and type(value.get('total_count')) is int
+                and 0 <= value['total_count'] <= MAX_PAGES * 100,
+                'artifact inventory exceeds limit or lacks total count')
+        require(total is None or total == value['total_count'], 'artifact inventory changed during pagination')
+        total = value['total_count']
+        items = value.get('artifacts')
+        require(isinstance(items, list) and len(items) <= 100, 'invalid artifact listing')
+        for item in items:
+            require(isinstance(item, dict) and type(item.get('id')) is int and item['id'] > 0
+                    and isinstance(item.get('name'), str) and 0 < len(item['name']) <= 1024
+                    and type(item.get('size_in_bytes')) is int and 0 <= item['size_in_bytes'] < 2 ** 63
+                    and type(item.get('expired')) is bool, 'invalid artifact metadata')
+            stamp(item.get('created_at'))
+            stamp(item.get('expires_at'))
+            run = item.get('workflow_run')
+            require(isinstance(run, dict) and type(run.get('id')) is int and run['id'] > 0,
+                    'invalid artifact run metadata')
+        rows.extend(items)
+        require(len(rows) <= total and len({item['id'] for item in rows}) == len(rows),
+                'artifact inventory count or IDs differ')
+        if len(items) < 100 or len(rows) == total:
+            require(len(rows) == total, 'incomplete artifact inventory')
+            return sorted(rows, key=lambda item: item['id'])
+    raise Refusal('artifact inventory exceeds bounded pagination')
+
+
+def label(value):
+    # Names and branch labels are untrusted; expose no controls, URLs or terminal escapes.
+    return re.sub(r'[^a-zA-Z0-9_. -]', '_', value)[:160] if isinstance(value, str) else None
+
+
+def inventory():
+    rows, groups = [], {}
+    for item in artifact_listing():
+        name = label(item['name'])
+        run = item['workflow_run']
+        rows.append({key: item[key] for key in ('id', 'size_in_bytes', 'created_at', 'expires_at', 'expired')}
+                    | {'name': name, 'run_id': run['id'], 'head_branch': label(run.get('head_branch')),
+                       'head_sha': run.get('head_sha') if re.fullmatch(r'[0-9a-f]{40}', str(run.get('head_sha'))) else None})
+        group = groups.setdefault(item['name'], {'name': name, 'count': 0, 'total_bytes': 0})
+        group['count'] += 1
+        group['total_bytes'] += item['size_in_bytes']
+    return {'repository': REPO, 'count': len(rows), 'total_bytes': sum(row['size_in_bytes'] for row in rows),
+            'groups': sorted(groups.values(), key=lambda group: (-group['total_bytes'], group['name'])), 'artifacts': rows}
+
+
+def routine_snapshot(before):
+    cutoff = stamp(before)
+    require(cutoff <= datetime.now(timezone.utc) - timedelta(days=7), 'routine cutoff must be at least seven days old')
+    items = [item for item in artifact_listing() if item['name'] in ROUTINE_NAMES]
+    runs, trusted, protected_rows = {}, [], []
+    for item in items:
+        run_id = item['workflow_run']['id']
+        if run_id not in runs:
+            runs[run_id] = gh(f'actions/runs/{run_id}')
+        run = runs[run_id]
+        require(isinstance(run, dict), 'invalid workflow run response')
+        row = {key: item[key] for key in ('id', 'name', 'size_in_bytes', 'created_at', 'expires_at')}
+        row['run_id'] = run_id
+        artifact_run = item['workflow_run']
+        source_ok = (type(run.get('id')) is int and run['id'] == run_id
+                     and run.get('name') == 'Hatchet Quality'
+                     and run.get('path') == '.github/workflows/hatchet-quality.yml'
+                     and run.get('event') in ('push', 'pull_request')
+                     and (run.get('event') != 'push' or run.get('head_branch') == 'main')
+                     and run.get('repository', {}).get('full_name') == REPO
+                     and run.get('head_repository', {}).get('full_name') == REPO
+                     and isinstance(run.get('head_branch'), str) and 0 < len(run['head_branch']) <= 1024
+                     and re.fullmatch(r'[0-9a-f]{40}', str(run.get('head_sha')))
+                     and artifact_run.get('head_sha') == run['head_sha']
+                     and artifact_run.get('head_branch') == run['head_branch']
+                     and type(run.get('repository', {}).get('id')) is int
+                     and artifact_run.get('repository_id') == run['repository']['id']
+                     and type(run.get('head_repository', {}).get('id')) is int
+                     and artifact_run.get('head_repository_id') == run['head_repository']['id'])
+        if not source_ok:
+            protected_rows.append(row | {'reason': 'untrusted_run'})
+            continue
+        row.update(head_branch=label(run['head_branch']), branch_digest=digest(run['head_branch']),
+                   head_sha=run['head_sha'], event=run['event'], is_main=run['head_branch'] == 'main',
+                   repository_id=run['repository']['id'], head_repository_id=run['head_repository']['id'])
+        if run.get('status') != 'completed':
+            protected_rows.append(row | {'reason': 'active_run'})
+            continue
+        # Bind reruns/completion changes and GitHub's immutable content digest to approval.
+        require(type(run.get('run_attempt')) is int and run['run_attempt'] > 0
+                and type(run.get('workflow_id')) is int and run['workflow_id'] > 0
+                and run.get('conclusion') in ('success', 'failure', 'cancelled', 'skipped', 'timed_out',
+                                               'action_required', 'neutral', 'stale', 'startup_failure'),
+                'invalid completed run metadata')
+        stamp(run.get('updated_at'))
+        row.update(run_attempt=run['run_attempt'], workflow_id=run['workflow_id'],
+                   run_updated_at=run['updated_at'], conclusion=run['conclusion'])
+        if item['expired'] or stamp(item['expires_at']) <= datetime.now(timezone.utc):
+            protected_rows.append(row | {'reason': 'expired'})
+            continue
+        if not re.fullmatch('sha256:' + HEX, str(item.get('digest', ''))):
+            protected_rows.append(row | {'reason': 'missing_content_digest'})
+            continue
+        stamp(item.get('updated_at'))
+        row.update(digest=item['digest'], updated_at=item['updated_at'])
+        trusted.append(row)
+    latest = {}
+    for row in trusted:
+        for key in ((row['name'], 'global'), (row['name'], 'main')) if row['is_main'] else ((row['name'], 'global'),):
+            latest[key] = max(latest.get(key, ('', 0)), (row['created_at'], row['run_id']))
+    selected = []
+    for row in trusted:
+        if (row['created_at'], row['run_id']) in (latest[(row['name'], 'global')], latest.get((row['name'], 'main'))):
+            reason = 'latest_global_or_main_evidence'
+        elif stamp(row['created_at']) >= cutoff or stamp(row['updated_at']) >= cutoff or stamp(row['run_updated_at']) >= cutoff:
+            reason = 'younger_than_cutoff'
+        else:
+            selected.append(row)
+            continue
+        protected_rows.append(row | {'reason': reason})
+    result = {'repository': REPO, 'policy': 'routine-ui-evidence-seven-days-v1', 'before': before,
+              'artifacts': sorted(selected, key=lambda row: row['id']),
+              'protected_artifacts': sorted(protected_rows, key=lambda row: row['id'])}
+    return result | {'snapshot_digest': digest(result), 'total_bytes': sum(row['size_in_bytes'] for row in selected)}
+
+
+def routine_prune(view):
+    receipt = ROOT / f"routine-{view['snapshot_digest']}.json"
+    require(not receipt.exists() and not receipt.is_symlink(), 'routine cleanup audit already exists; inspect it and preview again')
+    audit = {'snapshot': view, 'events': []}
+    completed = []
+    for row in view['artifacts']:
+        fresh = routine_snapshot(view['before'])
+        require(fresh['artifacts'] == [item for item in view['artifacts'] if item['id'] not in completed]
+                and fresh['protected_artifacts'] == view['protected_artifacts'],
+                'routine artifact snapshot changed during pruning')
+        event = {'artifact_id': row['id'], 'time': datetime.now(timezone.utc).isoformat(), 'status': 'delete_intent'}
+        audit['events'].append(event)
+        atomic(receipt, audit)
+        try:
+            gh(f"actions/artifacts/{row['id']}", method='DELETE')
+        except Exception:
+            audit['events'].append(event | {'time': datetime.now(timezone.utc).isoformat(), 'status': 'delete_failed_or_unknown'})
+            atomic(receipt, audit)
+            raise
+        audit['events'].append(event | {'time': datetime.now(timezone.utc).isoformat(), 'status': 'deleted'})
+        atomic(receipt, audit)
+        completed.append(row['id'])
+    return {'action': 'routine_prune', 'snapshot_digest': view['snapshot_digest'], 'artifact_ids': completed,
+            'total_bytes': view['total_bytes'], 'archive_root': str(ROOT)}
 
 
 def snapshot(before):
@@ -281,20 +437,9 @@ def status():
             'total_bytes': sum(row['size_in_bytes'] for row in rows), 'artifacts': rows}
 
 
-def dispatch(args):
-    if args == ['status']:
-        return status()
-    parser = argparse.ArgumentParser(prog='factory artifacts')
-    parser.add_argument('action', choices=('preview', 'preserve', 'prune'))
-    parser.add_argument('--before', required=True)
-    parser.add_argument('--snapshot-digest')
-    parser.add_argument('--yes', action='store_true')
-    options = parser.parse_args(args)
-    if options.action == 'preview':
-        require(not options.yes and options.snapshot_digest is None, 'preview takes no approval arguments')
-        return snapshot(options.before)
-    require(options.yes and re.fullmatch(HEX, options.snapshot_digest or ''), 'snapshot digest and --yes required')
-    root_checked(create=options.action == 'preserve', durable=True)
+@contextmanager
+def archive_lock(create=False):
+    root_checked(create=create, durable=True)
     lock = ROOT / '.lock'
     if not lock.exists():
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -302,6 +447,28 @@ def dispatch(args):
     protected(lock)
     with lock.open('rb') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
-        view = snapshot(options.before)
+        yield
+
+
+def dispatch(args):
+    if args == ['status']:
+        return status()
+    if args == ['inventory']:
+        return inventory()
+    routine = args[:1] == ['routine']
+    if routine:
+        args = args[1:]
+    parser = argparse.ArgumentParser(prog='factory artifacts')
+    parser.add_argument('action', choices=('preview', 'prune') if routine else ('preview', 'preserve', 'prune'))
+    parser.add_argument('--before', required=True)
+    parser.add_argument('--snapshot-digest')
+    parser.add_argument('--yes', action='store_true')
+    options = parser.parse_args(args)
+    if options.action == 'preview':
+        require(not options.yes and options.snapshot_digest is None, 'preview takes no approval arguments')
+        return routine_snapshot(options.before) if routine else snapshot(options.before)
+    require(options.yes and re.fullmatch(HEX, options.snapshot_digest or ''), 'snapshot digest and --yes required')
+    with archive_lock(create=routine or options.action == 'preserve'):
+        view = routine_snapshot(options.before) if routine else snapshot(options.before)
         require(view['snapshot_digest'] == options.snapshot_digest, 'artifact snapshot changed; preview again')
-        return operate(options.action, view)
+        return routine_prune(view) if routine else operate(options.action, view)
