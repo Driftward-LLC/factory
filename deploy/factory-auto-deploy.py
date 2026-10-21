@@ -296,6 +296,7 @@ def deploy(config, run_id, commit, credentials):
     with production.portable.installation_lock(Path(config['installation'])):
         install = production.Production(Path(config['installation']))
         with production.portable.installation_lock(Path('/tmp') / ('factory-tenant-' + install.tenant)):
+            assert_manual_idle(work)
             install.preflight()
             run = api(f'actions/runs/{run_id}')
             validate_run(run, api('actions/workflows/hatchet-quality.yml'), run_id, commit)

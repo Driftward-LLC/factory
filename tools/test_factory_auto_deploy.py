@@ -63,6 +63,45 @@ class DeploymentTests(unittest.TestCase):
         with patch.object(auto, 'api', return_value={'object': {'sha': 'c' * 40}}), self.assertRaisesRegex(auto.Refusal, 'superseded'):
             auto.current_main(COMMIT)
 
+    def test_manual_failure_written_before_tenant_lock_blocks_automatic_rollout(self):
+        config = {'enabled': True, 'work_directory': str(self.directory),
+                  'installation': str(self.directory / 'install'), 'production_bundle': str(self.directory)}
+        calls = []
+        @contextmanager
+        def lock(path):
+            calls.append(path)
+            if len(calls) == 2:
+                directory = self.directory / 'operator-deploy'
+                directory.mkdir(mode=0o700)
+                snapshot = {}
+                identifier = hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                path = directory / (identifier + '.json')
+                path.write_text(json.dumps({'format': 1, 'digest': identifier, 'snapshot': snapshot, 'phase': 'failed'}))
+                path.chmod(0o600)
+            yield
+        production = SimpleNamespace(portable=SimpleNamespace(installation_lock=lock),
+                                     Production=Mock(return_value=SimpleNamespace(tenant='fixture', preflight=Mock())))
+        actual_stat, actual_lstat = Path.stat, Path.lstat
+        def owned(info):
+            fields = list(info); fields[4] = 0
+            return os.stat_result(fields)
+        def fixture_stat(path, **options):
+            info = actual_stat(path, **options)
+            return owned(info) if path == self.directory or self.directory in path.parents else info
+        def fixture_lstat(path):
+            info = actual_lstat(path)
+            return owned(info) if path == self.directory or self.directory in path.parents else info
+        spec = SimpleNamespace(loader=SimpleNamespace(exec_module=Mock()))
+        with patch.object(auto.importlib.util, 'spec_from_file_location', return_value=spec), \
+             patch.object(auto.importlib.util, 'module_from_spec', return_value=production), \
+             patch.object(Path, 'stat', new=fixture_stat), patch.object(Path, 'lstat', new=fixture_lstat), \
+             patch.object(auto, 'get_image') as image, patch.object(auto, 'rollout') as rollout, patch.object(auto, 'api') as api:
+            with self.assertRaisesRegex(auto.Refusal, 'prior_deployment_requires_operator'):
+                auto.deploy(config, 34, COMMIT, {'username': 'fixture', 'token': 'synthetic_token'})
+        self.assertEqual(len(calls), 2)
+        image.assert_not_called(); rollout.assert_not_called(); api.assert_not_called()
+        production.Production.return_value.preflight.assert_not_called()
+
     def manifest(self, compatibility='d' * 64):
         return {'format': 2, 'commit': COMMIT, 'image': artifact.REGISTRY_IMAGE + '@' + IMAGE,
                 'image_config': 'sha256:' + 'c' * 64, 'compatibility': compatibility, 'run_id': 34, 'run_attempt': 2}
