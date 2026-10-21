@@ -23,6 +23,15 @@ No workflow, SSH grammar, credential grants, or automatic compatibility policy
 changes are involved. The cold backup and actual rollout receipt remain retained.
 
 A stopped bridge executor stays stopped across automatic and audited deployment.
+After the audited rollout completes, enable the independent reviewer with
+`factory execution configure preview --json`, then the returned
+`factory execution configure apply --snapshot-digest DIGEST --reason REASON --yes --json`.
+This fixed operation changes only the reviewer flag in the executor worker's
+private environment file. It requires the executor worker to remain stopped,
+validates effective Compose configuration, and records a durable approval and
+result. An interrupted or failed operation requires operator investigation;
+it never starts services or repairs configuration automatically.
+
 Use `factory execution preview --json`, then `factory execution resume
 --snapshot-digest DIGEST --reason TEXT --yes --json`. The preview binds the image,
 installation, successful trusted CI and rollout receipt, exact reviewed terminal

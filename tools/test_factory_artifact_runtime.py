@@ -40,6 +40,10 @@ class ArtifactRuntimeTests(unittest.TestCase):
         self.patch = patch.object(runtime, 'ROOT', self.root)
         self.patch.start()
         self.addCleanup(self.patch.stop)
+        # Artifact guards need 12 GiB headroom; fixture outcomes must not depend on the runner disk.
+        disk = patch.object(runtime.shutil, 'disk_usage', return_value=type('Usage', (), {'free': 20 * 1024**3})())
+        disk.start()
+        self.addCleanup(disk.stop)
         self.before = '2026-10-20T22:35:06Z'
         self.commit = 'a' * 40
         self.metadata = {'format': 1, 'commit': self.commit, 'image': 'sha256:' + 'b' * 64,

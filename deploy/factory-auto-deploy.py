@@ -62,6 +62,22 @@ def private_json(path):
 
 def assert_manual_idle(work, approved_digest=None):
     """An interrupted operator rollout also fences the automatic deployment path."""
+    configuration = work / 'operator-execution-configure'
+    if configuration.exists() or configuration.is_symlink():
+        info = configuration.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o700,
+                'unsafe_manual_deployment_journal')
+        require(sorted(path.name for path in configuration.iterdir()) == ['receipt.json'],
+                'execution_configuration_requires_operator')
+        receipt = private_json(configuration / 'receipt.json')
+        snap = receipt.get('snapshot')
+        require(receipt.get('phase') == 'complete' and isinstance(snap, dict)
+                and re.fullmatch(DIGEST, str(snap.get('reviewer_configuration', {}).get('after')))
+                and hashlib.sha256(json.dumps(snap, sort_keys=True, separators=(',', ':'),
+                                             allow_nan=False).encode()).hexdigest() == receipt.get('snapshot_digest')
+                and receipt.get('result') == {
+                    'environment_sha256': snap.get('reviewer_configuration', {}).get('after'),
+                    'independent_reviewer_enabled': True}, 'execution_configuration_requires_operator')
     directory = work / 'operator-deploy'
     if not directory.exists() and not directory.is_symlink():
         return

@@ -35,7 +35,7 @@ IMAGE, NEXT_IMAGE = 'sha256:' + 'c' * 64, 'sha256:' + 'd' * 64
 
 class DeployPolicyTests(unittest.TestCase):
     def test_help_uses_real_entrypoint_without_binding_or_root(self):
-        for args in (['--help'], ['deploy', '--help'], *(['deploy', name, '--help'] for name in ('status', 'preview', 'approve', 'apply'))):
+        for args in (['--help'], ['deploy', '--help'], ['execution', 'configure', '--help'], *(['deploy', name, '--help'] for name in ('status', 'preview', 'approve', 'apply'))):
             result = subprocess.run([sys.executable, str(ROOT / 'deploy/factory-cli.py'), *args], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('factory', result.stdout)
@@ -229,6 +229,160 @@ class AuditedDeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(manual.Refusal, 'stale_or_consent'):
                 manual.execution_run(auto, self.binding, args, self.installed, Mock())
         self.install.compose.assert_not_called()
+
+    def configuration_fixture(self, flag=b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n"):
+        self.save(self.work / 'status.json', {'phase': 'complete'})
+        directory = self.installation / 'env'; directory.mkdir(mode=0o700)
+        self.reviewer_env = directory / 'hatchet-worker-bridge-executor.env'
+        self.reviewer_env.write_bytes(b"PRIVATE_FIXTURE='retain byte for byte'\r\n" + flag)
+        self.reviewer_env.chmod(0o600)
+        self.other_env = directory / 'hatchet-verifier.env'
+        self.other_env.write_bytes(b"UNRELATED_FIXTURE='unchanged'\n"); self.other_env.chmod(0o600)
+        self.prod.portable.bootstrap = cli.production_module({'production_bundle': str(ROOT / 'deploy')}).portable.bootstrap
+        self.unresolved = {'services': {'bridge-executor-worker': {
+            'env_file': [{'path': str(self.reviewer_env)}, {'path': str(self.other_env)}], 'environment': {}}}}
+        def compose(*args, **kwargs):
+            self.assertEqual(args[0], 'config')  # Configuration never starts/stops a service.
+            if '--no-env-resolution' in args:
+                return json.dumps(self.unresolved)
+            values = self.prod.portable.bootstrap.read_env(self.reviewer_env)
+            return json.dumps({'services': {'bridge-executor-worker': {'environment': {
+                'DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED': '1', **values}}}})
+        self.install.compose = Mock(side_effect=compose)
+        snap = {'installation': str(self.installation), 'paused_execution': ['bridge-executor-worker']}
+        item = patch.object(manual, 'execution_snapshot', return_value=snap)
+        item.start(); self.addCleanup(item.stop)
+        return self.reviewer_env.read_bytes()
+
+    def configure(self, action, **values):
+        args = SimpleNamespace(action='configure', configure_action=action, snapshot_digest=None,
+                               reason=None, yes=False)
+        args.__dict__.update(values)
+        return manual.execution_run(auto, self.binding, args, self.installed, Mock())
+
+    def test_configure_preview_apply_preserves_private_bytes_and_never_starts(self):
+        for flag in (b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n", b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='false'\r\n", b''):
+            with self.subTest(flag=flag):
+                # Each subcase gets its own existing installation and audit state.
+                if hasattr(self, 'reviewer_env'):
+                    self.reviewer_env.write_bytes(b"PRIVATE_FIXTURE='retain byte for byte'\r\n" + flag)
+                    receipt = self.work / 'operator-execution-configure/receipt.json'
+                    receipt.unlink()
+                    receipt.parent.rmdir()
+                else:
+                    self.configuration_fixture(flag)
+                before = self.reviewer_env.read_bytes()
+                owner = self.reviewer_env.stat()
+                view = self.configure('preview')
+                self.assertEqual(self.reviewer_env.read_bytes(), before)
+                self.assertNotIn('PRIVATE_FIXTURE', json.dumps(view))
+                result = self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
+                self.assertEqual(result['phase'], 'complete')
+                after = self.reviewer_env.read_bytes()
+                expected = before.replace(flag, flag.replace(b"'0'", b"'1'").replace(b"'false'", b"'1'")) if flag else before + b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='1'\n"
+                self.assertEqual(after, expected)
+                self.assertEqual(self.reviewer_env.stat().st_mode & 0o777, 0o600)
+                self.assertEqual((self.reviewer_env.stat().st_uid, self.reviewer_env.stat().st_gid), (owner.st_uid, owner.st_gid))
+                self.assertEqual(self.other_env.read_bytes(), b"UNRELATED_FIXTURE='unchanged'\n")
+                auto.assert_manual_idle(self.work)
+                with self.assertRaisesRegex(manual.Refusal, 'already_enabled'):
+                    self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
+
+    def test_configure_parser_requires_fixed_subcommand(self):
+        self.assertEqual(cli.execution_parser(['configure', 'preview', '--json']).configure_action, 'preview')
+        for argv in (['configure'], ['configure', 'enable'], ['resume', 'apply']):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                cli.execution_parser(argv)
+
+    def test_configure_private_environment_pending_and_shared_sources_refuse(self):
+        before = self.configuration_fixture()
+        self.reviewer_env.chmod(0o640)
+        with self.assertRaisesRegex(manual.Refusal, 'unsafe_execution_environment'):
+            self.configure('preview')
+        self.reviewer_env.chmod(0o600)
+        pending = self.reviewer_env.with_suffix('.pending'); pending.touch(mode=0o600)
+        with self.assertRaisesRegex(manual.Refusal, 'interrupted_execution_configuration'):
+            self.configure('preview')
+        pending.unlink()
+        self.unresolved['services']['unexpected'] = {'env_file': [{'path': str(self.reviewer_env)}]}
+        with self.assertRaisesRegex(manual.Refusal, 'shared_environment'):
+            self.configure('preview')
+        self.assertEqual(self.reviewer_env.read_bytes(), before)
+
+    def test_configure_preserves_rollout_guard_and_role_readiness_refusals(self):
+        before = self.configuration_fixture()
+        for reason in ('terminal_inspection_guard_unverified', 'execution_roles_not_ready'):
+            with patch.object(manual, 'execution_snapshot', side_effect=manual.Refusal(reason)) as snap:
+                with self.assertRaisesRegex(manual.Refusal, reason): self.configure('preview')
+                self.assertTrue(snap.call_args.kwargs['configuring'])
+        self.save(self.work / 'status.json', {'phase': 'upgrading'})
+        with self.assertRaisesRegex(manual.Refusal, 'deployment_not_complete'): self.configure('preview')
+        self.assertEqual(self.reviewer_env.read_bytes(), before)
+
+    def test_configure_stale_file_duplicate_and_override_refuse(self):
+        before = self.configuration_fixture()
+        view = self.configure('preview')
+        self.reviewer_env.write_bytes(before + b"NEW_FIXTURE='different'\n")
+        with self.assertRaisesRegex(manual.Refusal, 'stale_or_consent'):
+            self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
+        self.assertFalse((self.work / 'operator-execution-configure').exists())
+        self.reviewer_env.write_bytes(before + b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n")
+        with self.assertRaises(ValueError): self.configure('preview')
+        self.reviewer_env.write_bytes(before)
+        self.unresolved['services']['bridge-executor-worker']['environment']['DRIFTWARD_FACTORY_REVIEWER_ENABLED'] = '0'
+        with self.assertRaisesRegex(manual.Refusal, 'overridden'): self.configure('preview')
+        self.unresolved['services']['bridge-executor-worker']['environment'].clear()
+        self.other_env.write_bytes(b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n")
+        with self.assertRaisesRegex(manual.Refusal, 'overridden'): self.configure('preview')
+
+    def test_configure_atomic_failure_latches_configure_resume_and_deploy(self):
+        before = self.configuration_fixture()
+        view = self.configure('preview')
+        with patch.object(os, 'replace', side_effect=OSError('synthetic failure')):
+            with self.assertRaises(OSError):
+                self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
+        self.assertEqual(self.reviewer_env.read_bytes(), before)
+        with self.assertRaisesRegex(auto.Refusal, 'configuration_requires_operator'):
+            self.configure('preview')
+        args = SimpleNamespace(action='resume')
+        with self.assertRaisesRegex(auto.Refusal, 'configuration_requires_operator'):
+            manual.execution_run(auto, self.binding, args, self.installed, Mock())
+        with self.assertRaisesRegex(auto.Refusal, 'configuration_requires_operator'):
+            auto.assert_manual_idle(self.work)
+
+    def test_configure_effective_mismatch_latches_after_mutation(self):
+        self.configuration_fixture()
+        view = self.configure('preview')
+        original = self.install.compose.side_effect
+        def mismatch(*args, **kwargs):
+            value = json.loads(original(*args, **kwargs))
+            if b"ENABLED='1'" in self.reviewer_env.read_bytes():
+                value['services']['unexpected-service'] = {}
+            return json.dumps(value)
+        self.install.compose.side_effect = mismatch
+        with self.assertRaisesRegex(manual.Refusal, 'effective_mismatch'):
+            self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
+        self.assertIn(b"ENABLED='1'", self.reviewer_env.read_bytes())
+        self.assertEqual(manual.private_json(self.work / 'operator-execution-configure/receipt.json')['phase'], 'failed')
+        with self.assertRaisesRegex(auto.Refusal, 'configuration_requires_operator'):
+            auto.assert_manual_idle(self.work)
+
+    def test_configure_interruption_after_replace_retains_consumed_latch(self):
+        self.configuration_fixture()
+        view = self.configure('preview')
+        replace = os.replace
+        def interrupted(source, target):
+            if target == self.reviewer_env:
+                self.assertEqual(manual.private_json(self.work / 'operator-execution-configure/receipt.json')['phase'], 'consumed')
+                replace(source, target)
+                raise SystemExit('simulated interruption')
+            return replace(source, target)
+        with patch.object(os, 'replace', side_effect=interrupted), self.assertRaises(SystemExit):
+            self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
+        self.assertIn(b"ENABLED='1'", self.reviewer_env.read_bytes())
+        self.assertEqual(manual.private_json(self.work / 'operator-execution-configure/receipt.json')['phase'], 'consumed')
+        with self.assertRaisesRegex(auto.Refusal, 'configuration_requires_operator'):
+            auto.assert_manual_idle(self.work)
 
     def test_guard_source_mismatch_is_refused_before_native_readiness(self):
         self.save(self.work / 'status.json', {'phase': 'complete', 'image': IMAGE, 'commit': TARGET, 'run_id': 34})

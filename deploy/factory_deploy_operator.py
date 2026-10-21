@@ -324,7 +324,7 @@ def execution_flags(install):
             'independent_reviewer_enabled': environment.get('DRIFTWARD_FACTORY_REVIEWER_ENABLED') == '1'}
 
 
-def execution_snapshot(auto, binding, config, install, installed, readiness):
+def execution_snapshot(auto, binding, config, install, installed, readiness, *, configuring=False):
     identity = current_identity(auto, install)
     check_idle(auto, install)
     status = private_json(Path(config['work_directory']) / 'status.json')
@@ -344,7 +344,7 @@ def execution_snapshot(auto, binding, config, install, installed, readiness):
             'terminal_inspection_guard_unverified')
     profile = readiness(binding, install)
     flags = execution_flags(install)
-    require(all(flags.values()), 'execution_flags_not_enabled')
+    require(flags['execution_enabled'] and (configuring or flags['independent_reviewer_enabled']), 'execution_flags_not_enabled')
     roles = profile.get('profiles', {})
     require(profile.get('reviewer_routed') is True and profile.get('gateway_executor_profile_selected') is True
             and profile.get('native_runtime_idle') is True
@@ -369,6 +369,8 @@ def execution_run(auto, binding, args, installed, readiness):
     os.umask(0o077)
     require(os.geteuid() == 0, 'root_required')
     with locked(auto, binding) as (config, prod, install):
+        if args.action == 'configure':
+            return configure_execution(auto, binding, args, installed, readiness, config, prod, install)
         directory = Path(config['work_directory']) / 'operator-execution'
         if args.action == 'status':
             result = {'installation': config['installation'], **current_identity(auto, install),
@@ -424,8 +426,109 @@ def execution_run(auto, binding, args, installed, readiness):
             raise
         finally:
             write(auto, path, receipt)
-        return {'phase': 'complete', 'snapshot_digest': identifier, 'installation': config['installation'],
+    return {'phase': 'complete', 'snapshot_digest': identifier, 'installation': config['installation'],
                 'next_command': 'factory execution status --json'}
+
+
+def reviewer_configuration(auto, prod, install):
+    """Prove the fixed private env file is the sole reviewer-flag source."""
+    key = 'DRIFTWARD_FACTORY_REVIEWER_ENABLED'
+    target = install.directory / 'env/hatchet-worker-bridge-executor.env'
+    private_directory(target.parent)
+    require(not exists(target.with_suffix('.pending')), 'interrupted_execution_configuration')
+    unresolved = json.loads(install.compose('config', '--no-env-resolution', '--format', 'json', private=True))
+    references = []
+    for name, service in unresolved['services'].items():
+        if name == 'bridge-executor-worker':
+            require(key not in service.get('environment', {}), 'reviewer_flag_overridden')
+        for entry in service.get('env_file', []):
+            path = Path(entry['path'] if isinstance(entry, dict) else entry)
+            if path == target:
+                require(name == 'bridge-executor-worker', 'reviewer_flag_shared_environment')
+                references.append(path)
+            if name != 'bridge-executor-worker':
+                continue
+            require(path.parent == target.parent, 'reviewer_flag_ambiguous_source')
+            info = path.lstat()
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 1024 * 1024,
+                    'unsafe_execution_environment')
+            # Reuse the generated dotenv parser: duplicate or nonliteral entries refuse.
+            values = prod.portable.bootstrap.read_env(path)
+            if path == target:
+                require(values.get(key) in (None, '0', 'false'), 'reviewer_flag_already_enabled_or_ambiguous')
+            else:
+                require(key not in values, 'reviewer_flag_overridden')
+    require(references == [target], 'reviewer_flag_ambiguous_source')
+    effective = json.loads(install.compose('config', '--format', 'json', private=True))
+    environment = effective['services']['bridge-executor-worker'].get('environment', {})
+    require(environment.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '1'
+            and environment.get(key) in (None, '0', 'false'), 'reviewer_flag_effective_mismatch')
+    before = target.read_bytes()
+    pattern = rb"(?m)^DRIFTWARD_FACTORY_REVIEWER_ENABLED='(?:0|false)'(?=\r?$)"
+    if key in prod.portable.bootstrap.read_env(target):
+        after, count = re.subn(pattern, b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='1'", before)
+        require(count == 1, 'reviewer_flag_ambiguous_source')
+    else:
+        after = before + (b'\n' if before and not before.endswith(b'\n') else b'') + b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='1'\n"
+    return target, before, after, effective
+
+
+def configure_execution(auto, binding, args, installed, readiness, config, prod, install):
+    require(rollout_status(auto, Path(config['work_directory'])) == 'complete', 'deployment_not_complete')
+    auto.assert_manual_idle(Path(config['work_directory']))
+    directory = Path(config['work_directory']) / 'operator-execution-configure'
+    path = directory / 'receipt.json'
+    snap = execution_snapshot(auto, binding, config, install, installed, readiness, configuring=True)
+    require(snap['paused_execution'] == ['bridge-executor-worker'], 'executor_not_paused')
+    target, before, after, effective = reviewer_configuration(auto, prod, install)
+    snap['reviewer_configuration'] = {'before': hashlib.sha256(before).hexdigest(),
+                                      'after': hashlib.sha256(after).hexdigest(), 'effective': digest(effective)}
+    identifier = digest(snap)
+    if args.configure_action == 'preview':
+        require(not args.yes and args.reason is None and args.snapshot_digest is None, 'unexpected_execution_approval')
+        return {'snapshot_digest': identifier, 'installation': config['installation'],
+                'independent_reviewer_enabled': False, 'target_independent_reviewer_enabled': True,
+                'next_command': 'factory execution configure apply --snapshot-digest ' + identifier
+                                + ' --reason "Reviewed independent reviewer enablement" --yes --json'}
+    require(args.yes and args.snapshot_digest == identifier and isinstance(args.reason, str)
+            and 1 <= len(args.reason.strip()) <= 512 and all(c.isprintable() for c in args.reason),
+            'execution_preview_stale_or_consent_missing')
+    if not exists(directory):
+        directory.mkdir(mode=0o700)
+    private_directory(directory)
+    sync_parent(directory)
+    receipt = {'phase': 'consumed', 'snapshot_digest': identifier, 'snapshot': snap,
+               'reason': args.reason, 'uid': os.geteuid()}
+    write(auto, path, receipt)
+    pending = target.with_suffix('.pending')
+    try:
+        require(not exists(pending), 'interrupted_execution_configuration')
+        require(target.read_bytes() == before, 'execution_configuration_changed')
+        descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'wb') as handle:
+            owner = target.lstat()
+            os.fchown(handle.fileno(), -1, owner.st_gid)
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(after)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(pending, target)
+        sync_parent(target)
+        expected = strict_json(json.dumps(effective))
+        expected['services']['bridge-executor-worker']['environment']['DRIFTWARD_FACTORY_REVIEWER_ENABLED'] = '1'
+        require(json.loads(install.compose('config', '--format', 'json', private=True)) == expected,
+                'execution_configuration_effective_mismatch')
+        require(target.read_bytes() == after, 'execution_configuration_changed')
+        receipt['phase'] = 'complete'
+        receipt['result'] = {'environment_sha256': hashlib.sha256(after).hexdigest(), 'independent_reviewer_enabled': True}
+    except Exception:
+        receipt['phase'] = 'failed'
+        raise
+    finally:
+        write(auto, path, receipt)
+    return {'phase': 'complete', 'snapshot_digest': identifier, 'installation': config['installation'],
+            'independent_reviewer_enabled': True, 'next_command': 'factory execution preview --json'}
 
 
 

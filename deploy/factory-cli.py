@@ -83,12 +83,16 @@ def installed_module(name, path):
 
 def execution_parser(args):
     parser = DeployArgumentParser(prog='factory execution')
-    parser.add_argument('action', choices=('status', 'preview', 'resume'))
+    parser.add_argument('action', choices=('status', 'preview', 'resume', 'configure'))
+    parser.add_argument('configure_action', nargs='?', choices=('preview', 'apply'))
     parser.add_argument('--snapshot-digest')
     parser.add_argument('--reason')
     parser.add_argument('--yes', action='store_true')
     parser.add_argument('--json', action='store_true')
-    return parser.parse_args(args)
+    parsed = parser.parse_args(args)
+    if (parsed.action == 'configure') != (parsed.configure_action is not None):
+        parser.error('configure requires preview or apply')
+    return parsed
 
 
 def profile_readiness(binding, install):
