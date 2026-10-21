@@ -4,6 +4,8 @@ import importlib.util
 import io
 import json
 import os
+import sqlite3
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -105,6 +107,9 @@ class AuditedDeploymentTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        fixture_tenant = 'fixture-' + self.root.name
+        tenant_lock = Path('/tmp') / ('.factory-tenant-' + fixture_tenant + '.factory-lock')
+        self.addCleanup(lambda: tenant_lock.unlink(missing_ok=True))
         actual_lstat = Path.lstat
         def fixture_lstat(path):
             info = actual_lstat(path)
@@ -112,7 +117,16 @@ class AuditedDeploymentTests(unittest.TestCase):
                 fields = list(info); fields[4] = 0
                 return os.stat_result(fields)
             return info
-        for item in (patch.object(Path, 'lstat', new=fixture_lstat), patch.object(os, 'geteuid', return_value=0)):
+        actual_fstat = os.fstat
+        def fixture_fstat(fd):
+            info = actual_fstat(fd)
+            path = Path(os.readlink('/proc/self/fd/' + str(fd)))
+            if self.root in path.parents or path == tenant_lock:
+                fields = list(info); fields[4] = 0
+                return os.stat_result(fields)
+            return info
+        for item in (patch.object(Path, 'lstat', new=fixture_lstat), patch.object(os, 'fstat', new=fixture_fstat),
+                     patch.object(os, 'geteuid', return_value=0)):
             item.start(); self.addCleanup(item.stop)
         self.work = self.root / 'work'; self.work.mkdir(mode=0o700)
         self.installation = self.root / 'installation'; self.installation.mkdir(mode=0o700)
@@ -135,7 +149,7 @@ class AuditedDeploymentTests(unittest.TestCase):
         self.artifact = {'id': 56, 'name': 'factory-production-' + TARGET, 'expired': False, 'size_in_bytes': 100,
                          'digest': 'sha256:' + 'e' * 64, 'workflow_run': {'id': 34, 'head_sha': TARGET}}
         self.install = SimpleNamespace(directory=self.installation, metadata={'installation_id': 'synthetic-id'},
-                                       project='synthetic', tenant='fixture-tenant', images={'factory': IMAGE}, service_rows=lambda: [])
+                                       project='synthetic', tenant=fixture_tenant, images={'factory': IMAGE}, service_rows=lambda: [])
         real_production = cli.production_module({'production_bundle': str(ROOT / 'deploy')})
         self.prod = SimpleNamespace(portable=real_production.portable, Production=Mock(return_value=self.install))
         self.patches = [patch.object(auto, 'CONFIG', self.config_path), patch.object(manual, 'production', return_value=self.prod),
@@ -216,12 +230,80 @@ class AuditedDeploymentTests(unittest.TestCase):
                 manual.execution_run(auto, self.binding, args, self.installed, Mock())
         self.install.compose.assert_not_called()
 
+    def test_guard_source_mismatch_is_refused_before_native_readiness(self):
+        self.save(self.work / 'status.json', {'phase': 'complete', 'image': IMAGE, 'commit': TARGET, 'run_id': 34})
+        tree = {manual.GUARDED_SOURCE: {'mode': '100644', 'type': 'blob', 'sha': manual.GUARDED_BLOB}}
+        readiness = Mock()
+        with patch.object(manual, 'current_identity', return_value={'current_image': IMAGE, 'current_commit': TARGET}), \
+             patch.object(manual, 'tree', return_value=(tree, 'fixture')), \
+             patch.object(auto, 'command', return_value='unguarded image source'):
+            with self.assertRaisesRegex(manual.Refusal, 'terminal_inspection_guard_unverified'):
+                manual.execution_snapshot(auto, self.binding, self.config, self.install, self.installed, readiness)
+        readiness.assert_not_called()
+
+    def test_fast_ci_callback_can_finish_before_dispatch_returns_without_lost_receipt(self):
+        identifier = self.preview(); self.call('approve', preview=identifier)
+        args = SimpleNamespace(action='apply', preview=identifier, yes=True)
+        original_api, command = self.api, self.command
+        def api(path):
+            if path == 'actions/workflows/factory-deploy.yml':
+                return {'id': 90, 'path': '.github/workflows/factory-deploy.yml'}
+            if path.startswith('actions/workflows/factory-deploy.yml/runs?'):
+                return {'total_count': 1, 'workflow_runs': [{'id': 78, 'workflow_id': 90,
+                    'path': '.github/workflows/factory-deploy.yml', 'event': 'workflow_run',
+                    'head_branch': 'main', 'head_sha': TARGET, 'status': 'completed',
+                    'repository': {'full_name': auto.REPO}, 'head_repository': {'full_name': auto.REPO}}]}
+            return original_api(path)
+        def request(*values, **kwargs):
+            if values[:3] == ('gh', 'api', '--method'):
+                # A synchronous callback attempts the real same nonblocking locks.
+                self.assertEqual(self.call('apply', preview=identifier)['phase'], 'complete')
+                return ''
+            return command(*values, **kwargs)
+        with patch.object(auto, 'api', side_effect=api), patch.object(auto, 'command', side_effect=request), \
+             patch.object(auto, 'get_image', return_value=NEXT_IMAGE), patch.object(auto, 'rollout'):
+            result = manual.run(auto, self.binding, args, self.installed)
+        self.assertEqual(result['phase'], 'complete')
+        self.assertEqual(result['current_image'], NEXT_IMAGE)
+        value = manual.private_json(self.work / 'operator-deploy' / (identifier + '.json'))
+        self.assertEqual(value['result']['image'], NEXT_IMAGE)
+
+    def test_execution_resume_holds_writer_barrier_and_consumes_receipt_once(self):
+        self.save(self.work / 'status.json', {'phase': 'complete'})
+        database = self.root / 'bridge.db'
+        with sqlite3.connect(database) as connection:
+            connection.executescript('CREATE TABLE factory_attempts(status TEXT); CREATE TABLE factory_execution_leases(released_at TEXT); CREATE TABLE bridge_jobs(state TEXT);')
+        snap = {'installation': str(self.installation), 'paused_execution': ['bridge-executor-worker']}
+        args = SimpleNamespace(action='resume', snapshot_digest=manual.digest(snap), reason='reviewed', yes=True)
+        def compose(*values, **kwargs):
+            self.assertEqual(manual.private_json(self.work / 'operator-execution' / 'receipt.json')['phase'], 'consumed')
+            with sqlite3.connect(database, timeout=0) as racing:
+                with self.assertRaises(sqlite3.OperationalError):
+                    racing.execute("INSERT INTO factory_attempts VALUES ('executing')")
+        self.install.compose = Mock(side_effect=compose)
+        with patch.object(manual, 'execution_snapshot', return_value=snap), patch.object(auto, 'healthy'), \
+             patch.object(auto, 'command', return_value=json.dumps([{'Mountpoint': str(self.root)}])):
+            result = manual.execution_run(auto, self.binding, args, self.installed, Mock())
+            self.assertEqual(result['phase'], 'complete')
+            with self.assertRaisesRegex(manual.Refusal, 'execution_requires_operator'):
+                manual.execution_run(auto, self.binding, args, self.installed, Mock())
+        self.install.compose.assert_called_once()
+
     def test_activation_exception_accepts_only_exact_reviewed_blob(self):
         name, sha = next(iter(manual.ACTIVATION_BLOBS.items()))
         target = {name: {'mode': '100644', 'type': 'blob', 'sha': sha}}
         self.assertFalse(manual.protected_changes(auto, {}, target, {})[1])
         target[name]['sha'] = TARGET
         self.assertEqual(manual.protected_changes(auto, {}, target, {})[1], [name])
+
+    def test_installed_artifact_helper_preserves_actual_executable_source_mode(self):
+        name = 'deploy/factory-artifact-runtime.py'
+        mode = format(stat.S_IFREG | stat.S_IMODE((ROOT / name).stat().st_mode), 'o')
+        target = {name: {'mode': mode, 'type': 'blob', 'sha': manual.blob(ROOT / name)}}
+        self.assertEqual(mode, '100755')
+        self.assertFalse(manual.protected_changes(auto, {}, target, {name: ROOT / name})[1])
+        target[name]['mode'] = '100644'
+        self.assertEqual(manual.protected_changes(auto, {}, target, {name: ROOT / name})[1], [name])
 
     def test_preview_no_runtime_changes_and_complete_once_lifecycle(self):
         with patch.object(auto, 'get_image') as image, patch.object(auto, 'rollout') as rollout:

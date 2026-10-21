@@ -19,9 +19,10 @@ GUARDED_BLOB = '5bc72abddaaa24343bcbe0d3fc67e2d161010c04'
 REVIEWABLE = {'factory/factory': '100755', 'deploy/CLI.md': '100644',
               '.github/workflows/hatchet-quality.yml': '100644'}
 INSTALLED_MODES = {'deploy/factory-auto-deploy.py': '100644', 'deploy/auto_deploy_artifact.py': '100644',
-                   'deploy/factory-profile-runtime.py': '100644', 'deploy/factory-artifact-runtime.py': '100644',
+                   'deploy/factory-profile-runtime.py': '100644', 'deploy/factory-artifact-runtime.py': '100755',
                    'deploy/factory_deploy_operator.py': '100644', 'deploy/factory-cli.py': '100644'}
 PHASES = {'preview', 'approved', 'consumed', 'complete', 'failed'}
+# One-release reviewed integration exceptions (PR80 and main #82/#83); no policy adoption.
 ACTIVATION_BLOBS = {
     ".github/workflows/factory-deploy.yml": "b346138c8d4c0839549c46b486e9bae53b0fe886",
     "AGENTS.md": "44a02dbeb554197edef4004766b4700cbde5f36d",
@@ -310,6 +311,13 @@ def report(value):
     return result
 
 
+def execution_flags(install):
+    effective = json.loads(install.compose('config', '--format', 'json', private=True))
+    environment = effective['services']['bridge-executor-worker'].get('environment', {})
+    return {'execution_enabled': environment.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '1',
+            'independent_reviewer_enabled': environment.get('DRIFTWARD_FACTORY_REVIEWER_ENABLED') == '1'}
+
+
 def execution_snapshot(auto, binding, config, install, installed, readiness):
     identity = current_identity(auto, install)
     check_idle(auto, install)
@@ -329,8 +337,11 @@ def execution_snapshot(auto, binding, config, install, installed, readiness):
     require(hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == GUARDED_BLOB,
             'terminal_inspection_guard_unverified')
     profile = readiness(binding, install)
+    flags = execution_flags(install)
+    require(all(flags.values()), 'execution_flags_not_enabled')
     roles = profile.get('profiles', {})
     require(profile.get('reviewer_routed') is True and profile.get('gateway_executor_profile_selected') is True
+            and profile.get('native_runtime_idle') is True
             and profile.get('executor_auth_ready') is True
             and profile.get('gateway_socket_listening') is True
             and profile.get('gateway_service', {}).get('ActiveState') == 'active'
@@ -341,10 +352,11 @@ def execution_snapshot(auto, binding, config, install, installed, readiness):
             'execution_roles_not_ready')
     return {'installation': config['installation'], 'installation_id': binding['installation_id'],
             **identity, 'guarded_blob': GUARDED_BLOB, 'configuration': digest(config),
-            'paused_execution': list(auto.paused_execution(install)), 'roles': profile,
+            'paused_execution': list(auto.paused_execution(install)), 'roles': profile, 'flags': flags,
             'host_files': {str(path): auto.sha256(path) for path in installed.values()},
             'installation_files': {name: auto.sha256(install.directory / name)
-                                   for name in ('.env', '.factory-install.json', '.factory-cutover.json')}}
+                                   for name in ('.env', '.factory-install.json', '.factory-cutover.json')},
+            'environment_files': {path.name: auto.sha256(path) for path in sorted((install.directory / 'env').glob('*.env'))}}
 
 
 def execution_run(auto, binding, args, installed, readiness):
@@ -355,6 +367,7 @@ def execution_run(auto, binding, args, installed, readiness):
         if args.action == 'status':
             result = {'installation': config['installation'], **current_identity(auto, install),
                       'paused_execution': list(auto.paused_execution(install)), 'phase': 'unknown',
+                      **execution_flags(install),
                       'next_command': 'factory execution preview --json'}
             if exists(directory / 'receipt.json'):
                 private_directory(directory)
@@ -368,6 +381,7 @@ def execution_run(auto, binding, args, installed, readiness):
         if args.action == 'preview':
             require(not args.yes and args.reason is None and args.snapshot_digest is None, 'unexpected_execution_approval')
             return {'snapshot_digest': identifier, 'installation': config['installation'], **current_identity(auto, install),
+                    **snap['flags'],
                     'paused_execution': snap['paused_execution'], 'guarded_blob': GUARDED_BLOB,
                     'next_command': 'factory execution resume --snapshot-digest ' + identifier + ' --reason "Reviewed execution activation" --yes --json'}
         require(args.yes and args.snapshot_digest == identifier and isinstance(args.reason, str)
@@ -379,7 +393,9 @@ def execution_run(auto, binding, args, installed, readiness):
         private_directory(directory)
         path = directory / 'receipt.json'
         if exists(path):
-            require(private_json(path).get('phase') == 'complete', 'execution_requires_operator')
+            previous = private_json(path)
+            require(previous.get('phase') == 'complete' and previous.get('snapshot_digest') != identifier,
+                    'execution_requires_operator')
         receipt = {'phase': 'consumed', 'snapshot_digest': identifier, 'snapshot': snap,
                    'reason': args.reason, 'uid': os.geteuid()}
         write(auto, path, receipt)
@@ -424,16 +440,27 @@ def queue_deployment(auto, value, path):
     deploy_run = matches[0]['id']
     value['dispatch'] = {'phase': 'requested', 'deploy_run_id': deploy_run}
     write(auto, path, value)
+    return {**report(value), '_dispatch_required': True}
+
+
+def dispatch_request(auto, binding, requested):
+    deploy_run = requested['deploy_run_id']
+    failed = False
     try:
         auto.command('gh', 'api', '--method', 'POST', f'repos/{auto.REPO}/actions/runs/{deploy_run}/rerun')
     except Exception:
-        value['dispatch']['phase'] = 'unknown'
-        write(auto, path, value)
-        raise Refusal('deployment_dispatch_outcome_unknown') from None
-    value['dispatch']['phase'] = 'queued'
-    write(auto, path, value)
-    return {**report(value), 'dispatch_phase': 'queued', 'deploy_run_id': deploy_run,
-            'next_command': 'factory deploy status --json'}
+        failed = True
+    # Network dispatch holds no installation locks: a fast callback can consume
+    # approval before GitHub's rerun request returns. Re-read; never overwrite it.
+    with locked(auto, binding) as (config, _, _):
+        directory = records_directory(config, create=False)
+        value = read_preview(auto, directory, requested['preview'])
+        require(value.get('dispatch', {}).get('deploy_run_id') == deploy_run, 'deployment_dispatch_changed')
+        value['dispatch']['phase'] = 'unknown' if failed else 'queued'
+        write(auto, directory / (requested['preview'] + '.json'), value)
+        if failed and value['phase'] == 'approved':
+            raise Refusal('deployment_dispatch_outcome_unknown') from None
+        return report(value)
 
 
 def forced_deployment(auto, run_id, commit, credentials):
@@ -468,6 +495,13 @@ def forced_deployment(auto, run_id, commit, credentials):
 
 
 def run(auto, binding, args, installed, *, credentials=None):
+    result = run_locked(auto, binding, args, installed, credentials=credentials)
+    if result.pop('_dispatch_required', False):
+        return dispatch_request(auto, binding, result)
+    return result
+
+
+def run_locked(auto, binding, args, installed, *, credentials=None):
     os.umask(0o077)
     require(os.geteuid() == 0, 'root_required')
     with locked(auto, binding) as (config, prod, install):

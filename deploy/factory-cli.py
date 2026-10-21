@@ -95,7 +95,9 @@ def profile_readiness(binding, install):
     helper = checked_hermes_wrapper(binding.get('profile_runtime'))
     wrapper = checked_hermes_wrapper(binding.get('hermes_wrapper'))
     backend = installed_module('factory_execution_profiles', helper)
-    return backend.dispatch(install, binding, wrapper, ['status'])
+    result = backend.dispatch(install, binding, wrapper, ['status'])
+    result['native_runtime_idle'] = backend.run_native(wrapper, 'idle', {}).get('idle') is True
+    return result
 
 
 def deploy_dispatch(binding, args, *, execution=False):
@@ -440,7 +442,8 @@ def main():
         if len(sys.argv) > 1 and sys.argv[1] == 'execution':
             execution_parser(sys.argv[2:])
         if sys.argv[1:] in ([], ['help'], ['-h'], ['--help']):
-            print('factory status | profiles | artifacts | deploy status|preview|approve|apply (factory deploy --help)')
+            print('factory status | profiles | artifacts | deploy status|preview|approve|apply (factory deploy --help)\n'
+                  'factory execution status|preview|resume (factory execution --help)')
             return 0
         if os.geteuid() != 0:
             raise ValueError('canonical Factory CLI requires root')
