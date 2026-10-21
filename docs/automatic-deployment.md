@@ -3,10 +3,13 @@
 `Hatchet Quality` pushes the exact Docker image it tested to the **private** GHCR
 package `ghcr.io/driftward-llc/factory-production`, only for same-repository pushes
 to `main` after its validation gates. The separate release workflow's package is
-unchanged. CI refuses an existing public, internal, unlinked or unverifiable
-production package; a missing package is created with GHCR's private default and
-its visibility/repository link is checked again after publication. No visibility
-settings are changed. `Factory Deploy` runs after that **entire** workflow succeeds (including
+unchanged. CI requires the production package to be a private container with the
+expected name, and refuses supplied foreign owner/repository identities or an
+unverifiable response. A missing package is created with GHCR's private default;
+the same checks run again after publication. Omitted/null owner and repository
+fields are accepted with the workflow/image provenance checks described below,
+and do not prove repository linkage. No visibility settings are changed.
+`Factory Deploy` runs after that **entire** workflow succeeds (including
 browser checks). It requests an image-only rollout through a deployment-only SSH
 account. No general-purpose GitHub runner, application credentials, or Docker
 socket is added to Factory containers. Hermes stays running and is not the
