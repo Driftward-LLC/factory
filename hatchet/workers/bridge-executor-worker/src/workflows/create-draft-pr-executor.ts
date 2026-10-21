@@ -92,6 +92,11 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
       return { executed: false, blockedReason, job, dryRun: Boolean(job.payload.dry_run), reused: true };
     }
 
+    // Inspection jobs also expire into failed: a queued event cannot revive them.
+    if (job.state === 'failed') {
+      return { executed: false, blockedReason: job.reason_code || 'already_failed', job, dryRun: Boolean(job.payload.dry_run) };
+    }
+
     if (job.requested_action === 'inspect_draft_pr_state') {
       if (job.state === 'completed') {
         return { executed: false, blockedReason: 'inspection_already_completed', job, dryRun: false, reused: true };
@@ -136,15 +141,6 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
         blockedReason: job.state === 'ready_for_human_review' ? 'already_verified_ready' : 'already_completed',
         job,
         prUrl: job.pr_url || undefined,
-        dryRun: Boolean(job.payload.dry_run)
-      };
-    }
-
-    if (job.state === 'failed') {
-      return {
-        executed: false,
-        blockedReason: job.reason_code || 'already_failed',
-        job,
         dryRun: Boolean(job.payload.dry_run)
       };
     }

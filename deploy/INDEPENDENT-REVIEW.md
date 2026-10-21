@@ -99,6 +99,20 @@ Hermes container image ID. An upgrade requires reviewing the adapter, rerunning
 its synthetic probe and repeating the real canary. Unexpected tools/API fail
 closed.
 
+Named-profile activation binds the gateway's trusted
+`DRIFTWARD_HERMES_PROFILE=factory-executor` environment and the provisioning
+`auth_root` to `/opt/data/profiles/factory-independent-reviewer` while execution
+is drained. The executor wrapper and runtime metadata probes select the same
+profile. An unset executor profile and omitted reviewer `auth_root` preserve
+the legacy paths. No other executor profile or reviewer auth root is accepted.
+The reviewer named root holds its separate sign-in; every review still creates
+a fresh child profile with empty secret scope and disabled generic plugins.
+Launch and independent cleanup carry the same auth root. Existing root/parent
+symlinks are refused. The reviewed activation moves the existing separate
+reviewer sign-in into the named root; it does not adopt a generator login.
+Reviewer traces add `factory.profile=factory-independent-reviewer` only when
+that named auth root is selected, preserving the existing review trace identity.
+
 Activation remains a separate reviewed operator change. Root-owned mode-0600
 `/etc/driftward/factory-reviewer.json` must contain:
 

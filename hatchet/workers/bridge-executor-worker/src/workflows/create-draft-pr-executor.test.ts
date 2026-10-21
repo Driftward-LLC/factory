@@ -71,6 +71,20 @@ for (const taskName of ['execute-create-draft-pr', 'await-hermes-receipt']) {
 
 type Handler = (input: { jobId: string; verificationAttemptId?: string }) => Promise<{ executed: boolean; blockedReason?: string; job?: BridgeJob }>;
 
+test('failed inspection cannot invoke a provider from an already queued event', async () => {
+  const fixture = executorFixture('accepted');
+  fixture.job.state = 'failed';
+  fixture.job.requested_action = 'inspect_draft_pr_state';
+  fixture.job.reason_code = 'inspection_capability_expired';
+  fixture.job.payload = { dry_run: false, inspection: { repository: 'example/repo', number: 1 },
+    inspection_request_key: 'expired', inspection_capability: 'expired-capability' };
+  // The fixture provides no inspection provider: reaching that call fails.
+  const result = await fixture.tasks.get('execute-create-draft-pr')!({ jobId: fixture.job.job_id });
+  assert.equal(result.executed, false);
+  assert.equal(result.blockedReason, 'inspection_capability_expired');
+  assert.deepEqual(fixture.acquired, []);
+});
+
 test('running authorized and canceled invocations route only to receipt recovery', async () => {
   for (const status of ['effect_authorized', 'effect_outcome_unknown', 'cancellation_requested']) {
     const fixture = executorFixture(status);

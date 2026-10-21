@@ -17,6 +17,176 @@ spec.loader.exec_module(cli)
 
 
 class CanonicalCliTests(unittest.TestCase):
+    def test_hermes_wrapper_rejects_unprotected_paths(self):
+        for value in (None, 42, 'relative/path'):
+            with self.assertRaises(ValueError):
+                cli.checked_hermes_wrapper(value)
+        directory = 0o040755
+        regular = 0o100755
+        for bad in (SimpleNamespace(st_mode=0o120777, st_uid=0),
+                    SimpleNamespace(st_mode=0o100775, st_uid=0),
+                    SimpleNamespace(st_mode=regular, st_uid=1000)):
+            def metadata(path):
+                return bad if path == Path('/usr/local/bin/hermes-fixture') else SimpleNamespace(st_mode=directory, st_uid=0)
+            with patch.object(Path, 'lstat', autospec=True, side_effect=metadata), \
+                 patch.object(cli.os, 'access', return_value=True):
+                with self.assertRaises(ValueError):
+                    cli.checked_hermes_wrapper('/usr/local/bin/hermes-fixture')
+        def protected(path):
+            return SimpleNamespace(st_mode=regular if path.name == 'hermes-fixture' else directory, st_uid=0)
+        with patch.object(Path, 'lstat', autospec=True, side_effect=protected), \
+             patch.object(cli.os, 'access', return_value=True):
+            self.assertEqual(cli.checked_hermes_wrapper('/usr/local/bin/hermes-fixture'), Path('/usr/local/bin/hermes-fixture'))
+        with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=0o040777, st_uid=0)):
+            with self.assertRaises(ValueError):
+                cli.checked_hermes_wrapper('/usr/local/bin/hermes-fixture')
+
+    def test_profile_subprocess_has_fixed_environment_timeout_and_private_output(self):
+        with patch.dict(cli.os.environ, {'DRIFTWARD_HERMES_ROOT': '/wrong', 'HERMES_HOME': '/wrong', 'COMPOSE_FILE': '/wrong'}), \
+             patch.object(cli.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(self.profile_result(False)))) as run:
+            cli.hermes_profiles(Path('/usr/local/bin/hermes-fixture'), False)
+        self.assertEqual(run.call_args.args[0], ['/usr/local/bin/hermes-fixture', 'shell', '-c', 'exec python3 -'])
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs['timeout'], 60)
+        self.assertTrue(kwargs['capture_output'])
+        self.assertTrue(kwargs['check'])
+        for name in ('DRIFTWARD_HERMES_ROOT', 'HERMES_HOME', 'COMPOSE_FILE'):
+            self.assertNotIn(name, kwargs['env'])
+
+    @staticmethod
+    def profile_result(create, existing=()):
+        return {'profiles': [{'name': name, 'existed': name in existing,
+                             'created': create and name not in existing, 'present': create or name in existing}
+                            for name in cli.PROFILES], 'active_profile': 'default',
+                'routing': 'unchanged', 'credentials': 'not_provisioned_by_factory'}
+
+    def test_native_profile_creation_and_idempotence(self):
+        # Execute the exact stdin script with a fake native module, covering
+        # creation and repeated calls without a Docker runtime or credentials.
+        import types
+        names = {'default'}
+        creations = []
+        module = types.ModuleType('hermes_cli.profiles')
+        module._get_profiles_root = lambda: Path(tempfile.gettempdir())
+        module.list_profile_names = lambda: sorted(names)
+        module.get_active_profile_name = lambda: 'default'
+        def create_profile(name, **kwargs):
+            self.assertEqual(kwargs, {'no_alias': True, 'no_skills': True, 'description': cli.PROFILES[name]})
+            creations.append(name)
+            names.add(name)
+            print('native output must be suppressed')
+        module.create_profile = create_profile
+        module.launch_model_seed = lambda value: value
+        config = types.ModuleType('hermes_cli.config')
+        config.read_user_config_raw = lambda source: {'model': {'default': 'configured-model'}}
+        constants = types.ModuleType('hermes_constants')
+        constants.get_hermes_home = lambda: Path(tempfile.gettempdir()) / 'absent-fixture-profile'
+        def run(args, **kwargs):
+            import contextlib
+            import io
+            output = io.StringIO()
+            with patch.dict(sys.modules, {'hermes_cli.profiles': module, 'hermes_cli.config': config,
+                                         'hermes_constants': constants}), contextlib.redirect_stdout(output):
+                exec(kwargs['input'], {})
+            return SimpleNamespace(stdout=output.getvalue())
+        with patch.object(cli.subprocess, 'run', side_effect=run):
+            status = cli.hermes_profiles(Path('/fixture'), False)
+            self.assertTrue(all(not row['present'] for row in status['profiles']))
+            first = cli.hermes_profiles(Path('/fixture'), True)
+            self.assertTrue(all(row['created'] for row in first['profiles']))
+            again = cli.hermes_profiles(Path('/fixture'), True)
+            self.assertTrue(all(row['existed'] and not row['created'] for row in again['profiles']))
+        self.assertEqual(creations, list(cli.PROFILES))
+
+    def test_native_creation_failure_is_not_reported_as_success(self):
+        import contextlib
+        import io
+        import types
+        module = types.ModuleType('hermes_cli.profiles')
+        module._get_profiles_root = lambda: Path(tempfile.gettempdir())
+        module.list_profile_names = lambda: ['default']
+        module.get_active_profile_name = lambda: 'default'
+        def fail(*args, **kwargs):
+            raise RuntimeError('native creation failed')
+        module.create_profile = fail
+        module.launch_model_seed = lambda value: value
+        config = types.ModuleType('hermes_cli.config')
+        config.read_user_config_raw = lambda source: {}
+        constants = types.ModuleType('hermes_constants')
+        constants.get_hermes_home = lambda: Path(tempfile.gettempdir()) / 'absent-fixture-profile'
+        def run(args, **kwargs):
+            with patch.dict(sys.modules, {'hermes_cli.profiles': module, 'hermes_cli.config': config,
+                                         'hermes_constants': constants}), contextlib.redirect_stdout(io.StringIO()):
+                exec(kwargs['input'], {})
+        with patch.object(cli.subprocess, 'run', side_effect=run), self.assertRaises(RuntimeError):
+            cli.hermes_profiles(Path('/fixture'), True)
+
+    def test_native_seed_inline_credentials_refuse_before_any_creation(self):
+        import contextlib
+        import io
+        import types
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'config.yaml').write_text('fixture')
+            names = {'default'}
+            module = types.ModuleType('hermes_cli.profiles')
+            module._get_profiles_root = lambda: root
+            module.list_profile_names = lambda: sorted(names)
+            module.get_active_profile_name = lambda: 'default'
+            module.create_profile = unittest.mock.Mock()
+            module.launch_model_seed = lambda value: value
+            config = types.ModuleType('hermes_cli.config')
+            constants = types.ModuleType('hermes_constants')
+            constants.get_hermes_home = lambda: root
+            def run(args, **kwargs):
+                output = io.StringIO()
+                with patch.dict(sys.modules, {'hermes_cli.profiles': module, 'hermes_cli.config': config,
+                                             'hermes_constants': constants}), contextlib.redirect_stdout(output):
+                    exec(kwargs['input'], {})
+                return SimpleNamespace(stdout=output.getvalue())
+            with patch.object(cli.subprocess, 'run', side_effect=run):
+                for key in ('api_key', 'API-Key', 'apiKey', 'Token', 'access_token', 'refresh-token',
+                            'password', 'CLIENT_SECRET', 'Authorization'):
+                    with self.subTest(key=key):
+                        config.read_user_config_raw = lambda source: {'providers': {'selected': {'headers': {key: 'private-fixture'}}}}
+                        with self.assertRaisesRegex(RuntimeError, 'inline credentials') as error:
+                            cli.hermes_profiles(Path('/fixture'), True)
+                        self.assertNotIn('private-fixture', str(error.exception))
+                        module.create_profile.assert_not_called()
+                config.read_user_config_raw = lambda source: {'model': {'default': 'configured-model'},
+                                                              'providers': {'selected': {'api_key': ''}}}
+                module.create_profile.side_effect = lambda name, **kwargs: names.add(name)
+                created = cli.hermes_profiles(Path('/fixture'), True)
+                self.assertTrue(all(row['created'] for row in created['profiles']))
+                self.assertEqual(module.create_profile.call_count, 2)
+                config.read_user_config_raw = unittest.mock.Mock(side_effect=AssertionError('must not inspect config'))
+                cli.hermes_profiles(Path('/fixture'), False)
+                names.update(cli.PROFILES)
+                cli.hermes_profiles(Path('/fixture'), True)
+                config.read_user_config_raw.assert_not_called()
+
+    def test_profile_errors_never_relay_native_output(self):
+        for error in (subprocess.TimeoutExpired(['fixture'], 60, output='secret', stderr='secret'),
+                      subprocess.CalledProcessError(1, ['fixture'], output='secret', stderr='secret')):
+            import io
+            output = io.StringIO()
+            with patch.object(cli.os, 'geteuid', return_value=0), \
+                 patch.object(cli, 'checked_config', return_value={}), \
+                 patch.object(cli, 'dispatch', side_effect=error), patch.object(cli.sys, 'stderr', output):
+                self.assertEqual(cli.main(), 1)
+            self.assertNotIn('secret', output.getvalue())
+
+    def test_profile_dispatch_keeps_fixed_scope(self):
+        with patch.object(cli, 'installation', return_value=SimpleNamespace()), \
+             patch.object(cli, 'checked_hermes_wrapper', return_value=Path('/fixture')), \
+             patch.object(cli, 'hermes_profiles', return_value=self.profile_result(True)) as profiles, \
+             patch('builtins.print'):
+            self.assertEqual(cli.dispatch_bound({}, ['profiles', 'create']), 0)
+            profiles.assert_called_once_with(Path('/fixture'), True)
+            for args in (['profiles'], ['profiles', 'create', 'other'], ['profiles', 'delete']):
+                with self.assertRaises(ValueError):
+                    cli.dispatch_bound({}, args)
+
     @unittest.skipUnless(os.geteuid() == 0, 'real Bash operator transport requires root')
     def test_operator_round_trip_uses_private_parsed_credentials_and_cleans_up(self):
         root = Path(__file__).resolve().parents[1]

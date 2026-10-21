@@ -1,5 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+
+test('executor profile selects native command and metadata runtime consistently', () => {
+  const previous = process.env.DRIFTWARD_HERMES_PROFILE;
+  try {
+    delete process.env.DRIFTWARD_HERMES_PROFILE;
+    assert.deepEqual(hermesProfileArguments(), []);
+    process.env.DRIFTWARD_HERMES_PROFILE = 'factory-executor';
+    assert.deepEqual(hermesProfileArguments(), ['--profile', 'factory-executor', '--skills',
+      'driftward-engineering:implement-change,driftward-engineering:verify-app,driftward-engineering:prepare-pr']);
+    const previousUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '1000:1000';
+    try {
+      assert.deepEqual(hermesRuntimeDockerArgs(['python3', '-c', 'pass']).slice(-5),
+        ['env', 'HERMES_HOME=/opt/data/profiles/factory-executor', 'python3', '-c', 'pass']);
+    } finally {
+      if (previousUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+      else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousUser;
+    }
+    process.env.DRIFTWARD_HERMES_PROFILE = '../default';
+    assert.throws(hermesProfileArguments, /factory-executor/);
+  } finally {
+    if (previous === undefined) delete process.env.DRIFTWARD_HERMES_PROFILE;
+    else process.env.DRIFTWARD_HERMES_PROFILE = previous;
+  }
+});
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -7,6 +32,8 @@ import path from 'node:path';
 import type { BridgeClient, BridgeJob } from '@driftward/hatchet-worker-shared';
 import {
   buildPrompt,
+  hermesProfileArguments,
+  hermesRuntimeDockerArgs,
   boundedHermesDraftPrReceipt,
   classifyHermesCommandFailure,
   DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES,
