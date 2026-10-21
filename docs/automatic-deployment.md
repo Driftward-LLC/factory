@@ -3,10 +3,13 @@
 `Hatchet Quality` pushes the exact Docker image it tested to the **private** GHCR
 package `ghcr.io/driftward-llc/factory-production`, only for same-repository pushes
 to `main` after its validation gates. The separate release workflow's package is
-unchanged. CI refuses an existing public, internal, unlinked or unverifiable
-production package; a missing package is created with GHCR's private default and
-its visibility/repository link is checked again after publication. No visibility
-settings are changed. `Factory Deploy` runs after that **entire** workflow succeeds (including
+unchanged. CI requires the production package to be a private container with the
+expected name, and refuses supplied foreign owner/repository identities or an
+unverifiable response. A missing package is created with GHCR's private default;
+the same checks run again after publication. Omitted/null owner and repository
+fields are accepted with the workflow/image provenance checks described below,
+and do not prove repository linkage. No visibility settings are changed.
+`Factory Deploy` runs after that **entire** workflow succeeds (including
 browser checks). It requests an image-only rollout through a deployment-only SSH
 account. No general-purpose GitHub runner, application credentials, or Docker
 socket is added to Factory containers. Hermes stays running and is not the
@@ -43,6 +46,18 @@ credential-helper autodetection; no login command or host keychain is used.
 The host removes that configuration before rollout (including on pull failure). The token never enters
 arguments, logs, application configuration or worker environments. Host `gh`
 authorization for source/Actions reads remains separate; it needs no package scope.
+
+Publication verifies the fixed organization/package REST endpoint reports a
+private container with the expected name. GitHub's REST package schema permits
+`repository` and `owner` to be omitted or null; when supplied, their identities
+must match. An absent repository field does not prove repository linkage.
+Provenance instead also relies on the canonical main-push workflow using its
+repository-scoped `github.token`, the tested image's OCI source/revision labels,
+and the pushed manifest's config digest matching that image. Local environment
+variables alone do not authenticate a publisher. Internal same-repository PRs
+run the same package check with their workflow token through the read-only
+`--verify-package` command; it never publishes an image or deployment metadata.
+Diagnostics report only fixed verification results and optional-field presence.
 
 ## What runs automatically
 
@@ -142,7 +157,7 @@ reviewed helper/shared policy together, validate the ephemeral credential path
 through the forced command and sudo, confirm Docker supports `image push
 --platform` in CI and private digest pulls on the host, and approve the new
 protected-tree baseline against the actual installed runtime. Verify the new
-package is private, linked to this repository, and readable by its deployment
+package is private, has the expected identity/provenance described above, and is readable by its deployment
 workflow token without changing the host's existing credentials. Keep any
 operator execution hold in effect; this change does not authorize a live rollout.
 
