@@ -80,14 +80,27 @@ the targeted tests named in `AGENTS.md` before release.
 
 Hatchet Quality cancels superseded runs only for the same pull request. Every
 main push keeps a unique run group so validation and image publication finish.
-Both jobs cache npm and pip package downloads using their lockfiles and bridge
-requirements; dependency installation and all checks still run on every job.
+Cheap whitespace and redacted secret checks run first. Code and browser/UI checks
+then run in parallel. Required evidence publication must confirm successful
+catalog and screenshot uploads before release readiness builds and rehearses the
+exact image (fresh install, restart, restore and stopped-state cutover). Upload
+failures leave a separate red evidence result even when browser assertions pass;
+all five gates must succeed for automatic deployment. The evidence job's summary
+shows browser and upload results; the named jobs show code and release results.
+Code and browser jobs cache npm and pip package downloads using their lockfiles
+and bridge requirements; dependency installation and all checks still run on every job.
 The caches exclude installed dependencies, browser binaries, and build outputs.
 
 Hatchet Quality retains routine UI evidence (`driftward-ui-storybook` and
 `factory-console-fixtures`) for seven days. Production image metadata
 (`factory-production-<commit>`) are separate deployment artifacts with their own
 existing seven-day retention; GitHub release assets are separate again.
+Uploads remain mandatory. A storage quota failure still blocks the workflow and
+release readiness. Retry **all jobs**, rather than only failed jobs, so published
+production metadata binds to the current run attempt. Workflow changes remain
+subject to the host's protected compatibility baseline; this CI change does not
+update that baseline. The manual release workflow keeps its existing safeguards
+and serialized execution.
 
 Changing workflow retention affects only newly uploaded artifacts. Cleanup of
 existing artifacts is a manual, audited operation against an explicit allowlist
