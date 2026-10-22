@@ -76,10 +76,16 @@ HATCHET_POSTGRES_PASSWORD=ci-postgres-password \
 For changes touching bridge, ingress, lifecycle writer, or worker behavior, run
 the targeted tests named in `AGENTS.md` before release.
 
-## CI artifact retention
+## CI efficiency and artifact retention
+
+Hatchet Quality cancels superseded runs only for the same pull request. Every
+main push keeps a unique run group so validation and image publication finish.
+Both jobs cache npm and pip package downloads using their lockfiles and bridge
+requirements; dependency installation and all checks still run on every job.
+The caches exclude installed dependencies, browser binaries, and build outputs.
 
 Hatchet Quality retains routine UI evidence (`driftward-ui-storybook` and
-`factory-console-fixtures`) for seven days. Production image bundles
+`factory-console-fixtures`) for seven days. Production image metadata
 (`factory-production-<commit>`) are separate deployment artifacts with their own
 existing seven-day retention; GitHub release assets are separate again.
 
