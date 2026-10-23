@@ -156,6 +156,7 @@ def deploy_dispatch(binding, args, *, execution=False):
     else:
         for label, key in (('Installation', 'installation'), ('Phase', 'phase'), ('Deployment enabled', 'enabled'),
                            ('Rollout phase', 'rollout_phase'),
+                           ('Configured compatibility baseline', 'configured_compatibility'),
                            ('Blocked reason', 'blocked_reason'), ('Current image', 'current_image'),
                            ('Target commit', 'target_commit'), ('CI run', 'run_id'), ('Preview', 'preview'),
                            ('Artifact digest', 'artifact_digest'),

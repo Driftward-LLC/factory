@@ -748,6 +748,7 @@ def run_locked(auto, binding, args, installed, *, credentials=None):
                 result = {'phase': phase or 'idle', 'installation': config['installation'], 'enabled': config['enabled'],
                           **current_identity(auto, install), 'next_command': 'factory deploy preview --run RUN_ID'}
             result['rollout_phase'] = phase
+            result['configured_compatibility'] = config['compatibility']
             automatic_blocked = phase not in {None, 'complete', 'blocked'}
             requires_recovery = automatic_blocked
             try:

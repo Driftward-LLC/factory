@@ -747,6 +747,7 @@ class AuditedDeploymentTests(unittest.TestCase):
         self.assertEqual(result['historical_manual_deployment']['run_id'], 34)
         self.assertNotIn('artifact_id', result)
         self.assertEqual(result['current_deployment']['commit'], 'f' * 40)
+        self.assertEqual(result['configured_compatibility'], self.config['compatibility'])
         for change, reason in (({'commit': TARGET}, 'identity_differs'), ({'image': NEXT_IMAGE}, 'identity_differs'),
                                ({'run_id': True}, 'invalid_deployment_status'), ({'image': 'invalid'}, 'invalid_deployment_status')):
             self.save(self.work / 'status.json', {'phase': 'complete', 'image': IMAGE, 'commit': 'f' * 40, 'run_id': 99, **change})
