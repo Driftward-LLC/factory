@@ -56,7 +56,8 @@ class DeploymentTests(unittest.TestCase):
         auto.validate_run(run, workflow, 34, COMMIT)
         for key, value in [('id', 35), ('workflow_id', 13), ('path', 'another.yml'), ('event', 'pull_request'),
                            ('event', 'workflow_dispatch'), ('head_branch', 'feature'), ('head_sha', 'c' * 40),
-                           ('status', 'in_progress'), ('conclusion', 'failure'),
+                           ('status', 'in_progress'), ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+                           ('conclusion', 'skipped'), ('conclusion', 'neutral'), ('conclusion', 'timed_out'),
                            ('repository', {'full_name': 'foreign/repo'}), ('head_repository', {'full_name': 'fork/repo'})]:
             with self.subTest(key=key, value=value), self.assertRaises(auto.Refusal):
                 auto.validate_run({**run, key: value}, workflow, 34, COMMIT)

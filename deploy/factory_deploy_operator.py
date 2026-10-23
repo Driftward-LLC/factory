@@ -704,6 +704,30 @@ def run(auto, binding, args, installed, *, credentials=None):
     return result
 
 
+def reconcile_rollout_status(auto, config, result, latest_value):
+    receipt = private_json(Path(config['work_directory']) / 'status.json')
+    require(receipt.get('phase') == 'complete'
+            and re.fullmatch(auto.SHA, str(receipt.get('commit')))
+            and re.fullmatch('sha256:' + auto.DIGEST, str(receipt.get('image')))
+            and type(receipt.get('run_id')) is int and 0 < receipt['run_id'] < 10**20,
+            'invalid_deployment_status')
+    require((receipt['image'], receipt['commit']) == (result['current_image'], result['current_commit']),
+            'deployment_status_identity_differs')
+    result['current_deployment'] = {key: receipt[key] for key in ('image', 'commit', 'run_id')}
+    if latest_value and latest_value['phase'] != 'complete':
+        return
+    if latest_value and (latest_value['snapshot']['commit'], latest_value['snapshot']['run_id']) == (receipt['commit'], receipt['run_id']):
+        return
+    # The latest pointer tracks manual approval history, not subsequent automatic releases.
+    if latest_value:
+        result['historical_manual_deployment'] = report(latest_value)
+    for key in ('preview', 'run_attempt', 'artifact_id', 'artifact_digest', 'protected_changes', 'blocked_paths',
+                'restart_impact', 'baseline_adoption', 'dispatch_phase', 'deploy_run_id', 'previous_image', 'previous_commit'):
+        result.pop(key, None)
+    result.update(phase='complete', target_commit=receipt['commit'], run_id=receipt['run_id'],
+                  eligible=False, next_command='factory deploy status --json')
+
+
 def run_locked(auto, binding, args, installed, *, credentials=None):
     os.umask(0o077)
     require(os.geteuid() == 0, 'root_required')
@@ -738,6 +762,8 @@ def run_locked(auto, binding, args, installed, *, credentials=None):
                               blocked_reason='prior_deployment_requires_operator', eligible=False,
                               next_command='factory deploy status',
                               next_step='Preserve the cold backup and audit records for an explicit recovery review.')
+            elif phase == 'complete':
+                reconcile_rollout_status(auto, config, result, latest_value)
             return result
         require(config['enabled'], 'automatic_deployment_disabled')
         require(not latest_value or latest_value['phase'] not in {'consumed', 'failed'},

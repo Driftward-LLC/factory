@@ -233,8 +233,14 @@ class AuditedDeploymentTests(unittest.TestCase):
 
     def test_baseline_canonical_cli_plain_and_json_preview_and_apply(self):
         self.baseline_fixture()
+        self.binding.update(profile_runtime=str(ROOT / 'deploy/factory-profile-runtime.py'),
+                            artifact_runtime=str(ROOT / 'deploy/factory-artifact-runtime.py'))
         modules = {'auto_deploy_artifact': policy, 'factory_cli_auto_deploy': auto, 'factory_cli_deploy_operator': manual}
-        with patch.object(cli, 'trusted_file'), patch.object(cli, 'installed_module', side_effect=lambda name, _: modules[name]):
+        with patch.object(cli, 'trusted_file'), patch.object(cli, 'checked_hermes_wrapper', side_effect=Path), \
+             patch.object(cli, 'installed_module', side_effect=lambda name, _: modules[name]), \
+             patch.object(cli, 'DEPLOY_HELPER', ROOT / 'deploy/factory-auto-deploy.py'), \
+             patch.object(cli, 'DEPLOY_POLICY', ROOT / 'deploy/auto_deploy_artifact.py'), \
+             patch.object(cli, 'DEPLOY_OPERATOR', ROOT / 'deploy/factory_deploy_operator.py'):
             for machine in (False, True):
                 output = io.StringIO()
                 with redirect_stdout(output):
@@ -726,6 +732,26 @@ class AuditedDeploymentTests(unittest.TestCase):
         status = self.call('status')
         self.assertEqual(status['phase'], 'blocked')
         self.assertIn('recovery review', status['next_step'])
+
+    def test_status_reconciles_new_automatic_release_and_preserves_manual_history(self):
+        identifier = self.preview()
+        path = self.work / 'operator-deploy' / (identifier + '.json')
+        value = manual.private_json(path)
+        value.update(phase='complete', result={'image': NEXT_IMAGE, 'commit': TARGET})
+        self.save(path, value)
+        current = {'current_image': IMAGE, 'current_commit': 'f' * 40}
+        self.save(self.work / 'status.json', {'phase': 'complete', 'image': IMAGE, 'commit': 'f' * 40, 'run_id': 99})
+        with patch.object(manual, 'current_identity', return_value=current):
+            result = self.call('status')
+        self.assertEqual((result['phase'], result['target_commit'], result['run_id']), ('complete', 'f' * 40, 99))
+        self.assertEqual(result['historical_manual_deployment']['run_id'], 34)
+        self.assertNotIn('artifact_id', result)
+        self.assertEqual(result['current_deployment']['commit'], 'f' * 40)
+        for change, reason in (({'commit': TARGET}, 'identity_differs'), ({'image': NEXT_IMAGE}, 'identity_differs'),
+                               ({'run_id': True}, 'invalid_deployment_status'), ({'image': 'invalid'}, 'invalid_deployment_status')):
+            self.save(self.work / 'status.json', {'phase': 'complete', 'image': IMAGE, 'commit': 'f' * 40, 'run_id': 99, **change})
+            with self.subTest(change=change), patch.object(manual, 'current_identity', return_value=current), self.assertRaisesRegex(manual.Refusal, reason):
+                self.call('status')
 
     def test_human_status_prints_blocked_recovery_guidance_and_enabled(self):
         result = {'phase': 'blocked', 'installation': str(self.installation), 'enabled': False,
