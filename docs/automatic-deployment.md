@@ -76,8 +76,9 @@ manual-rollout fences, and read-only executor authentication readiness check
 while the release image embeds older copies. `HOST_TARGET_BLOB_PAIRS` in the
 root-installed operator pins exactly three installed/target Git blob pairs:
 `factory-auto-deploy.py` (with the opaque-token fix), `factory-cli.py`, and
-`factory-profile-runtime.py`. Both source entries must remain regular blobs
-with their expected mode. A changed installed or target blob, deletion, or
+`factory-profile-runtime.py`. The target and any existing baseline entry must be
+regular blobs with their expected mode; an absent baseline entry permits only
+the same exact reviewed installed/target pair. A changed installed or target blob, deletion, or
 mode/type change requires a separate review. These pairs do not update host
 files, adopt a compatibility baseline, or bypass the existing exact-preview
 approval, stale-snapshot checks, cold backup, or execution fences.

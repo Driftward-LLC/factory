@@ -483,17 +483,18 @@ class AuditedDeploymentTests(unittest.TestCase):
                 changes, blocked = manual.protected_changes(auto, baseline, target, installed)
                 self.assertEqual(changes, [{'path': name, 'before': before, 'after': after}])
                 self.assertEqual(blocked, [])
-                with patch.object(manual, 'blob', return_value='0' * 40):
-                    self.assertEqual(manual.protected_changes(auto, baseline, target, installed)[1], [name])
-                for key, value in [('sha', TARGET), ('mode', '100755'), ('mode', '120000'), ('type', 'tree')]:
-                    changed = {name: {**after, key: value}}
-                    self.assertEqual(manual.protected_changes(auto, baseline, changed, installed)[1], [name])
+                for origin in (baseline, {}):
+                    self.assertEqual(manual.protected_changes(auto, origin, target, installed)[1], [])
+                    with patch.object(manual, 'blob', return_value='0' * 40):
+                        self.assertEqual(manual.protected_changes(auto, origin, target, installed)[1], [name])
+                    for key, value in [('sha', TARGET), ('mode', '100755'), ('mode', '120000'), ('type', 'tree')]:
+                        changed = {name: {**after, key: value}}
+                        self.assertEqual(manual.protected_changes(auto, origin, changed, installed)[1], [name])
+                    self.assertEqual(manual.protected_changes(auto, origin, target, {})[1], [name])
+                for key, value in [('mode', '100755'), ('mode', '120000'), ('type', 'tree')]:
                     changed = {name: {**before, key: value}}
-                    if key != 'sha':
-                        self.assertEqual(manual.protected_changes(auto, changed, target, installed)[1], [name])
+                    self.assertEqual(manual.protected_changes(auto, changed, target, installed)[1], [name])
                 self.assertEqual(manual.protected_changes(auto, baseline, {}, installed)[1], [name])
-                self.assertEqual(manual.protected_changes(auto, {}, target, installed)[1], [name])
-                self.assertEqual(manual.protected_changes(auto, baseline, target, {})[1], [name])
 
     def test_installed_artifact_helper_preserves_actual_executable_source_mode(self):
         name = 'deploy/factory-artifact-runtime.py'

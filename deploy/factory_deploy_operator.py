@@ -133,8 +133,8 @@ def protected_changes(auto, baseline, target, installed):
                    and (before is None or before['type'] == 'blob' and before['mode'] == expected_mode))
         if name in installed:
             installed_blob = blob(installed[name])
-            allowed = allowed and (after['sha'] == installed_blob or before is not None
-                                  and (installed_blob, after['sha']) == HOST_TARGET_BLOB_PAIRS.get(name))
+            allowed = allowed and (after['sha'] == installed_blob
+                                  or (installed_blob, after['sha']) == HOST_TARGET_BLOB_PAIRS.get(name))
         elif name in ACTIVATION_BLOBS:
             allowed = after == {'mode': '100644', 'type': 'blob', 'sha': ACTIVATION_BLOBS[name]}
         if not allowed:
