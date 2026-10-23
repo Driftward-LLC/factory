@@ -451,7 +451,7 @@ def dispatch_bound(config, args):
               'factory artifacts status | preview|preserve|prune --before ISO [--snapshot-digest DIGEST --yes]\n'
               'factory profiles status | list | create\n'
               'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
-              'factory profiles upgrade-observer preview|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
+              'factory profiles upgrade-observer preview|apply|status [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
               'factory profiles canary github\n'
               'factory profiles recover-inspection JOB preview|status|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
               'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair [arguments]\n'

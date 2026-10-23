@@ -1063,18 +1063,61 @@ def observer_upgrade_snapshot(install, wrapper):
     return {'native': native, 'target_digest': target, 'host_inputs': observer_host_digest(install), 'services': rows}
 
 
+def observer_upgrade_status(install, wrapper, request_id):
+    receipt = install.directory / ('observer-upgrade-' + request_id + '.json')
+    if not receipt.exists() and not receipt.is_symlink():
+        return {'request_id': request_id, 'phase': 'not_started', 'stage': 'not_started',
+                'stop_errors': [], 'read_only': True}
+    checked(receipt)
+    info = receipt.stat()
+    if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 65536:
+        raise ValueError('unsafe observer upgrade receipt')
+    value = json.loads(receipt.read_text())
+    phases = {'consumed', 'complete', 'requires_operator'}
+    stages = {'dispatcher_stop', 'gateway_stop', 'observer_upgrade', 'gateway_restore',
+              'dispatcher_restore', 'restored_health'}
+    if (not isinstance(value, dict) or value.get('request_id') != request_id
+            or value.get('actor') != 'root' or not isinstance(value.get('phase'), str) or value['phase'] not in phases
+            or any(not isinstance(value.get(key), str) or not re.fullmatch(r'[0-9a-f]{64}', value[key])
+                   for key in ('snapshot_digest', 'source_digest', 'target_digest'))
+            or ('stage' in value and (not isinstance(value['stage'], str) or value['stage'] not in stages))
+            or not isinstance(value.get('stop_errors', []), list)
+            or len(value.get('stop_errors', [])) > 2
+            or any(not isinstance(error, str) or error not in {'dispatcher_stop', 'gateway_stop'} for error in value.get('stop_errors', []))):
+        raise ValueError('invalid observer upgrade receipt')
+    selected = None
+    try:
+        selected = run_native(wrapper, 'observer-snapshot', {})['links']['posthog']['digest']
+        if not isinstance(selected, str) or not re.fullmatch(r'[0-9a-f]{64}', selected):
+            selected = None
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
+        pass
+    return {'request_id': request_id, 'phase': value['phase'],
+            'stage': value.get('stage', 'complete' if value['phase'] == 'complete' else 'unknown'),
+            'stop_errors': value.get('stop_errors', []),
+            **{key: value[key] for key in ('snapshot_digest', 'source_digest', 'target_digest')},
+            'current_selected_observer_digest': selected,
+            'native_snapshot_status': 'available' if selected else 'unavailable',
+            'read_only': True}
+
+
 def observer_upgrade(install, wrapper, args):
     import argparse
     class Parser(argparse.ArgumentParser):
         def error(self, message):
             raise ValueError('invalid observer upgrade arguments')
     parser = Parser(prog='factory profiles upgrade-observer', add_help=False)
-    parser.add_argument('operation', choices=('preview', 'apply'))
+    parser.add_argument('operation', choices=('preview', 'apply', 'status'))
     parser.add_argument('--snapshot-digest')
     parser.add_argument('--reason')
     parser.add_argument('--request-id')
     parser.add_argument('--yes', action='store_true')
     options = parser.parse_args(args)
+    if options.operation == 'status':
+        if (any((options.snapshot_digest, options.reason, options.yes)) or not options.request_id
+                or str(uuid.UUID(options.request_id)) != options.request_id):
+            raise ValueError('status requires only a canonical request UUID')
+        return observer_upgrade_status(install, wrapper, options.request_id)
     if options.operation == 'preview':
         if any((options.snapshot_digest, options.reason, options.request_id, options.yes)):
             raise ValueError('preview does not accept approval arguments')

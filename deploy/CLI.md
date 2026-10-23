@@ -172,6 +172,7 @@ factory profiles upgrade-observer preview
 factory profiles upgrade-observer apply \
   --snapshot-digest DIGEST_FROM_PREVIEW \
   --reason 'Reviewed observer-only upgrade' --request-id NEW_UUID --yes
+factory profiles upgrade-observer status --request-id REQUEST_UUID
 factory profiles canary github
 ```
 
@@ -185,6 +186,12 @@ preserves role configuration, authentication, capabilities, reviewer policy and
 the paused executor. Only the previously running dispatcher and gateway restart.
 A consumed request cannot be replayed. Failure leaves stopped services stopped
 and records `requires_operator` in the private receipt; inspect it before recovery.
+Use `status --request-id` for read-only diagnosis through the canonical CLI, even
+while the gateway is stopped. It returns only the validated request and digest
+identities, recorded phase/stage, bounded stop-error names and currently selected
+observer digest. If native inspection is unavailable, the receipt summary still
+returns with `native_snapshot_status=unavailable`. Reasons, paths, exception
+messages and native stderr are not returned. Status never retries an upgrade.
 
 The GitHub canary requires the selected observer to match the installed bundle.
 It invokes only `gh --version` through the native tool dispatcher, with native

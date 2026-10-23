@@ -33,6 +33,59 @@ def plugin_archive(extra=None):
 
 
 class ProfileRuntimeTests(unittest.TestCase):
+    def test_observer_upgrade_status_is_bounded_read_only_and_accepts_stopped_gateway(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, snapshot, after, args = self.upgrade_fixture(root)
+            request_id = args[-2]
+            receipt = root / ('observer-upgrade-' + request_id + '.json')
+            value = {'phase': 'requires_operator', 'stage': 'observer_upgrade', 'request_id': request_id,
+                     'actor': 'root', 'snapshot_digest': '1' * 64, 'source_digest': '2' * 64, 'target_digest': '3' * 64,
+                     'reason': 'PRIVATE_REASON', 'stop_errors': ['gateway_stop'], 'private_path': '/SECRET_PATH'}
+            runtime.write_observer_receipt(receipt, value)
+            before = receipt.read_bytes(), receipt.stat().st_mtime_ns, set(root.iterdir())
+            native = {'links': {'posthog': {'digest': '2' * 64}}}
+            with patch.object(runtime, 'run_native', return_value=native) as run, \
+                 patch.object(runtime, 'systemctl') as ctl, patch.object(runtime, 'bridge_database') as db:
+                result = runtime.observer_upgrade(install, '/wrapper', ['status', '--request-id', request_id])
+            self.assertEqual(result['stage'], 'observer_upgrade')
+            self.assertEqual(result['current_selected_observer_digest'], '2' * 64)
+            self.assertTrue(result['read_only'])
+            self.assertNotIn('PRIVATE_', json.dumps(result))
+            self.assertNotIn('SECRET_PATH', json.dumps(result))
+            self.assertEqual(before, (receipt.read_bytes(), receipt.stat().st_mtime_ns, set(root.iterdir())))
+            run.assert_called_once_with('/wrapper', 'observer-snapshot', {})
+            self.assertFalse(install.compose.called or ctl.called or db.called)
+            with patch.object(runtime, 'run_native', side_effect=RuntimeError('SECRET_NATIVE_STDERR')):
+                result = runtime.observer_upgrade(install, '/wrapper', ['status', '--request-id', request_id])
+            self.assertEqual(result['native_snapshot_status'], 'unavailable')
+            self.assertIsNone(result['current_selected_observer_digest'])
+            self.assertNotIn('SECRET_', json.dumps(result))
+
+    def test_observer_upgrade_status_refuses_unsafe_receipt_and_approval_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, snapshot, after, args = self.upgrade_fixture(root)
+            request_id = args[-2]
+            status_args = ['status', '--request-id', request_id]
+            with patch.object(runtime, 'run_native') as native:
+                result = runtime.observer_upgrade(install, '/wrapper', status_args)
+                self.assertEqual(result['phase'], 'not_started')
+                native.assert_not_called()
+                for suffix in (['--yes'], ['--snapshot-digest', 'a' * 64], ['--reason', 'PRIVATE_REASON']):
+                    with self.assertRaises(ValueError):
+                        runtime.observer_upgrade(install, '/wrapper', status_args + suffix)
+                receipt = root / ('observer-upgrade-' + request_id + '.json')
+                receipt.write_text('{}')
+                for mode in (0o644, 0o600):
+                    receipt.chmod(mode)
+                    with self.assertRaises(ValueError):
+                        runtime.observer_upgrade(install, '/wrapper', status_args)
+                receipt.unlink()
+                receipt.symlink_to(database)
+                with self.assertRaises(ValueError):
+                    runtime.observer_upgrade(install, '/wrapper', status_args)
+
     def upgrade_fixture(self, root):
         database = root / 'bridge.db'
         with sqlite3.connect(database) as connection:
