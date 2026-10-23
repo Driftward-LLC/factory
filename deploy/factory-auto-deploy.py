@@ -346,7 +346,8 @@ def main():
             and isinstance(credentials['username'], str)
             and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?', credentials['username'])
             and isinstance(credentials['token'], str) and 1 <= len(credentials['token']) <= 4096
-            and re.fullmatch(r'[A-Za-z0-9_]+', credentials['token']), 'invalid_registry_credentials')
+            # GitHub tokens are opaque; enforce transport safety, not a token format.
+            and re.fullmatch(r'[!-~]+', credentials['token']), 'invalid_registry_credentials')
     from factory_deploy_operator import forced_deployment
     from types import SimpleNamespace
     if not forced_deployment(SimpleNamespace(**globals()), int(match[1]), match[2], credentials):
