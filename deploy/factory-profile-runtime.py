@@ -382,6 +382,144 @@ def canary(payload):
             'model_run_completed': True, 'posthog_delivery': 'requires_server_verification'}
 
 
+def observer_files(payload):
+    files = {name: base64.b64decode(data, validate=True) for name, data in payload['observer'].items()}
+    if set(files) != {'__init__.py', 'plugin.yaml'} or sum(map(len, files.values())) > LIMIT:
+        raise ValueError('observer package differs')
+    return files
+
+
+def observer_snapshot():
+    """Hash protected role state without returning credentials or configuration."""
+    protected = {}
+    for home in (ROOT, *(ROOT / 'profiles' / name for name in ROLES.values())):
+        checked(home, directory=True, owner=runtime_identity()[0] if home in (ROOT, ROOT / 'profiles' / ROLES['executor']) else os.geteuid())
+        for name in ('config.yaml', 'auth.json', '.env'):
+            path = home / name
+            no_symlinks(path)
+            if path.exists():
+                info = path.stat()
+                checked(path, owner=info.st_uid)
+                if info.st_mode & 0o022 or info.st_size > LIMIT:
+                    raise ValueError('unsafe protected role file')
+                protected[str(path)] = [hashlib.sha256(path.read_bytes()).hexdigest(), info.st_uid,
+                                        info.st_gid, stat.S_IMODE(info.st_mode), info.st_ino]
+            else:
+                protected[str(path)] = None
+    executor = ROOT / 'profiles' / ROLES['executor']
+    links = {}
+    for name, parent in (('driftward-engineering', executor / 'plugins'),
+                         ('posthog', executor / 'plugins' / 'observability')):
+        checked(parent, directory=True)
+        path = parent / name
+        if not path.is_symlink():
+            raise ValueError('managed plugin link required')
+        release = path.resolve(strict=True)
+        expected = executor / 'factory-managed' / 'releases' / ('factory-posthog' if name == 'posthog' else name)
+        if release.parent != expected or (name == 'driftward-engineering' and release.name != COMMIT):
+            raise ValueError('managed plugin release identity differs')
+        checked(release, directory=True)
+        files = {}
+        for item in release.rglob('*'):
+            checked(item, directory=item.is_dir())
+            if item.is_file():
+                if item.stat().st_size > LIMIT:
+                    raise ValueError('managed plugin file too large')
+                files[item.relative_to(release).as_posix()] = item.read_bytes()
+        digest = tree_digest(files)
+        if name == 'posthog' and (set(files) != {'__init__.py', 'plugin.yaml'} or release.name != digest):
+            raise ValueError('observer release digest differs')
+        links[name] = {'target': str(release), 'digest': digest}
+    return {'protected': recovery_digest(protected), 'links': links}
+
+
+def upgrade_observer(payload):
+    idle_runtime()
+    before = observer_snapshot()
+    if recovery_digest(before) != payload['snapshot_digest']:
+        raise ValueError('native observer snapshot changed')
+    files = observer_files(payload)
+    digest = tree_digest(files)
+    if digest == before['links']['posthog']['digest']:
+        raise ValueError('observer release is already selected')
+    executor = ROOT / 'profiles' / ROLES['executor']
+    release = immutable_release(executor / 'factory-managed' / 'releases' / 'factory-posthog', digest, files)
+    # Persist release bytes before the selected symlink can survive a restart.
+    for path in (*sorted(release.rglob('*'), key=lambda item: len(item.parts), reverse=True), release, release.parent):
+        if path.is_file():
+            with path.open('rb') as handle:
+                os.fsync(handle.fileno())
+        else:
+            sync_directory(path)
+    link = executor / 'plugins' / 'observability' / 'posthog'
+    temporary = link.parent / ('.factory-observer-' + str(uuid.uuid4()))
+    temporary.symlink_to(release, target_is_directory=True)
+    try:
+        if observer_snapshot() != before:
+            raise ValueError('native observer snapshot changed')
+        temporary.replace(link)
+        sync_directory(link.parent)
+    finally:
+        if temporary.is_symlink():
+            temporary.unlink()
+    after = observer_snapshot()
+    if after['protected'] != before['protected'] or after['links']['driftward-engineering'] != before['links']['driftward-engineering']:
+        raise ValueError('protected role state changed')
+    return after
+
+
+def github_canary(payload):
+    """One fixed local version invocation through the real native dispatcher."""
+    selected = observer_snapshot()['links']['posthog']['digest']
+    if selected != payload['observer_digest']:
+        raise ValueError('GitHub canary observer release differs')
+    from hermes_constants import set_hermes_home_override
+    set_hermes_home_override(ROOT / 'profiles' / ROLES['executor'])
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    manager.discover_and_load()
+    plugin = manager._plugins.get('observability/posthog')
+    if not plugin or not plugin.enabled or plugin.error or 'factory_github' not in plugin.tools_registered:
+        raise ValueError('native GitHub observer unavailable')
+    observer = plugin.module
+    if not observer._enabled():
+        raise ValueError('GitHub canary telemetry unavailable')
+    identifier = str(uuid.UUID(payload['id']))
+    ids = {'session_id': 'factory-github-canary:' + identifier, 'task_id': identifier,
+           'turn_id': identifier, 'tool_call_id': identifier}
+    observed = []
+    original = observer._enqueue
+    def capture(event):
+        properties = event.get('properties', {})
+        if properties.get('hermes.tool_call_id') == identifier:
+            properties['factory.validation_only'] = True
+            properties['factory.validation_kind'] = 'github_version_canary'
+            observed.append(event)
+        original(event)
+    observer._enqueue = capture
+    try:
+        from model_tools import handle_function_call
+        response = json.loads(handle_function_call('tool_call', {'calls': [{'name': 'factory_github',
+            'arguments': {'args': ['--version'], 'workdir': '/tmp', 'timeout': 15}}]},
+            enabled_toolsets=['terminal'], **ids))
+    finally:
+        observer._enqueue = original
+        observer._flush_at_exit()
+    parents = [event['properties'] for event in observed if event['properties'].get('$ai_span_name') == 'factory_github']
+    children = [event['properties'] for event in observed if event['properties'].get('github.observation') == 'cli_invocation']
+    if len(parents) != 1 or len(children) != 1 or response.get('exit_code') != 0:
+        raise ValueError('native GitHub canary failed')
+    parent, child = parents[0], children[0]
+    if (child['$ai_parent_id'] != parent['$ai_span_id'] or child['$ai_trace_id'] != parent['$ai_trace_id']
+            or parent['hermes.tool_status'] != 'ok' or child['github.cli_operation'] != 'help_or_version'
+            or child['github.cli_status'] != 'success'):
+        raise ValueError('native GitHub canary correlation failed')
+    return {'session_id': ids['session_id'], 'trace_id': parent['$ai_trace_id'],
+            'tool_call_id': identifier, 'parent_span_id': parent['$ai_span_id'], 'child_span_id': child['$ai_span_id'],
+            'operation': 'help_or_version', 'exit_code': 0, 'observer_digest': selected,
+            'validation_only': True, 'posthog_delivery': 'server_verification_pending'}
+
+
 def container_main(command, payload):
     import contextlib
     import sys
@@ -393,6 +531,14 @@ def container_main(command, payload):
             result = configure(payload)
         elif command == 'canary':
             result = canary(payload)
+        elif command == 'observer-snapshot':
+            idle_runtime()
+            result = observer_snapshot()
+        elif command == 'observer-upgrade':
+            result = upgrade_observer(payload)
+        elif command == 'github-canary':
+            idle_runtime()
+            result = github_canary(payload)
         elif command in {'move-auth', 'rollback-auth'}:
             result = move_auth(command == 'rollback-auth')
         elif command == 'idle':
@@ -428,6 +574,19 @@ def write_private(path, content, mode=0o600):
         os.fsync(handle.fileno())
     temporary.chmod(mode)
     temporary.replace(path)
+
+
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_observer_receipt(path, value):
+    write_private(path, json.dumps(value).encode())
+    sync_directory(path.parent)
 
 
 def assert_quiescent(connection):
@@ -863,7 +1022,156 @@ def activate(install, wrapper):
         raise ValueError('profile cutover failed; inspect private cutover receipt') from None
 
 
+def observer_payload():
+    root = Path(__file__).parent / 'factory-observers' / 'posthog'
+    return {'observer': {name: base64.b64encode(checked(root / name).read_bytes()).decode()
+                         for name in ('__init__.py', 'plugin.yaml')}}
+
+
+def observer_host_digest(install):
+    files = [DROPIN, PROVISION, Path(__file__), install.directory / '.env']
+    env = install.directory / 'env'
+    checked(env, directory=True)
+    files.extend(sorted(env.iterdir()))
+    hashes = {}
+    for path in files:
+        checked(path)
+        if path.stat().st_size > LIMIT or path.stat().st_mode & 0o022:
+            raise ValueError('unsafe observer upgrade input')
+        hashes[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return recovery_digest(hashes)
+
+
+def observer_upgrade_snapshot(install, wrapper):
+    checked(DROPIN)
+    if DROPIN.read_bytes() != PROFILE_DROPIN:
+        raise ValueError('active executor routing required')
+    provision = checked(PROVISION)
+    if json.loads(provision.read_text()).get('auth_root') != str(ROOT / 'profiles' / ROLES['reviewer']):
+        raise ValueError('active reviewer routing required')
+    rows = sorted((row['Service'], row.get('State')) for row in install.service_rows())
+    if dict(rows).get('bridge-executor-worker') != 'exited' or dict(rows).get('execution-dispatch-worker') not in {'running', 'exited'}:
+        raise ValueError('observer upgrade requires paused executor and resolved dispatcher')
+    if gateway_status()['ActiveState'] != 'active':
+        raise ValueError('active gateway required')
+    with sqlite3.connect(bridge_database(install).as_uri() + '?mode=ro', uri=True, timeout=5) as connection:
+        assert_quiescent(connection)
+    native = run_native(wrapper, 'observer-snapshot', {})
+    target = tree_digest(observer_files(observer_payload()))
+    if native['links']['posthog']['digest'] == target:
+        raise ValueError('observer release is already selected')
+    return {'native': native, 'target_digest': target, 'host_inputs': observer_host_digest(install), 'services': rows}
+
+
+def observer_upgrade(install, wrapper, args):
+    import argparse
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise ValueError('invalid observer upgrade arguments')
+    parser = Parser(prog='factory profiles upgrade-observer', add_help=False)
+    parser.add_argument('operation', choices=('preview', 'apply'))
+    parser.add_argument('--snapshot-digest')
+    parser.add_argument('--reason')
+    parser.add_argument('--request-id')
+    parser.add_argument('--yes', action='store_true')
+    options = parser.parse_args(args)
+    if options.operation == 'preview':
+        if any((options.snapshot_digest, options.reason, options.request_id, options.yes)):
+            raise ValueError('preview does not accept approval arguments')
+        snapshot = observer_upgrade_snapshot(install, wrapper)
+        return {'action': 'upgrade_executor_observer', 'snapshot_digest': recovery_digest(snapshot),
+                'source_digest': snapshot['native']['links']['posthog']['digest'],
+                'target_digest': snapshot['target_digest'], 'paused_execution': ['bridge-executor-worker'], 'read_only': True}
+    if (not options.yes or not re.fullmatch(r'[0-9a-f]{64}', options.snapshot_digest or '')
+            or not options.reason or not 8 <= len(options.reason) <= 300
+            or not all(character.isprintable() for character in options.reason)
+            or not options.request_id or str(uuid.UUID(options.request_id)) != options.request_id):
+        raise ValueError('apply requires exact digest, reason, request UUID and --yes')
+    # The canonical CLI installation lock covers preview/apply/canary dispatch.
+    receipt = install.directory / ('observer-upgrade-' + options.request_id + '.json')
+    if receipt.exists() or receipt.is_symlink():
+        raise ValueError('observer upgrade request already consumed; inspect private receipt')
+    snapshot = observer_upgrade_snapshot(install, wrapper)
+    if recovery_digest(snapshot) != options.snapshot_digest:
+        raise ValueError('observer upgrade snapshot changed')
+    payload = observer_payload()
+    if tree_digest(observer_files(payload)) != snapshot['target_digest']:
+        raise ValueError('observer target changed')
+    services = ['execution-dispatch-worker'] if dict(snapshot['services'])['execution-dispatch-worker'] == 'running' else []
+    audit = {'phase': 'consumed', 'request_id': options.request_id, 'reason': options.reason,
+             'actor': 'root', 'snapshot_digest': options.snapshot_digest, 'target_digest': snapshot['target_digest'],
+             'source_digest': snapshot['native']['links']['posthog']['digest'],
+             'paused_execution': ['bridge-executor-worker'], 'timestamp': datetime.now(timezone.utc).isoformat()}
+    write_observer_receipt(receipt, audit)
+    stage = 'dispatcher_stop'
+    try:
+        if services:
+            install.compose('stop', '--timeout', '60', *services, private=True)
+        stage = 'gateway_stop'
+        systemctl('stop', SERVICE)
+        if gateway_status()['ActiveState'] not in {'inactive', 'failed'}:
+            raise ValueError('gateway did not stop')
+        current = dict((row['Service'], row.get('State')) for row in install.service_rows())
+        if any(current.get(name) != 'exited' for name in ('execution-dispatch-worker', 'bridge-executor-worker')):
+            raise ValueError('execution services did not stop')
+        stage = 'observer_upgrade'
+        with sqlite3.connect(bridge_database(install).as_uri() + '?mode=rw', uri=True, timeout=5) as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            assert_quiescent(connection)
+            if observer_host_digest(install) != snapshot['host_inputs'] or tree_digest(observer_files(observer_payload())) != snapshot['target_digest']:
+                raise ValueError('observer upgrade inputs changed')
+            result = run_native(wrapper, 'observer-upgrade', {**payload, 'snapshot_digest': recovery_digest(snapshot['native'])})
+            expected = copy.deepcopy(snapshot['native'])
+            expected['links']['posthog'] = {'target': str(Path(expected['links']['posthog']['target']).parent / snapshot['target_digest']),
+                                            'digest': snapshot['target_digest']}
+            if result != expected:
+                raise ValueError('observer upgrade result differs')
+            connection.rollback()
+        stage = 'gateway_restore'
+        systemctl('restart', SERVICE)
+        systemctl('is-active', '--quiet', SERVICE)
+        stage = 'dispatcher_restore'
+        if services:
+            install.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', *services, private=True)
+        stage = 'restored_health'
+        final_rows = sorted((row['Service'], row.get('State')) for row in install.service_rows())
+        if (final_rows != snapshot['services'] or gateway_status()['ActiveState'] != 'active'
+                or not gateway_socket_listening() or observer_host_digest(install) != snapshot['host_inputs']):
+            raise ValueError('observer upgrade restored state differs')
+        audit['phase'] = 'complete'
+        write_observer_receipt(receipt, audit)
+        return {'upgraded': True, 'target_digest': snapshot['target_digest'], 'receipt': str(receipt),
+                'paused_execution': ['bridge-executor-worker']}
+    except BaseException:
+        # Never retry a consumed mutation or restart a previously paused executor.
+        audit.update(phase='requires_operator', stage=stage)
+        errors = []
+        for name, action in (('dispatcher_stop', lambda: install.compose('stop', '--timeout', '60', *services, private=True) if services else None),
+                             ('gateway_stop', lambda: systemctl('stop', SERVICE))):
+            try:
+                action()
+            except BaseException:
+                errors.append(name)
+        audit['stop_errors'] = errors
+        write_observer_receipt(receipt, audit)
+        raise ValueError('observer upgrade failed; inspect private receipt; execution remains paused') from None
+
+
 def dispatch(install, config, wrapper, args):
+    if args and args[0] == 'upgrade-observer':
+        return observer_upgrade(install, wrapper, args[1:])
+    if args == ['canary', 'github']:
+        # Require the same pause, idle and routing checks as an observer upgrade.
+        checked(DROPIN)
+        if DROPIN.read_bytes() != PROFILE_DROPIN or [row.get('State') for row in install.service_rows() if row['Service'] == 'bridge-executor-worker'] != ['exited']:
+            raise ValueError('GitHub canary requires active profile and paused execution')
+        with sqlite3.connect(bridge_database(install).as_uri() + '?mode=ro', uri=True, timeout=5) as connection:
+            assert_quiescent(connection)
+        identifier = str(uuid.uuid4())
+        digest = tree_digest(observer_files(observer_payload()))
+        result = run_native(wrapper, 'github-canary', {'id': identifier, 'observer_digest': digest})
+        write_observer_receipt(install.directory / ('github-canary-' + identifier + '.json'), result)
+        return result
     if args and args[0] == 'recover-inspection':
         return recover_inspection(install, wrapper, args[1:])
     if args == ['status']:

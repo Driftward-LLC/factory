@@ -62,6 +62,7 @@ fixture_bin=Path('/tmp/fixture-bin')
 fixture_bin.mkdir(exist_ok=True)
 fixture_gh=fixture_bin/'gh'
 fixture_gh.write_text('#!/opt/hermes/.venv/bin/python\nimport os,sys\n'
+    'if sys.argv[1:]==["--version"]: print("gh version fixture"); sys.exit(0)\n'
     'assert "OPENAI_API_KEY" not in os.environ and "GH_TOKEN" not in os.environ\n'
     'assert sys.argv[1:]==["pr","create","--body","PRIVATE_SENTINEL"]\n'
     'assert sys.stdin.read()=="PRIVATE_STDIN"\n'
@@ -79,6 +80,20 @@ assert all(snapshot(p)==value for p,value in before.items())
 assert inventory()['profiles']['executor']['capabilities_match_default']
 assert (root/'profiles'/ROLES['executor']/'config.yaml').stat().st_uid==0
 assert (root/'profiles'/ROLES['reviewer']).stat().st_mode & 0o077 == 0
+observer_link=root/'profiles'/ROLES['executor']/'plugins'/'observability'/'posthog'
+old_observer={'__init__.py':b'# previous observer fixture\n','plugin.yaml':base64.b64decode(PAYLOAD['observer']['plugin.yaml'])}
+old_release=immutable_release(root/'profiles'/ROLES['executor']/'factory-managed'/'releases'/'factory-posthog',tree_digest(old_observer),old_observer)
+observer_link.unlink()
+observer_link.symlink_to(old_release,target_is_directory=True)
+upgrade_before=observer_snapshot()
+upgrade_result=upgrade_observer({**PAYLOAD,'snapshot_digest':recovery_digest(upgrade_before)})
+assert upgrade_result['protected']==upgrade_before['protected']
+assert upgrade_result['links']['posthog']['digest']==tree_digest(observer_files(PAYLOAD))
+try:
+    upgrade_observer({**PAYLOAD,'snapshot_digest':recovery_digest(upgrade_before)})
+    raise AssertionError('stale observer upgrade accepted')
+except ValueError:
+    pass
 move_auth()
 named=root/'profiles'/ROLES['reviewer']/'auth.json'
 assert snapshot(named)==before[legacy/'auth.json']
@@ -131,6 +146,8 @@ def executor_probe():
             return {'final_response':'fixture constructor; no request'}
     run_agent.AIAgent=ConstructorProbe
     result=canary({'role':'executor','id':str(uuid.uuid4())})
+    tool_result=github_canary({'id':str(uuid.uuid4()),'observer_digest':tree_digest(observer_files(PAYLOAD))})
+    assert tool_result['exit_code']==0 and tool_result['parent_span_id']!=tool_result['child_span_id']
     from hermes_cli.plugins import get_plugin_manager
     observer=get_plugin_manager()._plugins['observability/posthog'].module
     from hermes_constants import get_hermes_home

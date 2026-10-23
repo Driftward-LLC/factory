@@ -109,21 +109,23 @@ boundary. Queue drops, process termination and delivery failures can also leave
 gaps; these fields do not promise a complete external-action ledger. No old
 events are backfilled. Installing this source requires a separately reviewed
 profile upgrade; the existing guarded deployment/blob gates remain in force.
-The current `factory profiles configure` command rejects already-active roles;
-it cannot upgrade an active executor's observer. The current
-`factory profiles canary executor` runs without tools, so it cannot validate
-this operation span. Activating and checking this feature on an already-active
-profile requires a separately reviewed canonical CLI/backend upgrade and
-tool-operation canary path; this PR does not provide either path.
+`factory profiles configure` rejects already-active roles. Use the separately
+reviewed `factory profiles upgrade-observer preview|apply` path described in
+[CLI.md](CLI.md) for the observer-only active-profile change. Its digest approval,
+quiescence checks and consumed durable receipt preserve credentials, role
+configuration, reviewer policy and paused execution. This host helper operation
+does not change deployment/blob gates. The existing `canary executor` uses no
+tools; `factory profiles canary github` exercises the fixed native version call
+without a model request and returns the real parent/child IDs for verification.
 
 `tools/check_factory_profile_runtime_native.py` exercises the pinned Hermes
 catalog and real dispatcher offline with a synthetic `gh` subprocess, checking
 the generation → tool → CLI parent IDs and output secrecy. It does not prove
-PostHog ingestion. After an approved profile upgrade, an operator can use a
-synthetic native invocation such as `factory_github({"args":["--version"]})`,
-record its exact session/request/tool-call IDs and verify the associated trace,
-tool parent and `help_or_version` child server-side. This needs no GitHub API
-write; it still requires separate activation and delivery verification.
+PostHog ingestion. After an approved profile upgrade, use the installed
+`factory profiles canary github`, then verify its exact session, trace, tool-call,
+parent and `help_or_version` child IDs server-side. The spans are labeled
+validation-only and the receipt reports `server_verification_pending`. This
+needs no GitHub API write; activation and delivery verification remain separate.
 
 The host starts one credential-free source container with an immutable Git
 bundle/database, independent checkout, test tools and fresh Playwright browser.

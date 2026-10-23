@@ -33,6 +33,130 @@ def plugin_archive(extra=None):
 
 
 class ProfileRuntimeTests(unittest.TestCase):
+    def upgrade_fixture(self, root):
+        database = root / 'bridge.db'
+        with sqlite3.connect(database) as connection:
+            connection.executescript('CREATE TABLE factory_attempts(status TEXT); CREATE TABLE factory_execution_leases(released_at TEXT); CREATE TABLE bridge_jobs(state TEXT);')
+        rows = [{'Service': 'bridge-executor-worker', 'State': 'exited'},
+                {'Service': 'execution-dispatch-worker', 'State': 'running'}]
+        def compose(*args, **kwargs):
+            if args[0] == 'stop':
+                rows[1]['State'] = 'exited'
+            if args[0] == 'up':
+                rows[1]['State'] = 'running'
+        install = SimpleNamespace(directory=root, project='fixture', service_rows=lambda: rows, compose=Mock(side_effect=compose))
+        old = 'a' * 64
+        native = {'protected': 'protected-state', 'links': {
+            'posthog': {'target': '/releases/' + old, 'digest': old},
+            'driftward-engineering': {'target': '/engineering/' + runtime.COMMIT, 'digest': 'engineering'}}}
+        target = runtime.tree_digest(runtime.observer_files(runtime.observer_payload()))
+        snapshot = {'native': native, 'target_digest': target, 'host_inputs': 'host',
+                    'services': [('bridge-executor-worker', 'exited'), ('execution-dispatch-worker', 'running')]}
+        after = json.loads(json.dumps(native))
+        after['links']['posthog'] = {'target': '/releases/' + target, 'digest': target}
+        args = ['apply', '--snapshot-digest', runtime.recovery_digest(snapshot), '--reason', 'Reviewed observer upgrade',
+                '--request-id', '12345678-1234-4234-8234-123456789abc', '--yes']
+        return install, database, snapshot, after, args
+
+    def test_observer_upgrade_preview_is_read_only_and_apply_preserves_pause_and_consumes_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, snapshot, after, args = self.upgrade_fixture(root)
+            before = set(root.iterdir())
+            with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
+                 patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                 patch.object(runtime, 'bridge_database', return_value=database), \
+                 patch.object(runtime, 'gateway_status', side_effect=[{'ActiveState': 'inactive'}, {'ActiveState': 'active'}]), \
+                 patch.object(runtime, 'gateway_socket_listening', return_value=True), \
+                 patch.object(runtime, 'run_native', return_value=after) as native, patch.object(runtime, 'systemctl'):
+                preview = runtime.observer_upgrade(install, '/wrapper', ['preview'])
+                self.assertTrue(preview['read_only'])
+                self.assertEqual(before, set(root.iterdir()))
+                self.assertFalse(install.compose.called)
+                result = runtime.observer_upgrade(install, '/wrapper', args)
+                self.assertEqual(result['paused_execution'], ['bridge-executor-worker'])
+                with self.assertRaisesRegex(ValueError, 'already consumed'):
+                    runtime.observer_upgrade(install, '/wrapper', args)
+                self.assertEqual(native.call_count, 1)
+            self.assertEqual(install.service_rows()[0]['State'], 'exited')
+            self.assertTrue(all('bridge-executor-worker' not in call.args for call in install.compose.call_args_list))
+            receipt = json.loads((root / 'observer-upgrade-12345678-1234-4234-8234-123456789abc.json').read_text())
+            self.assertEqual(receipt['phase'], 'complete')
+            self.assertEqual(receipt['actor'], 'root')
+
+    def test_observer_upgrade_stale_snapshot_rejected_before_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, snapshot, after, args = self.upgrade_fixture(root)
+            args[2] = '0' * 64
+            with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
+                 patch.object(runtime, 'run_native') as native, self.assertRaisesRegex(ValueError, 'snapshot changed'):
+                runtime.observer_upgrade(install, '/wrapper', args)
+            self.assertFalse(native.called)
+            self.assertFalse(install.compose.called)
+            self.assertFalse(list(root.glob('observer-upgrade-*')))
+
+    def test_observer_upgrade_failure_remains_paused_and_request_cannot_be_retried(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, snapshot, after, args = self.upgrade_fixture(root)
+            with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
+                 patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                 patch.object(runtime, 'bridge_database', return_value=database), \
+                 patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'inactive'}), \
+                 patch.object(runtime, 'run_native', side_effect=RuntimeError('PRIVATE_DIAGNOSTIC')), \
+                 patch.object(runtime, 'systemctl'):
+                with self.assertRaisesRegex(ValueError, 'inspect private receipt'):
+                    runtime.observer_upgrade(install, '/wrapper', args)
+                with self.assertRaisesRegex(ValueError, 'already consumed'):
+                    runtime.observer_upgrade(install, '/wrapper', args)
+            receipt = (root / 'observer-upgrade-12345678-1234-4234-8234-123456789abc.json').read_text()
+            self.assertNotIn('PRIVATE_DIAGNOSTIC', receipt)
+            self.assertEqual(json.loads(receipt)['phase'], 'requires_operator')
+            self.assertTrue(all(row['State'] == 'exited' for row in install.service_rows()))
+            self.assertFalse(any(call.args[0] == 'up' for call in install.compose.call_args_list))
+
+    def test_observer_upgrade_rechecks_host_state_after_stopping_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            install, database, snapshot, after, args = self.upgrade_fixture(Path(temporary))
+            with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
+                 patch.object(runtime, 'observer_host_digest', return_value='changed'), \
+                 patch.object(runtime, 'bridge_database', return_value=database), \
+                 patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'inactive'}), \
+                 patch.object(runtime, 'run_native') as native, patch.object(runtime, 'systemctl'), \
+                 self.assertRaisesRegex(ValueError, 'inspect private receipt'):
+                runtime.observer_upgrade(install, '/wrapper', args)
+            self.assertFalse(native.called)
+
+    def test_observer_upgrade_fsync_failure_prevents_any_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            install, database, snapshot, after, args = self.upgrade_fixture(Path(temporary))
+            with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
+                 patch.object(runtime, 'sync_directory', side_effect=OSError('fixture fsync failure')), \
+                 patch.object(runtime, 'run_native') as native, patch.object(runtime, 'systemctl') as ctl, \
+                 self.assertRaises(OSError):
+                runtime.observer_upgrade(install, '/wrapper', args)
+            self.assertFalse(native.called)
+            self.assertFalse(install.compose.called)
+            self.assertFalse(ctl.called)
+
+    def test_observer_upgrade_unhealthy_restore_restops_and_retains_consumed_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, snapshot, after, args = self.upgrade_fixture(root)
+            with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
+                 patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                 patch.object(runtime, 'bridge_database', return_value=database), \
+                 patch.object(runtime, 'gateway_status', side_effect=[{'ActiveState': 'inactive'}, {'ActiveState': 'active'}]), \
+                 patch.object(runtime, 'gateway_socket_listening', return_value=False), \
+                 patch.object(runtime, 'run_native', return_value=after), patch.object(runtime, 'systemctl'), \
+                 self.assertRaisesRegex(ValueError, 'inspect private receipt'):
+                runtime.observer_upgrade(install, '/wrapper', args)
+            self.assertTrue(all(row['State'] == 'exited' for row in install.service_rows()))
+            receipt = json.loads((root / 'observer-upgrade-12345678-1234-4234-8234-123456789abc.json').read_text())
+            self.assertEqual(receipt['phase'], 'requires_operator')
+            self.assertEqual(receipt['stage'], 'restored_health')
+
     def test_explicit_runtime_owner_does_not_relax_managed_artifact_owner(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'config.yaml'

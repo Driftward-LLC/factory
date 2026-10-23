@@ -159,6 +159,42 @@ factory profiles canary executor
 factory profiles canary reviewer
 ```
 
+An active executor profile accepts a separately reviewed observer-only upgrade.
+Install the reviewed CLI, profile helper, and adjacent observer assets as one
+versioned root-owned host tooling bundle. Retain all adjacent gateway, reviewer,
+and engineering assets listed above for the existing commands. This installation
+does not deploy an image, adopt a deployment fingerprint, or alter deployment
+policy. Review and installation of unmerged source is a separate activation
+decision; merging source alone does not select the observer in a running profile.
+
+```bash
+factory profiles upgrade-observer preview
+factory profiles upgrade-observer apply \
+  --snapshot-digest DIGEST_FROM_PREVIEW \
+  --reason 'Reviewed observer-only upgrade' --request-id NEW_UUID --yes
+factory profiles canary github
+```
+
+Preview writes no runtime state. Its digest binds the exact selected and target
+observer trees, engineering release, protected role files, host configuration,
+and service states. Apply requires the executor already paused, bridge quiescence,
+and native idle state. Under the installation lock it consumes a root-only audit
+receipt, stops the running dispatcher and gateway, rechecks the inputs under the
+bridge write lock, and atomically selects the immutable observer release. It
+preserves role configuration, authentication, capabilities, reviewer policy and
+the paused executor. Only the previously running dispatcher and gateway restart.
+A consumed request cannot be replayed. Failure leaves stopped services stopped
+and records `requires_operator` in the private receipt; inspect it before recovery.
+
+The GitHub canary requires the selected observer to match the installed bundle.
+It invokes only `gh --version` through the native tool dispatcher, with native
+approval and secret filtering. It makes no model/provider request. The two real
+tool spans carry `factory.validation_only=true`; the receipt and CLI return exact
+session, trace, tool-call, parent and child IDs, never command output or credentials.
+The existing asynchronous sender is flushed boundedly without retrying execution.
+`server_verification_pending` requires exact-ID server evidence before claiming
+delivery. Existing model canaries remain separate commands.
+
 An old, accepted read-only PR inspection can block profile activation even when
 its 120-second inspection capability has expired. The root-only CLI supports a
 bounded recovery for one untouched inspection with exactly one pending linked

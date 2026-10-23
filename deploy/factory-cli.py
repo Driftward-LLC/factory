@@ -363,10 +363,11 @@ def dispatch_bound(config, args):
             return 1
         print(json.dumps(result, sort_keys=True))
     elif command == 'profiles':
-        if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['canary', 'executor'], ['canary', 'reviewer'])
+        if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['canary', 'executor'], ['canary', 'reviewer'], ['canary', 'github'])
+                or (len(args) >= 3 and args[1] == 'upgrade-observer')
                 or (len(args) == 4 and args[1:3] == ['configure', '--plugin-source'])
                 or (len(args) >= 4 and args[1] == 'recover-inspection')):
-            raise ValueError('usage: factory profiles status | list | create | configure --plugin-source REPO | activate | canary executor|reviewer | recover-inspection JOB preview|status|apply [approval arguments]')
+            raise ValueError('usage: factory profiles status | list | create | configure --plugin-source REPO | activate | canary executor|reviewer|github | upgrade-observer preview|apply [approval arguments] | recover-inspection JOB preview|status|apply [approval arguments]')
         wrapper = checked_hermes_wrapper(config.get('hermes_wrapper'))
         if args in (['profiles', 'create'], ['profiles', 'list']) or (args == ['profiles', 'status'] and 'profile_runtime' not in config):
             result = hermes_profiles(wrapper, args[1] == 'create')
@@ -450,6 +451,8 @@ def dispatch_bound(config, args):
               'factory artifacts status | preview|preserve|prune --before ISO [--snapshot-digest DIGEST --yes]\n'
               'factory profiles status | list | create\n'
               'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
+              'factory profiles upgrade-observer preview|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
+              'factory profiles canary github\n'
               'factory profiles recover-inspection JOB preview|status|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
               'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair [arguments]\n'
               'Operator command arguments and approval gates are provided by the active image.\n'
