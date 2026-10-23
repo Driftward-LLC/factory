@@ -109,6 +109,12 @@ boundary. Queue drops, process termination and delivery failures can also leave
 gaps; these fields do not promise a complete external-action ledger. No old
 events are backfilled. Installing this source requires a separately reviewed
 profile upgrade; the existing guarded deployment/blob gates remain in force.
+The current `factory profiles configure` command rejects already-active roles;
+it cannot upgrade an active executor's observer. The current
+`factory profiles canary executor` runs without tools, so it cannot validate
+this operation span. Activating and checking this feature on an already-active
+profile requires a separately reviewed canonical CLI/backend upgrade and
+tool-operation canary path; this PR does not provide either path.
 
 `tools/check_factory_profile_runtime_native.py` exercises the pinned Hermes
 catalog and real dispatcher offline with a synthetic `gh` subprocess, checking
