@@ -5,6 +5,7 @@ import json
 import sys
 import os
 import subprocess
+import threading
 
 from .server import serve
 from .operator import serve_operator
@@ -22,9 +23,12 @@ from .store import (
     list_factory_outbox,
     claim_factory_outbox_delivery,
     acknowledge_factory_outbox,
+    fail_factory_outbox_delivery,
     list_factory_inspection_outbox,
     claim_factory_inspection_outbox,
     acknowledge_factory_inspection_outbox,
+    fail_factory_inspection_outbox_delivery,
+    sweep_factory_effect_receipt_inspections,
 )
 
 
@@ -55,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     operator = sub.add_parser("serve-operator", help="Serve root-only factory retry operator socket")
     operator.add_argument("--socket", default="/run/driftward-factory-operator/operator.sock")
+    operator.add_argument("--console-host")
+    operator.add_argument("--console-port", type=int, default=0)
+    operator.add_argument("--console-assets")
+
+    console = sub.add_parser("serve-console", help="Serve the read-only Factory web console")
+    console.add_argument("--host", default="127.0.0.1")
+    console.add_argument("--port", type=int, default=19881)
+    console.add_argument("--assets")
 
     submit = sub.add_parser("submit", help="Submit or deduplicate a job")
     submit.add_argument("--idempotency-key", required=True)
@@ -93,7 +105,27 @@ def main(argv: list[str] | None = None) -> int:
             serve(args.db, args.host, args.port)
             return 0
         if args.command == "serve-operator":
-            serve_operator(args.socket)
+            console_server = None
+            console_thread = None
+            if args.console_host and args.console_port:
+                from .console import make_console_server
+
+                console_server = make_console_server(args.db, args.console_host, args.console_port, args.console_assets, os.environ.get("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB"), os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB"))
+                console_thread = threading.Thread(target=console_server.serve_forever, daemon=True)
+                console_thread.start()
+            try:
+                serve_operator(args.socket)
+            finally:
+                if console_server:
+                    console_server.shutdown()
+                    if console_thread:
+                        console_thread.join(timeout=5)
+                    console_server.server_close()
+            return 0
+        if args.command == "serve-console":
+            from .console import serve_console
+
+            serve_console(args.db, args.host, args.port, args.assets, os.environ.get("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB"), os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB"))
             return 0
 
         conn = connect_migrate(args.db) if args.command == "init" else connect_runtime(args.db)
@@ -133,23 +165,35 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print_json({"dry_run": args.dry_run, "results": results})
             elif args.command == "dispatch-factory-outbox":
-                delivered = 0
+                delivered = failed = 0
                 release_root = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_ROOT")
                 if not release_root:
                     raise BridgeError("immutable bridge release root is required for outbox dispatch")
-                deliveries = [(row, claim_factory_outbox_delivery, acknowledge_factory_outbox) for row in list_factory_outbox(conn, max(1, min(args.limit, 250)))]
-                deliveries += [(row, claim_factory_inspection_outbox, acknowledge_factory_inspection_outbox) for row in list_factory_inspection_outbox(conn, max(1, min(args.limit, 250)))]
-                for row, claim, acknowledge in deliveries:
+                batch_limit = max(1, min(args.limit, 250))
+                receipt_sweep = sweep_factory_effect_receipt_inspections(conn, batch_limit)
+                from . import independent_review
+                review_sweep = independent_review.sweep(conn, batch_limit)
+                deliveries = [(row, claim_factory_outbox_delivery, acknowledge_factory_outbox, fail_factory_outbox_delivery) for row in list_factory_outbox(conn, batch_limit)]
+                deliveries += [(row, claim_factory_inspection_outbox, acknowledge_factory_inspection_outbox, fail_factory_inspection_outbox_delivery) for row in list_factory_inspection_outbox(conn, batch_limit)]
+                for row, claim, acknowledge, fail in deliveries:
                     claimed = claim(conn, row["outbox_key"])
                     if not claimed or (claimed.get("event_type") and claimed["event_type"] != "hermes_job_accepted"):
                         continue
                     payload = claimed["payload"]
                     env = {key: value for key, value in os.environ.items() if key.startswith("HATCHET_CLIENT_")}
                     env.update({"BRIDGE_JOB_ID": str(payload["job_id"]), "BRIDGE_IDEMPOTENCY_KEY": str(payload["idempotency_key"])})
-                    result = subprocess.run(["/usr/bin/node", f"{release_root}/worker-triggers/push-accepted-event.js"], env=env, capture_output=True, timeout=15, check=False)
-                    if result.returncode == 0:
-                        acknowledge(conn, claimed["outbox_key"]); delivered += 1
-                print_json({"delivered": delivered})
+                    try:
+                        result = subprocess.run(["/usr/bin/node", f"{release_root}/worker-triggers/push-accepted-event.js"], env=env, capture_output=True, timeout=15, check=False)
+                    except (OSError, subprocess.TimeoutExpired):
+                        result = None
+                    if result is not None and result.returncode == 0:
+                        acknowledge(conn, claimed["outbox_key"], claimed["delivery_lease_id"]); delivered += 1
+                    else:
+                        fail(conn, claimed["outbox_key"], claimed["delivery_lease_id"]); failed += 1
+                        print(f"factory outbox delivery failed: {claimed['outbox_key']}", file=sys.stderr)
+                print_json({"delivered": delivered, "failed": failed, "receipt_inspection_sweep": receipt_sweep, "independent_review_sweep": review_sweep})
+                if failed:
+                    return 1
             else:
                 parser.error(f"unknown command {args.command}")
         finally:

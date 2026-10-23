@@ -1,7 +1,12 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
+import path from 'node:path';
+import { withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { SpanKind } from '@opentelemetry/api';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import { gatewayReasonCode, processSignal, transportStatus } from './bounded-evidence';
 import {
   assertHermesIdentityViaCommand,
   inspectGitHubHeadViaCommand,
@@ -15,10 +20,14 @@ import {
   type HermesDraftPrResult
 } from './create-draft-pr';
 import { NonRetryableBridgeExecutionError } from './errors';
+import { InvocationJournal, invocationLease } from './invocation-journal';
+import { MODEL_SELECTION_HEADER } from './model-selection';
+import { IndependentReviewer } from './independent-review';
 import {
   DEFAULT_HERMES_GRPC_TARGET,
   isHermesGrpcUnixTarget,
   resolveHermesGatewayProtoPath,
+  validateHermesGrpcTransport,
   type HermesIdentityCheck
 } from './hermes-gateway-client';
 
@@ -34,6 +43,7 @@ type CreateDraftPullRequestRequest = {
   branch?: string;
   jobJson?: string;
   timeoutMs?: number;
+  executionLeaseJson?: string;
 };
 
 type InspectDraftPullRequestRequest = {
@@ -57,23 +67,51 @@ type GatewayService = grpc.ServiceClientConstructor & { service: grpc.ServiceDef
 type UnaryCall<T> = grpc.ServerUnaryCall<T, unknown>;
 type SendUnary<T> = grpc.sendUnaryData<T>;
 
-function createServer(target: string): grpc.Server {
+export function createServer(target: string, runDraftPr = runHermesCreateDraftPrViaCommand): grpc.Server {
+  const reviewer = new IndependentReviewer(process.env.DRIFTWARD_FACTORY_REVIEW_DIRECTORY || '/var/lib/driftward-hermes-factory/reviews');
+  // Open lazily so read-only identity/inspection remains available during a storage fault.
+  let journal: InvocationJournal | undefined;
+  const invocations = () => journal ||= new InvocationJournal(process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY ||
+    (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor'
+      ? path.join(process.env.HERMES_HOME || '/opt/data', 'factory-invocations')
+      : '/var/lib/driftward-hermes-factory/invocations'));
+  const inspectInvocation = (request: CreateDraftPullRequestRequest, cancel: boolean) => {
+    const status = invocations().status(parseBridgeJob(request), cancel);
+    return { ...status, receipt: status.receipt ? draftPrResponse(status.receipt) : undefined,
+      executionLeaseJson: status.lease ? JSON.stringify(status.lease) : '' };
+  };
   const server = new grpc.Server();
   server.addService(loadGatewayService().service, {
+    readOnlyReview: unary(target, async (request: { jobJson?: string }) => {
+      const raw = requiredString(request.jobJson, 'job_json');
+      if (raw.length > 100000) throw new Error('Review job exceeds gateway limit');
+      const job = JSON.parse(raw) as BridgeJob;
+      return { receiptJson: JSON.stringify(await reviewer.run(job)) };
+    }),
     checkIdentity: unary(target, async (request: CheckIdentityRequest) => {
+      invocations();
       const identity = await assertHermesIdentityViaCommand(requiredString(request.repo, 'repo'));
       return identityResponse(identity);
     }),
-    createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest) => {
+    createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest, call) => {
       const job = parseBridgeJob(request);
-      const result = await runHermesCreateDraftPrViaCommand(job, undefined, optionalPositiveInt(request.timeoutMs));
+      const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
+      const result = await withExecutionSpan('factory.executor.invoke', () => invocations().execute(job, lease,
+        () => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined, (selection) => {
+          const metadata = new grpc.Metadata();
+          metadata.set(MODEL_SELECTION_HEADER, Buffer.from(JSON.stringify({ job_id: job.job_id, selection })));
+          call.sendMetadata(metadata);
+        }), { job, service: 'factory-executor' })),
+      { job, service: 'factory-executor' });
       return draftPrResponse(result);
     }),
+    inspectInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => inspectInvocation(request, false)),
+    cancelInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => inspectInvocation(request, true)),
     inspectDraftPullRequest: unary(target, async (request: InspectDraftPullRequestRequest) => {
       const repo = requiredString(request.repo, 'repo');
       const prNumber = requiredPositiveInt(request.prNumber, 'pr_number');
       const timeout = positiveInt(request.timeoutMs, 30_000);
-      const observation = await inspectDraftPullRequestViaCommand(repo, prNumber, timeout, 1024 * 1024);
+      const observation = await inspectDraftPullRequestViaCommand(repo, prNumber, timeout);
       return draftPrObservationResponse(observation);
     }),
     inspectPullRequestState: unary(target, async (request: InspectPullRequestStateRequest) => {
@@ -109,13 +147,15 @@ function createServer(target: string): grpc.Server {
 
 function unary<TRequest, TResponse>(
   target: string,
-  handler: (request: TRequest) => Promise<TResponse>
+  handler: (request: TRequest, call: UnaryCall<TRequest>) => Promise<TResponse>
 ): (call: UnaryCall<TRequest>, callback: SendUnary<TResponse>) => void {
   return (call, callback) => {
     void (async () => {
       try {
         authorize(call.metadata, target);
-        callback(null, await handler(call.request));
+        callback(null, await withExecutionSpan('factory.gateway.handle', () => handler(call.request, call), {
+          parent: call.metadata.get('traceparent')[0], service: 'factory-executor', kind: SpanKind.SERVER,
+        }));
       } catch (error) {
         callback(toServiceError(error), null);
       }
@@ -204,17 +244,14 @@ function serverCredentials(target: string): grpc.ServerCredentials {
 }
 
 function validateServerTarget(target: string): void {
+  validateHermesGrpcTransport(target);
   if (isHermesGrpcUnixTarget(target)) return;
-  if (process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP !== '1') {
-    throw new NonRetryableBridgeExecutionError(
-      'hermes_grpc_tcp_disabled',
-      'TCP Hermes gRPC gateway binds require DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1'
-    );
-  }
-  if (process.env.DRIFTWARD_HERMES_GRPC_TLS !== '1' && !(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim()) {
+  const mutualTls = process.env.DRIFTWARD_HERMES_GRPC_TLS === '1'
+    && process.env.DRIFTWARD_HERMES_GRPC_CA_PATH?.trim();
+  if (!(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim() && !mutualTls) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_auth_required',
-      'TCP Hermes gRPC gateway binds require TLS or DRIFTWARD_HERMES_GRPC_AUTH_TOKEN'
+      'TCP Hermes gRPC gateway binds require an auth token or a CA that enforces TLS client certificates'
     );
   }
 }
@@ -223,11 +260,13 @@ function authorize(metadata: grpc.Metadata, target: string): void {
   const expected = (process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim();
   if (!expected) {
     if (isHermesGrpcUnixTarget(target)) return;
-    if (process.env.DRIFTWARD_HERMES_GRPC_TLS === '1') return;
+    if (process.env.DRIFTWARD_HERMES_GRPC_TLS === '1' && process.env.DRIFTWARD_HERMES_GRPC_CA_PATH?.trim()) return;
     throw serviceError(grpc.status.UNAUTHENTICATED, 'hermes_grpc_auth_required', 'Hermes gRPC TCP gateway requires an auth token');
   }
-  const observed = metadata.get('authorization')[0];
-  if (observed !== `Bearer ${expected}`) {
+  const observed = metadata.get('authorization');
+  const expectedBytes = Buffer.from(`Bearer ${expected}`);
+  const observedBytes = typeof observed[0] === 'string' ? Buffer.from(observed[0]) : Buffer.alloc(0);
+  if (observed.length !== 1 || observedBytes.length !== expectedBytes.length || !timingSafeEqual(observedBytes, expectedBytes)) {
     throw serviceError(grpc.status.UNAUTHENTICATED, 'hermes_grpc_auth_failed', 'Hermes gRPC gateway authentication failed');
   }
 }
@@ -264,6 +303,7 @@ function parsePrReference(repository: string, reference: string): { number: numb
 
 function identityResponse(identity: HermesIdentityCheck): Record<string, unknown> {
   return {
+    invocationProtocolVersion: 1,
     githubLogin: identity.githubLogin,
     gitAuthorName: identity.gitAuthorName,
     gitAuthorEmail: identity.gitAuthorEmail,
@@ -397,14 +437,54 @@ function requiredFile(rawPath: string | undefined, envName: string): Buffer {
 function toServiceError(error: unknown): grpc.ServiceError {
   if (isServiceError(error)) return error;
   if (error instanceof NonRetryableBridgeExecutionError) {
-    return serviceError(grpc.status.FAILED_PRECONDITION, error.reasonCode, error.message);
+    return serviceError(grpc.status.FAILED_PRECONDITION, error.reasonCode, error.message, {
+      failureDomain: error.failureDomain,
+      failureStage: error.failureStage,
+      retryable: error.retryable,
+      transportStatus: error.transportStatus,
+      processExitCode: error.processExitCode,
+      processSignal: error.processSignal,
+      timedOut: error.timedOut,
+      bufferExceeded: error.bufferExceeded,
+    });
   }
-  return serviceError(grpc.status.UNKNOWN, 'hermes_grpc_gateway_failed', error instanceof Error ? error.message : String(error));
+  return serviceError(
+    grpc.status.UNKNOWN,
+    'hermes_grpc_gateway_failed',
+    'Hermes gateway failed without structured bounded evidence',
+    { failureDomain: 'gateway', failureStage: 'gateway_handler', retryable: null },
+  );
 }
 
-function serviceError(code: grpc.status, reasonCode: string, message: string): grpc.ServiceError {
+function serviceError(
+  code: grpc.status,
+  reasonCode: string,
+  message: string,
+  evidence: {
+    failureDomain?: string;
+    failureStage?: string;
+    retryable?: boolean | null;
+    transportStatus?: string | null;
+    processExitCode?: number | null;
+    processSignal?: string | null;
+    timedOut?: boolean | null;
+    bufferExceeded?: boolean | null;
+  } = {},
+): grpc.ServiceError {
   const metadata = new grpc.Metadata();
-  metadata.set('reason-code', reasonCode);
+  metadata.set('reason-code', gatewayReasonCode(reasonCode) || 'hermes_grpc_gateway_failed');
+  if (evidence.failureDomain) metadata.set('failure-domain', evidence.failureDomain);
+  if (evidence.failureStage) metadata.set('failure-stage', evidence.failureStage);
+  if (evidence.retryable !== undefined && evidence.retryable !== null) metadata.set('retryable', String(evidence.retryable));
+  const boundedTransportStatus = transportStatus(evidence.transportStatus);
+  if (boundedTransportStatus) metadata.set('transport-status', boundedTransportStatus);
+  if (Number.isInteger(evidence.processExitCode) && Number(evidence.processExitCode) >= -(2 ** 31) && Number(evidence.processExitCode) < 2 ** 31) {
+    metadata.set('process-exit-code', String(evidence.processExitCode));
+  }
+  const boundedProcessSignal = processSignal(evidence.processSignal);
+  if (boundedProcessSignal) metadata.set('process-signal', boundedProcessSignal);
+  if (evidence.timedOut !== undefined && evidence.timedOut !== null) metadata.set('timed-out', String(evidence.timedOut));
+  if (evidence.bufferExceeded !== undefined && evidence.bufferExceeded !== null) metadata.set('buffer-exceeded', String(evidence.bufferExceeded));
   return Object.assign(new Error(sanitizeText(message)), { code, metadata }) as grpc.ServiceError;
 }
 

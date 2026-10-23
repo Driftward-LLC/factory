@@ -29,7 +29,13 @@ def canonical_timestamp(value: object) -> str | None:
 
 
 class Outbox:
-    def __init__(self, path: str):
+    def __init__(self, path: str, *, readonly: bool = False):
+        if readonly:
+            self.path = path
+            self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA busy_timeout = 5000")
+            return
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -45,7 +51,8 @@ class Outbox:
             source_recorded_at TEXT NOT NULL, marker TEXT NOT NULL, body TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL, delivered_at TEXT, suppressed_at TEXT, last_error_code TEXT,
-            lease_owner TEXT, lease_until TEXT
+            lease_owner TEXT, lease_until TEXT, archived_at TEXT, archived_by TEXT,
+            archive_reason TEXT
           );
           CREATE INDEX IF NOT EXISTS idx_lifecycle_delivery ON lifecycle_outbox(delivery_state, next_attempt_at);
           CREATE TABLE IF NOT EXISTS lifecycle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -56,7 +63,7 @@ class Outbox:
 
     def _ensure_columns(self) -> None:
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(lifecycle_outbox)")}
-        for name in ("lease_owner", "lease_until"):
+        for name in ("lease_owner", "lease_until", "archived_at", "archived_by", "archive_reason"):
             if name not in columns:
                 self.conn.execute(f"ALTER TABLE lifecycle_outbox ADD COLUMN {name} TEXT")
 
@@ -64,7 +71,7 @@ class Outbox:
         """Normalize parseable legacy instants before any lexical comparisons."""
         columns = (
             "source_recorded_at", "next_attempt_at", "first_seen_at", "last_seen_at",
-            "delivered_at", "suppressed_at", "lease_until",
+            "delivered_at", "suppressed_at", "lease_until", "archived_at",
         )
         for column in columns:
             rows = self.conn.execute(
@@ -89,7 +96,7 @@ class Outbox:
         with self.conn:
             cursor = self.conn.execute(f"INSERT OR IGNORE INTO lifecycle_outbox ({','.join(columns)}) VALUES ({placeholders})", [values[column] for column in columns])
             if not cursor.rowcount:
-                self.conn.execute("UPDATE lifecycle_outbox SET last_seen_at = ? WHERE outbox_key = ?", (timestamp, item["outbox_key"]))
+                self.conn.execute("UPDATE lifecycle_outbox SET last_seen_at = ? WHERE outbox_key = ? AND delivery_state != 'archived'", (timestamp, item["outbox_key"]))
         return bool(cursor.rowcount)
 
     def claim_one(self, owner: str, *, lease_seconds: int = 120) -> dict[str, Any] | None:
@@ -166,15 +173,81 @@ class Outbox:
             """, (now(), watermark))
         return int(cursor.rowcount)
 
+    def list_dead_letters(self, limit: int = 100) -> list[dict[str, Any]]:
+        if limit < 1 or limit > 250:
+            raise ValueError("dead letter limit must be between 1 and 250")
+        rows = self.conn.execute(
+            """
+            SELECT outbox_key, delivery_state, reason_code, source_kind,
+                   source_recorded_at, first_seen_at, last_seen_at, issue_id,
+                   identifier, issue_url, job_id, repo, execution_mode,
+                   archived_at, archived_by, archive_reason
+            FROM lifecycle_outbox
+            WHERE delivery_state = 'dead_letter'
+            ORDER BY first_seen_at, outbox_key
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_dead_letter(self, key: str) -> dict[str, Any] | None:
+        rows = self.conn.execute(
+            """
+            SELECT outbox_key, delivery_state, reason_code, source_kind,
+                   source_recorded_at, first_seen_at, last_seen_at, issue_id,
+                   identifier, issue_url, job_id, repo, execution_mode,
+                   archived_at, archived_by, archive_reason
+            FROM lifecycle_outbox
+            WHERE outbox_key = ? AND delivery_state = 'dead_letter'
+            """,
+            (key,),
+        ).fetchone()
+        return dict(rows) if rows else None
+
+    def archive_dead_letter(self, key: str, *, actor: str, reason: str, expected_last_seen_at: str) -> dict[str, Any]:
+        timestamp = now()
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                UPDATE lifecycle_outbox
+                SET delivery_state = 'archived', archived_at = ?, archived_by = ?,
+                    archive_reason = ?, next_attempt_at = NULL,
+                    lease_owner = NULL, lease_until = NULL
+                WHERE outbox_key = ? AND delivery_state = 'dead_letter'
+                  AND last_seen_at = ?
+                """,
+                (timestamp, actor, reason, key, expected_last_seen_at),
+            )
+        if not cursor.rowcount:
+            raise ValueError("dead letter changed; preview again")
+        row = self.conn.execute(
+            """
+            SELECT outbox_key, delivery_state, reason_code, source_kind,
+                   source_recorded_at, first_seen_at, last_seen_at, issue_id,
+                   identifier, issue_url, job_id, repo, execution_mode,
+                   archived_at, archived_by, archive_reason
+            FROM lifecycle_outbox WHERE outbox_key = ?
+            """,
+            (key,),
+        ).fetchone()
+        return dict(row)
+
     def status(self) -> dict[str, Any]:
         connection = sqlite3.connect(self.path)
         try:
             states = {str(row[0]): int(row[1]) for row in connection.execute("SELECT delivery_state, COUNT(*) FROM lifecycle_outbox GROUP BY delivery_state")}
+            dead_letter_reasons = {
+                str(row[0] or "unknown"): int(row[1])
+                for row in connection.execute(
+                    "SELECT reason_code, COUNT(*) FROM lifecycle_outbox WHERE delivery_state = 'dead_letter' GROUP BY reason_code"
+                )
+            }
             row = connection.execute("SELECT MIN(first_seen_at) FROM lifecycle_outbox WHERE delivery_state IN ('pending', 'retrying', 'claimed')").fetchone()
             oldest = row[0] if row and row[0] else None
             age = None
             if oldest:
                 age = max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(oldest.replace("Z", "+00:00"))).total_seconds()))
-            return {"states": states, "oldest_pending_at": oldest, "oldest_queue_age_seconds": age, "dead_letters": states.get("dead_letter", 0)}
+            return {"states": states, "oldest_pending_at": oldest, "oldest_queue_age_seconds": age, "dead_letters": states.get("dead_letter", 0), "dead_letter_reasons": dead_letter_reasons}
         finally:
             connection.close()

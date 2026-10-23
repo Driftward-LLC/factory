@@ -13,11 +13,33 @@ HERMES_FACTORY_GATEWAY_SERVICE="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SERVICE:-drif
 HERMES_FACTORY_GATEWAY_SOCKET="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SOCKET:-/run/driftward-hermes-factory/hermes.sock}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 FACTORY_SHARE_DIR="${FACTORY_SHARE_DIR:-${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}}"
+RETIRED_FACTORY_UNITS=(
+  driftward-hatchet.service
+  driftward-hatchet-bridge.service
+  driftward-hatchet-event-ingress.service
+  driftward-hatchet-linear-webhook-proxy.service
+  driftward-hatchet-worker-intake.service
+  driftward-hatchet-worker-execution-dispatch.service
+  driftward-hatchet-worker-bridge-executor.service
+  driftward-hatchet-worker-pr-event.service
+  driftward-hatchet-worker-reconciliation.service
+  driftward-hatchet-hermes-gateway.service
+  driftward-factory-lifecycle-writer.service
+  driftward-factory-linear-token.service
+  driftward-factory-linear-token.timer
+  driftward-factory-operator.service
+  driftward-factory-outbox-dispatcher.service
+  driftward-factory-outbox-dispatcher.timer
+  driftward-hatchet-bridge-reconciler.service
+  driftward-hatchet-bridge-reconciler.timer
+)
 
 usage() {
   cat <<'EOF'
 Usage:
   factory status
+  factory console
+  factory analytics [--days N] [--json]
   factory logs [target] [-f|--follow] [-n|--lines N]
   factory mode
   factory mode dry-run
@@ -26,16 +48,31 @@ Usage:
   factory retry ENG-X --reason TEXT --request-id ID --snapshot-digest DIGEST [--supersede-pr URL] [--supersede-job JOB-ID] --yes
   factory retry ENG-X force-absence preview --attempt-id ATTEMPT-ID
   factory retry ENG-X force-absence --attempt-id ATTEMPT-ID --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+  factory review-recovery ENG-X inspect --review REVIEW-ID --source-attempt ATTEMPT-ID --yes
+  factory review-recovery ENG-X preview --review REVIEW-ID --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --reason TEXT
+  factory review-recovery ENG-X confirm --review REVIEW-ID --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+  factory review-repair ENG-X inspect --source-attempt ATTEMPT-ID --yes
+  factory review-repair ENG-X preview --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT
+  factory review-repair ENG-X confirm --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
+    Optional on preview/confirm: --from-policy-digest OLD --to-policy-digest CURRENT (Capykit .gitleaksignore addition only)
   factory lifecycle ENG-X [--json] [--limit N]
+  factory lifecycle dead-letters list [--json] [--limit N]
+  factory lifecycle dead-letters preview OUTBOX-KEY
+  factory lifecycle dead-letters archive OUTBOX-KEY --reason TEXT --snapshot-digest DIGEST --yes
   factory attempts active [--json]
   factory attempts list ENG-X [--json]
   factory attempts show ATTEMPT-ID
+  factory attempts evidence ATTEMPT-ID
   factory attempts events ATTEMPT-ID [--json] [--limit N]
   factory attempts cancel ATTEMPT-ID --reason TEXT --yes
+  factory attempts refresh-receipt ATTEMPT-ID --reason TEXT --yes
+  factory attempts resolve-interrupted ATTEMPT-ID inspect --yes
+  factory attempts resolve-interrupted ATTEMPT-ID preview --attestation FILE [--absence-evidence FILE] --reason TEXT
+  factory attempts resolve-interrupted ATTEMPT-ID confirm --attestation FILE [--absence-evidence FILE] --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
   factory doctor hatchet [--profile PROFILE | --live-json PATH] [--json] [--fail-on-warning]
 
 Log targets:
-  all, ingress, intake, executor, bridge, pr, reconciliation, lifecycle, linear
+  all, ingress, intake, executor, bridge, pr, reconciliation, lifecycle, linear, console
 
 Modes:
   dry-run  Linear Ready events create dry-run bridge jobs.
@@ -127,21 +164,47 @@ factory_docker_runtime_active() {
 }
 
 operator_token() {
-  [[ -r "$OPERATOR_ENV_FILE" ]] || die "factory retry operator credentials are unavailable"
+  [[ -r "$OPERATOR_ENV_FILE" ]] || die "factory operator credentials are unavailable"
   awk -F= '$1 == "HATCHET_FACTORY_OPERATOR_TOKEN" { print $2; exit }' "$OPERATOR_ENV_FILE"
 }
 
-operator_request() {
-  local method="$1" path="$2" data="${3:-}" token
+operator_request() (
+  local method="$1" path="$2" data="${3:-}" token response status=0
   require_root
   token="$(operator_token)"
-  [[ -n "$token" && -S "$OPERATOR_SOCKET" ]] || die "factory retry operator is unavailable"
+  [[ -n "$token" && -S "$OPERATOR_SOCKET" ]] || die "factory operator is unavailable"
+  response="$(mktemp)"
+  trap 'rm -f -- "$response"' EXIT
   if [[ "$method" == "GET" ]]; then
-    curl --silent --show-error --fail --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" "http://localhost$path"
+    curl --silent --show-error --fail-with-body --output "$response" --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" "http://localhost$path" || status=$?
   else
-    curl --silent --show-error --fail --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$data" "http://localhost$path"
+    curl --silent --show-error --fail-with-body --output "$response" --unix-socket "$OPERATOR_SOCKET" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data "$data" "http://localhost$path" || status=$?
   fi
-}
+  if [[ "$status" == 0 ]]; then
+    cat -- "$response"
+  elif [[ "$status" == 22 ]]; then
+    # Print only the bounded operator error field, never arbitrary response bodies.
+    python3 - "$response" 3<<<"$token" <<'PY' >&2
+import json
+import os
+import sys
+
+try:
+    with os.fdopen(3) as credential:
+        token = credential.read().rstrip("\n")
+    with open(sys.argv[1], encoding="utf-8") as source:
+        body = json.loads(source.read(65537))
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, str):
+        error = error.replace(token, "[redacted]") if token else error
+        error = "".join(char if char.isprintable() else " " for char in error)
+        print("factory operator: " + error[:512])
+except (OSError, ValueError, RecursionError):
+    pass
+PY
+  fi
+  return "$status"
+)
 
 require_jq_for_view() {
   command -v jq >/dev/null 2>&1 || die "jq is required for formatted output; rerun with --json"
@@ -185,6 +248,201 @@ format_attempt_events() {
   '
 }
 
+format_analytics() {
+  require_jq_for_view
+  jq -r '
+    def pct: if . == null then "-" else "\((. * 1000 | round) / 10)%" end;
+    def cov: if . == null then "-" else "\(.observed)/\(.eligible)  \(.rate | pct)" end;
+    def value: if . == null then "unavailable" else tostring end;
+    def words: gsub("_"; " ");
+    def duration:
+      if . == null then "-"
+      elif . < 1000 then "\(. | round)ms"
+      elif . < 60000 then "\(((. / 1000) * 10 | round) / 10)s"
+      elif . < 3600000 then "\(((. / 60000) * 10 | round) / 10)m"
+      else "\(((. / 3600000) * 10 | round) / 10)h" end;
+    "Factory analytics — attempts created in the last \(.window.days) days",
+    "Generated \(.generated_at)",
+    "",
+    "Coverage",
+    "  Work items                       \(.coverage.cohort_work_items)",
+    "  Attempts                         \(.coverage.cohort_attempts)",
+    "  Execution claimed                \(.coverage.execution_claimed_attempts)",
+    "  Effect authorized                \(.coverage.effect_authorized_attempts)",
+    "  Backend attributed               \(.coverage.backend_attribution.observed)/\(.coverage.backend_attribution.eligible)  \(.coverage.backend_attribution.rate | pct)",
+    "  Route assigned                   \(.coverage.execution_route_assignment | cov)",
+    "  Configured auth labels known     \(.coverage.configured_auth_label.observed)/\(.coverage.configured_auth_label.eligible)  \(.coverage.configured_auth_label.rate | pct)",
+    "  Attempt failures attributed      \(.coverage.attempt_failure_attribution.observed)/\(.coverage.attempt_failure_attribution.eligible)  \(.coverage.attempt_failure_attribution.rate | pct)",
+    "",
+    "Intake",
+    (if .intake.available then
+      "  Linear events \(.intake.linear_events)  eligible work items \(.intake.eligible_work_items)  rejected \(.intake.rejected_events)",
+      "  Published \(.intake.published_events)  unpublished \(.intake.unpublished_events)",
+      "  Raw repeated Ready observations \(.intake.repeated_eligible_events) (all eligible events)",
+      "  Eligible receipt authenticity   \(.intake.eligible_event_authenticity | cov)",
+      (if .intake.correlation.available then
+        "  Authenticated repeated Ready rate \(.intake.authenticated_repeated_eligible_events)/\(.intake.authenticated_eligible_events)  \(.intake.repeated_eligible_event_rate | pct)",
+        "  Eligible → real attempt         \(.intake.correlation.eligible_to_real_attempt | cov)",
+        (if .intake.correlation.work_item_conversion then
+          "  Ready work items: attempt \(.intake.correlation.work_item_conversion.all.real_attempt | cov), PR \(.intake.correlation.work_item_conversion.all.draft_pr_available | cov), verified \(.intake.correlation.work_item_conversion.all.verified_ready | cov), merged \(.intake.correlation.work_item_conversion.all.merged | cov)",
+          "  Ready merge outcomes settled  \(.intake.correlation.work_item_conversion.all.merge_outcome_evidence | cov); right-censored \(.intake.correlation.work_item_conversion.all.right_censored_work_items)"
+         else empty end),
+        "  Active-attempt reuse rate      \(.intake.correlation.active_attempt_reuse_events)/\(.intake.correlation.eligible_to_real_attempt.eligible)  \(.intake.correlation.active_attempt_reuse_rate | pct)"
+       else "  Authenticated Ready correlation unavailable." end),
+      (if .intake.receipts.available then
+        "  Webhook receipts \(.intake.receipts.receipts)  signature verified \(.intake.receipts.signature_verified_receipts | value)  unverified \(.intake.receipts.unverified_receipts | value)",
+        "  Receipt coverage                \(.intake.receipts.event_receipt_coverage | cov)",
+        (if .intake.receipts.full_window_rate_available then
+          "  Full-window redelivery rate     \(.intake.receipts.redelivery_rate | pct)"
+         else "  Observed-receipt redelivery     \(.intake.receipts.observed_receipt_redelivery_rate | pct) (conditional; full-window rate unavailable)" end)
+       else "  Webhook receipt audit unavailable." end),
+      "  Current publication backlog     \(.intake.publication.current_backlog | value)"
+     else "  Intake ledger unavailable." end),
+    "",
+    "Delivery funnel (unique work items)",
+    (["attempted", "executor_started", "effect_committed", "draft_pr_available", "verified_ready"][] as $stage |
+      "  \($stage | words)  \(.funnel.stages[$stage].count)  \(.funnel.stages[$stage].rate_from_attempted | pct)"),
+    "",
+    "Attempt status (attempt grain)",
+    (.outcomes.by_status | to_entries[] | "  \(.key | words)  \(.value)"),
+    (if .outcomes.right_censored then
+      "  Note: \(.outcomes.active_attempts) cohort attempt(s) are still active; outcome rates are right-censored."
+     else "  All cohort attempts are terminal." end),
+    (if .github.authenticated_outcomes_available == false or .outcomes.github_observation_coverage == null then
+      "  GitHub outcomes unavailable."
+     else
+      "  GitHub PR outcomes observed \(.outcomes.github_observation_coverage.observed)/\(.outcomes.github_observation_coverage.eligible)  open \(.outcomes.open_prs | value)  merged \(.outcomes.merged_prs | value)  closed unmerged \(.outcomes.closed_unmerged_prs | value)  unobserved \(.outcomes.unobserved_prs | value)",
+      "  Provider-timed merges            \(.github.merge_timestamp_coverage | cov) (required for temporal attribution)",
+      "  Closed-unmerged / terminal PRs  \(.github.closed_unmerged_rates.terminal_prs.numerator)/\(.github.closed_unmerged_rates.terminal_prs.denominator)  \(.github.closed_unmerged_rates.terminal_prs.rate | pct); all-eligible lower bound \(.github.closed_unmerged_rates.all_eligible_prs.rate | pct), censored \(.github.closed_unmerged_rates.all_eligible_prs.right_censored)",
+      "  Authenticated GitHub observations \(.github.authenticity.authenticated_observations | value)  unverified matching \(.github.authenticity.unverified_matching_observations | value)",
+      (if .github.first_pass_checks.available then
+        "  First-pass CI                    \(.github.first_pass_checks.success_rate | pct)"
+       else "  First-pass CI                    unavailable (required-check aggregate is not observed)" end),
+      (if .github.reviews.available then
+        "  Reviews with changes requested  \(.github.reviews.changes_requested_prs)/\(.github.reviews.coverage.observed)  \(.github.reviews.changes_requested_rate | pct)"
+       else "  Review observations             unavailable" end),
+      "  Mature 24h terminal coverage    \(.outcomes.maturity.at_24h.terminal_observation | cov)",
+      "  Mature 7d terminal coverage     \(.outcomes.maturity.at_7d.terminal_observation | cov)"
+     end),
+    "",
+    "Latency                                      n        p50        p95",
+    (.latency_ms | to_entries[] | "  \(.key | words)  \(.value.samples)/\(.value.eligible // .value.samples)  \(.value.p50 | duration)  \(.value.p95 | duration)"),
+    "",
+    "Failure evidence (attempt grain)",
+    "  Currently failed \(.failures.currently_failed_attempts)  with failure evidence \(.failures.attempts_with_failure_evidence)  recovered \(.failures.recovered_failure_attempts)",
+    (if (.failures.by_classification | length) == 0 then "  none"
+     else (.failures.by_classification[] | "  \(.failure_domain) / \(.failure_stage) / \(.reason_code)  \(.count)") end),
+    "  Backend invocation failures      \(.failures.backend_invocations.failed)",
+    (.failures.backend_invocations.by_classification[] | "    \(.failure_domain) / \(.failure_stage) / \(.reason_code)  \(.count)"),
+    "  Dispatch boundary failures       \(.failures.dispatch_boundaries.failed)",
+    (.failures.dispatch_boundaries.by_classification[] | "    \(.failure_domain) / \(.failure_stage) / \(.reason_code)  \(.count)"),
+    "  Effect commit boundary failures  \(.failures.effect_commit_boundaries.failed)",
+    (.failures.effect_commit_boundaries.by_classification[] | "    \(.failure_domain) / \(.failure_stage) / \(.reason_code)  \(.count)"),
+    "",
+    "Recovery and safety",
+    (.recovery.by_attempt_kind | to_entries[] | "  \(.key | words) attempts  \(.value.attempts)  verified \(.value.verified)"),
+    "  Failed-attempt recovery within \(.recovery.recovery_maturity_days)d \(.recovery.failed_attempts_verified_within_horizon)/\(.recovery.age_qualified_failed_attempts)  \(.recovery.failed_attempt_recovery_rate | pct)",
+    "  Recovery horizon maturity         \(.recovery.failed_attempt_recovery_outcome_coverage | cov); right-censored \(.recovery.right_censored_failed_attempts) (active-now \(.recovery.active_recovery_lineages), immature \(.recovery.immature_failed_attempts), unaged \(.recovery.unaged_unrecovered_failed_attempts))",
+    "  Observed eventual recoveries      \(.recovery.failed_attempts_eventually_verified) (late beyond horizon \(.recovery.late_observed_attempt_recoveries))",
+    "  Failure → retry p50             \(.recovery.failure_to_retry_reserved_ms.p50 | duration)",
+    "  Failure → verified p50          \(.recovery.failure_to_verified_ready_ms.p50 | duration)",
+    "  Repair budgets exhausted          \(.recovery.repair_budgets_exhausted)",
+    "  Bridge submit deduplicated events  \(.safety.bridge_submit_deduplicated_events)",
+    "  Unknown effect outcomes           \(.safety.unknown_effect_outcomes)",
+    "  Observed receipt recovery incidents \(.safety.observed_receipt_commit_recovery_incidents)",
+    "  Unresolved observed receipts        \(.safety.unresolved_observed_receipts)",
+    "  Receipt recovery retries exhausted  \(.safety.observed_receipt_recovery_exhausted)",
+    "  Rejected observed receipts          \(.safety.rejected_observed_receipts)",
+    "  Duplicate effects                 \(if .safety.duplicate_effects_detected == null then "unavailable" else .safety.duplicate_effects_detected end)",
+    "  Work items ready for review       \(.human.work_items_ready_for_review)",
+    "  Exception intervention attempts  \(.human.exception_intervention_attempts)",
+    "",
+    "Backends",
+    (if (.backends | length) == 0 then "  No attributed backend executions."
+     else (.backends[] | "  \(.execution_backend)/\(.execution_transport) configured_auth=\(.configured_auth_mode)  attempts=\(.attempts) invocations=\(.invocations) completed=\(.completed_invocations) failed=\(.failed_invocations) completed_p50=\(.completed_invocation_latency_ms.p50 | duration) failed_p50=\(.failed_invocation_latency_ms.p50 | duration)") end),
+    "",
+    "Intent-to-treat routes",
+    (if (.routes.groups | length) == 0 then "  No route assignments in this cohort."
+     else (.routes.groups[] | "  \(.experiment_id)/\(.variant) \(.intended_backend)/\(.intended_transport) provider=\(.configured_provider) model=\(.configured_model) repo=\(.repository) kind=\(.attempt_kind) attempts=\(.attempts) invoked=\(.backend_invoked) verified=\(.verified_ready)") end),
+    (if .routes.lineage then
+      "  Lineage route pairs \(.routes.lineage.route_pair_coverage | cov)  identity crossovers \(.routes.lineage.identity_crossovers)  variant crossovers \(.routes.lineage.variant_crossovers)"
+     else empty end),
+    "",
+    "Executor-selected models (configuration, not provider usage)",
+    (if .models then
+      "  Selection coverage \(.models.coverage | cov)  unknown \(.models.unknown_attempts)  before invocation \(.models.attempts_before_invocation)",
+      (.models.groups[] | "  \(.selected_provider)/\(.selected_model)  attempts=\(.attempts)")
+     else "  Unavailable in this report version." end),
+    "",
+    "Current active backlog",
+    (if .activity.current_active_backlog then
+      "  Attempts \(.activity.current_active_backlog.attempts)  work items \(.activity.current_active_backlog.work_items)  age p50 \(.activity.current_active_backlog.age_ms.p50 | duration)  p95 \(.activity.current_active_backlog.age_ms.p95 | duration)  max \(.activity.current_active_backlog.age_ms.max | duration)",
+      ((.activity.current_active_backlog.by_status // {}) | to_entries[] | "  \(.key | words)  \(.value)")
+     else "  Unavailable in this report version." end),
+    "",
+    "Lifecycle delivery",
+    (if .lifecycle.available then
+      "  Cohort records \(.lifecycle.cohort_records)  current dead letters \(.lifecycle.current_dead_letters)",
+      (.lifecycle.by_state | to_entries[] | "  \(.key | words)  \(.value)"),
+      (if (.lifecycle.dead_letter_delivery_errors | length) == 0 then empty
+       else (.lifecycle.dead_letter_delivery_errors | to_entries[] | "  delivery error \(.key)  \(.value)") end)
+     else "  Lifecycle ledger unavailable." end),
+    "",
+    "Delivery backlogs",
+    "  Ingress publication             \(.delivery.ingress_publication.current_backlog // "unavailable")",
+    "  Attempt event outbox            \(.delivery.factory_attempt_outbox.current_backlog // "unavailable")",
+    "  Inspection outbox               \(.delivery.factory_inspection_outbox.current_backlog // "unavailable")",
+    "  Lifecycle outbox                \(.delivery.lifecycle_outbox.current_backlog // "unavailable")",
+    "",
+    "Reconciliation",
+    (if .reconciliation.available then
+      "  Current \(.reconciliation.current)  actionable \(.reconciliation.actionable)  historical \(.reconciliation.historical)",
+      (.reconciliation.by_kind | to_entries[] | "  \(.key | words)  \(.value)")
+     else "  Reconciliation evidence unavailable." end),
+    "",
+    "Source freshness",
+    ((.sources // {}) | to_entries[] | "  \(.key)  \(if .value.available then "rows=\(.value.row_count // (.value.row_counts | add // 0)) lag=\(.value.lag_ms | duration) schema=\(.value.schema_contract)" else "unavailable" end)"),
+    (if .sources.ingress.receipt_timestamp_health.available then
+      "  ingress receipts  invalid_time=\(.sources.ingress.invalid_receipt_timestamp_rows) future_time=\(.sources.ingress.future_receipt_timestamp_rows)"
+     else empty end),
+    (if .sources.bridge.available then
+      "  bridge timestamp values  invalid=\(.sources.bridge.invalid_timestamp_rows) future=\(.sources.bridge.future_timestamp_rows)"
+     else empty end),
+    "",
+    "Unavailable evidence",
+    (.unavailable_metrics[] | "  - \(.)")
+  '
+}
+
+analytics() {
+  local days=30 json=0 response
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --days)
+        [[ $# -ge 2 ]] || die "--days requires a value"
+        days="$2"
+        shift 2
+        ;;
+      --json)
+        json=1
+        shift
+        ;;
+      *)
+        die "usage: factory analytics [--days N] [--json]"
+        ;;
+    esac
+  done
+  [[ "$days" =~ ^[0-9]{1,3}$ ]] || die "analytics --days must be between 1 and 365"
+  days=$((10#$days))
+  (( days >= 1 && days <= 365 )) || die "analytics --days must be between 1 and 365"
+  response="$(operator_request GET "/v1/analytics?days=$days")"
+  if [[ "$json" == "1" ]]; then
+    printf '%s\n' "$response"
+  else
+    format_analytics <<<"$response"
+  fi
+}
+
 format_lifecycle() {
   require_jq_for_view
   jq -r '
@@ -217,9 +475,28 @@ format_lifecycle() {
   '
 }
 
+format_lifecycle_dead_letters() {
+  require_jq_for_view
+  jq -r '
+    if (.dead_letters | length) == 0 then
+      "No lifecycle dead letters."
+    else
+      "Lifecycle dead letters",
+      "======================",
+      (.dead_letters[] |
+        "",
+        "\(.outbox_key)",
+        "  reason: \(.reason_code // "unknown")",
+        "  source: \(.source_kind)  recorded=\(.source_recorded_at)",
+        "  issue: \(.identifier // "-")  job=\(.job_id // "-")"
+      )
+    end
+  '
+}
+
 github_absence_evidence() {
   local repo="$1" branch="$2" encoded_branch pr_json branch_exists api_error observed
-  command -v gh >/dev/null 2>&1 || die "GitHub CLI gh is required for force-absence evidence"
+  command -v gh >/dev/null 2>&1 || die "GitHub CLI gh is required for branch and PR absence evidence"
   encoded_branch="$(jq -rn --arg branch "$branch" '$branch|@uri')"
   pr_json="$(gh pr list --repo "$repo" --head "$branch" --state all --json number,url,state,isDraft,headRefName,headRefOid,baseRefName,mergedAt,closedAt,title)"
   if api_error="$(gh api "repos/$repo/branches/$encoded_branch" 2>&1 >/dev/null)"; then
@@ -232,7 +509,7 @@ github_absence_evidence() {
       die "GitHub branch absence check failed"
     fi
   fi
-  observed="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  observed="$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")"
   jq -cn --arg kind "github_branch_pr_absence_v1" --arg repo "$repo" --arg branch "$branch" --arg observed "$observed" --argjson branch_exists "$branch_exists" --argjson prs "$pr_json" '{kind:$kind,repository:$repo,head_branch:$branch,branch_exists:$branch_exists,pull_requests:$prs,observed_at:$observed}'
 }
 
@@ -273,6 +550,11 @@ force_absence_retry() {
 }
 
 lifecycle() {
+  if [[ "${1:-}" == "dead-letters" ]]; then
+    shift
+    lifecycle_dead_letters "$@"
+    return
+  fi
   local issue="" json=0 limit=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -306,6 +588,49 @@ lifecycle() {
   else
     format_lifecycle <<<"$response"
   fi
+}
+
+lifecycle_dead_letters() {
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    list)
+      local json=0 limit="" path response
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) json=1; shift ;;
+          --limit) [[ $# -ge 2 ]] || die "--limit requires a value"; limit="$2"; shift 2 ;;
+          *) die "usage: factory lifecycle dead-letters list [--json] [--limit N]" ;;
+        esac
+      done
+      path="/v1/lifecycle/dead-letters"
+      [[ -z "$limit" ]] || path="$path?limit=$limit"
+      response="$(operator_request GET "$path")"
+      if [[ "$json" == "1" ]]; then printf '%s\n' "$response"; else format_lifecycle_dead_letters <<<"$response"; fi
+      ;;
+    preview)
+      [[ $# -eq 1 ]] || die "usage: factory lifecycle dead-letters preview OUTBOX-KEY"
+      operator_request POST /v1/lifecycle/dead-letters/archive/preview "$(jq -cn --arg outbox_key "$1" '{outbox_key:$outbox_key}')"
+      ;;
+    archive)
+      local outbox_key="${1:-}" reason="" snapshot_digest="" yes=""
+      [[ -n "$outbox_key" ]] || die "usage: factory lifecycle dead-letters archive OUTBOX-KEY --reason TEXT --snapshot-digest DIGEST --yes"
+      shift || true
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
+          --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the digest returned by preview"; snapshot_digest="$2"; shift 2 ;;
+          --yes) yes="--yes"; shift ;;
+          *) die "unknown lifecycle archive option: $1" ;;
+        esac
+      done
+      [[ "$yes" == "--yes" ]] || die "lifecycle dead-letter archive requires reviewed approval; rerun with --yes"
+      [[ -n "$reason" ]] || die "lifecycle dead-letter archive requires --reason"
+      [[ -n "$snapshot_digest" ]] || die "lifecycle dead-letter archive requires --snapshot-digest from a fresh preview"
+      operator_request POST /v1/lifecycle/dead-letters/archive "$(jq -cn --arg outbox_key "$outbox_key" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" '{outbox_key:$outbox_key,reason:$reason,snapshot_digest:$snapshot_digest}')"
+      ;;
+    *) die "usage: factory lifecycle dead-letters {list|preview|archive}" ;;
+  esac
 }
 
 retry_issue() {
@@ -344,6 +669,88 @@ retry_issue() {
   local body
   body="$(jq -cn --arg issue "$issue" --arg mode "$mode" --arg request_id "$request_id" --arg reason "$reason" --arg snapshot_digest "$snapshot_digest" --arg supersede "$supersede" --arg supersede_job "$supersede_job" '{issue:$issue,mode:$mode,request_id:$request_id,reason:$reason,snapshot_digest:$snapshot_digest} + (if $supersede == "" then {} else {supersede_pr_url:$supersede} end) + (if $supersede_job == "" then {} else {supersede_job_id:$supersede_job} end)')"
   operator_request POST /v1/retry/reserve "$body"
+}
+
+review_recovery() {
+  local issue="${1:-}" phase="${2:-}"; shift 2 || die "review-recovery requires an issue and phase"
+  local review="" source="" repo="" pr="" branch="" head="" reason="" request_id="" digest="" yes="" body
+  [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "review-recovery phase must be inspect, preview or confirm"
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == --yes || $# -ge 2 ]] || die "$1 requires a value"
+    case "$1" in
+      --review) review="$2"; shift 2 ;;
+      --source-attempt) source="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --pr) pr="$2"; shift 2 ;;
+      --branch) branch="$2"; shift 2 ;;
+      --reviewed-head) head="$2"; shift 2 ;;
+      --reason) reason="$2"; shift 2 ;;
+      --request-id) request_id="$2"; shift 2 ;;
+      --snapshot-digest) digest="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
+      *) die "unknown review-recovery option: $1" ;;
+    esac
+  done
+  [[ -n "$review" && -n "$source" ]] || die "review-recovery requires --review and --source-attempt"
+  body="$(jq -cn --arg issue "$issue" --arg review_id "$review" --arg source_attempt_id "$source" '{issue:$issue,review_id:$review_id,source_attempt_id:$source_attempt_id}')"
+  if [[ "$phase" == inspect ]]; then
+    [[ -n "$yes" && -z "$repo$pr$branch$head$reason$request_id$digest" ]] || die "inspect accepts only --review, --source-attempt and --yes"
+  else
+    [[ -n "$repo" && -n "$pr" && -n "$branch" && -n "$head" && -n "$reason" ]] || die "review-recovery requires the exact artifact and reason"
+    body="$(jq -c --arg repository "$repo" --arg pr_url "$pr" --arg branch "$branch" --arg reviewed_head_sha "$head" --arg reason "$reason" '. + {repository:$repository,pr_url:$pr_url,branch:$branch,reviewed_head_sha:$reviewed_head_sha,reason:$reason}' <<<"$body")"
+    if [[ "$phase" == confirm ]]; then
+      [[ -n "$yes" && -n "$request_id" && -n "$digest" ]] || die "confirm requires --yes, --request-id and --snapshot-digest from preview"
+      body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
+    else
+      [[ -z "$yes$request_id$digest" ]] || die "preview does not accept confirmation options"
+    fi
+  fi
+  operator_request POST "/v1/review-recovery/$phase" "$body"
+}
+
+review_repair() {
+  local issue="${1:-}" phase="${2:-}"; shift 2 || die "review-repair requires an issue and phase"
+  local source="" repo="" pr="" branch="" head="" feedback="" reason="" request_id="" digest="" yes="" from_policy="" to_policy=""
+  [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "review-repair phase must be inspect, preview or confirm"
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == --yes || $# -ge 2 ]] || die "$1 requires a value"
+    case "$1" in
+      --source-attempt) source="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --pr) pr="$2"; shift 2 ;;
+      --branch) branch="$2"; shift 2 ;;
+      --reviewed-head) head="$2"; shift 2 ;;
+      --feedback) feedback="$2"; shift 2 ;;
+      --reason) reason="$2"; shift 2 ;;
+      --request-id) request_id="$2"; shift 2 ;;
+      --snapshot-digest) digest="$2"; shift 2 ;;
+      --from-policy-digest) from_policy="$2"; shift 2 ;;
+      --to-policy-digest) to_policy="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
+      *) die "unknown review-repair option: $1" ;;
+    esac
+  done
+  [[ -n "$source" ]] || die "review-repair requires --source-attempt"
+  local body
+  if [[ "$phase" == inspect ]]; then
+    [[ -n "$yes" ]] || die "inspect queues one read-only artifact inspection; use --yes"
+    [[ -z "$repo$pr$branch$head$feedback$reason$request_id$digest$from_policy$to_policy" ]] || die "inspect accepts only --source-attempt and --yes"
+    body="$(jq -cn --arg issue "$issue" --arg source_attempt_id "$source" '{issue:$issue,source_attempt_id:$source_attempt_id}')"
+  else
+    [[ -n "$repo" && -n "$pr" && -n "$branch" && -n "$head" && -n "$feedback" && -n "$reason" ]] || die "review-repair requires the exact artifact, feedback and reason"
+    body="$(jq -cn --arg issue "$issue" --arg source_attempt_id "$source" --arg repository "$repo" --arg pr_url "$pr" --arg branch "$branch" --arg reviewed_head_sha "$head" --arg feedback "$feedback" --arg reason "$reason" '{issue:$issue,source_attempt_id:$source_attempt_id,repository:$repository,pr_url:$pr_url,branch:$branch,reviewed_head_sha:$reviewed_head_sha,feedback:$feedback,reason:$reason}')"
+    if [[ -n "$from_policy$to_policy" ]]; then
+      [[ "$from_policy" =~ ^[0-9a-f]{64}$ && "$to_policy" =~ ^[0-9a-f]{64}$ ]] || die "policy reauthorization requires both full policy digests"
+      body="$(jq -c --arg source_digest "$from_policy" --arg target_digest "$to_policy" '. + {policy_reauthorization:{source_digest:$source_digest,target_digest:$target_digest}}' <<<"$body")"
+    fi
+    if [[ "$phase" == confirm ]]; then
+      [[ -n "$yes" && -n "$request_id" && -n "$digest" ]] || die "confirm requires --yes, --request-id and --snapshot-digest from preview"
+      body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
+    else
+      [[ -z "$yes$request_id$digest" ]] || die "preview does not accept confirmation options"
+    fi
+  fi
+  operator_request POST "/v1/review-repair/$phase" "$body"
 }
 
 attempts() {
@@ -390,6 +797,7 @@ attempts() {
       operator_request GET "/v1/attempts/work-item/$issue"
       ;;
     show) [[ $# -eq 1 ]] || die "usage: factory attempts show ATTEMPT-ID"; operator_request GET "/v1/attempts/$1" ;;
+    evidence) [[ $# -eq 1 ]] || die "usage: factory attempts evidence ATTEMPT-ID"; operator_request GET "/v1/attempts/$1/evidence" ;;
     events)
       local id="" json=0 limit="" path response
       while [[ $# -gt 0 ]]; do
@@ -432,7 +840,57 @@ attempts() {
       [[ -n "$reason" && "$yes" == "--yes" ]] || die "cancellation requires --reason and --yes; it never closes or deletes a PR"
       operator_request POST "/v1/attempts/$id/cancel" "$(jq -cn --arg reason "$reason" '{reason:$reason}')"
       ;;
-    *) die "usage: factory attempts {active|list|show|events|cancel}" ;;
+    refresh-receipt)
+      local id="${1:-}"; shift || true; local reason="" yes=""
+      [[ -n "$id" ]] || die "usage: factory attempts refresh-receipt ATTEMPT-ID --reason TEXT --yes"
+      while [[ $# -gt 0 ]]; do case "$1" in --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;; --yes) yes="--yes"; shift ;; *) die "unknown receipt refresh option: $1" ;; esac; done
+      [[ -n "$reason" && "$yes" == "--yes" ]] || die "receipt refresh requires --reason and --yes; it performs one read-only PR inspection and never invokes the execution backend"
+      operator_request POST "/v1/attempts/$id/receipt-recovery/refresh" "$(jq -cn --arg reason "$reason" '{reason:$reason}')"
+      ;;
+    resolve-interrupted)
+      local id="${1:-}" phase="${2:-}"; shift 2 || die "resolve-interrupted requires ATTEMPT-ID and inspect, preview, or confirm"
+      local reason="" attestation="" absence_evidence="" request_id="" snapshot_digest="" yes=0 body result
+      [[ "$id" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || die "resolve-interrupted requires a canonical attempt UUID"
+      [[ "$phase" == inspect || "$phase" == preview || "$phase" == confirm ]] || die "resolve-interrupted requires inspect, preview, or confirm"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --reason) [[ $# -ge 2 ]] || die "--reason requires text"; reason="$2"; shift 2 ;;
+          --attestation) [[ $# -ge 2 ]] || die "--attestation requires a file"; attestation="$2"; shift 2 ;;
+          --absence-evidence) [[ $# -ge 2 ]] || die "--absence-evidence requires a file"; absence_evidence="$2"; shift 2 ;;
+          --request-id) [[ $# -ge 2 ]] || die "--request-id requires an ID"; request_id="$2"; shift 2 ;;
+          --snapshot-digest) [[ $# -ge 2 ]] || die "--snapshot-digest requires the preview digest"; snapshot_digest="$2"; shift 2 ;;
+          --yes) yes=1; shift ;;
+          *) die "unknown interrupted resolution option: $1" ;;
+        esac
+      done
+      if [[ "$phase" == inspect ]]; then
+        [[ "$yes" == 1 && -z "$reason$attestation$absence_evidence$request_id$snapshot_digest" ]] || die "inspect requires only --yes; it performs a read-only artifact inspection"
+        body='{}'
+      else
+        [[ -n "$reason" && -n "$attestation" ]] || die "resolution requires --attestation and --reason"
+        [[ -f "$attestation" && ! -L "$attestation" ]] || die "attestation must be a regular file, not a symlink"
+        [[ $(stat -c '%u:%a' "$attestation") == 0:600 && $(stat -c '%s' "$attestation") -le 4096 ]] || die "attestation must be root-owned, mode 0600, at most 4096 bytes"
+        body="$(jq -cen --slurpfile evidence "$attestation" --arg reason "$reason" 'if ($evidence|length)==1 and ($evidence[0]|type)=="object" then {attestation:$evidence[0],reason:$reason} else error("expected one attestation object") end')"
+        if [[ -n "$absence_evidence" ]]; then
+          [[ -f "$absence_evidence" && ! -L "$absence_evidence" ]] || die "absence evidence must be a regular file, not a symlink"
+          [[ $(stat -c '%u:%a' "$absence_evidence") == 0:600 && $(stat -c '%s' "$absence_evidence") -le 4096 ]] || die "absence evidence must be root-owned, mode 0600, at most 4096 bytes"
+          body="$(jq -ce --slurpfile evidence "$absence_evidence" 'if ($evidence|length)==1 and ($evidence[0]|type)=="object" then . + {absence_evidence:$evidence[0]} else error("expected one absence evidence object") end' <<<"$body")"
+        fi
+        if [[ "$phase" == confirm ]]; then
+          [[ "$yes" == 1 && -n "$request_id" && -n "$snapshot_digest" ]] || die "confirm requires --request-id, --snapshot-digest and --yes"
+          body="$(jq -c --arg request_id "$request_id" --arg snapshot_digest "$snapshot_digest" '. + {request_id:$request_id,snapshot_digest:$snapshot_digest}' <<<"$body")"
+        else
+          [[ "$yes" == 0 && -z "$request_id$snapshot_digest" ]] || die "preview does not accept confirmation flags"
+        fi
+      fi
+      result="$(operator_request POST "/v1/attempts/$id/interrupted-resolution/$phase" "$body")"
+      if [[ "$phase" == inspect ]] && jq -e '.absence_evidence_target' >/dev/null <<<"$result"; then
+        github_absence_evidence "$(jq -er '.absence_evidence_target.repository' <<<"$result")" "$(jq -er '.absence_evidence_target.head_branch' <<<"$result")"
+      else
+        printf '%s\n' "$result"
+      fi
+      ;;
+    *) die "usage: factory attempts {active|list|show|events|evidence|cancel|refresh-receipt|resolve-interrupted}" ;;
   esac
 }
 
@@ -583,11 +1041,28 @@ retired_timer_status() {
   fi
 }
 
+retired_factory_units_status() {
+  local unit active enabled offenders=""
+  for unit in "${RETIRED_FACTORY_UNITS[@]}"; do
+    active="$(systemctl is-active "$unit" 2>/dev/null || true)"
+    enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    if [[ "$active" == "active" || "$enabled" == "enabled" || "$enabled" == "enabled-runtime" ]]; then
+      offenders="${offenders:+$offenders,}$unit(active=${active:-unknown},enabled=${enabled:-unknown})"
+    fi
+  done
+  if [[ -z "$offenders" ]]; then
+    status_line OK "Retired direct-host Factory units" "inactive and disabled"
+  else
+    status_line FAIL "Retired direct-host Factory units" "$offenders"
+    mark_failure
+  fi
+}
+
 docker_service_status() {
   local label="$1"
   local service="$2"
   local required="${3:-required}"
-  local running detail
+  local cid inspection state oom restarts health image detail
 
   if ! factory_docker_runtime_available; then
     detail="missing compose runtime: $RUNTIME_ROOT/docker-compose.yml"
@@ -600,15 +1075,21 @@ docker_service_status() {
     return
   fi
 
-  running="$(docker_compose ps --services --filter status=running 2>/dev/null || true)"
-  detail="compose_service=$service"
-  if grep -qx "$service" <<<"$running"; then
+  cid="$(docker_compose ps -q "$service" 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$cid" ]]; then
+    detail="compose_service=$service running=no"
+  else
+    inspection="$(docker inspect --format '{{.State.Status}}|{{.State.OOMKilled}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+    IFS='|' read -r state oom restarts health image <<<"$inspection"
+    detail="compose_service=$service state=${state:-unknown} health=${health:-unknown} oom=${oom:-unknown} restarts=${restarts:-unknown} image=${image:-unknown}"
+  fi
+  if [[ "$state" == "running" && "$oom" == "false" && "${restarts:-0}" == "0" && ( "$health" == "healthy" || "$health" == "none" ) ]]; then
     status_line OK "$label" "$detail"
   elif [[ "$required" == "required" ]]; then
-    status_line FAIL "$label" "$detail running=no"
+    status_line FAIL "$label" "$detail"
     mark_failure
   else
-    status_line WARN "$label" "$detail running=no"
+    status_line WARN "$label" "$detail"
   fi
 }
 
@@ -693,6 +1174,92 @@ bridge_token() {
   fi
 }
 
+hatchet_conformance_status() {
+  local script desired output critical warning
+  script="$(factory_hatchet_doctor_script)"
+  desired="$(factory_hatchet_desired_state)"
+  if [[ ! -f "$script" || ! -f "$desired" || ! -x "$(command -v hatchet 2>/dev/null || true)" ]]; then
+    status_line FAIL "Hatchet desired-state conformance" "doctor, desired state, or Hatchet CLI unavailable"
+    mark_failure
+    return
+  fi
+  output="$(python3 "$script" --desired "$desired" --profile "${FACTORY_HATCHET_PROFILE:-prod}" --json 2>/dev/null || true)"
+  critical="$(jq -r '.criticalCount // empty' <<<"$output" 2>/dev/null || true)"
+  warning="$(jq -r '.warningCount // empty' <<<"$output" 2>/dev/null || true)"
+  if [[ ! "$critical" =~ ^[0-9]+$ || ! "$warning" =~ ^[0-9]+$ ]]; then
+    status_line FAIL "Hatchet desired-state conformance" "inventory unavailable"
+    mark_failure
+  elif (( critical > 0 )); then
+    status_line FAIL "Hatchet desired-state conformance" "critical=$critical warning=$warning"
+    mark_failure
+  elif (( warning > 0 )); then
+    status_line WARN "Hatchet desired-state conformance" "critical=0 warning=$warning"
+  else
+    status_line OK "Hatchet desired-state conformance" "critical=0 warning=0"
+  fi
+}
+
+bridge_reconciliation_status() {
+  local token="$1" payload actionable critical warning terminal active system current historical
+  payload="$(curl --silent --show-error --fail --max-time 3 -H "Authorization: Bearer $token" 'http://127.0.0.1:19877/reconciliation/findings?active_within_minutes=30' 2>/dev/null || true)"
+  actionable="$(jq -r '.findings.actionable // empty' <<<"$payload" 2>/dev/null || true)"
+  critical="$(jq -r '.findings.actionable_severity.critical // empty' <<<"$payload" 2>/dev/null || true)"
+  warning="$(jq -r '.findings.actionable_severity.warning // empty' <<<"$payload" 2>/dev/null || true)"
+  active="$(jq -r '.findings.scope.active_work // empty' <<<"$payload" 2>/dev/null || true)"
+  system="$(jq -r '.findings.scope.system // empty' <<<"$payload" 2>/dev/null || true)"
+  terminal="$(jq -r '.findings.scope.terminal_work // empty' <<<"$payload" 2>/dev/null || true)"
+  current="$(jq -r '.findings.current // empty' <<<"$payload" 2>/dev/null || true)"
+  historical="$(jq -r '.findings.historical // empty' <<<"$payload" 2>/dev/null || true)"
+  if [[ ! "$actionable" =~ ^[0-9]+$ || ! "$critical" =~ ^[0-9]+$ || ! "$warning" =~ ^[0-9]+$ || ! "$active" =~ ^[0-9]+$ || ! "$system" =~ ^[0-9]+$ || ! "$terminal" =~ ^[0-9]+$ ]]; then
+    status_line FAIL "Actionable reconciliation findings" "unavailable"
+    mark_failure
+  elif (( critical > 0 )); then
+    status_line FAIL "Actionable reconciliation findings" "actionable=$actionable active=$active system=$system critical=$critical warning=$warning"
+    mark_failure
+  elif (( warning > 0 )); then
+    status_line WARN "Actionable reconciliation findings" "actionable=$actionable active=$active system=$system critical=0 warning=$warning"
+  else
+    status_line OK "Actionable reconciliation findings" "actionable=0 active=0 system=0"
+  fi
+  if [[ "$terminal" =~ ^[0-9]+$ ]] && (( terminal > 0 )); then
+    status_line WARN "Terminal reconciliation debt" "current=$terminal all_current=${current:-unknown} historical=${historical:-unknown}"
+  elif [[ "$terminal" =~ ^[0-9]+$ ]]; then
+    status_line OK "Terminal reconciliation debt" "current=0 historical=${historical:-unknown}"
+  fi
+}
+
+lifecycle_writer_status() {
+  local response code payload dead_letters dead_letter_reasons last_success
+  response="$(curl --silent --show-error --max-time 3 --write-out $'\n%{http_code}' http://127.0.0.1:19880/status 2>/dev/null || true)"
+  code="${response##*$'\n'}"
+  payload="${response%$'\n'*}"
+  dead_letters="$(jq -r '.outbox.dead_letters // empty' <<<"$payload" 2>/dev/null || true)"
+  dead_letter_reasons="$(jq -c '.outbox.dead_letter_reasons // {}' <<<"$payload" 2>/dev/null || true)"
+  last_success="$(jq -r '.last_success // empty' <<<"$payload" 2>/dev/null || true)"
+  if [[ "$code" != "200" ]]; then
+    status_line FAIL "Factory lifecycle writer status" "http=${code:-000} last_success=${last_success:-unknown}"
+    mark_failure
+  elif [[ "$dead_letters" =~ ^[0-9]+$ ]] && (( dead_letters > 0 )); then
+    status_line WARN "Factory lifecycle writer status" "http=200 dead_letters=$dead_letters reasons=${dead_letter_reasons:-unknown} last_success=${last_success:-unknown}"
+  else
+    status_line OK "Factory lifecycle writer status" "http=200 dead_letters=${dead_letters:-0} last_success=${last_success:-unknown}"
+  fi
+}
+
+factory_release_status() {
+  local token="$1" cid labels version revision health_commit
+  cid="$(docker_compose ps -q bridge 2>/dev/null | head -n 1 || true)"
+  labels="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}|{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid" 2>/dev/null || true)"
+  IFS='|' read -r version revision <<<"$labels"
+  health_commit="$(curl --silent --show-error --fail --max-time 3 -H "Authorization: Bearer $token" http://127.0.0.1:19877/health 2>/dev/null | jq -r '.release_commit // empty' 2>/dev/null || true)"
+  if [[ -n "$revision" && "$revision" != "development-unversioned" && "$health_commit" == "$revision" ]]; then
+    status_line OK "Factory release provenance" "version=${version:-unknown} commit=$revision"
+  else
+    status_line FAIL "Factory release provenance" "version=${version:-unknown} image_commit=${revision:-missing} bridge_commit=${health_commit:-missing}"
+    mark_failure
+  fi
+}
+
 command_status() {
   local label="$1"
   local required="${2:-required}"
@@ -751,6 +1318,7 @@ show_status() {
     docker_service_status "Factory Linear token refresh" factory-linear-token-refresh required
     docker_service_status "Factory retry operator" factory-operator required
     docker_service_status "Factory outbox dispatcher" outbox-dispatcher required
+    retired_factory_units_status
   else
     unit_status "Hatchet control plane" driftward-hatchet.service required
     unit_status "Hatchet Hermes gRPC gateway" driftward-hatchet-hermes-gateway.service required
@@ -768,21 +1336,31 @@ show_status() {
 
   printf '\nRequired endpoints\n'
   printf '%s\n' '------------------'
-  http_status "Hatchet dashboard/API" http://127.0.0.1:8888/ "200 302 401" required
+  http_status "Hatchet readiness" http://127.0.0.1:8733/ready "200" required
   token="$(bridge_token)"
   if [[ -n "$token" ]]; then
     http_status "Hatchet bridge health" http://127.0.0.1:19877/health "200" required -H "Authorization: Bearer $token"
+    bridge_reconciliation_status "$token"
+    if factory_docker_runtime_active; then
+      factory_release_status "$token"
+    fi
   else
     status_line FAIL "Hatchet bridge token" "missing or unreadable $BRIDGE_ENV_FILE"
     mark_failure
   fi
   http_status "Hatchet ingress health" http://127.0.0.1:19878/health "200" required
   http_status "Linear webhook readiness" http://127.0.0.1:19879/ready "200" required
+  if factory_docker_runtime_active; then
+    http_status "Factory console" http://127.0.0.1:19881/health "200" required
+  else
+    http_status "Factory console" http://127.0.0.1:19881/health "200" advisory
+  fi
   linear_webhook_public_readiness_status "Linear webhook public readiness" required
-  http_status "Factory lifecycle writer status" http://127.0.0.1:19880/status "200" required
+  lifecycle_writer_status
   http_status "Driftward Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
   command_status "Driftward Hermes Codex auth" required driftward-hermes hermes auth status openai-codex
   socket_status "Hermes Factory gRPC socket" "$HERMES_FACTORY_GATEWAY_SOCKET" advisory
+  hatchet_conformance_status
 
   printf '\nAdvisory / recovery\n'
   printf '%s\n' '-------------------'
@@ -877,6 +1455,9 @@ docker_services_for_target() {
       printf '%s\n' \
         factory-lifecycle-writer \
         factory-linear-token-refresh
+      ;;
+    console)
+      printf '%s\n' factory-operator
       ;;
     linear)
       printf '%s\n' \
@@ -989,11 +1570,30 @@ show_logs() {
   fi
 }
 
+show_console() {
+  local dns url="${FACTORY_CONSOLE_URL:-}"
+  curl -fsS http://127.0.0.1:19881/health >/dev/null || die "Factory console is unavailable"
+  if [[ -z "$url" ]] && command -v tailscale >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    dns="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' 2>/dev/null | sed 's/[.]$//' || true)"
+    [[ -z "$dns" || "$dns" == "null" ]] || url="https://$dns:19881/"
+  fi
+  [[ -n "$url" ]] || die "Factory console requires a Tailscale Serve URL; set FACTORY_CONSOLE_URL for local development"
+  printf '%s\n' "$url"
+}
+
 main() {
   local command="${1:-}"
   case "$command" in
     status)
       show_status
+      ;;
+    console)
+      [[ $# -eq 1 ]] || die "usage: factory console"
+      show_console
+      ;;
+    analytics)
+      shift
+      analytics "$@"
       ;;
     logs)
       shift
@@ -1015,6 +1615,14 @@ main() {
     lifecycle)
       shift
       lifecycle "$@"
+      ;;
+    review-recovery)
+      shift
+      review_recovery "$@"
+      ;;
+    review-repair)
+      shift
+      review_repair "$@"
       ;;
     attempts)
       shift

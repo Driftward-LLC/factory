@@ -5,9 +5,10 @@ import json
 import sys
 
 from .normalizer import IngressValidationError, normalize_github_pull_request, normalize_linear_issue
+from .publisher import PublishError, publish_hatchet_event
 from .public_proxy import serve_public_proxy
 from .server import serve
-from .store import DEFAULT_DB_PATH, IngressConflict, IngressNotFound, connect, get_event, list_events, record_event
+from .store import DEFAULT_DB_PATH, IngressConflict, IngressNotFound, claim_pending_publication, connect, get_event, list_events, list_pending_publications, mark_publication_failed, mark_published, publication_status, record_event
 
 
 def print_json(payload) -> None:
@@ -31,6 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="List recent ingress events")
     status.add_argument("--limit", type=int, default=20)
+
+    dispatch = sub.add_parser("dispatch-pending", help="Retry persisted events not yet published to Hatchet")
+    dispatch.add_argument("--limit", type=int, default=50)
 
     get = sub.add_parser("get", help="Get an ingress event by ID or event key")
     get.add_argument("ref")
@@ -79,7 +83,24 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "init":
                 print_json({"ok": True, "db": args.db})
             elif args.command == "status":
-                print_json({"events": list_events(conn, args.limit)})
+                print_json({"events": list_events(conn, args.limit), "publication": publication_status(conn)})
+            elif args.command == "dispatch-pending":
+                delivered = failed = 0
+                for event in list_pending_publications(conn, max(1, min(args.limit, 250))):
+                    claimed = claim_pending_publication(conn, event["event_key"])
+                    if not claimed:
+                        continue
+                    lease_id = claimed["publish_lease_id"]
+                    try:
+                        event_id = publish_hatchet_event(claimed["hatchet_event_name"], claimed["normalized"])
+                        mark_published(conn, claimed["event_key"], event_id, lease_id=lease_id)
+                        delivered += 1
+                    except PublishError:
+                        mark_publication_failed(conn, claimed["event_key"], lease_id)
+                        failed += 1
+                print_json({"delivered": delivered, "failed": failed, "publication": publication_status(conn)})
+                if failed:
+                    return 1
             elif args.command == "get":
                 print_json(get_event(conn, args.ref))
             elif args.command == "normalize-github-pr":

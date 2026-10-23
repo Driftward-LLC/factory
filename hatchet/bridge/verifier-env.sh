@@ -2,11 +2,12 @@
 set -euo pipefail
 
 env_file="${HATCHET_VERIFIER_ENV_PATH:-/etc/driftward/hatchet-verifier.env}"
-policy_path="${HATCHET_VERIFIER_POLICY_PATH:-/etc/driftward/hatchet-verifier-policy.json}"
+policy_path="${HATCHET_VERIFIER_POLICY_PATH:-}"
 policy_source="${HATCHET_VERIFIER_POLICY_SOURCE:-}"
 
 test_mode="${HATCHET_VERIFIER_TEST_MODE:-0}"
 [[ "$(id -u)" == "0" || "$test_mode" == "1" ]] || { echo "verifier env operation requires root" >&2; exit 1; }
+[[ -n "$policy_path" ]] || { echo "HATCHET_VERIFIER_POLICY_PATH is required" >&2; exit 1; }
 
 token_ok() {
   [[ -f "$env_file" ]] && [[ "$(stat -c '%a' "$env_file")" == "600" ]] && \

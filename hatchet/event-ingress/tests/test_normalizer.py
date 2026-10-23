@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,9 +10,12 @@ from unittest.mock import patch
 from hatchet_event_ingress.contracts import DECISIONS, HATCHET_EVENTS, REASON_CODES
 from hatchet_event_ingress.normalizer import (
     IngressValidationError,
+    normalize_github_check_suite,
     normalize_github_pull_request,
+    normalize_github_pull_request_review,
     normalize_linear_issue,
 )
+from hatchet_event_ingress.store import payload_hash
 
 
 class NormalizeGitHubPullRequestTest(unittest.TestCase):
@@ -24,7 +28,8 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_CREATED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:created:delivery-opened-1",
+            "github:pull_request:Driftward-LLC/capykit:11:created:"
+            f"sha256:{payload_hash(payload)}",
         )
         self.assertEqual(normalized["linearIssues"], ["ENG-7"])
         self.assertTrue(normalized["isDraft"])
@@ -41,7 +46,8 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_SYNCHRONIZED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:synchronized:delivery-sync-1",
+            "github:pull_request:Driftward-LLC/capykit:11:synchronized:"
+            f"sha256:{payload_hash(payload)}",
         )
         self.assertEqual(normalized["headSha"], "def456")
         self.assertFalse(normalized["dispatchEligible"])
@@ -56,7 +62,8 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_CLOSED_UNMERGED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:closed_unmerged:delivery-1",
+            "github:pull_request:Driftward-LLC/capykit:11:closed_unmerged:"
+            f"sha256:{payload_hash(payload)}",
         )
         self.assertEqual(normalized["linearIssues"], ["ENG-7"])
         self.assertFalse(normalized["dispatchEligible"])
@@ -71,15 +78,34 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_CLOSED_MERGED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:closed_merged:delivery-merged-1",
+            "github:pull_request:Driftward-LLC/capykit:11:closed_merged:"
+            f"sha256:{payload_hash(payload)}",
         )
         self.assertTrue(normalized["merged"])
         self.assertFalse(normalized["dispatchEligible"])
         self.assertEqual(normalized["decision"], DECISIONS["OBSERVE_ONLY"])
         self.assertEqual(normalized["reasonCode"], REASON_CODES["GITHUB_PR_CLOSED_MERGED"])
 
+    def test_reopened_pr_restores_open_unmerged_observation(self) -> None:
+        payload = _github_pr_payload(action="reopened", state="closed", merged=True)
+
+        normalized = normalize_github_pull_request(payload, delivery_id="delivery-reopened-1")
+
+        self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_REOPENED"])
+        self.assertEqual(
+            normalized["eventKey"],
+            "github:pull_request:Driftward-LLC/capykit:11:reopened:"
+            f"sha256:{payload_hash(payload)}",
+        )
+        self.assertEqual(normalized["action"], "reopened")
+        self.assertEqual(normalized["state"], "open")
+        self.assertFalse(normalized["merged"])
+        self.assertFalse(normalized["dispatchEligible"])
+        self.assertEqual(normalized["decision"], DECISIONS["OBSERVE_ONLY"])
+        self.assertEqual(normalized["reasonCode"], REASON_CODES["GITHUB_PR_REOPENED"])
+
     def test_unsupported_pr_action_is_rejected(self) -> None:
-        payload = _github_pr_payload(action="reopened", state="open", merged=False)
+        payload = _github_pr_payload(action="labeled", state="open", merged=False)
 
         with self.assertRaises(IngressValidationError):
             normalize_github_pull_request(payload)
@@ -90,6 +116,74 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         with self.assertRaises(IngressValidationError):
             normalize_github_pull_request(payload, delivery_id="delivery")
 
+    def test_delivery_header_is_transport_metadata_not_event_identity(self) -> None:
+        payload = _github_pr_payload(action="opened", state="open", merged=False)
+        first = normalize_github_pull_request(payload, delivery_id="delivery-one")
+        replay = normalize_github_pull_request(payload, delivery_id="delivery-two")
+
+        self.assertEqual(first["eventKey"], replay["eventKey"])
+        self.assertEqual(first["deliveryId"], "delivery-one")
+        self.assertEqual(replay["deliveryId"], "delivery-two")
+
+
+class NormalizeGitHubChecksAndReviewsTest(unittest.TestCase):
+    def test_completed_check_suite_preserves_ci_outcome_and_pr_correlation(self) -> None:
+        payload = _github_check_suite_payload()
+        normalized = normalize_github_check_suite(
+            payload,
+            delivery_id="delivery-checks-1",
+        )
+
+        self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_CHECKS_COMPLETED"])
+        self.assertEqual(
+            normalized["eventKey"],
+            "github:check_suite:Driftward-LLC/capykit:987:completed:"
+            f"sha256:{payload_hash(payload)}",
+        )
+        self.assertEqual(normalized["subject"], "Driftward-LLC/capykit#11")
+        self.assertEqual(normalized["pullRequestNumbers"], [11])
+        self.assertEqual(normalized["checkConclusion"], "success")
+        self.assertEqual(normalized["checkRunCount"], 3)
+        self.assertFalse(normalized["dispatchEligible"])
+        self.assertEqual(normalized["decision"], DECISIONS["OBSERVE_ONLY"])
+        self.assertEqual(normalized["reasonCode"], REASON_CODES["GITHUB_CHECKS_COMPLETED"])
+
+    def test_completed_check_suite_without_pr_is_still_commit_correlated(self) -> None:
+        payload = _github_check_suite_payload()
+        payload["check_suite"]["pull_requests"] = []
+
+        normalized = normalize_github_check_suite(payload, delivery_id="delivery-checks-2")
+
+        self.assertIsNone(normalized["prNumber"])
+        self.assertEqual(normalized["subject"], "Driftward-LLC/capykit@abc123")
+
+    def test_non_completed_check_suite_is_rejected(self) -> None:
+        payload = _github_check_suite_payload()
+        payload["action"] = "requested"
+        with self.assertRaises(IngressValidationError):
+            normalize_github_check_suite(payload, delivery_id="delivery-checks-3")
+
+    def test_submitted_review_preserves_state_without_actor_identity(self) -> None:
+        payload = _github_review_payload()
+        normalized = normalize_github_pull_request_review(payload, delivery_id="delivery-review-1")
+
+        self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_REVIEW_SUBMITTED"])
+        self.assertEqual(normalized["subject"], "Driftward-LLC/capykit#11")
+        self.assertEqual(normalized["reviewState"], "changes_requested")
+        self.assertEqual(normalized["actorKind"], "human")
+        self.assertEqual(normalized["linearIssues"], ["ENG-7"])
+        self.assertNotIn("actorName", normalized)
+        self.assertNotIn("reviewBody", normalized)
+        self.assertFalse(normalized["dispatchEligible"])
+        self.assertEqual(normalized["decision"], DECISIONS["OBSERVE_ONLY"])
+        self.assertEqual(normalized["reasonCode"], REASON_CODES["GITHUB_REVIEW_SUBMITTED"])
+
+    def test_non_submitted_review_is_rejected(self) -> None:
+        payload = _github_review_payload()
+        payload["action"] = "dismissed"
+        with self.assertRaises(IngressValidationError):
+            normalize_github_pull_request_review(payload, delivery_id="delivery-review-2")
+
 
 class NormalizeLinearIssueTest(unittest.TestCase):
     def test_ready_linear_issue_is_dispatch_eligible(self) -> None:
@@ -99,7 +193,10 @@ class NormalizeLinearIssueTest(unittest.TestCase):
         normalized = normalize_linear_issue(payload, delivery_id="linear-delivery-1")
 
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["LINEAR_ISSUE_READY_FOR_IMPLEMENTATION"])
-        self.assertEqual(normalized["eventKey"], "linear:issue:ENG-40:update:linear-delivery-1")
+        self.assertEqual(
+            normalized["eventKey"],
+            f"linear:issue:ENG-40:update:sha256:{payload_hash(payload)}",
+        )
         self.assertEqual(normalized["subject"], "ENG-40")
         self.assertTrue(normalized["dispatchEligible"])
         self.assertEqual(normalized["decision"], DECISIONS["READY_FOR_IMPLEMENTATION"])
@@ -109,6 +206,15 @@ class NormalizeLinearIssueTest(unittest.TestCase):
         self.assertEqual(normalized["projectName"], "Capykit")
         self.assertEqual(normalized["updatedFields"], ["state"])
         self.assertTrue(all(gate["passed"] for gate in normalized["gateResults"]))
+
+    def test_delivery_header_is_transport_metadata_not_event_identity(self) -> None:
+        payload = _ready_linear_issue_payload()
+        first = normalize_linear_issue(payload, delivery_id="linear-delivery-one")
+        replay = normalize_linear_issue(payload, delivery_id="linear-delivery-two")
+
+        self.assertEqual(first["eventKey"], replay["eventKey"])
+        self.assertEqual(first["deliveryId"], "linear-delivery-one")
+        self.assertEqual(replay["deliveryId"], "linear-delivery-two")
 
     def test_project_id_is_preserved_when_only_project_id_is_present(self) -> None:
         payload = _ready_linear_issue_payload()
@@ -127,7 +233,13 @@ class NormalizeLinearIssueTest(unittest.TestCase):
             "name": "Driftward Software Factory",
         }
 
-        normalized = normalize_linear_issue(payload, delivery_id="linear-delivery-disabled-project")
+        registry = json.loads((Path(__file__).resolve().parents[2] / "workers/routing-registry.json").read_text())
+        next(route for route in registry["routes"] if route["project_id"] == payload["data"]["project"]["id"])["execution_enabled"] = False
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "routes.json"
+            path.write_text(json.dumps(registry))
+            with patch.dict(os.environ, {"HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(path)}):
+                normalized = normalize_linear_issue(payload, delivery_id="linear-delivery-disabled-project")
 
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["LINEAR_ISSUE_OBSERVED"])
         self.assertFalse(normalized["dispatchEligible"])
@@ -274,6 +386,39 @@ def _github_pr_payload(*, action: str, state: str, merged: bool) -> dict:
             "base": {"ref": "main"},
         },
     }
+
+
+def _github_check_suite_payload() -> dict:
+    return {
+        "action": "completed",
+        "repository": {"full_name": "Driftward-LLC/capykit"},
+        "check_suite": {
+            "id": 987,
+            "head_sha": "abc123",
+            "status": "completed",
+            "conclusion": "success",
+            "latest_check_runs_count": 3,
+            "created_at": "2026-08-11T08:01:00Z",
+            "updated_at": "2026-08-11T08:05:00Z",
+            "pull_requests": [{"number": 11}],
+        },
+    }
+
+
+def _github_review_payload() -> dict:
+    payload = _github_pr_payload(action="opened", state="open", merged=False)
+    payload.update({
+        "action": "submitted",
+        "review": {
+            "id": 654,
+            "state": "changes_requested",
+            "body": "Please rotate the private credential pasted here.",
+            "commit_id": "abc123",
+            "submitted_at": "2026-08-11T08:10:00Z",
+        },
+        "sender": {"id": 123, "login": "private-reviewer", "type": "User"},
+    })
+    return payload
 
 
 if __name__ == "__main__":

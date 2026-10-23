@@ -74,7 +74,7 @@ export const RECONCILIATION_KINDS = [
   'linear_route_mismatch',
 ] as const;
 
-type Event = { event_type: string; details: Record<string, unknown> };
+type Event = { event_type: string; details: Record<string, unknown>; created_at?: string };
 const ACTIVE = new Set(['accepted', 'running', 'effect_committed', 'verification_pending']);
 const TERMINAL_LINEAR = new Set(['done', 'canceled', 'cancelled', 'duplicate', 'in review', 'needs operator', 'blocked']);
 
@@ -83,6 +83,7 @@ export function compareCrossProvider(
   events: Event[],
   lookups: { github?: ObservationLookup; linear?: ObservationLookup; hatchet?: HatchetRunLookup },
   cutoff: number,
+  eventsComplete = true,
 ): ReconciliationFinding[] {
   const findings: ReconciliationFinding[] = [];
   const active = ACTIVE.has(job.state);
@@ -103,13 +104,7 @@ export function compareCrossProvider(
   }
 
   if (job.idempotency_key.startsWith('hatchet:') && (!job.hatchet_workflow_run_id || !job.hatchet_step_run_id)) findings.push(finding(job, 'warning', 'hatchet_provenance_missing', 'Hatchet-originated bridge job lacks workflow/task correlation', expected, { workflowRunId: job.hatchet_workflow_run_id, stepRunId: job.hatchet_step_run_id }));
-  if (!dryRun && (job.state === 'effect_committed' || job.state === 'verification_pending' || job.state === 'ready_for_human_review' || job.state === 'completed') && !job.reason_code?.startsWith('reconciled_')) {
-    if (!job.hermes_session_id) {
-      findings.push(finding(job, 'critical', 'hermes_execution_ref_missing', 'real effect lacks a Hermes execution receipt', expected, { receiptPresent: false }));
-    } else if (!events.some((event) => event.details.hermes_session_id === job.hermes_session_id)) {
-      findings.push(finding(job, 'critical', 'hermes_receipt_contradicts_bridge_history', 'Hermes execution receipt is absent from append-only bridge history', expected, { receiptPresent: false, bridgeReceiptRef: job.hermes_session_id }));
-    }
-  }
+  findings.push(...inspectHermesExecution(job, events, cutoff, eventsComplete));
   if (job.pr_url && !dryRun && lookups.github) {
     const github = lookups.github;
     if (github.status === 'not_found') {
@@ -118,12 +113,28 @@ export function compareCrossProvider(
       findings.push(finding(job, 'warning', `github_observation_${github.status}`, 'GitHub observation source did not return a usable result', expected, { status: github.status }));
     } else {
       const observed = github.observation.github || {};
-      if (observed.prUrl !== job.pr_url) findings.push(finding(job, 'critical', 'github_pr_url_mismatch', 'GitHub observation PR URL differs from bridge record', expected, observed));
-      if (typeof expected.repo === 'string' && observed.repo !== expected.repo) findings.push(finding(job, 'critical', 'github_pr_repo_mismatch', 'GitHub observation repository differs from bridge route', expected, observed));
-      if (job.branch && observed.headRefName !== job.branch) findings.push(finding(job, 'critical', 'github_pr_branch_mismatch', 'GitHub observation branch differs from deterministic bridge branch', expected, observed));
-      if (job.commit_sha && observed.headSha !== job.commit_sha) findings.push(finding(job, 'critical', 'github_pr_commit_mismatch', 'GitHub observation head commit differs from bridge record', expected, observed));
-      if (observed.isDraft !== true) findings.push(finding(job, 'critical', 'github_pr_not_draft', 'GitHub observation is not a draft PR', expected, observed));
-      if (observed.state?.toLowerCase() === 'closed' && observed.merged !== true) findings.push(finding(job, 'critical', 'github_pr_closed_unmerged_after_effect', 'GitHub reports an unmerged closed PR after bridge effect', expected, observed));
+      const missingFields = ['prUrl', ...(expected.repo ? ['repo'] : []), ...(job.branch ? ['headRefName'] : []), ...(job.commit_sha ? ['headSha'] : [])].filter((key) => !nonemptyString(observed[key as keyof typeof observed]));
+      if (typeof observed.isDraft !== 'boolean') missingFields.push('isDraft');
+      if (observed.state !== 'open' && observed.state !== 'closed') missingFields.push('state');
+      if (typeof observed.merged !== 'boolean') missingFields.push('merged');
+      if (missingFields.length) findings.push(finding(job, 'warning', 'github_observation_malformed', 'GitHub observation lacks usable PR evidence; missing fields are unknown, not mismatches', expected, { missingFields }));
+      if (nonemptyString(observed.prUrl) && observed.prUrl !== job.pr_url) findings.push(finding(job, 'critical', 'github_pr_url_mismatch', 'GitHub observation PR URL differs from bridge record', expected, observed));
+      if (typeof expected.repo === 'string' && nonemptyString(observed.repo) && observed.repo !== expected.repo) findings.push(finding(job, 'critical', 'github_pr_repo_mismatch', 'GitHub observation repository differs from bridge route', expected, observed));
+      if (job.branch && nonemptyString(observed.headRefName) && observed.headRefName !== job.branch) findings.push(finding(job, 'critical', 'github_pr_branch_mismatch', 'GitHub observation branch differs from deterministic bridge branch', expected, observed));
+      // Provider time wins over ingress arrival time: a delayed webhook is not
+      // evidence of drift after the recorded effect or verification checkpoint.
+      const observedAt = Date.parse(github.observation.providerUpdatedAt || github.observation.observedAt);
+      const evidenceAt = Math.max(0, ...events.filter((event) => ['transition:effect_committed', 'transition:ready_for_human_review', 'transition:completed'].includes(event.event_type)).map((event) => Date.parse(event.created_at || '')).filter(Number.isFinite));
+      if (!Number.isFinite(observedAt)) {
+        findings.push(finding(job, 'warning', 'github_observation_malformed', 'GitHub observation has no usable timestamp', expected, { timestampPresent: false }));
+      } else if (observedAt < evidenceAt) {
+        findings.push(finding(job, 'warning', 'github_observation_stale', 'GitHub observation predates recorded bridge evidence; current PR state is unknown', expected, { evidenceAt, observedAt }));
+      } else {
+        const handedOff = job.state === 'completed' || job.state === 'ready_for_human_review';
+        if (job.commit_sha && nonemptyString(observed.headSha) && observed.headSha !== job.commit_sha) findings.push(finding(job, handedOff ? 'warning' : 'critical', 'github_pr_commit_mismatch', handedOff ? 'Historical bridge evidence does not cover the observed PR head' : 'GitHub observation head commit differs from bridge record', expected, observed));
+        if (!handedOff && observed.isDraft === false) findings.push(finding(job, 'critical', 'github_pr_not_draft', 'GitHub observation is not a draft PR', expected, observed));
+        if (observed.state === 'closed' && observed.merged === false) findings.push(finding(job, handedOff ? 'warning' : 'critical', 'github_pr_closed_unmerged_after_effect', 'GitHub reports an unmerged closed PR after bridge effect', expected, observed));
+      }
       if (issue && !observed.linearIssues?.includes(issue)) findings.push(finding(job, 'warning', 'github_pr_missing_linear_link', 'GitHub observation lacks the originating Linear issue link', expected, observed));
     }
   }
@@ -138,12 +149,27 @@ export function compareCrossProvider(
       const status = observed.status?.trim().toLowerCase();
       if (active && status && TERMINAL_LINEAR.has(status)) findings.push(finding(job, 'critical', 'linear_terminal_issue_with_active_bridge_job', 'Linear issue is terminal while bridge job remains active', expected, observed));
       if (active && (observed.blockedByCount || 0) > 0) findings.push(finding(job, 'critical', 'linear_issue_blocked_with_active_bridge_job', 'Linear issue has blockers while bridge job remains active', expected, observed));
-      if (active && observed.dispatchEligible !== true) findings.push(finding(job, 'warning', 'linear_issue_ineligible_with_active_bridge_job', 'Linear issue is no longer eligible while bridge job remains active', expected, observed));
+      if (active && observed.dispatchEligible === false) findings.push(finding(job, 'warning', 'linear_issue_ineligible_with_active_bridge_job', 'Linear issue is no longer eligible while bridge job remains active', expected, observed));
       const routing = objectPayload(job, 'routing');
       if (routing?.project_id && observed.projectId && routing.project_id !== observed.projectId) findings.push(finding(job, 'critical', 'linear_route_mismatch', 'Linear project route differs from bridge routing record', expected, observed));
     }
   }
   return findings;
+}
+
+function inspectHermesExecution(job: BridgeJob, events: Event[], cutoff: number, eventsComplete: boolean): ReconciliationFinding[] {
+  // Hermes remains the only executor. Keep its legacy receipt contract here,
+  // separate from backend-neutral artifact and control-plane comparisons.
+  const effectAction = job.requested_action === 'create_draft_pr' || job.requested_action === 'repair_draft_pr';
+  if (job.payload.dry_run === true || !effectAction || !['effect_committed', 'verification_pending', 'ready_for_human_review', 'completed'].includes(job.state) || job.reason_code?.startsWith('reconciled_')) return [];
+  const severity = !ACTIVE.has(job.state) && Date.parse(job.updated_at) <= cutoff ? 'warning' : 'critical';
+  if (!job.hermes_session_id) return [finding(job, severity, 'hermes_execution_ref_missing', 'real effect lacks a Hermes execution receipt', expectedJob(job), { receiptPresent: false })];
+  if (eventsComplete && !events.some((event) => event.details.hermes_session_id === job.hermes_session_id)) return [finding(job, severity, 'hermes_receipt_contradicts_bridge_history', 'Hermes execution receipt is absent from append-only bridge history', expectedJob(job), { receiptPresent: false, bridgeReceiptRef: job.hermes_session_id })];
+  return [];
+}
+
+function nonemptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 export function finding(

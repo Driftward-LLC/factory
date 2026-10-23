@@ -9,9 +9,33 @@ or mutating external systems.
 - Workflow: `reconciliation-bridge-state-check`
 - Task: `inspect-bridge-ledger`
 - Event emitted: `driftward.reconciliation.detected`
-- Trigger: `hatchet trigger bridge-check --profile prod`
+- Schedule: every 15 minutes (`*/15 * * * *`)
+- Manual trigger: `hatchet trigger bridge-check --profile prod`
 
 The worker checks bounded bridge, sanitized ingress, and Hatchet inventories.
+Bridge scans rotate oldest-first through independent active and historical
+cohorts, ordered by immutable `(created_at, job_id)`. The default 250-job budget
+reserves 200 slots for active work and 50 for history (a one-job budget inspects
+only active work and is explicitly incomplete). Each sweep freezes its upper
+bound, so new arrivals cannot indefinitely postpone older jobs. Two progress
+rows in the existing bridge database retain pending page IDs and an opaque
+token across worker restarts; retries reread those IDs with current job state.
+Only successful inspection, finding persistence, recovery dispatch and event
+publication acknowledge a page. Failed work leaves that page pending.
+Retries retain the original page size even if the requested budget changes.
+Pending-page replay recomputes current findings and republishes those still
+present, including already-persisted findings; consumers deduplicate by stable
+finding key. Notifications are best-effort if the underlying state changes
+after a failed publication: the original finding remains in the durable ledger
+but may no longer be emitted. Ordinary new pages publish newly recorded
+findings only.
+
+`coverage.active` and `coverage.history` report scanned/total counts,
+`complete`, and `sweepComplete`. Reaching the end of a multi-page sweep does
+not mean the current invocation checked the whole ledger. `complete`/`clean`
+remain false unless both cohorts and every other evidence source are complete
+in that invocation. Absence checks use bounded full-ledger correlation queries,
+and duplicate branch/PR lookup includes jobs outside the current page.
 It never reports clean when an inventory is unavailable or reaches its safe
 limit. It compares every scanned bridge job and its append-only events for stale
 active jobs, missing event history, missing Hatchet provenance, missing PR URLs
@@ -23,6 +47,13 @@ compares the bridge PR URL and deterministic branch with the latest GitHub
 ingress observation, active bridge jobs with the latest Linear status and
 blockers, and real Hermes effects with their persisted Hermes session reference
 and append-only `effect_committed` event.
+
+Hermes receipt checks are isolated from backend-neutral comparisons; this does
+not enable another executor. After verified handoff, normal draft promotion is
+allowed, while a changed head or closed-unmerged PR is a historical-evidence
+warning. Repository, PR URL and branch identity mismatches stay critical.
+Missing fields, truncated histories and observations older than the recorded
+effect/handoff cannot establish a current mutable-state contradiction.
 
 Ingress owns provider verification and retains raw payloads. The worker uses
 only loopback `GET /observations/latest` and `/reconciliation/observations`,
@@ -36,6 +67,45 @@ ingress, Hatchet, or event-history limit reached is an explicit incomplete
 finding and prevents a clean result. Finding writes are sorted and chunked to
 the bridge's 250-record cap; a failed chunk is reported in worker telemetry
 while later chunks continue.
+An unsuccessful write fails the invocation and retains scan progress for retry.
+
+This is not a read-only bridge client: it persists findings and scan/ACK state,
+and requests durable verification resumes for eligible stale jobs. It never
+creates a new job/branch/PR for recovery. Scan endpoints are authenticated bridge-local POSTs at
+`/reconciliation/scan` and `/reconciliation/scan/ack`; the read-only batched
+`/reconciliation/correlations` POST accepts at most 250 keys per field.
+
+## Verification recovery
+
+Stale `running` jobs also request bounded execution receipt recovery through
+`POST /jobs/{ref}/factory-execution/resume`. The bridge permits only an existing
+authorized invocation and coalesces wakes in its outbox. The executor worker
+retrieves a durable gateway receipt using the original fence, including during
+manual handoff. Missing receipts never authorize another implementation. See
+[execution recovery](../../../docs/execution-recovery.md).
+
+`POST /jobs/{ref}/verification/resume` revalidates the current job and Factory
+attempt in one bridge transaction, then queues the ordinary same-job accepted
+wake in the existing Factory outbox. Only stale, real, current attempts in
+`effect_committed` or `verification_pending`, with a bound PR/branch/commit and
+no live verification lease, qualify. Pending or delivering wakes are coalesced;
+their delivery lease is not reset. Publication failures use the existing outbox
+retry/ACK protocol. The worker does not publish accepted events directly.
+
+The consumer acquires and claims a fresh verification owner only when it starts,
+so queue delays cannot consume a pre-reserved five-minute lease. Cancellation,
+supersession and terminal-attempt guards apply again at acquire, claim and
+completion/observation; expired owners cannot complete a newer lease. Recovery
+reuses durable context and the existing artifact, never re-executes an ambiguous
+effect or creates another PR. Existing receipt-recovery fencing is unchanged.
+
+Legacy bridge jobs without a Factory attempt, and imported generation-one real
+attempts already prohibited from verified completion, are reported as `legacy_job` skips
+in the run's `recovery` counts/reasons and retain their stale-job finding. They
+require reviewed operator recovery; no synthetic attempt or legacy direct event
+fallback is created. Other ineligible jobs are also explicit skips. A bridge
+enqueue error fails the scan and retains its page for retry. This is control-plane
+recovery independent of the executor's model/provider credentials.
 
 It does not call GitHub, Linear, Driftward Hermes, Docker, or arbitrary shell.
 Missing or unavailable observations are warnings; the reconciliation worker
@@ -49,7 +119,7 @@ break-glass recovery from the immutable bridge release.
 ```json
 {
   "requestId": "manual-check",
-  "maxJobs": 100,
+  "maxJobs": 250,
   "maxEventsPerJob": 100,
   "staleAfterMinutes": 30,
   "emitWhenClean": false
@@ -58,6 +128,20 @@ break-glass recovery from the immutable bridge release.
 
 `emitWhenClean` is useful for smoke tests because it proves the worker can emit
 an event even when no findings exist.
+
+The bridge exposes a 30-minute current projection separately from the complete
+append-only findings history. This makes recent drift actionable without
+discarding earlier evidence.
+An empty current finding projection is not proof of a complete clean sweep.
+
+## Deployment
+
+Bridge schema 7 adds the two-cohort progress table and lookup indexes. Use the
+existing reviewed backup and installer-only migration procedure before starting
+the new worker/bridge together. Runtime connections perform no DDL. A rollback
+to schema-6 code requires the matching pre-upgrade database snapshot; do not
+delete scan rows or edit the live ledger to bypass the schema check. This source
+change does not alter the registered workflow name, schedule or deployment.
 
 ## Environment
 

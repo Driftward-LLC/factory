@@ -100,10 +100,13 @@ class FactoryHatchetDoctorTests(unittest.TestCase):
                 "import json, sys\n"
                 f"workflows = {json.dumps({'rows': workflows})!r}\n"
                 f"workers = {json.dumps({'rows': workers})!r}\n"
+                f"crons = {json.dumps({'rows': live['cronTriggers']})!r}\n"
                 "if sys.argv[1:3] == ['workflows', 'list']:\n"
                 "    print(workflows)\n"
                 "elif sys.argv[1:3] == ['worker', 'list']:\n"
                 "    print(workers)\n"
+                "elif sys.argv[1:3] == ['cron', 'list']:\n"
+                "    print(crons)\n"
                 "else:\n"
                 "    sys.exit(2)\n",
                 encoding="utf-8",
@@ -141,6 +144,15 @@ class FactoryHatchetDoctorTests(unittest.TestCase):
 
         self.assertEqual(desired_workflows, catalog_workflows)
 
+    def test_missing_desired_cron_is_critical(self) -> None:
+        live = clean_live_inventory()
+        live["cronTriggers"] = []
+        result = run_doctor(live)
+
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertIn("desired_cron_trigger_not_live", {item["kind"] for item in payload["findings"]})
+
 
 def clean_live_inventory() -> dict[str, object]:
     desired = json.loads(DESIRED.read_text(encoding="utf-8"))
@@ -176,6 +188,11 @@ def clean_live_inventory() -> dict[str, object]:
             for worker in desired["active_workers"]
         ],
         "taskActions": task_actions,
+        "cronTriggers": [
+            {"workflowName": workflow["name"], "cron": expression, "active": True}
+            for workflow in desired["active_workflows"]
+            for expression in workflow.get("cron_triggers", [])
+        ],
     }
 
 

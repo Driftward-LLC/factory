@@ -47,6 +47,13 @@
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_pr_synchronized"
     },
+    "github_pr_reopened": {
+      "label": "GitHub PR reopened",
+      "wire_name": "driftward.github.pr.reopened",
+      "event_key_suffix": "reopened",
+      "default_decision_id": "observe_only",
+      "default_reason_code_id": "github_pr_reopened"
+    },
     "github_pr_closed_unmerged": {
       "label": "GitHub PR closed unmerged",
       "wire_name": "driftward.github.pr.closed_unmerged",
@@ -64,11 +71,13 @@
     "github_checks_completed": {
       "label": "GitHub checks completed",
       "wire_name": "driftward.github.checks.completed",
+      "default_decision_id": "observe_only",
       "default_reason_code_id": "github_checks_completed"
     },
     "github_review_submitted": {
       "label": "GitHub review submitted",
       "wire_name": "driftward.github.review.submitted",
+      "default_decision_id": "observe_only",
       "default_reason_code_id": "github_review_submitted"
     },
     "linear_issue_observed": {
@@ -145,6 +154,9 @@
     },
     "github_pr_synchronized": {
       "label": "GitHub PR head changed"
+    },
+    "github_pr_reopened": {
+      "label": "GitHub PR was reopened"
     },
     "github_pr_closed_unmerged": {
       "label": "GitHub PR was closed without merge"
@@ -360,7 +372,10 @@
   "provider_action_mappings": {
     "github.pull_request.opened": "github_pr_created",
     "github.pull_request.synchronize": "github_pr_synchronized",
+    "github.pull_request.reopened": "github_pr_reopened",
     "github.pull_request.closed.unmerged": "github_pr_closed_unmerged",
-    "github.pull_request.closed.merged": "github_pr_closed_merged"
+    "github.pull_request.closed.merged": "github_pr_closed_merged",
+    "github.check_suite.completed": "github_checks_completed",
+    "github.pull_request_review.submitted": "github_review_submitted"
   }
 }

@@ -1,0 +1,32 @@
+# Opt-in via the portable/production wrapper's telemetry command.
+services:
+  otel-collector:
+    image: ${FACTORY_OTEL_COLLECTOR_IMAGE:?Use the telemetry operations command}
+    labels:
+      io.driftward.factory.installation: ${FACTORY_INSTALLATION_ID:?}
+      io.driftward.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?}
+    command: ["--config=/etc/otelcol/factory.yaml"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: 0.5
+    env_file:
+      - ${FACTORY_OTEL_COLLECTOR_ENV_FILE:?Set a dedicated collector-only env file}
+    volumes:
+      - type: bind
+        source: ${FACTORY_OTEL_COLLECTOR_CONFIG:?Use the telemetry operations command}
+        target: /etc/otelcol/factory.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:${FACTORY_OTEL_PORT:-4318}:4318"
+    networks: [factory]
+  bridge:
+    environment:
+      FACTORY_OTEL_TRACES_ENDPOINT: ${FACTORY_OTEL_INTERNAL_ENDPOINT-}
+  bridge-executor-worker:
+    environment:
+      FACTORY_OTEL_TRACES_ENDPOINT: ${FACTORY_OTEL_INTERNAL_ENDPOINT-}

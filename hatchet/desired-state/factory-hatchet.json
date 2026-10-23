@@ -1,8 +1,8 @@
 {
   "schema": "driftward.factory.hatchet.desired-state.v1",
   "linear_issue": "ENG-97",
-  "last_reviewed": "2026-08-25",
-  "status": "transitional_in_driftward_host",
+  "last_reviewed": "2026-09-09",
+  "status": "standalone_factory_compose",
   "repository": "Driftward-LLC/factory",
   "source_roots": [
     "factory/",
@@ -16,7 +16,7 @@
     {
       "name": "intake-worker",
       "source": "hatchet/workers/intake-worker",
-      "systemd_unit": "driftward-hatchet-worker-intake.service",
+      "compose_service": "intake-worker",
       "status": "repo_managed",
       "tasks": [
         "reserve-ready-linear-issue-attempt"
@@ -28,7 +28,7 @@
     {
       "name": "execution-dispatch-worker",
       "source": "hatchet/workers/execution-dispatch-worker",
-      "systemd_unit": "driftward-hatchet-worker-execution-dispatch.service",
+      "compose_service": "execution-dispatch-worker",
       "status": "repo_managed",
       "tasks": [
         "submit-create-draft-pr"
@@ -40,7 +40,7 @@
     {
       "name": "bridge-executor-worker",
       "source": "hatchet/workers/bridge-executor-worker",
-      "systemd_unit": "driftward-hatchet-worker-bridge-executor.service",
+      "compose_service": "bridge-executor-worker",
       "status": "repo_managed",
       "tasks": [
         "execute-create-draft-pr",
@@ -53,7 +53,7 @@
     {
       "name": "pr-event-worker",
       "source": "hatchet/workers/pr-event-worker",
-      "systemd_unit": "driftward-hatchet-worker-pr-event.service",
+      "compose_service": "pr-event-worker",
       "status": "repo_managed",
       "tasks": [
         "normalize-pr-event"
@@ -65,7 +65,7 @@
     {
       "name": "reconciliation-worker",
       "source": "hatchet/workers/reconciliation-worker",
-      "systemd_unit": "driftward-hatchet-worker-reconciliation.service",
+      "compose_service": "reconciliation-worker",
       "status": "repo_managed",
       "tasks": [
         "inspect-bridge-ledger"
@@ -140,6 +140,10 @@
           "owner": "hatchet/event-ingress"
         },
         {
+          "event": "driftward.github.pr.reopened",
+          "owner": "hatchet/event-ingress"
+        },
+        {
           "event": "driftward.github.pr.closed_unmerged",
           "owner": "hatchet/event-ingress"
         },
@@ -168,6 +172,9 @@
         "inspect-bridge-ledger"
       ],
       "event_triggers": [],
+      "cron_triggers": [
+        "*/15 * * * *"
+      ],
       "runbook": "hatchet/workers/reconciliation-worker/README.md"
     }
   ],

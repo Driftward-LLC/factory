@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from .telemetry import bridge_span, record_status, flush as flush_telemetry
 
 from .store import (
     BridgeConflict,
@@ -19,12 +20,17 @@ from .store import (
     list_events,
     list_lifecycle_events,
     list_jobs,
+    reconciliation_scan,
+    acknowledge_reconciliation_scan,
+    reconciliation_correlations,
+    reconciliation_findings_status,
     record_reconciliation_findings,
     record_job_correlation,
     reserve_factory_intake,
     submit_job,
     transition_job,
     acquire_verification_lease,
+    enqueue_verification_resume,
     claim_verification_lease,
     record_verification_observation,
     get_factory_attempt,
@@ -38,6 +44,10 @@ from .store import (
     execution_may_effect,
     settle_factory_execution,
     recover_factory_execution,
+    enqueue_execution_receipt_recovery,
+    record_execution_receipt_observation,
+    record_factory_execution_analytics,
+    record_factory_execution_route,
     list_factory_outbox,
     claim_factory_outbox_delivery,
     acknowledge_factory_outbox,
@@ -94,6 +104,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         return data
 
     def _write_json(self, status: int, payload: dict[str, Any] | list[Any]) -> None:
+        record_status(getattr(self, "_telemetry_span", None), status)
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -112,6 +123,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._require_auth():
             return
+        with bridge_span(self.headers.get("traceparent")) as span:
+            self._telemetry_span = span
+            try:
+                BridgeHandler._get(self)
+            finally:
+                self._telemetry_span = None
+
+    def _get(self) -> None:
 
         try:
             parsed = urlparse(self.path)
@@ -167,6 +186,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._write_json(200, {"outbox": list_factory_outbox(self.conn, 250)})
                 return
 
+            if parts == ["reconciliation", "findings"]:
+                query = parse_qs(parsed.query)
+                active_minutes = _bounded_limit(query, default=30, label="active_within_minutes", key="active_within_minutes", maximum=1440)
+                self._write_json(200, {"findings": reconciliation_findings_status(self.conn, active_within_minutes=active_minutes)})
+                return
+
             if len(parts) == 2 and parts[0] == "jobs":
                 self._write_json(200, get_job(self.conn, parts[1]))
                 return
@@ -185,11 +210,34 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._require_auth():
             return
+        with bridge_span(self.headers.get("traceparent")) as span:
+            self._telemetry_span = span
+            try:
+                BridgeHandler._post(self)
+            finally:
+                self._telemetry_span = None
+
+    def _post(self) -> None:
 
         try:
             path = urlparse(self.path).path
             parts = [unquote(part) for part in path.split("/") if part]
             body = self._read_json()
+
+            if parts == ["reconciliation", "scan"]:
+                if set(body) != {"cohort", "limit"}:
+                    raise BridgeValidationError("reconciliation scan requires only cohort and limit")
+                self._write_json(200, reconciliation_scan(self.conn, cohort=body["cohort"], limit=body["limit"]))
+                return
+            if parts == ["reconciliation", "scan", "ack"]:
+                if set(body) != {"cohort", "token"}:
+                    raise BridgeValidationError("reconciliation scan acknowledgement requires only cohort and token")
+                acknowledge_reconciliation_scan(self.conn, cohort=body["cohort"], token=body["token"])
+                self._write_json(200, {"ok": True})
+                return
+            if parts == ["reconciliation", "correlations"]:
+                self._write_json(200, reconciliation_correlations(self.conn, body))
+                return
 
             if parts == ["jobs"]:
                 job, created = submit_job(self.conn, body)
@@ -238,8 +286,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._write_json(200, acquire_verification_lease(self.conn, parts[1], attempt_id=body.get("attempt_id"), ttl_seconds=body.get("ttl_seconds", 300)))
                 return
 
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "verification" and parts[3] == "resume":
+                if set(body) != {"stale_after_minutes"}:
+                    raise BridgeValidationError("verification resume requires only stale_after_minutes")
+                self._write_json(200, enqueue_verification_resume(self.conn, parts[1], stale_after_minutes=body["stale_after_minutes"]))
+                return
+
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "claim":
                 self._write_json(200, claim_factory_execution(self.conn, parts[1], owner=body.get("owner"), ttl_seconds=body.get("ttl_seconds", 900)))
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "resume":
+                if set(body) != {"stale_after_minutes"}:
+                    raise BridgeValidationError("execution resume requires only stale_after_minutes")
+                self._write_json(200, enqueue_execution_receipt_recovery(self.conn, parts[1], stale_after_minutes=body["stale_after_minutes"]))
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "observation":
+                record_execution_receipt_observation(self.conn, parts[1], body)
+                self._write_json(200, {"ok": True})
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "may-effect":
                 self._write_json(200, {"allowed": execution_may_effect(self.conn, parts[1], body)})
@@ -252,8 +315,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "settle":
                 claim = {key: body.get(key) for key in ("lease_id", "owner", "epoch", "fence_token")}
-                settle_factory_execution(self.conn, parts[1], claim, effect_observed=body.get("effect_observed") is True)
+                settle_factory_execution(
+                    self.conn,
+                    parts[1],
+                    claim,
+                    effect_observed=body.get("effect_observed") is True,
+                    failure_details=body.get("failure_details"),
+                    failure_event_type=body.get("failure_event_type", "execution_backend_failed"),
+                )
                 self._write_json(200, {"ok": True})
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "route":
+                if set(body) != {"details"}:
+                    raise BridgeValidationError("factory execution route body is invalid")
+                recorded = record_factory_execution_route(self.conn, parts[1], body.get("details"))
+                self._write_json(201 if recorded else 200, {"recorded": recorded})
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "analytics":
+                if set(body) != {"lease_id", "owner", "epoch", "fence_token", "event_type", "details"}:
+                    raise BridgeValidationError("factory execution analytics body is invalid")
+                claim = {key: body.get(key) for key in ("lease_id", "owner", "epoch", "fence_token")}
+                event_type = body.get("event_type")
+                if event_type not in {"execution_backend_invoked", "execution_backend_completed", "execution_model_selected"}:
+                    raise BridgeValidationError("factory execution analytics endpoint accepts invocation, model selection, and completion only")
+                recorded = record_factory_execution_analytics(
+                    self.conn,
+                    parts[1],
+                    claim,
+                    event_type=event_type,
+                    details=body.get("details"),
+                )
+                self._write_json(201 if recorded else 200, {"recorded": recorded})
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "commit":
                 claim = {key: body.get(key) for key in ("lease_id", "owner", "epoch", "fence_token")}
@@ -269,12 +361,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._write_json(200, {"inspection": record_pr_inspection(self.conn, parts[1], body.get("result"), request_key=body.get("inspection_request_key"), capability=body.get("inspection_capability"))})
                 return
 
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "independent-review" and parts[3] in {"claim", "complete", "authorization"}:
+                if not self._require_inspection_auth(): return
+                from . import independent_review
+                if parts[3] == "claim":
+                    self._write_json(200, {"claimed": independent_review.claim(self.conn, parts[1], body.get("review_capability"))})
+                elif parts[3] == "authorization":
+                    self._write_json(200, independent_review.authorization(self.conn, parts[1], body.get("review_capability")))
+                else:
+                    self._write_json(200, {"review": independent_review.complete(self.conn, parts[1], body.get("review_capability"), body.get("result"))})
+                return
+
             if len(parts) == 3 and parts[0] == "factory" and parts[1] == "outbox" and parts[2] == "claim":
                 item = claim_factory_outbox_delivery(self.conn, body.get("outbox_key"))
                 self._write_json(200, {"outbox": item})
                 return
             if len(parts) == 4 and parts[0] == "factory" and parts[1] == "outbox" and parts[3] == "ack":
-                acknowledge_factory_outbox(self.conn, parts[2]); self._write_json(200, {"ok": True}); return
+                acknowledge_factory_outbox(self.conn, parts[2], body.get("delivery_lease_id")); self._write_json(200, {"ok": True}); return
 
             if len(parts) == 5 and parts[0] == "jobs" and parts[2] == "verification" and parts[3] == "lease" and parts[4] == "claim":
                 if not self._require_verifier_auth():
@@ -315,8 +418,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._handle_error(exc)
 
 
-def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str) -> int:
-    values = query.get("limit", [])
+def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str, key: str = "limit", maximum: int = 250) -> int:
+    values = query.get(key, [])
     if not values:
         return default
     if len(values) != 1:
@@ -325,8 +428,8 @@ def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str) -> 
         value = int(values[0])
     except (TypeError, ValueError) as exc:
         raise BridgeValidationError(f"{label} must be an integer") from exc
-    if value < 1 or value > 250:
-        raise BridgeValidationError(f"{label} must be between 1 and 250")
+    if value < 1 or value > maximum:
+        raise BridgeValidationError(f"{label} must be between 1 and {maximum}")
     return value
 
 
@@ -381,3 +484,4 @@ def serve(db_path: str, host: str, port: int) -> None:
     finally:
         httpd.server_close()
         conn.close()
+        flush_telemetry()

@@ -1,5 +1,59 @@
 # Hatchet To Hermes Control Plane Boundary
 
+## Execution observability
+
+See [optional OpenTelemetry execution tracing](factory-opentelemetry.md) for
+the disabled-by-default cross-process tracing slice and activation gates.
+
+PostHog export belongs to Driftward Hermes, not Hatchet workers. The command
+adapter supplies a metadata-only envelope per invocation: bridge job UUID,
+sealed Factory attempt UUID/generation, and bounded Linear issue identifier.
+The host's `driftward-hermes` wrapper explicitly validates and forwards those
+four `FACTORY_OBSERVABILITY_*` fields into `docker compose exec`; host environment
+variables are not otherwise inherited by Hermes.
+
+The Hermes-native PostHog observer attaches `factory.job_id`,
+`factory.attempt_id`, `factory.generation`, and `factory.linear_issue` to
+generation/tool span events. One trace represents an attempt; tool spans link
+to their requesting generation. No prompts, tool arguments/results, bridge
+fences, or idempotency keys are exported. This metadata is diagnostic only and
+must not authorize execution, change lifecycle state, or replace ledger evidence.
+
+This path needs the matching host wrapper/plugin update from `driftward-host`.
+After both PRs merge, publish the host files and the compiled Factory gateway
+using the deployment runbook while execution is idle. No protobuf change,
+PostHog SDK, extra service, or PostHog credentials in Factory containers are needed.
+
+## Complete draft PR diff inspection
+
+The typed executor inspection pins both GitHub base and head commit SHAs and
+fetches the diff through the immutable compare endpoint. The supported CLI view
+fields are joined to REST's exact revisions only when their head SHA and head/base
+branch names agree; this avoids requiring newer CLI JSON fields. Paginated PR filenames
+must match GitHub's changed-file count. A second PR observation rejects changes
+to those revisions or PR identity during inspection; checks use that latest
+observation for the same head.
+
+Only an explicit HTTP 406 diff-size response permits a local Git fallback.
+The fixed reader runs as the executor user, creates a private temporary bare
+repository, fetches those exact SHAs and full ancestry with a blob filter, and
+uses the merge-base diff (including rename and binary-file evidence). It checks
+the complete local filename set against the paginated API evidence. It never
+checks out source or loads global Git configuration, repository hooks, external
+diffs, or text conversion commands. Its process-local credential helper uses
+the executor's existing GitHub CLI authentication; workers receive no credentials.
+
+Inspection shares one deadline across commands (at most 120 seconds). The
+fallback reserves cleanup time, kills its Git process group on failure or timeout,
+and removes temporary source before returning evidence. Output remains bounded
+(2 MiB by default, configurable up to 16 MiB); Git has a 512 MiB address-space
+limit, a 60-second CPU limit, a 256 MiB per-file limit and a polled 256 MiB source
+budget. Oversized history, missing ancestry, mismatched paths, unavailable
+credentials and unrelated API failures stop verification. The existing path,
+reported secret-check, commit and temp-file-content gates still apply. Evidence
+fetch failures report verification evidence unavailable; identity preflight
+failures retain their identity reason, without recording command output.
+
 Status: Draft
 Last reviewed: 2026-08-09
 Linear: ENG-35
@@ -256,20 +310,19 @@ key or fail with a conflict if the requested outcome differs.
 
 ## Placement
 
-If Hatchet is adopted as a durable host runtime, follow
-`docs/containerized-service-runbook.md` before adding Docker or systemd state.
-The expected scope is `host-level` because Hatchet would support shared
-bridge-backed work coordination across repos.
+Hatchet is deployed as part of the standalone Factory Compose application.
+`driftward-host` supplies Docker and protected secret files but does not own the
+Factory product runtime.
 
-Recommended paths:
+Current paths:
 
 ```text
-/docker/driftward/hatchet/              # Hatchet control-plane runtime
-/docker/driftward/hatchet/data/         # Hatchet durable state
+/docker/driftward/factory/              # Factory Compose runtime
+/var/lib/docker/volumes/driftward-factory-*  # Docker-managed durable state
 /etc/driftward/hatchet.env              # Hatchet control-plane env, mode 0600
-/etc/driftward/hatchet-worker.env       # Worker token only, mode 0600
+/etc/driftward/hatchet-workers.env      # Worker token only, mode 0600
 /var/lib/driftward-hatchet-bridge/      # Binding/control store for pilot
-/usr/local/bin/driftward-hatchet-smoke  # Host smoke test
+/usr/local/bin/factory-docker-smoke     # Factory runtime smoke test
 ```
 
 Bind all service ports to localhost unless a separate ingress, authentication,

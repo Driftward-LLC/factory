@@ -17,6 +17,26 @@ reconciliation_env_file="${DRIFTWARD_HATCHET_WORKER_RECONCILIATION_ENV_FILE:-/et
 hatchet_workers_env_file="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"
 factory_operator_env_file="${DRIFTWARD_FACTORY_OPERATOR_ENV_FILE:-/etc/driftward/factory-operator.env}"
 legacy_hatchet_unit="${DRIFTWARD_LEGACY_HATCHET_UNIT:-driftward-hatchet.service}"
+legacy_factory_units=(
+  "$legacy_hatchet_unit"
+  driftward-hatchet-bridge.service
+  driftward-hatchet-event-ingress.service
+  driftward-hatchet-linear-webhook-proxy.service
+  driftward-hatchet-worker-intake.service
+  driftward-hatchet-worker-execution-dispatch.service
+  driftward-hatchet-worker-bridge-executor.service
+  driftward-hatchet-worker-pr-event.service
+  driftward-hatchet-worker-reconciliation.service
+  driftward-hatchet-hermes-gateway.service
+  driftward-factory-lifecycle-writer.service
+  driftward-factory-linear-token.service
+  driftward-factory-linear-token.timer
+  driftward-factory-operator.service
+  driftward-factory-outbox-dispatcher.service
+  driftward-factory-outbox-dispatcher.timer
+  driftward-hatchet-bridge-reconciler.service
+  driftward-hatchet-bridge-reconciler.timer
+)
 factory_cli_source="$repo_root/factory/factory"
 factory_cli_target="${DRIFTWARD_FACTORY_CLI_TARGET:-/usr/local/bin/factory}"
 factory_share_dir="${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}"
@@ -36,6 +56,17 @@ factory_image_override="${FACTORY_IMAGE:-}"
 smoke_timeout="${DRIFTWARD_FACTORY_SMOKE_TIMEOUT:-90}"
 smoke_interval="${DRIFTWARD_FACTORY_SMOKE_INTERVAL:-5}"
 start=0
+hatchet_postgres_volume=driftward-factory-hatchet-postgres-data
+bridge_volume=driftward-factory-bridge-data
+ingress_volume=driftward-factory-ingress-data
+lifecycle_volume=driftward-factory-lifecycle-data
+
+secret_shaped_value() {
+  local value="${1,,}"
+  [[ "$value" =~ (^|[._+:/@-])(sk-|gh[pousr]_|github_pat_|xox[baprs]-|hf_|gsk_|lin_api_|glpat-|npm_|pypi-|akia[a-z0-9]|asia[a-z0-9]|aiza[a-z0-9]|bearer([._+-]|$)) ]] \
+    || [[ "$value" =~ eyj[a-z0-9_-]{2,}\.[a-z0-9_-]{2,}\.[a-z0-9_-]{2,} ]] \
+    || [[ "$value" =~ [a-z0-9_.-]{128,} ]]
+}
 
 usage() {
   cat <<'USAGE'
@@ -45,7 +76,7 @@ Installs the Docker Compose deployment wrapper for Driftward Factory.
 It does not create or print secrets. Required env files stay under /etc/driftward.
 
 Options:
-  --start          Build the selected Factory image and restart the systemd unit.
+  --start          Build the selected Factory image and converge the systemd unit.
   --image-tag TAG  Persist the Factory image tag used by systemd and Compose.
   --image IMAGE    Persist a full Factory image reference instead of a tag.
 USAGE
@@ -70,19 +101,29 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$factory_image_override" ]] && secret_shaped_value "$factory_image_override"; then
+  echo "Factory image reference contains credential-like material" >&2
+  exit 64
+fi
 if [[ -n "$factory_image_override" && ! "$factory_image_override" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$ ]]; then
-  echo "invalid Factory image reference: $factory_image_override" >&2
+  echo "invalid Factory image reference" >&2
   exit 64
 fi
 if [[ -z "$factory_image_override" ]]; then
+  if secret_shaped_value "$factory_image_tag"; then
+    echo "Factory image tag contains credential-like material" >&2
+    exit 64
+  fi
   if [[ ! "$factory_image_tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
-    echo "invalid Factory image tag: $factory_image_tag" >&2
+    echo "invalid Factory image tag" >&2
     exit 64
   fi
   factory_image="driftward/factory:$factory_image_tag"
 else
   factory_image="$factory_image_override"
 fi
+factory_release_commit="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'development-unversioned')"
+factory_release_version="${factory_image##*:}"
 
 if [[ ! "$smoke_timeout" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid smoke timeout: $smoke_timeout" >&2
@@ -151,6 +192,68 @@ wait_for_factory_smoke() {
   done
 }
 
+activate_factory_runtime() {
+  systemctl enable "$service_name"
+  if systemctl is-active --quiet "$service_name"; then
+    systemctl reload "$service_name"
+  else
+    systemctl start "$service_name"
+  fi
+}
+
+rollback_factory_runtime() {
+  local rollback_image="$1"
+  [[ -n "$rollback_image" ]] || return 1
+  local rollback_dropin
+  rollback_dropin="$(mktemp)"
+  printf '[Service]\nEnvironment=FACTORY_IMAGE=%s\n' "$rollback_image" >"$rollback_dropin"
+  install -D -m 0644 "$rollback_dropin" "$factory_image_dropin"
+  rm -f "$rollback_dropin"
+  systemctl daemon-reload
+  activate_factory_runtime
+}
+
+compose_service_file_exists() {
+  local service="$1"
+  local path="$2"
+
+  "${compose_env[@]}" docker compose "${compose_args[@]}" run --rm --no-deps --entrypoint sh "$service" \
+    -c 'test -f "$1"' sh "$path" >/dev/null 2>&1
+}
+
+require_compose_volume_file() {
+  local service="$1"
+  local path="$2"
+  local volume="$3"
+  local label="$4"
+  local legacy_path="${5:-}"
+
+  if compose_service_file_exists "$service" "$path"; then
+    return 0
+  fi
+  echo "$label data is missing from Docker volume $volume at $path" >&2
+  if [[ -n "$legacy_path" && -e "$legacy_path" ]]; then
+    echo "legacy host bind data exists at $legacy_path; migrate it into $volume before starting" >&2
+  fi
+  exit 1
+}
+
+require_legacy_file_migrated() {
+  local service="$1"
+  local path="$2"
+  local volume="$3"
+  local label="$4"
+  local legacy_path="$5"
+
+  [[ -e "$legacy_path" ]] || return 0
+  if compose_service_file_exists "$service" "$path"; then
+    return 0
+  fi
+  echo "$label legacy host bind data exists at $legacy_path but Docker volume $volume is not populated at $path" >&2
+  echo "migrate the legacy data into the Docker volume before starting Factory" >&2
+  exit 1
+}
+
 if [[ "$(id -u)" != "0" ]]; then
   echo "Factory Docker install requires root" >&2
   exit 1
@@ -200,6 +303,57 @@ env_file_value() {
   awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }' "$file" 2>/dev/null || true
 }
 
+remove_env() {
+  local file="$1"
+  local key="$2"
+  local tmp
+
+  [[ -e "$file" ]] || return 0
+  tmp="$(mktemp)"
+  awk -F= -v key="$key" '$1 != key { print }' "$file" >"$tmp"
+  install -m 0600 -o root -g root "$tmp" "$file"
+  rm -f "$tmp"
+}
+
+analytics_label_secret_shaped() {
+  secret_shaped_value "$1"
+}
+
+analytics_label_valid() {
+  local kind="$1"
+  local value="$2"
+  analytics_label_secret_shaped "$value" && return 1
+  case "$kind" in
+    auth) [[ "$value" == "chatgpt_codex_oauth" || "$value" == "api_key" || "$value" == "unknown" ]] ;;
+    dimension) [[ "$value" =~ ^[a-z][a-z0-9_.-]{0,79}$ ]] ;;
+    version) [[ "$value" != "unknown" && "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,119}$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_analytics_label() {
+  local file="$1"
+  local key="$2"
+  local kind="$3"
+  local configured="$4"
+  local value="$configured"
+  [[ -n "$value" ]] || value="$(env_file_value "$file" "$key")"
+  if [[ -n "$value" ]] && analytics_label_valid "$kind" "$value"; then
+    # Always rewrite the key, even when the existing first value is valid.
+    # upsert_env removes every occurrence before appending one canonical value,
+    # so a later duplicate cannot become the effective secret-shaped label.
+    upsert_env "$file" "$key" "$value"
+  elif [[ "$kind" == "version" ]]; then
+    remove_env "$file" "$key"
+  else
+    upsert_env "$file" "$key" unknown
+  fi
+  value="$(env_file_value "$file" "$key")"
+  if [[ -z "$value" || "$value" == "unknown" ]]; then
+    echo "warning: $key is unknown or invalid; execution attribution will be incomplete" >&2
+  fi
+}
+
 ensure_env_secret() {
   local file="$1"
   local key="$2"
@@ -232,14 +386,7 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 install -d -m 0750 -o root -g root "$runtime_root"
-install -d -m 0750 -o root -g root \
-  "$runtime_root/data/bridge" \
-  "$runtime_root/data/hatchet/config" \
-  "$runtime_root/data/hatchet/postgres" \
-  "$runtime_root/data/ingress" \
-  "$runtime_root/data/lifecycle" \
-  "$runtime_root/data/linear-token" \
-  "$runtime_root/keys/hatchet"
+install -d -m 0750 -o root -g root "$runtime_root/keys/hatchet"
 install -d -m 0755 -o root -g root /etc/driftward
 ensure_env_file "$bridge_env_file"
 ensure_env_file "$bridge_executor_env_file"
@@ -249,6 +396,13 @@ ensure_env_secret "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN
 upsert_env "$bridge_executor_env_file" HATCHET_HERMES_INSPECTION_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN)"
 upsert_env "$reconciliation_env_file" HATCHET_HERMES_RECOVERY_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN)"
 ensure_env_default "$bridge_executor_env_file" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
+normalize_analytics_label "$bridge_executor_env_file" DRIFTWARD_HERMES_AUTH_MODE auth "${DRIFTWARD_HERMES_AUTH_MODE:-}"
+remove_env "$bridge_executor_env_file" DRIFTWARD_HERMES_PROVIDER
+remove_env "$bridge_executor_env_file" DRIFTWARD_HERMES_MODEL
+normalize_analytics_label "$bridge_executor_env_file" DRIFTWARD_HERMES_VERSION version "${DRIFTWARD_HERMES_VERSION:-}"
+# The image supplies this label. Remove any stale env-file override, especially
+# secret-shaped legacy content, so the checked image metadata remains authoritative.
+remove_env "$bridge_executor_env_file" FACTORY_RELEASE_VERSION
 ensure_env_file "$factory_operator_env_file"
 operator_dry_run="true"
 if [[ -r "$hatchet_workers_env_file" ]]; then
@@ -270,6 +424,15 @@ install -D -m 0755 "$script_dir/factory-docker-smoke" /usr/local/bin/factory-doc
 install -D -m 0755 "$factory_cli_source" "$factory_cli_target"
 install -d -m 0755 -o root -g root "$factory_share_dir/desired-state"
 install -d -m 0755 -o root -g root "$factory_share_dir/hermes-gateway"
+install -d -m 0755 -o root -g root "$factory_share_dir/independent-reviewer/deploy/independent-reviewer"
+for reviewer_asset in Dockerfile runner.py native_agent.py review_observer.py source_server.py source_token_broker.py renew_source_token.py browser_probe.cjs response.schema.json package.json package-lock.json; do
+  install -m 0644 "$script_dir/independent-reviewer/$reviewer_asset" "$factory_share_dir/independent-reviewer/deploy/independent-reviewer/$reviewer_asset"
+done
+install -d -m 0755 -o root -g root "$factory_share_dir/independent-reviewer/systemd"
+for reviewer_unit in driftward-factory-reviewer-source-token.service driftward-factory-reviewer-source-token.timer; do
+  install -m 0644 "$script_dir/systemd/$reviewer_unit" "$factory_share_dir/independent-reviewer/systemd/$reviewer_unit"
+done
+install -m 0644 "$script_dir/INDEPENDENT-REVIEW.md" "$factory_share_dir/independent-reviewer/INDEPENDENT-REVIEW.md"
 install -m 0755 "$factory_hatchet_doctor_source" "$factory_hatchet_doctor_target"
 install -m 0644 "$factory_hatchet_desired_state_source" "$factory_hatchet_desired_state_target"
 install -m 0644 "$hermes_gateway_proto_source" "$hermes_gateway_proto_target"
@@ -318,7 +481,7 @@ if [[ -r "$hatchet_env_file" ]]; then
   compose_args=(--env-file "$hatchet_env_file" "${compose_args[@]}")
 fi
 
-compose_env=(env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG FACTORY_SOURCE_ROOT="$repo_root")
+compose_env=(env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG FACTORY_SOURCE_ROOT="$repo_root" FACTORY_RELEASE_COMMIT="$factory_release_commit" FACTORY_RELEASE_VERSION="$factory_release_version")
 if [[ -n "$factory_image_override" ]]; then
   compose_env+=(FACTORY_IMAGE="$factory_image_override")
 else
@@ -336,7 +499,7 @@ echo "Factory CLI installed: $factory_cli_target"
 
 if (( start )); then
   if systemctl is-active --quiet "$legacy_hatchet_unit"; then
-    echo "$legacy_hatchet_unit is still active; stop it after migrating Hatchet data into $runtime_root/data/hatchet" >&2
+    echo "$legacy_hatchet_unit is still active; stop it after migrating Hatchet data into Docker volume $hatchet_postgres_volume" >&2
     exit 1
   fi
   for key_file in master.key private_ec256.key public_ec256.key; do
@@ -346,23 +509,46 @@ if (( start )); then
       exit 1
     fi
   done
-  if [[ ! -f "$runtime_root/data/hatchet/postgres/PG_VERSION" ]]; then
-    echo "Hatchet Postgres data is missing under $runtime_root/data/hatchet/postgres" >&2
-    echo "Migrate historical Hatchet data before starting the standalone Factory runtime." >&2
-    exit 1
-  fi
   if [[ ! -r /etc/driftward/factory-linear-token.env ]]; then
     echo "Factory Linear token credentials are missing: /etc/driftward/factory-linear-token.env" >&2
     echo "Create this protected env file before starting the standalone Factory runtime." >&2
     exit 1
   fi
 
-  docker build -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"
+  rollback_image=""
+  previous_bridge_cid="$("${compose_env[@]}" docker compose "${compose_args[@]}" ps -q bridge 2>/dev/null || true)"
+  if [[ -n "$previous_bridge_cid" ]]; then
+    previous_image_id="$(docker inspect --format '{{.Image}}' "$previous_bridge_cid")"
+    rollback_image="driftward/factory:rollback-$(date +%s)"
+    docker image tag "$previous_image_id" "$rollback_image"
+  fi
+  docker build \
+    --build-arg "FACTORY_RELEASE_COMMIT=$factory_release_commit" \
+    --build-arg "FACTORY_RELEASE_VERSION=$factory_release_version" \
+    -f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"
+  require_compose_volume_file postgres /var/lib/postgresql/data/PG_VERSION "$hatchet_postgres_volume" "Hatchet Postgres" "$runtime_root/data/hatchet/postgres/PG_VERSION"
+  require_legacy_file_migrated bridge /var/lib/driftward-hatchet-bridge/bridge.db "$bridge_volume" "Bridge ledger" "$runtime_root/data/bridge/bridge.db"
+  require_legacy_file_migrated event-ingress /var/lib/driftward-hatchet-event-ingress/ingress.db "$ingress_volume" "Ingress ledger" "$runtime_root/data/ingress/ingress.db"
+  require_legacy_file_migrated factory-lifecycle-writer /var/lib/driftward-factory-lifecycle-writer/outbox.db "$lifecycle_volume" "Lifecycle outbox" "$runtime_root/data/lifecycle/outbox.db"
   systemctl enable "$hermes_gateway_service_name"
   systemctl restart "$hermes_gateway_service_name"
-  systemctl enable "$service_name"
-  systemctl restart "$service_name"
-  wait_for_factory_smoke
+  if ! activate_factory_runtime || ! wait_for_factory_smoke; then
+    echo "Factory deploy failed health validation; restoring the previous runtime image" >&2
+    if rollback_factory_runtime "$rollback_image"; then
+      wait_for_factory_smoke || echo "Factory rollback started but did not pass the current smoke check" >&2
+    else
+      echo "Factory rollback image is unavailable" >&2
+    fi
+    exit 1
+  fi
+  for legacy_unit in "${legacy_factory_units[@]}"; do
+    if systemctl cat "$legacy_unit" >/dev/null 2>&1; then
+      systemctl disable --now "$legacy_unit"
+    fi
+  done
+  if [[ -n "$rollback_image" ]]; then
+    docker image rm "$rollback_image" >/dev/null 2>&1 || true
+  fi
 else
   echo "Start the Hermes Factory gateway with: systemctl enable --now $hermes_gateway_service_name"
   echo "Start after the selected image exists with: systemctl enable --now $service_name"

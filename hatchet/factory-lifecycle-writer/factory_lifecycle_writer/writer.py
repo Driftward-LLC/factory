@@ -50,6 +50,7 @@ FAILURE_MESSAGES = {
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 IDENTIFIER = re.compile(r"^ENG-[1-9][0-9]{0,8}$")
 REPO = re.compile(r"^Driftward-LLC/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+DRAFT_PR_ACTIONS = {"create_draft_pr", "repair_draft_pr"}
 
 
 class SourceError(RuntimeError):
@@ -214,8 +215,14 @@ class LifecycleWriter:
         return item["outbox_key"]
 
     def _bridge_candidate(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        # Operator ownership resolution is not a workflow outcome notification.
+        if event.get("eventType") == "execution_interrupted_resolved":
+            return None
         if event.get("sourceKind") == "factory_attempt":
             return self._attempt_candidate(event)
+        requested_action = event.get("requestedAction")
+        if requested_action is not None and requested_action not in DRAFT_PR_ACTIONS:
+            return None
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if isinstance(payload.get("factory_retry"), dict):
             # Generationed attempt events below are the canonical lifecycle
@@ -274,9 +281,12 @@ class LifecycleWriter:
             return None
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         source_time = _canonical_timestamp(event.get("createdAt"))
-        base = dict(issue_id=payload.get("linear_issue_id"), identifier=payload.get("linear_issue"), issue_url=payload.get("linear_issue_url"), job_id=event.get("jobId"), idempotency_key=event.get("idempotencyKey"), source_event_key=None, source_delivery_id=None, repo=payload.get("repo"), pr_url=event.get("prUrl"), execution_mode="real" if payload.get("dry_run") is False else "unknown", source_kind="factory_attempt", source_recorded_at=source_time)
+        dry_run = payload.get("dry_run")
+        base = dict(issue_id=payload.get("linear_issue_id"), identifier=payload.get("linear_issue"), issue_url=payload.get("linear_issue_url"), job_id=event.get("jobId"), idempotency_key=event.get("idempotencyKey"), source_event_key=None, source_delivery_id=None, repo=payload.get("repo"), pr_url=event.get("prUrl"), execution_mode="dry_run" if dry_run is True else "real" if dry_run is False else "unknown", source_kind="factory_attempt", source_recorded_at=source_time)
         if not source_time or source_time <= self.config.activation_watermark:
             return None
+        if dry_run is True:
+            return self._suppressed(base, phase, "dry_run_suppressed")
         if base["execution_mode"] != "real" or not self._valid_issue(base) or not self._valid_repo(base["repo"]):
             return self._dead_letter(base, "attempt_identity_invalid")
         generation = event.get("generation")

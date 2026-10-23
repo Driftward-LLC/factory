@@ -7,6 +7,13 @@ bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env
 operator_env_file="${FACTORY_OPERATOR_ENV:-/etc/driftward/factory-operator.env}"
 operator_socket="${FACTORY_OPERATOR_SOCKET:-/run/driftward-factory-operator/operator.sock}"
 operator_preview_smoke_issue="${FACTORY_OPERATOR_PREVIEW_SMOKE_ISSUE:-ENG-999999999}"
+expected_policy_path="/app/hatchet/workers/verifier-policy.json"
+hatchet_postgres_volume=driftward-factory-hatchet-postgres-data
+hatchet_config_volume=driftward-factory-hatchet-config-data
+bridge_volume=driftward-factory-bridge-data
+ingress_volume=driftward-factory-ingress-data
+lifecycle_volume=driftward-factory-lifecycle-data
+linear_token_volume=driftward-factory-linear-token-data
 
 env_file_value() {
   local file="$1"
@@ -53,6 +60,71 @@ running="$(docker compose "${compose_args[@]}" ps --services --filter status=run
 for service in "${required_services[@]}"; do
   if ! grep -qx "$service" <<<"$running"; then
     echo "Factory Docker service is not running: $service" >&2
+    exit 1
+  fi
+done
+
+require_container_health() {
+  local service="$1" cid inspection state oom restarts health
+  cid="$(docker compose "${compose_args[@]}" ps -q "$service")"
+  inspection="$(docker inspect --format '{{.State.Status}}|{{.State.OOMKilled}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid")"
+  IFS='|' read -r state oom restarts health <<<"$inspection"
+  if [[ "$state" != "running" || "$oom" != "false" || "$restarts" != "0" || ( "$health" != "healthy" && "$health" != "none" ) ]]; then
+    echo "Factory Docker service is degraded: $service state=$state health=$health oom=$oom restarts=$restarts" >&2
+    exit 1
+  fi
+}
+
+for service in "${required_services[@]}"; do
+  require_container_health "$service"
+done
+
+require_named_volume_mount() {
+  local service="$1"
+  local destination="$2"
+  local expected="$3"
+  local cid mount
+
+  cid="$(docker compose "${compose_args[@]}" ps -q "$service")"
+  if [[ -z "$cid" ]]; then
+    echo "Factory Docker service has no container id: $service" >&2
+    exit 1
+  fi
+  mount="$(
+    docker inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\n" .Type .Name .Destination}}{{end}}' "$cid" |
+      awk -F '\t' -v dest="$destination" '$3 == dest { print $1 " " $2; found=1 } END { exit found ? 0 : 1 }'
+  )" || {
+    echo "Factory Docker service $service is missing mount: $destination" >&2
+    exit 1
+  }
+  if [[ "$mount" != "volume $expected" ]]; then
+    echo "Factory Docker service $service has unexpected mount for $destination: $mount" >&2
+    exit 1
+  fi
+}
+
+require_named_volume_mount postgres /var/lib/postgresql/data "$hatchet_postgres_volume"
+require_named_volume_mount hatchet-lite /config "$hatchet_config_volume"
+require_named_volume_mount bridge /var/lib/driftward-hatchet-bridge "$bridge_volume"
+require_named_volume_mount event-ingress /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
+require_named_volume_mount factory-lifecycle-writer /var/lib/driftward-factory-lifecycle-writer "$lifecycle_volume"
+require_named_volume_mount factory-linear-token-refresh /var/lib/driftward-factory-linear-token "$linear_token_volume"
+require_named_volume_mount factory-linear-token-refresh /var/run/factory-linear-token driftward-factory-linear-published-token
+require_named_volume_mount factory-lifecycle-writer /var/run/factory-linear-token driftward-factory-linear-published-token
+require_named_volume_mount factory-operator /var/lib/driftward-hatchet-bridge "$bridge_volume"
+require_named_volume_mount factory-operator /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
+require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-bridge "$bridge_volume"
+require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
+
+for service in bridge intake-worker bridge-executor-worker factory-operator; do
+  runtime="$(docker compose "${compose_args[@]}" exec -T "$service" printenv HATCHET_FACTORY_RUNTIME || true)"
+  if [[ "$runtime" != "docker" ]]; then
+    echo "Factory Docker service $service has unexpected runtime marker: $runtime" >&2
+    exit 1
+  fi
+  actual="$(docker compose "${compose_args[@]}" exec -T "$service" printenv HATCHET_VERIFIER_POLICY_PATH || true)"
+  if [[ "$actual" != "$expected_policy_path" ]]; then
+    echo "Factory Docker service $service has unexpected verifier policy path: $actual" >&2
     exit 1
   fi
 done
@@ -131,14 +203,21 @@ hatchet_postgres_user="${hatchet_postgres_user:-hatchet}"
 docker compose "${compose_args[@]}" exec -T postgres pg_isready \
   -d "$hatchet_postgres_db" \
   -U "$hatchet_postgres_user" >/dev/null
-if ! curl -fsS http://127.0.0.1:8733/health >/dev/null 2>&1; then
-  curl -fsS http://127.0.0.1:8888/ >/dev/null
-fi
+curl -fsS http://127.0.0.1:8733/ready >/dev/null
 
-curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health >/dev/null
+bridge_health="$(curl -fsS "${bridge_header[@]}" http://127.0.0.1:19877/health)"
+bridge_cid="$(docker compose "${compose_args[@]}" ps -q bridge)"
+image_revision="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$bridge_cid")"
+bridge_revision="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("release_commit", ""))' <<<"$bridge_health")"
+if [[ -z "$image_revision" || "$image_revision" == "development-unversioned" || "$bridge_revision" != "$image_revision" ]]; then
+  echo "Factory release provenance mismatch: image=${image_revision:-missing} bridge=${bridge_revision:-missing}" >&2
+  exit 1
+fi
 curl -fsS http://127.0.0.1:19878/health >/dev/null
 curl -fsS http://127.0.0.1:19879/health >/dev/null
 curl -fsS http://127.0.0.1:19880/health >/dev/null
+curl -fsS http://127.0.0.1:19881/health >/dev/null
 operator_preview_smoke
+factory doctor hatchet --profile "${FACTORY_HATCHET_PROFILE:-prod}" --json >/dev/null
 
 echo "Factory Docker runtime is healthy: $runtime_root"

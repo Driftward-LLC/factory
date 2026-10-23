@@ -1,5 +1,16 @@
 # Factory Docker Deployment
 
+For a **new Linux/amd64 dry-run installation**, start with
+[the portable release guide](PORTABLE.md). That path uses published images,
+private per-installation configuration and namespaced state. The installer and
+cutover procedure below remain the existing VPS migration/real-execution path.
+
+To prepare a move from that existing Compose app to a new installation, follow
+[same-host cutover preparation](CUTOVER.md). The new helper previews first and
+can only copy an already stopped, quiescent source; it does not start the
+candidate or switch production routing. The legacy host-to-Docker gate below
+is a different migration and should not be used to rename the live deployment.
+
 Factory should deploy as a Docker Compose application owned by this repository.
 The host keeps Docker, the Compose wrapper, systemd supervision, and protected
 env files; the Factory Compose app owns Hatchet Lite/Postgres plus the CLI,
@@ -16,15 +27,16 @@ manifests, and checked-in runtime code.
   `driftward-hermes.service` and `driftward-hermes-factory-gateway.service`.
 - Hermes gateway: `driftward-hermes-factory-gateway.service`, listening on
   `unix:///run/driftward-hermes-factory/hermes.sock`.
-- Durable data:
-  - `/docker/driftward/factory/data/hatchet/postgres`
-  - `/docker/driftward/factory/data/hatchet/config`
-  - `/docker/driftward/factory/data/bridge`
-  - `/docker/driftward/factory/data/ingress`
-  - `/docker/driftward/factory/data/lifecycle`
-  - `/docker/driftward/factory/data/linear-token`
+- Durable data lives in Docker named volumes:
+  - `driftward-factory-hatchet-postgres-data`
+  - `driftward-factory-hatchet-config-data`
+  - `driftward-factory-bridge-data`
+  - `driftward-factory-ingress-data`
+  - `driftward-factory-lifecycle-data`
+  - `driftward-factory-linear-token-data`
 - Hatchet key material: `/docker/driftward/factory/keys/hatchet`
 - Local operator socket: `/run/driftward-factory-operator/operator.sock`.
+- Local Factory Console: `http://127.0.0.1:19881/`.
 - Local Hermes gateway socket: `/run/driftward-hermes-factory/hermes.sock`.
 
 ## Boundaries
@@ -55,15 +67,35 @@ seeds `DRIFTWARD_HERMES_GRPC_TARGET` in
 
 ```text
 DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
+DRIFTWARD_HERMES_AUTH_MODE=unknown
 ```
 
 The gateway may bind TCP later by setting `DRIFTWARD_HERMES_GRPC_TARGET` or
 `DRIFTWARD_HERMES_GRPC_BIND_TARGET` plus `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1`
-and either TLS or `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`. Do not solve Factory to
+and TLS plus `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`, or TLS with enforced client
+certificates (`DRIFTWARD_HERMES_GRPC_CA_PATH`). Server-only TLS does not
+authenticate callers. Explicit insecure development TCP is limited to literal
+loopback addresses and still requires a token. Do not solve Factory to
 Hermes access by copying Hermes credentials or session state into Factory.
 The gateway is bundled during install and requires a host Node.js 18+ binary;
 override the default `/usr/bin/node` with `DRIFTWARD_FACTORY_NODE_BIN` if the
 host keeps Node elsewhere.
+
+Set the non-secret `DRIFTWARD_HERMES_AUTH_MODE` deployment label to
+`chatgpt_codex_oauth` or `api_key` only when that route is explicitly
+configured. It defaults to `unknown`; the label supports analytics and never
+copies provider credentials into Factory.
+
+Set optional `DRIFTWARD_HERMES_VERSION` from reviewed deployment configuration
+when known. Do not configure provider/model labels in Factory: the executor
+reads Hermes's native configuration and pins the selected model/provider on
+the invocation. It reports only those bounded identifiers to the worker, not
+credentials or session state. The retired `DRIFTWARD_HERMES_MODEL` and
+`DRIFTWARD_HERMES_PROVIDER` variables are ignored and removed by the installers.
+The current worker always records the truthful
+route `factory-default-v1` / `hermes` / `static`. It deliberately ignores
+experiment-label environment variables: a future comparison must first add a
+real, reviewed router with stable assignment and lineage stickiness.
 
 ## Required Env Files
 
@@ -95,14 +127,21 @@ runtime secrets and must not be checked into this repository.
 ## Cutover Gate
 
 This PR does not migrate historical records. Before starting the standalone
-Factory runtime, migrate the existing Hatchet Postgres data and key material
-from the current Hatchet runtime into:
+Factory runtime, migrate existing Hatchet state into Docker named volumes and
+key material into the runtime root:
 
 ```text
-/docker/driftward/factory/data/hatchet/postgres
-/docker/driftward/factory/data/hatchet/config
+driftward-factory-hatchet-postgres-data
+driftward-factory-hatchet-config-data
+driftward-factory-bridge-data
+driftward-factory-ingress-data
+driftward-factory-lifecycle-data
+driftward-factory-linear-token-data
 /docker/driftward/factory/keys/hatchet
 ```
+
+Legacy host-bind state under `/docker/driftward/factory/data/*`, if present,
+is a migration source or archive only. It is not the live Docker runtime store.
 
 Then stop the legacy host-managed Hatchet unit:
 
@@ -112,8 +151,10 @@ systemctl disable --now driftward-hatchet.service
 
 `deploy/install-docker.sh --start` fails closed while
 `driftward-hatchet.service` is active or the migrated Hatchet DB/key material is
-missing. That prevents accidentally starting a second empty Hatchet control
-plane on the same ports.
+missing. If legacy bridge, ingress, or lifecycle SQLite files exist under the
+old host-bind path, start also fails until matching files exist inside the
+Docker volumes. That prevents accidentally starting an empty Factory control
+plane on the same ports and ledgers.
 
 ## Release Deployment
 
@@ -139,9 +180,14 @@ For release-shaped tags such as `v2026.8.26`, the installer verifies that the
 checkout is clean and that `HEAD` matches the requested tag before building.
 It writes the selected image into
 `/etc/systemd/system/driftward-factory.service.d/10-image-tag.conf`, reloads
-systemd, builds `driftward/factory:<tag>`, restarts
-`driftward-factory.service`, and retries `factory-docker-smoke` until the
-runtime is healthy or the deploy smoke timeout expires.
+systemd, builds `driftward/factory:<tag>` with immutable commit/version labels,
+and reloads `driftward-factory.service`. Compose recreates only changed
+services; unchanged PostgreSQL and Hatchet containers remain running. The
+installer retries `factory-docker-smoke` until healthy and restores the
+previously running image automatically if validation fails.
+After validation succeeds, it disables the retired direct-host worker, bridge,
+ingress, lifecycle, token, operator, outbox, and reconciliation units so the
+Compose application remains the only active Factory runtime.
 The smoke check also calls the retry operator's read-only preview endpoint for
 a sentinel ENG issue, so missing ingress mounts fail before a release is
 reported healthy.
@@ -176,6 +222,76 @@ image reference.
 
 ## Operations
 
+The Factory operator container also serves the Factory Console (read-only by default) on
+loopback port `19881`. Publish it privately through Tailscale Serve, never
+through Funnel or a public listener:
+
+```bash
+tailscale serve --bg --https=19881 http://127.0.0.1:19881
+factory console
+```
+
+The console requires the `Tailscale-User-Login` identity header on every page
+and API request; `/health` is the only unauthenticated endpoint. For local
+development only, set `FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED=1`. This bypass
+**always disables ownership commands**, including requests carrying an identity.
+
+### Per-issue manual ownership (opt-in)
+
+After a reviewed rollout and bridge schema-8 migration, an operator may enable
+the narrow console approval API in the protected `factory-operator.env` file:
+
+```dotenv
+FACTORY_CONSOLE_PUBLIC_ORIGIN=https://your-host.your-tailnet.ts.net:19881
+FACTORY_CONSOLE_OPERATOR_LOGINS=operator@example.com
+```
+
+Use the exact HTTPS origin, without a trailing slash, path, query, or credentials.
+The login list is comma-separated and exact-match. Missing/invalid configuration
+leaves commands disabled. This change does not enable them automatically.
+Deploy all bridge/operator/dispatcher processes from the same schema-8 release;
+do not run mixed versions against the shared database. Use the existing reviewed
+backup/quiesce/migration procedure, not console-triggered migration.
+
+Tailscale identity headers are **not cryptographic authentication on their own**.
+Only the trusted Tailscale Serve proxy and trusted local/runtime processes may
+reach port 19881. Verify host firewall, loopback publication, container-network
+access, and tailnet ACLs before enabling commands. Do not put an untrusted proxy
+or public listener in front of it. POSTs additionally require exact Origin,
+JSON content type, and the console's action header; forwarded host or browser
+supplied actor fields never confer authority. There is no generic root-operator
+proxy or browser dead-letter archive action.
+
+In an issue's **Execution control** panel:
+
+1. Choose **Take manual control**, enter a reason, preview, then confirm. The
+   durable hold fences new intake, queued execution, verification, and repairs.
+2. Wait for **Manual control—safe to edit**. Handoff pending means execution is
+   still unsettled. An already-authorized external effect can finish and record
+   its receipt; cancellation and lease expiry do not prove it has stopped. An
+   unknown outcome requires the existing reviewed operator recovery procedure.
+3. To start over, choose **Return for a fresh attempt**, preview, and confirm.
+   The latest stored Linear observation must be Ready, unblocked, and routed to
+   an enabled repository. A previous PR must be closed/unmerged with a current
+   worker inspection and exact artifact fencing. Missing/stale inspection or an
+   open/merged PR blocks handback. The preview uses cached provider observations,
+   not a synchronous live Linear query, and displays the recorded update time.
+
+Handback atomically clears the hold and reserves one new generation/outbox event;
+normal configured verification/repair policy then applies. Failed reservation
+retains manual control. Once controlled, this issue requires explicit future
+reservations; ordinary webhook intake stays fenced so delayed pre-hold events
+cannot regain authority. Linear workflow status is not changed by these commands.
+Fresh handback checks recorded Factory artifacts; it does not discover or adopt
+a separate PR or branch created manually. Reconcile those artifacts deliberately
+before approving a new attempt.
+Verification or continuation of manually edited **open PRs is not implemented**;
+it needs a new commit-bound validation/execution contract, not an old-job resume.
+
+If confirmation times out, use **Check previous request**. Its durable command ID
+recovers the committed result even after token expiry or a server restart, without
+duplicating execution. Ownership audit history retains actor, time, and reason.
+
 ```bash
 systemctl status driftward-factory.service --no-pager
 systemctl status driftward-hermes-factory-gateway.service --no-pager
@@ -183,12 +299,27 @@ journalctl -u driftward-factory.service -n 100 --no-pager
 journalctl -u driftward-hermes-factory-gateway.service -n 100 --no-pager
 docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
 docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100
-systemctl restart driftward-factory.service
+systemctl reload driftward-factory.service
 systemctl restart driftward-hermes-factory-gateway.service
 factory-docker-smoke
 ```
 
 Rollback to the previous release by checking out the prior tag and running
-`bash deploy/install-docker.sh --image-tag <tag> --start`. Preserve
-`/docker/driftward/factory/data/*` unless there is a separately approved record
-migration or restore plan.
+`bash deploy/install-docker.sh --image-tag <tag> --start`. Preserve the
+`driftward-factory-*` Docker volumes and `/docker/driftward/factory/keys/*`
+unless there is a separately approved record migration or restore plan.
+
+`factory status` treats container OOM state, unexpected restarts, failed Docker
+health checks, Hatchet readiness, desired-state drift, release provenance, and
+actionable reconciliation findings for active work or system inventory as
+first-class signals. Findings attached to terminal jobs are reported
+separately as nonfatal reconciliation debt. The ingress health
+endpoint is unhealthy while persisted events await Hatchet publication; the
+shared outbox dispatcher retries those rows with a lease every 30 seconds.
+The same cycle advances bounded recovery for observed effect receipts whose
+read-only PR inspection worker never returned; it does not reinvoke Hermes.
+Lifecycle status reports permanent dead letters by bounded reason code. The
+operator mounts only the lifecycle named volume needed for root-only,
+snapshot-fenced dead-letter archival; that action remains unavailable to the
+browser, even when per-issue ownership approvals are enabled.
+Reconciliation runs natively in Hatchet every 15 minutes.

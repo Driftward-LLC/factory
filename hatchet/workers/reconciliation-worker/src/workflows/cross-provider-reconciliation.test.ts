@@ -8,6 +8,7 @@ import test from 'node:test';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { HATCHET_CONTRACT } from '@driftward/hatchet-worker-shared';
 import { IngressObservationClient, isValidObservationTimestamp } from '../ingress-observation-client';
+import type { ProviderObservation } from '../ingress-observation-client';
 import { compareCrossProvider, RECONCILIATION_KINDS } from './cross-provider-reconciliation';
 import { bridgeEventHistoryIncomplete, inspectHatchetInventory, inspectIngressInventory } from './inventory-reconciliation';
 
@@ -50,6 +51,14 @@ test('reports an observation lookup failure without throwing or transitioning br
   assert.equal(findings[0].severity, 'warning');
 });
 
+test('missing Linear dispatch eligibility is unknown rather than affirmative ineligibility', () => {
+  const job = activeRealJob();
+  const observation = { ...linearObservation(), linear: { status: 'Ready' } };
+  assert.deepEqual(compareCrossProvider(job, [], { linear: { status: 'matched', observation } }, CUTOFF), []);
+  const ineligible = { ...observation, linear: { ...observation.linear, dispatchEligible: false } };
+  assert.deepEqual(compareCrossProvider(job, [], { linear: { status: 'matched', observation: ineligible } }, CUTOFF).map((item) => item.kind), ['linear_issue_ineligible_with_active_bridge_job']);
+});
+
 test('waits for the grace period before reporting a missing GitHub observation', () => {
   const fresh = completedRealJob({ updated_at: '2026-08-13T11:55:00Z' });
   const stale = completedRealJob({ updated_at: '2026-08-13T10:00:00Z' });
@@ -68,7 +77,33 @@ test('requires a Hermes execution reference and its append-only bridge event', (
   const absentEventFindings = compareCrossProvider(absentEvent, [], {}, CUTOFF);
 
   assert.equal(missingReferenceFindings[0].kind, 'hermes_execution_ref_missing');
+  assert.equal(missingReferenceFindings[0].severity, 'warning');
   assert.equal(absentEventFindings[0].kind, 'hermes_receipt_contradicts_bridge_history');
+  assert.equal(compareCrossProvider(missingReference, [], {}, Date.parse('2026-08-13T09:59:00Z'))[0].severity, 'critical');
+});
+
+test('Hermes diagnostics preserve active, repair, dry-run and legacy receipt rules', () => {
+  for (const state of ['effect_committed', 'verification_pending'] as const) {
+    for (const requested_action of ['create_draft_pr', 'repair_draft_pr'] as const) {
+      const job = completedRealJob({ state, requested_action });
+      assert.equal(compareCrossProvider(job, [], {}, CUTOFF)[0]?.severity, 'critical');
+      assert.deepEqual(compareCrossProvider(job, hermesEvents(job), {}, CUTOFF), []);
+      assert.deepEqual(compareCrossProvider({ ...job, reason_code: 'reconciled_effect' }, [], {}, CUTOFF), []);
+      assert.deepEqual(compareCrossProvider({ ...job, payload: { ...job.payload, dry_run: true } }, [], {}, CUTOFF), []);
+    }
+  }
+});
+
+test('incomplete event history cannot prove a Hermes receipt contradiction', () => {
+  const job = completedRealJob({ state: 'verification_pending' });
+  assert.deepEqual(compareCrossProvider(job, [], {}, CUTOFF, false), []);
+  assert.equal(compareCrossProvider(job, [], {}, CUTOFF, true)[0]?.kind, 'hermes_receipt_contradicts_bridge_history');
+  assert.equal(compareCrossProvider({ ...job, hermes_session_id: null }, [], {}, CUTOFF, false)[0]?.kind, 'hermes_execution_ref_missing');
+});
+
+test('does not require an effect receipt for read-only inspection jobs', () => {
+  const inspection = completedRealJob({ requested_action: 'inspect_draft_pr_state', hermes_session_id: null, pr_url: null, commit_sha: null });
+  assert.equal(compareCrossProvider(inspection, [], {}, CUTOFF).length, 0);
 });
 
 test('checks Hatchet provenance for jobs made by current workers', () => {
@@ -171,6 +206,77 @@ test('compares GitHub repository, commit, draft and Linear route eligibility', (
   assert.deepEqual(findings.map((item) => item.kind), ['github_pr_repo_mismatch', 'github_pr_commit_mismatch', 'github_pr_not_draft', 'linear_issue_ineligible_with_active_bridge_job', 'linear_route_mismatch']);
 });
 
+test('human draft promotion after completed or verified handoff is expected', () => {
+  for (const state of ['completed', 'ready_for_human_review'] as const) {
+    const job = completedRealJob({ state });
+    const promoted = { status: 'matched' as const, observation: githubObservation({ isDraft: false }) };
+    assert.deepEqual(compareCrossProvider(job, hermesEvents(job), { github: promoted }, CUTOFF), []);
+    const changed = { status: 'matched' as const, observation: githubObservation({ isDraft: false, headSha: 'later-head' }) };
+    const findings = compareCrossProvider(job, hermesEvents(job), { github: changed }, CUTOFF);
+    assert.deepEqual(findings.map(({ kind, severity }) => ({ kind, severity })), [{ kind: 'github_pr_commit_mismatch', severity: 'warning' }]);
+    assert.match(findings[0].reason, /Historical bridge evidence/);
+    assert.equal(job.commit_sha, 'abc123');
+  }
+});
+
+test('handoff keeps PR identity mismatches critical, but human closure is only a warning', () => {
+  const job = completedRealJob({ state: 'ready_for_human_review' });
+  const findings = compareCrossProvider(job, hermesEvents(job), {
+    github: { status: 'matched', observation: githubObservation({ repo: 'Driftward-LLC/capykit', prUrl: 'https://github.com/Driftward-LLC/capykit/pull/456', headRefName: 'codex/wrong', isDraft: false, state: 'closed' }) },
+  }, CUTOFF);
+  assert.deepEqual(findings.map(({ kind, severity }) => ({ kind, severity })), [
+    { kind: 'github_pr_url_mismatch', severity: 'critical' },
+    { kind: 'github_pr_repo_mismatch', severity: 'critical' },
+    { kind: 'github_pr_branch_mismatch', severity: 'critical' },
+    { kind: 'github_pr_closed_unmerged_after_effect', severity: 'warning' },
+  ]);
+  assert.deepEqual(compareCrossProvider(job, hermesEvents(job), { github: { status: 'matched', observation: githubObservation({ isDraft: false, state: 'closed', merged: true }) } }, CUTOFF), []);
+});
+
+test('active execution still requires the recorded draft head and open PR', () => {
+  for (const state of ['running', 'effect_committed', 'verification_pending'] as const) {
+    const job = completedRealJob({ state });
+    const findings = compareCrossProvider(job, hermesEvents(job), {
+      github: { status: 'matched', observation: githubObservation({ headSha: 'different', isDraft: false, state: 'closed' }) },
+    }, CUTOFF);
+    assert.deepEqual(findings.map(({ kind, severity }) => ({ kind, severity })), [
+      { kind: 'github_pr_commit_mismatch', severity: 'critical' },
+      { kind: 'github_pr_not_draft', severity: 'critical' },
+      { kind: 'github_pr_closed_unmerged_after_effect', severity: 'critical' },
+    ]);
+  }
+});
+
+test('observations before recorded effects or verification do not prove later drift', () => {
+  const job = completedRealJob({ state: 'verification_pending' });
+  const observation = githubObservation({ headSha: 'older-head', isDraft: false, state: 'closed' });
+  observation.observedAt = '2026-08-13T09:29:00Z';
+  let findings = compareCrossProvider(job, hermesEvents(job), { github: { status: 'matched', observation } }, CUTOFF);
+  assert.deepEqual(findings.map(({ kind, severity }) => ({ kind, severity })), [{ kind: 'github_observation_stale', severity: 'warning' }]);
+  const delayed = { ...observation, observedAt: '2026-08-13T11:00:00Z', providerUpdatedAt: '2026-08-13T09:29:00Z' };
+  findings = compareCrossProvider(job, hermesEvents(job), { github: { status: 'matched', observation: delayed } }, CUTOFF);
+  assert.equal(findings[0]?.kind, 'github_observation_stale');
+  const verified = { ...job, state: 'ready_for_human_review' as const };
+  const events = [...hermesEvents(job), { event_type: 'transition:ready_for_human_review', details: {}, created_at: '2026-08-13T11:30:00Z' }];
+  findings = compareCrossProvider(verified, events, { github: { status: 'matched', observation: { ...observation, observedAt: '2026-08-13T11:00:00Z' } } }, CUTOFF);
+  assert.equal(findings[0]?.kind, 'github_observation_stale');
+});
+
+test('missing GitHub evidence is unknown instead of affirmative identity, head or draft drift', () => {
+  const job = completedRealJob({ state: 'verification_pending' });
+  const observation = githubObservation({ prUrl: undefined, repo: undefined, headRefName: undefined, headSha: undefined, isDraft: undefined, merged: undefined });
+  const findings = compareCrossProvider(job, hermesEvents(job), { github: { status: 'matched', observation } }, CUTOFF);
+  assert.deepEqual(findings.map(({ kind, severity }) => ({ kind, severity })), [{ kind: 'github_observation_malformed', severity: 'warning' }]);
+  assert.deepEqual(findings[0].observed.missingFields, ['headRefName', 'headSha', 'isDraft', 'merged', 'prUrl', 'repo']);
+  const badTime = { ...githubObservation({ headSha: 'different' }), observedAt: 'invalid' };
+  assert.deepEqual(compareCrossProvider(job, hermesEvents(job), { github: { status: 'matched', observation: badTime } }, CUTOFF).map((item) => item.kind), ['github_observation_malformed']);
+});
+
+test('dry-run jobs never compare external PR evidence', () => {
+  const job = completedRealJob({ payload: { ...baseJob().payload, dry_run: true }, hermes_session_id: null });
+  assert.deepEqual(compareCrossProvider(job, [], { github: { status: 'matched', observation: githubObservation({ headSha: 'different', isDraft: false }) } }, CUTOFF), []);
+});
+
 test('detects ingress publication and consumption drift from the sanitized inventory', () => {
   const results = inspectIngressInventory({
     status: 'matched', complete: true,
@@ -270,7 +376,7 @@ function hermesEvents(job: BridgeJob) {
   }];
 }
 
-function githubObservation(overrides: { repo?: string; headRefName?: string; headSha?: string; isDraft?: boolean } = {}) {
+function githubObservation(overrides: NonNullable<ProviderObservation['github']> = {}) {
   return {
     eventKey: 'github:pull_request:Driftward-LLC/driftward-host:123:created:delivery-1',
     source: 'github' as const,
@@ -278,14 +384,15 @@ function githubObservation(overrides: { repo?: string; headRefName?: string; hea
     action: 'opened',
     observedAt: '2026-08-13T09:30:00Z',
     github: {
-      repo: overrides.repo || 'Driftward-LLC/driftward-host',
+      repo: 'Driftward-LLC/driftward-host',
       prUrl: 'https://github.com/Driftward-LLC/driftward-host/pull/123',
       state: 'open',
       merged: false,
-      headRefName: overrides.headRefName || 'codex/hatchet-hermes-example',
-      headSha: overrides.headSha || 'abc123',
-      isDraft: overrides.isDraft ?? true,
+      headRefName: 'codex/hatchet-hermes-example',
+      headSha: 'abc123',
+      isDraft: true,
       linearIssues: ['ENG-39'],
+      ...overrides,
     },
   };
 }

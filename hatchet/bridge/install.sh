@@ -72,7 +72,7 @@ ledger_snapshot() {
 import hashlib,json,sqlite3,sys
 c=sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True)
 tables={row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-for table in ('bridge_jobs','bridge_events','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events','factory_import_conflicts','factory_import_conflict_resolutions','factory_import_conflict_attestations'):
+for table in ('bridge_jobs','bridge_events','factory_attempts','factory_execution_leases','factory_attempt_outbox','factory_inspection_outbox','factory_attempt_events','factory_import_conflicts','factory_import_conflict_resolutions','factory_import_conflict_attestations','factory_issue_controls','factory_issue_control_commands','factory_independent_reviews','factory_independent_review_deliveries'):
  if table not in tables:
   print(f'{table}=missing'); continue
  rows=c.execute("SELECT * FROM "+table).fetchall()
@@ -292,17 +292,15 @@ HATCHET_BRIDGE_STAGE_ROOT="$stage" DRIFTWARD_BRIDGE_RELEASE_VERSION="$release_ve
 verify_staged_release
 mkdir -p "$stage/etc/driftward" "$stage/units" "$stage/rollback"
 if [[ "${BRIDGE_TEST_MODE:-}" == 1 ]]; then
-  cp "$repo_root/hatchet/workers/verifier-policy.json" "$stage/etc/driftward/hatchet-verifier-policy.json"
   cp "$repo_root/hatchet/workers/routing-registry.json" "$stage/etc/driftward/hatchet-routing-registry.json"
   for unit in "${units[@]}"; do cp "$repo_root/hatchet/systemd/$unit" "$stage/units/$unit"; done
 else
-  git -C "$repo_root" show "$release_version:hatchet/workers/verifier-policy.json" >"$stage/etc/driftward/hatchet-verifier-policy.json"
   git -C "$repo_root" show "$release_version:hatchet/workers/routing-registry.json" >"$stage/etc/driftward/hatchet-routing-registry.json"
   for unit in "${units[@]}"; do git -C "$repo_root" show "$release_version:hatchet/systemd/$unit" >"$stage/units/$unit"; done
 fi
 chmod 0640 "$stage/etc/driftward/"*.json; chmod 0644 "$stage/units/"*
 grep -R -E '/root/driftward-host|__REPO_ROOT__' "$stage/units" && { echo "staged unit references mutable checkout" >&2; exit 1; } || true
-python3 -m json.tool "$stage/etc/driftward/hatchet-verifier-policy.json" >/dev/null; python3 -m json.tool "$stage/etc/driftward/hatchet-routing-registry.json" >/dev/null
+python3 -m json.tool "$stage/release/verifier-policy.json" >/dev/null; python3 -m json.tool "$stage/etc/driftward/hatchet-routing-registry.json" >/dev/null
 python3 "$script_dir/release_hygiene.py" scan --tree "$stage"
 expected_attestation_delta="$(attestation_delta_required)"
 
@@ -376,7 +374,7 @@ health="$(curl --silent --fail --max-time 2 -H "Authorization: Bearer $token" ht
 HEALTH="$health" RELEASE="$release_version" python3 - <<'PY'
 import json,os
 health=json.loads(os.environ['HEALTH'])
-assert health == {'ok':True,'schema_version':5,'release_commit':os.environ['RELEASE']}
+assert health == {'ok':True,'schema_version':10,'release_commit':os.environ['RELEASE']}
 PY
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$release_root/current" DB="$db" python3 -B - <<'PY'
 import os

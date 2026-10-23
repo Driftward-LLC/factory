@@ -2,6 +2,38 @@
 
 Main operator-facing CLI for Driftward factory operations.
 
+Factory is the operator surface. Hermes is an internal execution layer;
+operators do not need to chat with it. Use interactive development sessions for
+deeper investigation and PostHog for agent diagnostics.
+
+### Agent trace links
+
+Set `FACTORY_CONSOLE_POSTHOG_PROJECT_URL` in the active installation's
+`env/factory-operator.env` (legacy host: `/etc/driftward/factory-operator.env`)
+to your browser project URL, for example `https://us.posthog.com/project/12345`.
+This is public navigation configuration, not an API key. US, EU and legacy app
+PostHog Cloud hosts are supported; ingestion hosts and self-hosted URLs are not.
+Recreate the operator service through the reviewed deployment procedure to load
+configuration changes. No executor credentials or PostHog query key belong in
+Factory. The console makes no PostHog requests until the user follows the link.
+
+Overview, Work and issue history show **Capture unconfirmed** with **Find trace
+in PostHog** for real attempts whose sealed job lineage matches the attempt.
+This is a lookup, not a claim that a trace exists. Each retry has its own trace ID.
+Dry runs, missing lineage, and absent/invalid project configuration are explicit
+non-link states. Links use the Hermes observer's attempt UUIDv5 contract and
+PostHog's [trace route](https://github.com/PostHog/posthog/blob/master/products/ai_observability/manifest.tsx).
+Links include the first recorded backend invocation/start time, or the attempt
+creation time if execution timing is absent, so old runs are not restricted to
+PostHog's current date window. Missing or invalid timestamps produce no link.
+Navigation not configured, missing correlation/timing, and dry runs are distinct
+from a recorded `factory_receipt_analytics_setup_failed` telemetry setup failure.
+That reason does not establish a PostHog capture/upload failure. No current
+ledger field confirms ingestion, so missing evidence stays unknown, never
+"not captured" or "capture failed". Older runs may predate
+correlation, events may be missing, and PostHog access/retention still apply.
+Telemetry cannot authorize manual editing or change Factory ownership.
+
 This sits beside `hatchet/` and `deploy/` because it is not the workflow engine,
 the deployment wrapper, or the execution runtime. It is the human control
 surface over those systems.
@@ -42,6 +74,8 @@ Use this command first when managing the current factory path:
 
 ```bash
 factory status
+factory console
+factory analytics --days 30
 factory doctor hatchet --profile prod
 factory mode
 factory logs linear -f
@@ -54,6 +88,9 @@ Current scope:
 
 ```bash
 factory status
+factory console
+factory analytics
+factory analytics --days 30 --json
 factory doctor hatchet --profile prod
 factory logs linear -f
 factory logs lifecycle
@@ -66,12 +103,25 @@ factory retry ENG-62 --reason "prior draft PR was closed unmerged" --request-id 
 factory retry ENG-62 --reason "orphaned bridge job is obsolete" --request-id eng-62-orphan-20260823 --snapshot-digest PREVIEW_DIGEST --supersede-job BRIDGE-JOB-ID --yes
 factory lifecycle ENG-62
 factory lifecycle ENG-62 --json --limit 100
+factory lifecycle dead-letters list
+factory lifecycle dead-letters preview OUTBOX-KEY
+factory lifecycle dead-letters archive OUTBOX-KEY --reason "reviewed historical record" --snapshot-digest PREVIEW_DIGEST --yes
 factory attempts active
 factory attempts list ENG-62 --json
 factory attempts show ATTEMPT-ID
+factory attempts evidence ATTEMPT-ID
 factory attempts events ATTEMPT-ID
 factory attempts cancel ATTEMPT-ID --reason "operator canceled before execution" --yes
+factory attempts refresh-receipt ATTEMPT-ID --reason "retry exact PR receipt inspection" --yes
+factory attempts resolve-interrupted ATTEMPT-ID inspect --yes
+factory attempts resolve-interrupted ATTEMPT-ID preview --attestation FILE [--absence-evidence FILE] --reason "reviewed containment"
 ```
+
+Root-attested interrupted-execution resolution has a separate
+[safety contract and confirmation procedure](../docs/interrupted-execution.md).
+It requires proven external containment and preserved workspace evidence;
+lease expiry or an unchanged PR is not sufficient. It never retries execution
+or marks the implementation successful.
 
 `factory logs lifecycle` follows the root-owned Shipwright lifecycle writer.
 It publishes bounded Linear status only; it never executes work or changes
@@ -83,7 +133,122 @@ It reports intake mode, the active Docker Compose runtime or legacy systemd
 layout, loopback health endpoints, public Linear webhook readiness, and
 advisory recovery/operator components.
 Required failures return a nonzero exit status; advisory warnings are shown
-without failing the command.
+without failing the command. Reconciliation findings for active jobs and
+system inventory are actionable; findings attached to terminal jobs are shown
+separately as historical debt and do not fail live health.
+
+`factory console` prints the private URL for the read-only Factory Operations
+Console. The console shows active and recent attempts, actionable versus
+terminal reconciliation findings, lifecycle dead-letter counts, and the
+returned sanitized lifecycle for an Engineering issue. Its Analytics tab shows
+cohort delivery, PR-quality evidence coverage, repair outcomes, failures, and
+stage timing for the selected attempt-creation window. It does not expose
+operator mutations or credentials. Production requests must arrive through Tailscale
+Serve so the console receives an authenticated `Tailscale-User-Login` header.
+The console's FastAPI schema is available to authenticated operators at
+`/api/openapi.json`.
+
+Analytics reads an explicit aggregate projection at `/api/analytics?days=N`
+using the existing ledgers, with missing evidence and coverage shown directly.
+The browser does not receive the full operator report, raw events, backend or
+authentication configuration, or source paths. Recorded verification and
+observed check suites do not establish reviewer approval or first-pass CI.
+
+The dark operator workspace follows Linear's public app references, with compact
+icon navigation, status indicators, and a toolbar for issue lookup. The Overview
+page leads with unresolved-execution, pending-verification, and recent-failure
+review queues, then active work. Recent activity and system status share the
+lower desktop view. Queue links and sidebar shortcuts open matching Work filters; failed
+attempts can have newer active generations. Runtime and ledger totals are
+expandable, and system findings remain separate from work queues. See
+[`DESIGN.md`](../DESIGN.md) for the interface direction. Work
+filters by issue/repository/branch text, stage, repository, and execution mode.
+It combines all active attempts with the most recent 30 and deduplicates by
+attempt ID; it is not a complete Linear backlog or historical search.
+Quick Work scope links preserve the other filters. Filters and issue selection
+are shareable in the URL, including the existing
+`?issue=ENG-N` links, and support browser back/forward navigation.
+Selecting an issue opens its inspection view directly; closing it restores the
+page and filters. Narrow screens show compact attempt entries with expandable
+metadata instead of horizontally scrolling tables.
+
+Verification labels describe recorded evidence, not a PR's current head,
+merge state, or outstanding review. Issue inspection shows immutable checkpoint
+states for the newest returned attempt and compares its verified SHA with the
+latest stored PR inspection. Changed heads, inspections predating verification,
+stale observations and missing evidence are explicit. Refreshing does not call
+GitHub or request a new inspection. Local checks remain executor-reported and
+independent review remains unavailable in this view. See
+[`work evidence`](../docs/factory-work-evidence.md) for the contract.
+Attempt age and recorded span are not
+model-runtime measurements. The issue timeline shows at most 80 returned
+events; source/API limits also apply. Unknown and unavailable data remain
+explicit, and a failed refresh retains the last successful snapshot with a
+stale indicator. Automatic refresh runs every 30 seconds while the tab is
+visible.
+
+The frontend uses React components and hooks in `factory/console/src`, bundled
+with esbuild. FastAPI serves the generated `app.js` alongside the existing HTML
+and CSS; all assets stay local under the current content security policy.
+Docker builds the bundle and excludes frontend build dependencies from the
+runtime image. The generated bundle is not committed.
+
+Build before running the console from a source checkout or its API/browser tests:
+
+```bash
+npm ci --prefix factory/console
+npm run build --prefix factory/console
+```
+
+For local edits, `npm run dev --prefix factory/console` watches and rebuilds the
+bundle. Refresh the existing local console to see changes. This command does
+not start another server or connect to production.
+
+Run the console API tests with the bridge's pinned Python dependencies:
+
+```bash
+PYTHONPATH=hatchet/bridge:hatchet/factory-lifecycle-writer python3 -m unittest discover -s hatchet/bridge/tests -p test_console.py
+```
+
+The browser regression check uses disposable API fixtures, never live jobs.
+Playwright is a test-only dependency; install it outside the repository:
+
+```bash
+npm install --prefix /tmp/factory-console-checks --no-save --ignore-scripts playwright@1.55.0
+node /tmp/factory-console-checks/node_modules/playwright/cli.js install chromium --only-shell
+NODE_PATH=/tmp/factory-console-checks/node_modules node tools/test_factory_console_browser.cjs
+```
+
+An existing compatible Chromium executable can be selected with
+`FACTORY_CONSOLE_CHROMIUM`. Set `FACTORY_CONSOLE_EVIDENCE_DIR` to retain all
+console, ownership-control, backend and Storybook screenshots in a named evidence
+directory; the default is the system temporary directory. Screenshots are
+fictional test data. Each check closes its browser and local server afterward.
+The ordinary browsing check asserts that every request is read-only and runs
+with the production Content Security Policy, including `style-src 'self'`.
+The ownership checks exercise the explicit preview and confirm flow separately:
+
+```bash
+NODE_PATH=/tmp/factory-console-checks/node_modules node tools/test_factory_issue_control_browser.cjs
+NODE_PATH=/tmp/factory-console-checks/node_modules node tools/test_factory_issue_control_backend_browser.cjs
+```
+
+The first uses synthetic HTTP fixtures. The second uses the real console API,
+disposable SQLite stores and a loopback test identity proxy; it verifies one
+authorized fresh attempt, one outbox record and two ownership audit entries.
+Set `FACTORY_CONSOLE_TEST_PYTHON` to the Python environment containing the bridge's
+pinned dependencies. Neither check contacts the deployed console or an executor.
+
+`factory analytics` is the root-only, read-only performance and quality report.
+It projects real, non-legacy attempt cohorts from the bridge ledger and joins
+optional ingress and lifecycle evidence without creating a new analytics
+store. Use `--days N` for a 1-to-365-day attempt-creation window and `--json`
+for the versioned `factory-analytics-v1` result. Missing evidence remains
+explicitly unknown or unavailable; in particular, the configured
+`chatgpt_codex_oauth` route does not by itself prove whether Hermes, OAuth, or
+the provider caused a failure. See
+[`docs/factory-analytics.md`](../docs/factory-analytics.md) for metric grains,
+coverage, and privacy constraints.
 
 `factory doctor hatchet` is a read-only desired-state drift check. It collects
 live Hatchet inventory with `--profile`, or compares a saved sanitized inventory
@@ -100,10 +265,135 @@ and includes the associated bridge job and execution lease summary when present.
 bridge jobs, execution leases, and a bounded timeline of attempt and bridge
 events. Use `--json` on either command for scripts or deeper inspection.
 
+`factory lifecycle dead-letters` is a root-only review surface. List and
+preview return sanitized metadata without comment bodies or markers. Archive
+requires an exact outbox key, a bounded reason, the latest preview digest, and
+`--yes`; it retains the row and records the local socket actor, timestamp, and
+reason instead of deleting or replaying the event.
+
 Use `factory status` first, then direct `systemctl`, `curl`, Docker, or
 service-specific commands only for
 focused debugging, installer work, or break-glass recovery after `factory`
 identifies the component involved.
+
+## Unstarted independent review recovery
+
+Root can recover the legacy `review_inconclusive` preflight stop caused by
+`unavailable-generator-session` when the source execution has no Hermes session.
+This command requires a verified latest source and the exact open draft head,
+unchanged enabled review/enrollment and verification policies, intact admission
+requirements manifests, and settled execution/verification leases. Held issues,
+started reviews, receipts, ambiguous job events, subsequent passes and a second
+recovery are rejected. It never retries model work or allocates another pass.
+
+```bash
+factory review-recovery ENG-X inspect --review REVIEW-ID \
+  --source-attempt ATTEMPT-ID --yes
+# Wait for the existing typed inspection worker/outbox to record its result.
+factory review-recovery ENG-X preview --review REVIEW-ID \
+  --source-attempt ATTEMPT-ID --repo OWNER/REPO \
+  --pr https://github.com/OWNER/REPO/pull/N --branch EXISTING-BRANCH \
+  --reviewed-head FULL-40-HEX-SHA --reason "reviewed unstarted preflight recovery"
+factory review-recovery ENG-X confirm --review REVIEW-ID \
+  --source-attempt ATTEMPT-ID --repo OWNER/REPO \
+  --pr https://github.com/OWNER/REPO/pull/N --branch EXISTING-BRANCH \
+  --reviewed-head FULL-40-HEX-SHA --reason "reviewed unstarted preflight recovery" \
+  --request-id STABLE-REQUEST-ID --snapshot-digest DIGEST-FROM-PREVIEW --yes
+```
+
+Preview is read-only and binds the root principal, exact intent, original
+failure evidence, current eligibility and a typed inspection at most 120 seconds
+old. Confirm checks again under the ledger write lock and appends one delivery
+job, approval/failure snapshot, audit event and existing accepted outbox. The
+original failed job, request, events and outbox remain unchanged. The logical
+review retains its ID, source, pass, policy, head, capability and creation time;
+the new delivery starts its own bounded dispatch deadline. The failed delivery
+loses claim, authorization and completion authority. Identical request IDs and
+approval snapshots return the existing delivery; changed intent conflicts.
+
+Native reviewer journals are never removed or reset. If one already exists for
+an incompatible intent or ambiguous invocation, the gateway still fails closed.
+The same logical review trace scope applies to the first native invocation;
+recovery approval alone does not prove a trace or model invocation exists.
+
+This requires an explicitly deployed schema-10 release; see the
+[schema deployment boundary](../docs/factory-release-runbook.md#bridge-schema-10).
+
+## Exact-head review repairs
+
+After an independent review, root can authorize one repair of a Factory-owned
+open draft PR, including a source attempt that is already `verified_ready`.
+The previous attempt and successful verification remain intact. This is an
+operator action, not a GitHub comment or automatic review trigger.
+
+```bash
+factory review-repair ENG-X inspect --source-attempt ATTEMPT-ID --yes
+# Wait for the existing typed inspection worker/outbox to record its result.
+factory review-repair ENG-X preview --source-attempt ATTEMPT-ID \
+  --repo OWNER/REPO --pr https://github.com/OWNER/REPO/pull/N \
+  --branch EXISTING-BRANCH --reviewed-head FULL-40-HEX-SHA \
+  --feedback "independent review findings" --reason "reviewed repair"
+factory review-repair ENG-X confirm --source-attempt ATTEMPT-ID \
+  --repo OWNER/REPO --pr https://github.com/OWNER/REPO/pull/N \
+  --branch EXISTING-BRANCH --reviewed-head FULL-40-HEX-SHA \
+  --feedback "independent review findings" --reason "reviewed repair" \
+  --request-id STABLE-REQUEST-ID --snapshot-digest DIGEST-FROM-PREVIEW --yes
+```
+
+`inspect` explicitly queues only the existing read-only action; `preview` never
+queues work. Inspection must be at most 120 seconds old at approval. Preview
+binds the exact issue, latest real source attempt/job, canonical repository,
+PR URL, existing branch, full reviewed SHA, sanitized feedback (up to 2,000
+Unicode code points), reason, next generation/review round, ingress, ownership and policy.
+Review-repair HTTP requests retain a 32 KiB body cap so escaped Unicode feedback
+fits the same character bound; other operator actions retain their 8 KiB cap.
+Confirm revalidates under the ledger write lock and atomically appends one
+repair attempt, job, audit events and accepted outbox. Identical retransmissions
+of a stable request ID return that attempt; changed intent or digest conflicts.
+The Unix peer supplies the root actor; callers cannot choose it.
+
+Review repairs allow Engineering issues in `Ready` or `In Review`, with no
+blockers or Factory delegate and an enabled project route. Fresh intake retains
+its Ready-only gate. Held/manual control, unresolved attempts or execution and
+verifier leases (even expired but unreleased), missing lineage, changed policies,
+stale inspection, closed/merged/non-draft PRs and head/base/branch drift block
+approval. Each approval grants exactly one round; another review requires a new
+explicit preview and confirmation against the resulting latest attempt/head.
+If that latest repair failed conclusively before any effect authorization, its
+settled immutable repair lineage can identify the inherited draft/head for a
+new explicit inspection and approval. The failed job keeps its absent receipt;
+the new attempt records that failed predecessor and the original artifact owner.
+An authorized, unknown or unreleased execution can never use this recovery path.
+No automatic repairs follow this operator repair, even when the deployment's
+automatic verifier-repair budget is high. Automatic repair defaults are unchanged.
+
+For the reviewed Capykit policy change that adds only `.gitleaksignore` to
+`allowed_changed_paths`, root can explicitly reauthorize an existing source by
+adding `--from-policy-digest OLD-DIGEST --to-policy-digest CURRENT-DIGEST` to both
+`preview` and `confirm`. Both full digests and the old/current policies bind the
+snapshot. Any other policy difference fails closed. The new attempt uses the
+current verifier policy and inherits the original independent-review enrollment;
+the source attempt, policy, enrollment and shared PR review budget remain intact.
+This permits the file path, not arbitrary secret exclusions: the reviewed repair
+feedback must name exact false-positive fingerprints, and normal secret checks
+and independent review still apply. It grants no permission to change scanner
+configuration, CI checks, forbidden paths or execution capabilities.
+
+The worker mechanically reinspects the exact draft before the effect gate, and
+the credential-bearing invocation repeats that check before starting Hermes.
+The full expected head is carried to Hermes, with a descendant-only normal
+fast-forward push requirement and no permission to overwrite remote work.
+Push-time rechecking is part of the existing agent contract, not a new native
+GitHub compare-and-swap security boundary; remote drift during agent execution
+remains a limitation of that authority model. The operator and workers receive
+no GitHub/provider credentials, and this path never merges or deploys.
+
+This touches protected bridge/executor compatibility surfaces. Activation
+requires an operator-reviewed rollout, including the separately installed
+credential-bearing gateway where used, followed by synthetic smoke validation;
+the ordinary image-only automatic deployment cannot activate it. See
+[automatic deployment](../docs/automatic-deployment.md). No schema migration,
+historical artifact migration or shared Hermes state migration is introduced.
 
 ## Fresh retries
 

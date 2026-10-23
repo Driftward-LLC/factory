@@ -1,0 +1,109 @@
+# Explicit portable profile; the legacy VPS Compose defaults remain unchanged.
+# Requires Docker Compose >= 2.24.4 (!override support).
+x-portable: &portable
+  build: !reset null
+  labels: &installation-labels
+    io.driftward.factory.installation: ${FACTORY_INSTALLATION_ID:?Use the portable wrapper}
+
+services:
+  postgres:
+    labels: *installation-labels
+    ports: !reset []
+  hatchet-lite:
+    labels: *installation-labels
+    environment:
+      DEFAULT_TENANT_ID: ${HATCHET_DEFAULT_TENANT_ID:?Initialize this installation first}
+    ports: !override
+      - "127.0.0.1:${FACTORY_HATCHET_PORT:-8888}:8888"
+    volumes: !override
+      - factory-hatchet-config-data:/config
+      - ${FACTORY_INSTALL_DIR:?}/keys/hatchet:/keys:ro
+  bridge:
+    <<: *portable
+    ports: !reset []
+    volumes:
+      - factory-maintenance:/run/driftward-hatchet-bridge
+  event-ingress:
+    <<: *portable
+    ports: !reset []
+  linear-webhook-proxy:
+    <<: *portable
+    profiles: [linear]
+    ports: !override
+      - "127.0.0.1:${FACTORY_WEBHOOK_PORT:-19879}:19879"
+  intake-worker:
+    <<: *portable
+  execution-dispatch-worker:
+    <<: *portable
+  bridge-executor-worker:
+    <<: *portable
+    volumes: !reset []
+  pr-event-worker:
+    <<: *portable
+  reconciliation-worker:
+    <<: *portable
+  factory-lifecycle-writer:
+    <<: *portable
+    profiles: [linear]
+    ports: !reset []
+  factory-linear-token-refresh:
+    <<: *portable
+    profiles: [linear]
+  factory-operator:
+    <<: *portable
+    environment:
+      # The optional Linear writer is not running; report its data unavailable.
+      HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB: ""
+    depends_on: !override
+      bridge:
+        condition: service_healthy
+      event-ingress:
+        condition: service_healthy
+    volumes: !override
+      - factory-operator-socket:/run/driftward-factory-operator
+      - factory-bridge-data:/var/lib/driftward-hatchet-bridge
+      - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro
+      - factory-lifecycle-data:/var/lib/driftward-factory-lifecycle-writer
+      - factory-maintenance:/run/driftward-hatchet-bridge
+    ports: !override
+      - "127.0.0.1:${FACTORY_CONSOLE_PORT:-19881}:19881"
+  outbox-dispatcher:
+    <<: *portable
+    volumes:
+      - factory-maintenance:/run/driftward-hatchet-bridge
+  keygen:
+    labels: *installation-labels
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:0fc77a4779a58778abafb20d2b9077830dc0ebb984a00c8d31cc288b0b398bf6
+    profiles: [bootstrap]
+    entrypoint: [/hatchet-admin]
+    command: [keyset, create-local-keys, --key-dir, /keys]
+    volumes:
+      - ${FACTORY_INSTALL_DIR:?}/keys/hatchet:/keys
+    network_mode: none
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  factory-maintenance:
+    name: ${FACTORY_PROJECT_NAME:?}-maintenance
+    labels: *installation-labels
+  factory-hatchet-postgres-data:
+    labels: *installation-labels
+  factory-hatchet-config-data:
+    labels: *installation-labels
+  factory-bridge-data:
+    labels: *installation-labels
+  factory-ingress-data:
+    labels: *installation-labels
+  factory-lifecycle-data:
+    labels: *installation-labels
+  factory-linear-token-data:
+    labels: *installation-labels
+  factory-linear-published-token:
+    labels: *installation-labels
+  factory-operator-socket:
+    name: ${FACTORY_PROJECT_NAME:?}-operator-socket
+    labels: *installation-labels
+
+networks:
+  factory:
+    labels: *installation-labels

@@ -11,7 +11,7 @@ WorkingDirectory=/docker/driftward/hatchet/releases/bridge/current
 Environment=PYTHONPATH=/docker/driftward/hatchet/releases/bridge/current
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=HATCHET_INTAKE_ROUTING_REGISTRY_PATH=/etc/driftward/hatchet-routing-registry.json
-Environment=HATCHET_VERIFIER_POLICY_PATH=/etc/driftward/hatchet-verifier-policy.json
+Environment=HATCHET_VERIFIER_POLICY_PATH=/docker/driftward/hatchet/releases/bridge/current/verifier-policy.json
 EnvironmentFile=/etc/driftward/factory-operator.env
 ExecStart=/usr/bin/python3 -m hatchet_hermes_bridge.cli serve-operator --socket /run/driftward-factory-operator/operator.sock
 Restart=always

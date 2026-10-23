@@ -38,3 +38,29 @@ test('invalid immutable refs stay blocked without verifier completion', async ()
   });
   assert.equal(result.blockedReason, 'verification_recovery_lease_unavailable'); assert.equal(completion, 0);
 });
+
+test('recovery completes already observed verification before resuming context', async () => {
+  const calls: string[] = [];
+  const pending = { ...job(), verification_observed_context: { receipt: 'already-observed' } };
+  const ready = { ...pending, state: 'ready_for_human_review' as const, reason_code: 'draft_pr_verified' };
+  const result = await recoverClaimedVerification({
+    bridge: {
+      async acquireVerificationLease() { calls.push('acquire'); return { acquired: true }; },
+      async claimVerificationLease() { calls.push('claim'); return { claimed: true }; },
+      async completeVerificationFailure() { throw new Error('failure completion must not run'); },
+    },
+    job: pending,
+    attemptId: 'attempt-observed',
+    ensurePending: async () => { calls.push('pending'); return pending; },
+    completeObserved: async (_job, attemptId) => {
+      calls.push(`complete-observed:${attemptId}`);
+      return { executed: true, completed: true, job: ready };
+    },
+    resume: () => { throw new Error('resume must not run'); },
+    verify: async () => { throw new Error('verify must not run'); },
+    emitFailure: async () => { throw new Error('failure event must not run'); },
+  });
+  assert.equal(result.job.state, 'ready_for_human_review');
+  assert.equal(result.executed, true);
+  assert.deepEqual(calls, ['acquire', 'claim', 'pending', 'complete-observed:attempt-observed']);
+});

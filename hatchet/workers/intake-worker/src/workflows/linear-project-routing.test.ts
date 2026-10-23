@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -25,17 +25,21 @@ const CHECKED_IN_REGISTRY = path.resolve(__dirname, '../../../routing-registry.j
 process.env.NODE_ENV = 'test';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(__dirname, '../../../verifier-policy.json');
 
-test('resolves the enabled Capykit route and rejects the disabled factory project', () => {
+test('routes Capykit and standalone Factory to their reviewed repositories', () => {
   assert.deepEqual(resolveLinearProjectRoute(CAPYKIT_PROJECT_ID, { registryPath: CHECKED_IN_REGISTRY }), {
     projectId: CAPYKIT_PROJECT_ID,
     repo: 'Driftward-LLC/capykit',
     executionEnabled: true,
     registryVersion: 2
   });
-  assertRoutingError(
-    () => resolveLinearProjectRoute(HOST_PROJECT_ID, { registryPath: CHECKED_IN_REGISTRY }),
-    'linear_issue_project_execution_disabled'
-  );
+  assert.equal(resolveLinearProjectRoute(HOST_PROJECT_ID, { registryPath: CHECKED_IN_REGISTRY }).repo, 'Driftward-LLC/factory');
+  const policy = resolveDraftPrVerifierPolicy('Driftward-LLC/factory');
+  assert.equal(policy.id, 'factory-operator-refresh-v1');
+  assert.equal(policy.expected_base, 'main');
+  assert(policy.allowed_changed_paths.includes('hatchet/bridge/hatchet_hermes_bridge/operator.py'));
+  assert(!policy.allowed_changed_paths.includes('hatchet'));
+  assert(policy.forbidden_changed_paths.includes('.github/workflows'));
+  assert(policy.forbidden_changed_paths.includes('hatchet/workers'));
 });
 
 test('fails closed for missing and unmapped projects', () => {
@@ -115,28 +119,35 @@ test('fails closed for duplicate, invalid, unreadable, and unparsable registries
 });
 
 test('rejects stale ready events for the disabled project before any bridge operation in dry-run and real mode', () => {
-  const previous = process.env.HATCHET_INTAKE_DRY_RUN;
-  for (const mode of ['true', 'false']) {
-    process.env.HATCHET_INTAKE_DRY_RUN = mode;
+  const registry = JSON.parse(readFileSync(CHECKED_IN_REGISTRY, 'utf8'));
+  registry.routes.find((route: { project_id: string }) => route.project_id === HOST_PROJECT_ID).execution_enabled = false;
+  withRegistry(registry, (registryPath) => {
+    const previousRegistry = process.env[ROUTING_REGISTRY_PATH_ENV];
+    const previousMode = process.env.HATCHET_INTAKE_DRY_RUN;
+    process.env[ROUTING_REGISTRY_PATH_ENV] = registryPath;
     try {
-      assertRoutingError(
-        () => assertReadyLinearIssueDispatch({
-          eventKey: `linear:issue:ENG-53:update:${mode}`,
-          identifier: 'ENG-53',
-          projectId: HOST_PROJECT_ID,
-          status: 'Ready',
-          team: 'Engineering',
-          blockedBy: [],
-          dispatchEligible: true,
-          decision: 'ready_for_implementation',
-          reasonCode: 'linear_issue_ready_for_implementation'
-        }),
-        'linear_issue_project_execution_disabled'
-      );
+      for (const mode of ['true', 'false']) {
+        process.env.HATCHET_INTAKE_DRY_RUN = mode;
+        assertRoutingError(
+          () => assertReadyLinearIssueDispatch({
+            eventKey: `linear:issue:ENG-53:update:${mode}`,
+            identifier: 'ENG-53',
+            projectId: HOST_PROJECT_ID,
+            status: 'Ready',
+            team: 'Engineering',
+            blockedBy: [],
+            dispatchEligible: true,
+            decision: 'ready_for_implementation',
+            reasonCode: 'linear_issue_ready_for_implementation'
+          }),
+          'linear_issue_project_execution_disabled'
+        );
+      }
     } finally {
-      restoreEnvironment('HATCHET_INTAKE_DRY_RUN', previous);
+      restoreEnvironment('HATCHET_INTAKE_DRY_RUN', previousMode);
+      restoreEnvironment(ROUTING_REGISTRY_PATH_ENV, previousRegistry);
     }
-  }
+  });
 });
 
 test('rejects repositories outside the intake allowlist', () => {
@@ -196,7 +207,7 @@ test('includes immutable project routing evidence in bridge payloads', () => {
   assert.equal(payload.expected_base, 'main');
   assert.equal(payload.body, 'Refs Linear ENG-7');
   assert.equal('required_github_checks' in payload, false);
-  assert.deepEqual(payload.allowed_changed_paths, ['src', 'tests', 'scripts', 'docs', 'README.md', 'package.json', 'package-lock.json', 'tsconfig.json']);
+  assert.deepEqual(payload.allowed_changed_paths, ['src', 'tests', 'scripts', 'docs', 'README.md', 'package.json', 'package-lock.json', 'tsconfig.json', '.dockerignore', '.markdownlint.json', 'Dockerfile.connector', 'Dockerfile.hosted', 'compose.yaml', 'deploy/connector-config/.gitkeep', 'deploy/init-postgres.sh', '.gitleaksignore']);
   assert.equal(payload.secret_check_command, 'npm run check:secrets');
   assert.deepEqual(payload.verification_policy, verifierPolicyPayload(resolveDraftPrVerifierPolicy('Driftward-LLC/capykit')));
 });
@@ -281,6 +292,19 @@ test('verifier policy fails closed when required enforcement is missing or empty
   withRawRegistry(JSON.stringify({ version: 1, policies: [{ id: 'bad', repo: 'Driftward-LLC/capykit', expected_base: 'main', allowed_changed_paths: [], forbidden_changed_paths: ['.env'], required_local_commands: ['npm test'], secret_check_command: 'npm run check:secrets' }] }), (policyPath) => {
     assert.throws(() => resolveDraftPrVerifierPolicy('Driftward-LLC/capykit', { policyPath }), (error: unknown) => error instanceof DraftPrVerifierPolicyError && error.code === 'verification_policy_invalid');
   });
+});
+
+test('Docker verifier policy resolution rejects host policy paths', () => {
+  const previousRuntime = process.env.HATCHET_FACTORY_RUNTIME;
+  try {
+    process.env.HATCHET_FACTORY_RUNTIME = 'docker';
+    assert.throws(
+      () => resolveDraftPrVerifierPolicy('Driftward-LLC/capykit', { policyPath: '/etc/driftward/hatchet-verifier-policy.json' }),
+      (error: unknown) => error instanceof DraftPrVerifierPolicyError && error.code === 'verification_policy_unavailable'
+    );
+  } finally {
+    restoreEnvironment('HATCHET_FACTORY_RUNTIME', previousRuntime);
+  }
 });
 
 function withRegistry(value: unknown, fn: (registryPath: string) => void): void {

@@ -13,3 +13,7 @@ keys
 .env
 .env.*
 *.log
+factory/console/app.js
+
+factory/console/styles.css
+storybook-static/

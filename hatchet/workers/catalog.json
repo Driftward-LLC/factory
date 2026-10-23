@@ -82,6 +82,7 @@
       "consumes_events": [
         "driftward.github.pr.created",
         "driftward.github.pr.synchronized",
+        "driftward.github.pr.reopened",
         "driftward.github.pr.closed_unmerged",
         "driftward.github.pr.closed_merged",
         "driftward.github.checks.completed",
@@ -202,7 +203,8 @@
       ],
       "consumes_events": [
         "driftward.github.pr.created",
-        "driftward.github.pr.synchronized"
+        "driftward.github.pr.synchronized",
+        "driftward.github.pr.reopened"
       ]
     },
     {
@@ -307,11 +309,13 @@
       "worker": "bridge-executor-worker",
       "stage": "execution",
       "status": "source_added",
-      "purpose": "Consume accepted create_draft_pr bridge jobs, perform the dry-run or fenced Hermes execution path, and record durable bridge state.",
+      "purpose": "Consume accepted bridge jobs, execute fenced creation or repair, dispatch policy-reserved isolated independent reviews, and record durable bridge state.",
       "does_not": [
         "submit fresh Linear intake",
         "bypass bridge idempotency",
         "perform real PR creation without factory attempt lineage and execution gate",
+        "reserve review passes or grant repair authority from model output",
+        "retry an ambiguous independent review invocation",
         "merge, deploy, or release code"
       ],
     "tasks": [
@@ -354,6 +358,7 @@
       "consumes_events": [
         "driftward.github.pr.created",
         "driftward.github.pr.synchronized",
+        "driftward.github.pr.reopened",
         "driftward.github.pr.closed_unmerged",
         "driftward.github.pr.closed_merged",
         "driftward.github.checks.completed",
@@ -370,7 +375,7 @@
       "worker": "reconciliation-worker",
       "stage": "reconciliation",
       "status": "source_added",
-      "purpose": "Inspect bridge ledger state and persist deduplicated reconciliation findings for stale or inconsistent jobs.",
+      "purpose": "Rotate bounded bridge scans, persist findings, and queue original-invocation receipt lookup or resume stale verification against the same artifact.",
       "does_not": [
         "create pull requests",
         "merge, deploy, or release code",
@@ -398,6 +403,7 @@
     "driftward.github.pr.creation_simulated",
     "driftward.github.pr.created",
     "driftward.github.pr.synchronized",
+    "driftward.github.pr.reopened",
     "driftward.github.pr.closed_unmerged",
     "driftward.github.pr.closed_merged",
     "driftward.github.checks.completed",

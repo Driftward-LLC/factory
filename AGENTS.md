@@ -9,6 +9,16 @@ Read `README.md` first for the current repo overview, layout, deployment
 model, and common commands. Use this file for agent-specific boundaries, safety
 rules, and validation expectations.
 
+For console UI work, read `DESIGN.md` for Factory's operator priorities, visual
+conventions, responsive behavior, and design validation expectations.
+
+For shared components and assets, read `docs/design-system.md`. Reuse the
+`@driftward/ui` workspace in `factory/console/ui/`. Inspect its Storybook docs
+and stories before adding UI: use `docs-list` and `docs-show` through the local
+Storybook MCP endpoint when connected, or read the component source and stories
+directly. Verify properties rather than inventing them. Add representative
+stories for new components/states and run both console and catalog checks.
+
 ## Boundaries
 
 - `factory/`: operator CLI and front-door documentation.
@@ -40,11 +50,20 @@ browser state, and Hermes session retention.
   containers.
 - `factory doctor hatchet` is read-only. Pause/remove/apply paths for live
   Hatchet workflows require explicit reviewed operator approval.
+- Lifecycle dead-letter archive must use the root-only operator preview and
+  snapshot digest. Retain the audited row; do not delete or edit outbox data
+  directly from the browser console.
 - Historical bridge, ingress, lifecycle, and Hatchet records are not migrated
   by source-copy changes. Migrate records only after the standalone deployment
   path is approved.
 
 ## Validation
+
+When changing relevant Factory runtime paths, incorporate existing PostHog
+tracing and bounded metadata where useful. Verify ingestion by exact trace,
+session, job or attempt IDs when safe. Telemetry is not the lifecycle or audit
+source of truth. Never export prompts, outputs or credentials, and do not set up
+new production telemetry unless requested.
 
 Before changing Factory contracts, workers, bridge, ingress, lifecycle writer,
 or CLI behavior, run the focused checks that fit the touched area. Useful

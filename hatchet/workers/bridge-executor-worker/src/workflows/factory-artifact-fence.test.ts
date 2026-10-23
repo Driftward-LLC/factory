@@ -65,6 +65,79 @@ test('superseded PR fence still passes for the same closed unmerged PR', async (
   assert.deepEqual(result, { ok: true });
 });
 
+test('operator review repair rechecks the exact source draft and fails on drift', async () => {
+  const job = reviewRepairJob();
+  const observe = (): DraftPrStateInspection => ({
+    repository: 'Driftward-LLC/capykit', number: 77, url: 'https://github.com/Driftward-LLC/capykit/pull/77',
+    state: 'open', merged: false, draft: true, head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main', reason: 'ok',
+  });
+  let calls = 0;
+  assert.deepEqual(await validateFactoryArtifactFence(job, { inspectDraftPrState: async (repo, reference) => {
+    calls += 1;
+    assert.equal(repo, 'Driftward-LLC/capykit');
+    assert.equal(reference, 'https://github.com/Driftward-LLC/capykit/pull/77');
+    return observe();
+  } }), { ok: true });
+  assert.equal(calls, 1);
+  const review = job.payload.factory_review_repair as JsonObject;
+  review.feedback = 'Bug. '.repeat(399) + 'Fix.' + '😀';
+  assert.equal([...String(review.feedback)].length, 2000);
+  assert.deepEqual(await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => observe() }), { ok: true });
+  review.feedback += '😀';
+  assert.equal((await validateFactoryArtifactFence(job)).ok, false);
+  review.feedback = 'Fix stale observations';
+  for (const change of [{ head_sha: 'b'.repeat(40) }, { head_branch: 'codex/other' }, { base_ref: 'other' },
+    { state: 'closed' as const }, { draft: false }, { merged: true }, { repository: 'other/repo' },
+    { reason: 'inspect_unavailable' as const }]) {
+    const result = await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({ ...observe(), ...change }) });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reasonCode, 'artifact_fence_changed');
+  }
+  const invalidPayloads: JsonObject[] = [{ expected_head_sha: 'b'.repeat(40) }, { factory_artifact_fence: null },
+    { factory_repair: { ...job.payload.factory_repair as JsonObject, source_attempt_id: 'other' } }];
+  for (const payload of invalidPayloads) {
+    const result = await validateFactoryArtifactFence({ ...job, payload: { ...job.payload, ...payload } }, {
+      inspectDraftPrState: async () => { throw new Error('invalid authority must not inspect'); },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reasonCode, 'artifact_fence_invalid');
+  }
+});
+
+function reviewRepairJob(): BridgeJob {
+  const job = baseJob({});
+  const prUrl = 'https://github.com/Driftward-LLC/capykit/pull/77';
+  job.requested_action = 'repair_draft_pr';
+  job.branch = 'codex/existing';
+  job.payload = {
+    ...job.payload, expected_head_sha: 'a'.repeat(40), expected_base: 'main',
+    factory_artifact_fence: { kind: 'operator_review_repair_v1', repository: 'Driftward-LLC/capykit',
+      prior_attempt_id: 'source-attempt', prior_job_id: 'source-job', prior_pr_url: prUrl,
+      head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main' },
+    factory_repair: { source_attempt_id: 'source-attempt', source_job_id: 'source-job', source_generation: 1,
+      reason_code: 'operator_review_feedback', error: 'review', verification_attempt_id: null,
+      pr_url: prUrl, branch: job.branch, commit_sha: 'a'.repeat(40) },
+    factory_review_repair: { source_attempt_id: 'source-attempt', repository: 'Driftward-LLC/capykit',
+      pr_url: prUrl, branch: job.branch, reviewed_head_sha: 'a'.repeat(40), feedback: 'Fix stale observations', automatic_repairs_allowed: false },
+  };
+  return job;
+}
+
+test('policy review repair uses separate authority and the same exact-head fence', async () => {
+  const job = reviewRepairJob();
+  (job.payload.factory_artifact_fence as JsonObject).kind = 'policy_review_repair_v1';
+  (job.payload.factory_repair as JsonObject).reason_code = 'policy_review_feedback';
+  const review = job.payload.factory_review_repair as JsonObject;
+  review.policy_authority = { kind: 'independent_review_policy_v1', review_id: 'review-1', policy_digest: 'c'.repeat(64) };
+  const observation: DraftPrStateInspection = { repository: 'Driftward-LLC/capykit', number: 77,
+    url: 'https://github.com/Driftward-LLC/capykit/pull/77', state: 'open', merged: false, draft: true,
+    head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main', reason: 'ok' };
+  assert.deepEqual(await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => observation }), { ok: true });
+  assert.equal((await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({ ...observation, head_sha: 'b'.repeat(40) }) })).ok, false);
+  review.approval = { principal: 'root' };
+  assert.equal((await validateFactoryArtifactFence(job)).ok, false);
+});
+
 function absenceRetryJob(): BridgeJob {
   const fence = absenceFence();
   return baseJob({

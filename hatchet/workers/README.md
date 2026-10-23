@@ -19,6 +19,15 @@ ambiguous, or disabled policy fails before a bridge job is submitted. Names,
 titles, descriptions, and labels are never routing inputs. The intake and
 Hermes executor allowlists remain independent defense-in-depth checks.
 
+The Driftward Software Factory project routes to `Driftward-LLC/factory`.
+Its `factory-operator-refresh-v1` verification policy permits ENG-153's operator,
+ledger, CLI, tests and documentation paths only; it cannot edit deployment,
+worker policy, contracts or GitHub workflows. Retain the old host policy for
+immutable historical jobs. `retired_repositories` in the routing registry keeps
+old host receipts recognizable by legacy reconciliation without providing a
+project route or execution permission. Runtime intake and Hermes allowlists
+must include the standalone Factory repository before admitting ENG-153.
+
 ## Boundary
 
 ```text
@@ -68,6 +77,7 @@ Manual Hatchet dispatch
   -> Driftward Hermes creates draft artifact
   -> bridge effect_committed/verification_pending
   -> bounded Hermes-side verification
+  -> queued GitHub checks remain verification_pending and are durably re-enqueued by reconciliation
   -> bridge ready_for_human_review only when evidence is green
   -> Hatchet event
   -> pr-event-worker advances state
@@ -154,6 +164,7 @@ python3 tools/hatchet-contracts.py check
 | `driftward.github.pr.creation_simulated` | Bridge executor | Analytics or operators | Dry-run PR creation path completed without a real GitHub side effect. |
 | `driftward.github.pr.created` | GitHub webhook or bridge executor | `pr-event-worker` | A real PR exists and should be inspected. |
 | `driftward.github.pr.synchronized` | GitHub webhook | `pr-event-worker` | PR head changed and evidence may be stale. |
+| `driftward.github.pr.reopened` | GitHub webhook | `pr-event-worker` | A closed PR became active again and needs fresh verification. |
 | `driftward.github.pr.closed_unmerged` | Event ingress | `pr-event-worker` | A PR was closed without merge; record observation and do not dispatch Hermes. |
 | `driftward.github.pr.closed_merged` | Event ingress | `pr-event-worker` | A PR was merged; record observation and do not dispatch Hermes. |
 | `driftward.github.checks.completed` | GitHub webhook | `verification-worker` | CI/check state changed. |
@@ -396,27 +407,19 @@ factory logs reconciliation
 factory logs linear -f
 ```
 
-Use direct worker units only for focused worker debugging or remediation after
-`factory status` or the smoke test points at a specific service:
+The direct worker units are retired migration artifacts. Debug the current
+Compose services after `factory status` or the smoke test points at one:
 
 ```bash
-systemctl status driftward-hatchet-worker-execution-dispatch.service --no-pager
-systemctl status driftward-hatchet-worker-intake.service --no-pager
-systemctl status driftward-hatchet-worker-bridge-executor.service --no-pager
-systemctl status driftward-hatchet-worker-pr-event.service --no-pager
-systemctl status driftward-hatchet-worker-reconciliation.service --no-pager
-
-systemctl restart driftward-hatchet-worker-execution-dispatch.service
-systemctl restart driftward-hatchet-worker-intake.service
-systemctl restart driftward-hatchet-worker-bridge-executor.service
-systemctl restart driftward-hatchet-worker-pr-event.service
-systemctl restart driftward-hatchet-worker-reconciliation.service
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100 <service>
+docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory up -d --no-deps <service>
 ```
 
 Run the full Hatchet smoke, including a managed worker dry-run job:
 
 ```bash
-driftward-hatchet-smoke
+factory-docker-smoke
 ```
 
 Use `hatchet worker dev --profile prod` only for local development from an

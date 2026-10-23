@@ -1,5 +1,6 @@
 import unittest
 import os
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,6 +10,89 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class InstallerPolicyTests(unittest.TestCase):
+    def test_migration_ledger_preserves_existing_issue_ownership_and_audit(self):
+        source = (ROOT / "bridge" / "install.sh").read_text()
+        helpers = source[source.index("ledger_snapshot() {"):source.index("attestation_delta_required() {")]
+        tables = ("factory_issue_controls", "factory_issue_control_commands")
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "bridge.db"
+            before, after = Path(directory) / "before", Path(directory) / "after"
+            with sqlite3.connect(database) as conn:
+                for table in tables:
+                    conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, evidence TEXT)")
+
+            def snapshot():
+                result = subprocess.run(["bash", "-c", helpers + "\nledger_snapshot"],
+                                        env={**os.environ, "db": str(database)}, text=True, capture_output=True, check=True)
+                return result.stdout
+
+            def verify():
+                return subprocess.run(["bash", "-c", helpers + '\nassert_migration_ledger "$1" "$2" 0',
+                                       "ledger-test", str(before), str(after)], text=True, capture_output=True)
+
+            original = snapshot()
+            before.write_text(original)
+            after.write_text(original)
+            self.assertEqual(verify().returncode, 0)
+            for table in tables:
+                with self.subTest(table=table):
+                    self.assertIn(f"{table}=0:", original)
+                    with sqlite3.connect(database) as conn:
+                        conn.execute(f"INSERT INTO {table} VALUES ('existing', 'retained evidence')")
+                    before.write_text(snapshot())
+                    with sqlite3.connect(database) as conn:
+                        conn.execute(f"UPDATE {table} SET evidence='unexpected migration rewrite'")
+                    after.write_text(snapshot())
+                    rejected = verify()
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn(f"immutable/effect ledger changed during migration: {table}", rejected.stderr)
+            # The first upgrade may add previously absent tables; later upgrades
+            # must preserve their contents once they have entered the ledger.
+            before.write_text("".join(f"{table}=missing\n" for table in tables))
+            self.assertEqual(verify().returncode, 0)
+
+    def test_blocked_recovery_checks_ownership_and_accepts_only_absent_legacy_tables(self):
+        source = (ROOT / "bridge" / "recover-blocked.sh").read_text()
+        helper = source[source.index("ledger_snapshot() {"):source.index('expected_schema=')]
+        guard = source[source.index('current_ledger="$(ledger_snapshot)"'):source.index("\nacquire_maintenance_lock")]
+        ownership = ("factory_issue_controls", "factory_issue_control_commands")
+        with tempfile.TemporaryDirectory() as directory:
+            database, state = Path(directory) / "bridge.db", Path(directory) / "state"
+            with sqlite3.connect(database) as conn:
+                for table in ("bridge_jobs", "factory_attempts", "factory_execution_leases", "factory_attempt_outbox", "factory_inspection_outbox", "factory_attempt_events"):
+                    conn.execute(f"CREATE TABLE {table} (id TEXT, evidence TEXT)")
+            env = {**os.environ, "db": str(database), "state": str(state)}
+
+            def run(command):
+                return subprocess.run(["bash", "-c", helper + "\n" + command], env=env, text=True, capture_output=True)
+
+            legacy = run("ledger_snapshot")
+            self.assertEqual(legacy.returncode, 0, legacy.stderr)
+            state.write_text("\n".join(line for line in legacy.stdout.splitlines() if not line.startswith(ownership)))
+            self.assertEqual(run(guard).returncode, 0)
+            for table in ownership:
+                with self.subTest(table=table):
+                    with sqlite3.connect(database) as conn:
+                        conn.execute(f"CREATE TABLE {table} (id TEXT, evidence TEXT)")
+                        conn.execute(f"INSERT INTO {table} VALUES ('existing','retained evidence')")
+                    self.assertNotEqual(run(guard).returncode, 0)  # No captured authority for a new table.
+                    state.write_text(run("ledger_snapshot").stdout)
+                    self.assertEqual(run(guard).returncode, 0)
+                    with sqlite3.connect(database) as conn:
+                        conn.execute(f"UPDATE {table} SET evidence='unexpected rewrite'")
+                    rejected = run(guard)
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("recovery refuses changed immutable ledger", rejected.stderr)
+                    with sqlite3.connect(database) as conn:
+                        conn.execute(f"DROP TABLE {table}")
+                    self.assertNotEqual(run(guard).returncode, 0)  # Missing no longer means legacy.
+                    state.write_text(legacy.stdout)
+            with sqlite3.connect(database) as conn:
+                conn.execute("DROP TABLE bridge_jobs")
+            unreadable = run(guard)
+            self.assertNotEqual(unreadable.returncode, 0)
+            self.assertIn("recovery could not read immutable ledger", unreadable.stderr)
+
     def test_predeploy_runs_before_any_install_or_secret_mutation(self):
         source = (ROOT / "bridge" / "install.sh").read_text()
         predeploy = source.index('predeploy-check.py')
@@ -153,14 +237,40 @@ class InstallerPolicyTests(unittest.TestCase):
         self.assertIn("/tmp/gitleaks git --redact --verbose .", workflow)
 
     def test_runtime_uses_one_explicit_policy_path_and_separate_verifier_env(self):
-        bridge_unit = (ROOT / "systemd" / "driftward-hatchet-bridge.service").read_text()
+        compose = (ROOT.parent / "deploy" / "docker-compose.yml").read_text()
+        smoke = (ROOT.parent / "deploy" / "factory-docker-smoke").read_text()
+        operator = (ROOT / "bridge" / "hatchet_hermes_bridge" / "operator.py").read_text()
+        verifier_env = (ROOT / "bridge" / "verifier-env.sh").read_text()
         executor_unit = (ROOT / "workers" / "systemd" / "driftward-hatchet-worker-bridge-executor.service").read_text()
         workers_install = (ROOT / "workers" / "install.sh").read_text()
-        self.assertIn('HATCHET_VERIFIER_POLICY_PATH=/etc/driftward/hatchet-verifier-policy.json', bridge_unit)
-        self.assertIn('EnvironmentFile=-/etc/driftward/hatchet-verifier.env', bridge_unit)
+        self.assertIn('HATCHET_VERIFIER_POLICY_PATH: /app/hatchet/workers/verifier-policy.json', compose)
+        self.assertIn('HATCHET_FACTORY_OPERATOR_RUNTIME: docker', compose)
+        self.assertIn('expected_policy_path="/app/hatchet/workers/verifier-policy.json"', smoke)
+        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH", "/etc/driftward/hatchet-verifier-policy.json"', operator)
+        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-/etc/driftward/hatchet-verifier-policy.json', verifier_env)
         self.assertIn('EnvironmentFile=-/etc/driftward/hatchet-verifier.env', executor_unit)
         self.assertIn('upsert_env "$common_env" HATCHET_VERIFIER_POLICY_PATH "$policy_dst"', workers_install)
         self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-', workers_install)
+
+    def test_verifier_env_requires_explicit_policy_path(self):
+        helper = ROOT / "bridge" / "verifier-env.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "hatchet-verifier.env"
+            env_file.write_text("HATCHET_HERMES_VERIFIER_TOKEN=" + "a" * 64 + "\n")
+            env_file.chmod(0o600)
+            result = subprocess.run(
+                [str(helper), "status"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **{key: value for key, value in os.environ.items() if key != "HATCHET_VERIFIER_POLICY_PATH"},
+                    "HATCHET_VERIFIER_TEST_MODE": "1",
+                    "HATCHET_VERIFIER_ENV_PATH": str(env_file),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("HATCHET_VERIFIER_POLICY_PATH is required", result.stderr)
 
     def test_verifier_env_provisioning_is_atomic_idempotent_and_non_disclosing(self):
         helper = ROOT / "bridge" / "verifier-env.sh"

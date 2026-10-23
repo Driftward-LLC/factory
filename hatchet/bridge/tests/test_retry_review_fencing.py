@@ -9,7 +9,7 @@ from pathlib import Path
 from hatchet_hermes_bridge.operator import OperatorError, preview_retry, reserve_retry
 from hatchet_hermes_bridge.store import (
     BridgeValidationError, BridgeConflict, acknowledge_factory_outbox, claim_factory_execution,
-    claim_factory_outbox_delivery, connect_readonly, get_factory_attempt,
+    claim_factory_outbox_delivery, connect_readonly, fail_factory_outbox_delivery, get_factory_attempt,
     list_factory_outbox, list_factory_attempt_events, reserve_factory_retry, cancel_factory_attempt, submit_job,
     complete_pr_inspection, get_job, recover_factory_execution,
 )
@@ -61,11 +61,18 @@ class RetryReviewFencingTests(unittest.TestCase):
         claimed = claim_factory_outbox_delivery(conn, row["outbox_key"])
         self.assertIsNotNone(claimed)
         self.assertIsNone(claim_factory_outbox_delivery(conn, row["outbox_key"]))
+        fail_factory_outbox_delivery(conn, row["outbox_key"], claimed["delivery_lease_id"])
+        second_claim = claim_factory_outbox_delivery(conn, row["outbox_key"])
+        self.assertIsNotNone(second_claim)
         # A crash before acknowledgement leaves the same immutable event for a
         # lease-expiry replay, never a second attempt/job/event row.
         conn.execute("UPDATE factory_attempt_outbox SET delivery_lease_expires_at='2000-01-01T00:00:00.000000Z' WHERE outbox_key=?", (row["outbox_key"],)); conn.commit()
-        self.assertEqual(claim_factory_outbox_delivery(conn, row["outbox_key"])["payload"], row["payload"])
-        acknowledge_factory_outbox(conn, row["outbox_key"]); acknowledge_factory_outbox(conn, row["outbox_key"])
+        replay = claim_factory_outbox_delivery(conn, row["outbox_key"])
+        self.assertEqual(replay["payload"], row["payload"])
+        acknowledge_factory_outbox(conn, row["outbox_key"], second_claim["delivery_lease_id"])
+        self.assertEqual(len(list_factory_outbox(conn)), 1)
+        acknowledge_factory_outbox(conn, row["outbox_key"], replay["delivery_lease_id"])
+        acknowledge_factory_outbox(conn, row["outbox_key"], replay["delivery_lease_id"])
         self.assertEqual(list_factory_outbox(conn), [])
         conn.close()
 
@@ -78,6 +85,7 @@ class RetryReviewFencingTests(unittest.TestCase):
 
     def test_malformed_legacy_payload_records_conflict_and_readonly_requires_predeploy(self):
         conn = connect(self.db)
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('legacy','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr','{', 'x','branch','2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')")
         conn.commit(); conn.close()
         # Reopening invokes the write-time import/backfill and keeps the problem
@@ -88,6 +96,7 @@ class RetryReviewFencingTests(unittest.TestCase):
 
     def test_eng8_legacy_event_pr20_is_imported_as_a_blocking_artifact(self):
         conn = connect(self.db)
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         payload = json.dumps({"linear_issue": "ENG-8", "work_item_id": "ENG-8", "repo": "Driftward-LLC/capykit", "dry_run": False})
         branch = "codex/hatchet-hermes-d648b143d1aa45d1"
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('eng8-legacy','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr',?,?, ?,'2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')", (payload, "fixture", branch))
@@ -101,6 +110,7 @@ class RetryReviewFencingTests(unittest.TestCase):
 
     def test_legacy_cross_repository_event_is_recorded_as_an_import_conflict(self):
         conn = connect(self.db)
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         payload = json.dumps({"linear_issue": "ENG-8", "repo": "Driftward-LLC/capykit", "dry_run": False})
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('wrong-repo','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr',?,?,NULL,'2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')", (payload, "fixture"))
         conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('00000000-0000-4000-8000-000000000021','wrong-repo','effect_committed','effect_committed',?, '2026-01-01T00:01:00.000000Z')", (json.dumps({"pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/143"}),))
@@ -121,6 +131,7 @@ class RetryReviewFencingTests(unittest.TestCase):
             with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
                 db = str(Path(directory) / "bridge.db")
                 conn = connect(db)
+                conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
                 payload = {"linear_issue":"ENG-8", "repo":"Driftward-LLC/capykit", "dry_run":False}
                 if source == "payload": payload.update(malformed)
                 branch = malformed["branch"] if source == "direct" else None
@@ -241,13 +252,14 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertIsNone(rows[1]["result_json"])
         conn.close()
 
-    def test_bridge_init_refreshes_latest_attempt_expired_inspection(self):
+    def test_legacy_bridge_init_refreshes_latest_attempt_expired_inspection(self):
         conn = connect(self.db)
         from hatchet_hermes_bridge.store import _queue_pr_inspection
         attempt, _job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="refresh-on-init", reason="retry", actor="uid:0", payload={"repo":"Driftward-LLC/capykit"})
         url = "https://github.com/Driftward-LLC/capykit/pull/22"
         conn.execute("UPDATE factory_attempts SET status='failed', prior_pr_url=?, updated_at=? WHERE attempt_id=?", (url, "2000-01-01T00:00:00.000000Z", attempt["attempt_id"]))
         _queue_pr_inspection(conn, "ENG-62", url, attempt["attempt_id"])
+        conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
         conn.execute("UPDATE factory_inspection_requests SET created_at='2000-01-01T00:00:00.000000Z',updated_at='2000-01-01T00:00:00.000000Z' WHERE prior_attempt_id=?", (attempt["attempt_id"],)); conn.commit(); conn.close()
         conn = connect(self.db)
         rows = conn.execute("SELECT request_key,state FROM factory_inspection_requests WHERE prior_attempt_id=? ORDER BY created_at,request_key", (attempt["attempt_id"],)).fetchall()
@@ -335,7 +347,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertEqual(claim_factory_execution(conn, job["job_id"], owner="executor-b")["reason"], "factory_execution_recovery_required")
         self.assertFalse(execution_may_effect(conn, job["job_id"], a))
         with self.assertRaises(BridgeConflict):
-            commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1"})
+            commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1", "branch":job["branch"]})
         self.assertEqual(get_job(conn, job["job_id"])["state"], "running")
         self.assertEqual(get_factory_attempt(conn, attempt["attempt_id"])["status"], "effect_outcome_unknown")
         conn.close()
@@ -349,7 +361,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         self.assertEqual(cancel_factory_attempt(conn, attempt["attempt_id"], reason="too late", actor="uid:0")["status"], "cancellation_requested")
         conn.execute("UPDATE factory_execution_leases SET expires_at='2000-01-01T00:00:00.000000Z' WHERE lease_id=?", (a["lease_id"],)); conn.commit()
         self.assertEqual(claim_factory_execution(conn, job["job_id"], owner="executor-b")["reason"], "factory_execution_recovery_required")
-        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1"})
+        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/9", "commit_sha":"abcdef1", "branch":job["branch"]})
         self.assertEqual(committed["state"], "effect_committed")
         self.assertEqual(get_factory_attempt(conn, attempt["attempt_id"])["status"], "canceled_after_effect")
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_execution_leases WHERE effect_authorized_at IS NOT NULL").fetchone()[0], 1)
@@ -365,7 +377,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         lease = conn.execute("SELECT * FROM factory_execution_leases WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()
         self.assertIsNone(lease["released_at"])
         self.assertEqual(claim_factory_execution(conn, job["job_id"], owner="executor-b")["reason"], "factory_execution_in_progress")
-        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/10", "commit_sha":"abcdef1"})
+        committed = commit_factory_execution(conn, job["job_id"], a, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/10", "commit_sha":"abcdef1", "branch":job["branch"]})
         self.assertEqual(committed["state"], "effect_committed")
         self.assertFalse(claim_factory_execution(conn, job["job_id"], owner="executor-b")["claimed"])
         conn.close()
@@ -388,7 +400,7 @@ class RetryReviewFencingTests(unittest.TestCase):
         transition_job(conn, job["job_id"], state="running", details={})
         claim = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
         self.assertTrue(authorize_factory_effect(conn, job["job_id"], claim))
-        commit_factory_execution(conn, job["job_id"], claim, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/11", "commit_sha":"abcdef1"})
+        commit_factory_execution(conn, job["job_id"], claim, {"pr_url":"https://github.com/Driftward-LLC/capykit/pull/11", "commit_sha":"abcdef1", "branch":job["branch"]})
         for state in ("failed", "completed", "canceled"):
             with self.assertRaises(BridgeValidationError):
                 transition_job(conn, job["job_id"], state=state, details={})

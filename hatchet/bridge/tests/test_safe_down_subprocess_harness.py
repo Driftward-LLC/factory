@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = ROOT.parent
 POINTS = (
     "archive", "transition", "installer-adoption", "prepared-journal",
-    "publication-applied-directories", "publication-applied-policy", "publication-applied-routing",
+    "publication-applied-directories", "publication-applied-routing",
     "publication-applied-units", "publication-applied-release", "publication-applied-current", "committed-journal",
 )
 SUPERSESSION_POINTS = (
@@ -128,7 +128,9 @@ class SafeDownSubprocessFixture:
             clone = _bounded_run(["git", "clone", "--quiet", "--no-hardlinks", str(REPO_ROOT), str(self.repo)], timeout=SETUP_TIMEOUT_SECONDS)
             if clone.returncode: raise AssertionError(clone.stderr)
             shutil.copytree(ROOT / "bridge", self.repo / "hatchet/bridge", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            for command in (["git", "-C", str(self.repo), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(self.repo), "config", "user.name", "bridge test"], ["git", "-C", str(self.repo), "add", "hatchet/bridge"]):
+            for policy in ("verifier-policy.json", "independent-review-policy.json"):
+                shutil.copy2(ROOT / "workers" / policy, self.repo / "hatchet/workers" / policy)
+            for command in (["git", "-C", str(self.repo), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(self.repo), "config", "user.name", "bridge test"], ["git", "-C", str(self.repo), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json"]):
                 result = _bounded_run(command, timeout=SETUP_TIMEOUT_SECONDS)
                 if result.returncode: raise AssertionError(result.stderr)
             _commit_if_staged(self.repo)
@@ -193,7 +195,7 @@ exit 0
         self._write(self.fake / "factory", "#!/bin/sh\n[ \"$1\" = mode ] && echo dry-run\n")
         self._write(self.fake / "curl", f'''#!/bin/sh
 case " $* " in *"/health"*)
-  [ -f {started!s} ] && printf '%s\\n' '{{"ok":true,"schema_version":5,"release_commit":"{self.release_version}"}}' && exit 0
+  [ -f {started!s} ] && printf '%s\\n' '{{"ok":true,"schema_version":10,"release_commit":"{self.release_version}"}}' && exit 0
   ;;
 esac
 exit 22
@@ -475,7 +477,9 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         clone = _bounded_run(["git", "clone", "--quiet", "--no-hardlinks", str(REPO_ROOT), str(template)], timeout=SETUP_TIMEOUT_SECONDS)
         if clone.returncode: raise AssertionError(clone.stderr)
         shutil.copytree(ROOT / "bridge", template / "hatchet/bridge", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        for command in (["git", "-C", str(template), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(template), "config", "user.name", "bridge test"], ["git", "-C", str(template), "add", "hatchet/bridge"]):
+        for policy in ("verifier-policy.json", "independent-review-policy.json"):
+            shutil.copy2(ROOT / "workers" / policy, template / "hatchet/workers" / policy)
+        for command in (["git", "-C", str(template), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(template), "config", "user.name", "bridge test"], ["git", "-C", str(template), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json"]):
             result = _bounded_run(command, timeout=SETUP_TIMEOUT_SECONDS)
             if result.returncode: raise AssertionError(result.stderr)
         _commit_if_staged(template)
@@ -519,6 +523,8 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         self.assertTrue((release_root / "current").is_symlink())
         self.assertEqual((release_root / "current").resolve(), release)
         self.assertFalse(any(path.suffix == ".pyc" or "__pycache__" in path.parts for path in release.rglob("*")))
+        self.assertEqual((release / "independent-review-policy.json").read_bytes(),
+                         (ROOT / "workers/independent-review-policy.json").read_bytes())
         verified = _bounded_run(
             ["python3", str(ROOT / "bridge/release_hygiene.py"), "verify", "--tree", str(release), "--commit", fixture.release_version, "--source-tree", fixture.release_version],
             timeout=DIRECT_TIMEOUT_SECONDS,
@@ -620,7 +626,7 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         self.assertEqual(postdeploy.returncode, 0, postdeploy.stdout + postdeploy.stderr)
         self.assertIn("legacy import conflicts: original=38 resolvable=38 unresolved=0", postdeploy.stdout)
         con = sqlite3.connect(db)
-        self.assertEqual(con.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone()[0], 5)
+        self.assertEqual(con.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone()[0], 10)
         self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflicts").fetchone()[0], 38)
         self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflict_resolutions").fetchone()[0], 38)
         self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflict_resolutions WHERE operator='migration'",).fetchone()[0], 38)

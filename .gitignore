@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .pytest_cache/
+.venv/
 __pycache__/
 *.py[cod]
 .coverage
@@ -10,3 +11,7 @@ __pycache__/
 *.log
 tmp/
 coverage/
+/factory/console/app.js
+
+/factory/console/styles.css
+storybook-static/

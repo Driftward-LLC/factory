@@ -1,6 +1,6 @@
 export type BridgeState = 'accepted' | 'running' | 'effect_committed' | 'verification_pending' | 'ready_for_human_review' | 'completed' | 'failed';
 
-export type BridgeAction = 'create_draft_pr' | 'repair_draft_pr' | 'inspect_draft_pr_state';
+export type BridgeAction = 'create_draft_pr' | 'repair_draft_pr' | 'inspect_draft_pr_state' | 'read_only_review';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -29,6 +29,7 @@ export type BridgeJob = JsonObject & {
   error: string | null;
   created_at: string;
   updated_at: string;
+  reconciliation_duplicate_refs?: { branch_job_id?: string; pr_job_id?: string };
 };
 
 export type BridgeSubmitRequest = {
@@ -94,6 +95,20 @@ export type BridgeEventsResponse = {
 export type BridgeJobsResponse = {
   jobs: BridgeJob[];
   total: number;
+};
+
+export type ReconciliationScanPage = BridgeJobsResponse & {
+  cohort: 'active' | 'history';
+  token: string;
+  complete: boolean;
+  sweep_complete: boolean;
+  replayed: boolean;
+};
+
+export type ReconciliationCorrelations = {
+  source_event_keys: string[];
+  legacy_work_items: string[];
+  hatchet_run_ids: string[];
 };
 
 export type FactoryAttempt = JsonObject & {

@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "findings"],
+  "properties": {
+    "verdict": {"type": "string", "enum": ["passed", "changes_requested", "inconclusive"]},
+    "findings": {"type": "array", "maxItems": 20, "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["priority", "file", "line", "title", "body"],
+      "properties": {
+        "priority": {"type": "integer", "minimum": 0, "maximum": 3},
+        "file": {"type": "string", "minLength": 1, "maxLength": 300},
+        "line": {"type": "integer", "minimum": 1},
+        "title": {"type": "string", "minLength": 1, "maxLength": 160},
+        "body": {"type": "string", "minLength": 1, "maxLength": 1200}
+      }
+    }}
+  }
+}

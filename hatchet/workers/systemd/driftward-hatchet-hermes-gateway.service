@@ -10,7 +10,7 @@ Documentation=file:__REPO_ROOT__/hatchet/workers/bridge-executor-worker/README.m
 Type=simple
 WorkingDirectory=__REPO_ROOT__/hatchet/workers/bridge-executor-worker
 Environment=NODE_ENV=production
-Environment=HATCHET_VERIFIER_POLICY_PATH=/etc/driftward/hatchet-verifier-policy.json
+Environment=HATCHET_VERIFIER_POLICY_PATH=__REPO_ROOT__/hatchet/workers/verifier-policy.json
 Environment=DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
 EnvironmentFile=/etc/driftward/hatchet-worker-bridge-executor.env
 ExecStartPre=/bin/sh -c 'group=driftward; getent group "$group" >/dev/null || group=root; install -d -m 2770 -o root -g "$group" /run/driftward-hermes-factory'
@@ -21,9 +21,11 @@ TimeoutStopSec=30
 CPUQuota=50%
 MemoryMax=384M
 UMask=0007
+StateDirectory=driftward-hermes-factory
+StateDirectoryMode=0700
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/run/driftward-hermes-factory /run/docker.sock /var/run/docker.sock
+ReadWritePaths=/run/driftward-hermes-factory /var/lib/driftward-hermes-factory /run/docker.sock /var/run/docker.sock
 
 [Install]
 WantedBy=multi-user.target

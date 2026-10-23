@@ -9,7 +9,7 @@ Type=exec
 WorkingDirectory=/docker/driftward/hatchet/releases/bridge/current
 Environment=PYTHONPATH=/docker/driftward/hatchet/releases/bridge/current
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=HATCHET_VERIFIER_POLICY_PATH=/etc/driftward/hatchet-verifier-policy.json
+Environment=HATCHET_VERIFIER_POLICY_PATH=/docker/driftward/hatchet/releases/bridge/current/verifier-policy.json
 EnvironmentFile=-/etc/driftward/hatchet-verifier.env
 EnvironmentFile=-/etc/driftward/hatchet-bridge.env
 ExecStart=/usr/bin/python3 -m hatchet_hermes_bridge.cli --db /var/lib/driftward-hatchet-bridge/bridge.db serve --host 127.0.0.1 --port 19877
