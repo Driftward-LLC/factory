@@ -472,6 +472,29 @@ class AuditedDeploymentTests(unittest.TestCase):
         target[name]['sha'] = TARGET
         self.assertEqual(manual.protected_changes(auto, {}, target, {})[1], [name])
 
+    def test_preserved_host_toolchain_requires_exact_installed_and_target_blobs(self):
+        for name, (host_sha, target_sha) in manual.HOST_TARGET_BLOB_PAIRS.items():
+            with self.subTest(path=name):
+                installed = {name: ROOT / name}
+                self.assertEqual(manual.blob(installed[name]), host_sha)
+                before = {'mode': '100644', 'type': 'blob', 'sha': BASE}
+                after = {'mode': '100644', 'type': 'blob', 'sha': target_sha}
+                baseline, target = {name: before}, {name: after}
+                changes, blocked = manual.protected_changes(auto, baseline, target, installed)
+                self.assertEqual(changes, [{'path': name, 'before': before, 'after': after}])
+                self.assertEqual(blocked, [])
+                with patch.object(manual, 'blob', return_value='0' * 40):
+                    self.assertEqual(manual.protected_changes(auto, baseline, target, installed)[1], [name])
+                for key, value in [('sha', TARGET), ('mode', '100755'), ('mode', '120000'), ('type', 'tree')]:
+                    changed = {name: {**after, key: value}}
+                    self.assertEqual(manual.protected_changes(auto, baseline, changed, installed)[1], [name])
+                    changed = {name: {**before, key: value}}
+                    if key != 'sha':
+                        self.assertEqual(manual.protected_changes(auto, changed, target, installed)[1], [name])
+                self.assertEqual(manual.protected_changes(auto, baseline, {}, installed)[1], [name])
+                self.assertEqual(manual.protected_changes(auto, {}, target, installed)[1], [name])
+                self.assertEqual(manual.protected_changes(auto, baseline, target, {})[1], [name])
+
     def test_installed_artifact_helper_preserves_actual_executable_source_mode(self):
         name = 'deploy/factory-artifact-runtime.py'
         mode = format(stat.S_IFREG | stat.S_IMODE((ROOT / name).stat().st_mode), 'o')
@@ -526,6 +549,35 @@ class AuditedDeploymentTests(unittest.TestCase):
         with patch.object(auto, 'current_main', side_effect=auto.Refusal('superseded_commit')):
             with self.assertRaisesRegex(auto.Refusal, 'superseded'):
                 self.call('approve', preview=identifier)
+
+    def test_reviewed_host_pair_does_not_bypass_snapshot_staleness(self):
+        name = 'deploy/factory-auto-deploy.py'
+        _, target_sha = manual.HOST_TARGET_BLOB_PAIRS[name]
+        helper = self.root / 'preserved-auto-deploy.py'
+        content = (ROOT / name).read_bytes()
+        helper.write_bytes(content)
+        self.installed[name] = helper
+        self.target[name] = {'mode': '100644', 'type': 'blob', 'sha': target_sha}
+        baseline = {name: {'mode': '100644', 'type': 'blob', 'sha': BASE}}
+        fingerprint = policy.compatibility_entries([f'100644 blob {BASE}\t{name}'.encode()])
+        self.config['compatibility'] = fingerprint
+        self.save(self.config_path, self.config)
+        real_tree = manual.tree
+        def tree(auto, commit):
+            return (baseline, fingerprint) if commit == BASE else real_tree(auto, commit)
+        with patch.object(manual, 'tree', side_effect=tree):
+            view = self.call('preview')
+            self.assertTrue(view['eligible'])
+            for change in ('host', 'target'):
+                with self.subTest(change=change):
+                    if change == 'host':
+                        helper.write_bytes(content + b'\n# changed\n')
+                    else:
+                        self.target[name]['sha'] = '0' * 40
+                    with self.assertRaisesRegex(ValueError, 'preview_stale'):
+                        self.call('approve', preview=view['preview'])
+                    helper.write_bytes(content)
+                    self.target[name]['sha'] = target_sha
 
     def test_hard_block_cannot_be_approved(self):
         self.target['hatchet/bridge/hatchet_hermes_bridge/store.py'] = {'mode': '100644', 'type': 'blob', 'sha': TARGET}

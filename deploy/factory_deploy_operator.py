@@ -38,6 +38,16 @@ ACTIVATION_BLOBS = {
     "hatchet/workers/bridge-executor-worker/src/hermes/independent-review.ts": "e74eb196d831f18994fef22e62a071aa6ee7243a",
     "tools/check_factory_profile_runtime_native.py": "e9d25c9ad4ebd01b5d930da4ecfab850f415b8be"
 }
+# Preserve this reviewed newer host toolchain when the image embeds older copies.
+# Values pin (installed host blob, target source blob); never adopt a new baseline.
+HOST_TARGET_BLOB_PAIRS = {
+    'deploy/factory-auto-deploy.py': ('5aa5487fcae9044b867843d8fcead0fcdb417e49',
+                                    '7f84489ca152f80e3736b7494f08f1efdf0814b5'),
+    'deploy/factory-cli.py': ('7e69e2030082d74ed85d13b61f60ced3d823560b',
+                            'a6ce5bd3a4bd8940a5e450a6f517c5c1d0e7dd5c'),
+    'deploy/factory-profile-runtime.py': ('e88de54253fff919cf04abdafbb38726487d8018',
+                                        '77a72b3370a6cdce222378dc8bcec90ab59ee790'),
+}
 
 
 class Refusal(ValueError):
@@ -122,7 +132,9 @@ def protected_changes(auto, baseline, target, installed):
         allowed = (expected_mode and after and after['type'] == 'blob' and after['mode'] == expected_mode
                    and (before is None or before['type'] == 'blob' and before['mode'] == expected_mode))
         if name in installed:
-            allowed = allowed and after['sha'] == blob(installed[name])
+            installed_blob = blob(installed[name])
+            allowed = allowed and (after['sha'] == installed_blob or before is not None
+                                  and (installed_blob, after['sha']) == HOST_TARGET_BLOB_PAIRS.get(name))
         elif name in ACTIVATION_BLOBS:
             allowed = after == {'mode': '100644', 'type': 'blob', 'sha': ACTIVATION_BLOBS[name]}
         if not allowed:

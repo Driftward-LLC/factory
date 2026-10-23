@@ -71,6 +71,17 @@ An operator must review such changes, deploy their components/migrations, and
 then update the compatibility baseline. Never just copy a failed artifact's hash
 to bypass the gate. Auto-deployment never updates its own host installation.
 
+The reviewed host toolchain can retain its newer audited deployment CLI,
+manual-rollout fences, and read-only executor authentication readiness check
+while the release image embeds older copies. `HOST_TARGET_BLOB_PAIRS` in the
+root-installed operator pins exactly three installed/target Git blob pairs:
+`factory-auto-deploy.py` (with the opaque-token fix), `factory-cli.py`, and
+`factory-profile-runtime.py`. Both source entries must remain regular blobs
+with their expected mode. A changed installed or target blob, deletion, or
+mode/type change requires a separate review. These pairs do not update host
+files, adopt a compatibility baseline, or bypass the existing exact-preview
+approval, stale-snapshot checks, cold backup, or execution fences.
+
 Before stopping services, the host requires no active/unknown attempts, no
 unreleased execution lease and no unfinished bridge jobs. An expired lease or
 historical cancellation is not evidence of executor containment. A short SQLite
