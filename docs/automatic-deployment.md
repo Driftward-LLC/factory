@@ -9,10 +9,9 @@ unverifiable response. A missing package is created with GHCR's private default;
 the same checks run again after publication. Omitted/null owner and repository
 fields are accepted with the workflow/image provenance checks described below,
 and do not prove repository linkage. No visibility settings are changed.
-`Factory Deploy` runs after that **entire** workflow succeeds, including browser
-checks and required evidence publication. It requests an image-only rollout
-through a deployment-only SSH account. No general-purpose GitHub runner,
-application credentials, or Docker
+`Factory Deploy` runs after that **entire** workflow succeeds (including
+browser checks). It requests an image-only rollout through a deployment-only SSH
+account. No general-purpose GitHub runner, application credentials, or Docker
 socket is added to Factory containers. Hermes stays running and is not the
 deployment scheduler; GitHub Actions owns this deterministic release sequence.
 
@@ -35,8 +34,8 @@ containerd can use the manifest digest. Only those two verified local IDs are
 accepted, and the existing production wrapper and canonical CLI continue to use
 the immutable local ID. A rerun changing the attempt during download is refused.
 
-The release-readiness job has static `packages: write` permission because it must
-publish the tested local image without another large artifact transfer. Trusted same-repo
+The validation job has static `packages: write` permission because it must publish
+the tested local image without another large artifact transfer. Trusted same-repo
 PR jobs therefore have that capability, while login/publication are guarded to
 same-repo main pushes and fork tokens remain read-only. The deployment job has
 only `packages: read` and sends its short-lived `GITHUB_TOKEN` and actor name over
@@ -62,25 +61,6 @@ Diagnostics report only fixed verification results and optional-field presence.
 
 ## What runs automatically
 
-`Hatchet Quality` first runs cheap whitespace and pinned, redacted secret checks.
-Only a successful preflight starts the parallel **Code checks** and **Browser and
-UI checks** jobs. Browser assertions remain blocking. Catalog and screenshot
-uploads stay on the browser runner; their failures are reported by the separate
-**Required evidence publication** gate, which requires both successful uploads
-and their artifact IDs, plus a successful browser job. Its bounded summary
-distinguishes failed browser checks from missing evidence. Upload failures can
-leave browser assertions green while evidence and the workflow remain red;
-they never permit release or deployment.
-
-**Release readiness** runs only after preflight, code, browser/UI and evidence
-all succeed. It builds the exact checkout's image and proves fresh installation,
-restart, backup/restore and stopped-state cutover before the main-only publisher
-pushes that same tested image and uploads its immutable metadata. Failed, skipped
-or cancelled prerequisites block this job. Evidence storage quota failures remain
-blocking, but no longer obscure the code/UI result or consume a release rehearsal.
-Every main push still runs this graph. The manual release workflow retains its
-existing checks and serialization.
-
 The first version allows known image-only surfaces: console, analytics, selected
 worker workflows, documentation and tests. Everything else contributes to a
 root-approved compatibility fingerprint. This deliberately includes executor and
@@ -90,6 +70,18 @@ rollout. This is a conservative file gate, **not** semantic migration detection.
 An operator must review such changes, deploy their components/migrations, and
 then update the compatibility baseline. Never just copy a failed artifact's hash
 to bypass the gate. Auto-deployment never updates its own host installation.
+
+The reviewed host toolchain can retain its newer audited deployment CLI,
+manual-rollout fences, and read-only executor authentication readiness check
+while the release image embeds older copies. `HOST_TARGET_BLOB_PAIRS` in the
+root-installed operator pins exactly three installed/target Git blob pairs:
+`factory-auto-deploy.py` (with the opaque-token fix), `factory-cli.py`, and
+`factory-profile-runtime.py`. The target and any existing baseline entry must be
+regular blobs with their expected mode; an absent baseline entry permits only
+the same exact reviewed installed/target pair. A changed installed or target blob, deletion, or
+mode/type change requires a separate review. These pairs do not update host
+files, adopt a compatibility baseline, or bypass the existing exact-preview
+approval, stale-snapshot checks, cold backup, or execution fences.
 
 Before stopping services, the host requires no active/unknown attempts, no
 unreleased execution lease and no unfinished bridge jobs. An expired lease or
@@ -200,8 +192,8 @@ manifest/run-attempt contract before integration. No archive fallback is allowed
 - Active/ambiguous work requires the existing reviewed recovery procedure. Once
   resolved, rerun the deploy workflow job if that SHA is still current `main`.
   If retrying `Hatchet Quality`, rerun **all jobs**: retrying only a failed browser
-  job advances GitHub's run attempt without republishing the release-readiness
-  job's metadata. The host intentionally refuses that stale producer attempt.
+  job advances GitHub's run attempt without republishing the validation job's
+  metadata. The host intentionally refuses that stale producer attempt.
   New commits trigger new checks; blocked runs are not retried in a hidden loop.
 - Disable `FACTORY_AUTO_DEPLOY_ENABLED` **and** host `enabled` to suspend future
   requests. Revoking the dedicated authorized key immediately removes ingress.
@@ -209,6 +201,3 @@ manifest/run-attempt contract before integration. No archive fallback is allowed
 
 Acceptance of a merge is authorization for routine, compatible image deployment,
 not permission to clear held issues, migrate state or change executor identity.
-CI policy itself belongs to the protected compatibility fingerprint: changing
-this graph does not update the root-approved host baseline or authorize bypassing
-its compatibility review.
