@@ -21,9 +21,9 @@ credentials, host root mounts or the Docker socket. See the
 
 For an installed system, use the canonical `factory` binding documented in
 [deploy/CLI.md](../deploy/CLI.md); it follows the active installation and image.
-Start with `factory version`, `factory status`, and `factory help`.
-`factory doctor hatchet --profile prod` checks drift read-only. A source checkout
-is not an instruction to reinstall host tooling or operate a live deployment.
+Start with `factory version`, `factory status`, and `factory help` to discover
+supported commands. A source checkout is not an instruction to reinstall host
+tooling or operate a live deployment.
 
 Engineering plugin behavior is maintained in
 [`Driftward-LLC/driftward-engineering`](https://github.com/Driftward-LLC/driftward-engineering),
