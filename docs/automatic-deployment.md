@@ -212,3 +212,27 @@ not permission to clear held issues, migrate state or change executor identity.
 CI policy itself belongs to the protected compatibility fingerprint: changing
 this graph does not update the root-approved host baseline or authorize bypassing
 its compatibility review.
+
+## Reconciled host tooling and reviewed baseline adoption
+
+The host CLI, deployment operator, automatic rollout helper, profile runtime and
+artifact preservation runtime are reviewed source files in this repository.
+Host upgrades remain explicit operator work; automatic rollout never downloads
+or replaces its own helpers. The installed operator retains the three existing
+exact HOST_TARGET_BLOB_PAIRS for backward compatibility with older release images.
+Those pairs do not authorize baseline adoption.
+
+After installing reviewed helpers and deploying their exact current-main release,
+run `factory deploy baseline preview --run RUN_ID --json`. Review the entire
+protected diff, full compatibility fingerprint, deployed commit, CI and artifact
+identity, and installed helper identities. All six installed helper blobs and
+source modes must match the deployed commit exactly, plus its completed audited
+release receipt. Unsupported protected changes and compatibility pairs are refused.
+
+Apply that unchanged preview using `factory deploy baseline apply --preview DIGEST
+--reason "Reviewed full protected baseline and helper equality" --yes --json`.
+Both deployment locks protect revalidation and durable root approval. The receipt
+is consumed before updating the exact-schema private configuration and baseline
+anchor. Interruption leaves a consumed or failed receipt, fencing future rollout
+for explicit operator recovery. The prior release receipt stays available;
+services, paused execution and independent reviewer settings are preserved.
