@@ -17,6 +17,7 @@ import tempfile
 import uuid
 import sqlite3
 import socket
+import time
 from datetime import datetime, timezone
 
 ROOT = Path('/opt/data')
@@ -1063,11 +1064,38 @@ def observer_upgrade_snapshot(install, wrapper):
     return {'native': native, 'target_digest': target, 'host_inputs': observer_host_digest(install), 'services': rows}
 
 
-def observer_upgrade_status(install, wrapper, request_id):
-    receipt = install.directory / ('observer-upgrade-' + request_id + '.json')
+OBSERVER_HEALTH_PREDICATES = {'host_inputs_changed', 'service_states', 'gateway_active', 'gateway_listener'}
+
+
+class ObserverHealthFailure(ValueError):
+    def __init__(self, predicate):
+        super().__init__('observer service readiness failed')
+        self.predicate = predicate
+
+
+def wait_observer_health(install, services, host_inputs, timeout=30):
+    deadline = time.monotonic() + timeout
+    while True:
+        if observer_host_digest(install) != host_inputs:
+            raise ObserverHealthFailure('host_inputs_changed')
+        current = sorted((row['Service'], row.get('State')) for row in install.service_rows())
+        if current != services:
+            predicate = 'service_states'
+        elif gateway_status()['ActiveState'] != 'active':
+            predicate = 'gateway_active'
+        elif not gateway_socket_listening():
+            predicate = 'gateway_listener'
+        else:
+            return
+        if time.monotonic() >= deadline:
+            raise ObserverHealthFailure(predicate)
+        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+
+
+def read_observer_receipt(install, request_id, prefix='observer-upgrade-'):
+    receipt = install.directory / (prefix + request_id + '.json')
     if not receipt.exists() and not receipt.is_symlink():
-        return {'request_id': request_id, 'phase': 'not_started', 'stage': 'not_started',
-                'stop_errors': [], 'read_only': True}
+        return None
     checked(receipt)
     info = receipt.stat()
     if info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 65536:
@@ -1085,6 +1113,16 @@ def observer_upgrade_status(install, wrapper, request_id):
             or len(value.get('stop_errors', [])) > 2
             or any(not isinstance(error, str) or error not in {'dispatcher_stop', 'gateway_stop'} for error in value.get('stop_errors', []))):
         raise ValueError('invalid observer upgrade receipt')
+    if 'failed_predicate' in value and (not isinstance(value['failed_predicate'], str) or value['failed_predicate'] not in OBSERVER_HEALTH_PREDICATES):
+        raise ValueError('invalid observer readiness predicate')
+    return value
+
+
+def observer_upgrade_status(install, wrapper, request_id, prefix='observer-upgrade-'):
+    value = read_observer_receipt(install, request_id, prefix)
+    if value is None:
+        return {'request_id': request_id, 'phase': 'not_started', 'stage': 'not_started',
+                'stop_errors': [], 'read_only': True}
     selected = None
     try:
         selected = run_native(wrapper, 'observer-snapshot', {})['links']['posthog']['digest']
@@ -1092,13 +1130,150 @@ def observer_upgrade_status(install, wrapper, request_id):
             selected = None
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
         pass
+    gateway = 'unavailable'
+    states = {name: 'unavailable' for name in ('bridge-executor-worker', 'execution-dispatch-worker')}
+    try:
+        active = gateway_status()['ActiveState']
+        gateway = active if active in {'active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading'} else 'unknown'
+        for row in install.service_rows():
+            if row['Service'] in states:
+                states[row['Service']] = row.get('State') if row.get('State') in {'running', 'exited'} else 'unknown'
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
+        pass
     return {'request_id': request_id, 'phase': value['phase'],
             'stage': value.get('stage', 'complete' if value['phase'] == 'complete' else 'unknown'),
             'stop_errors': value.get('stop_errors', []),
+            'failed_predicate': value.get('failed_predicate', 'unknown'),
             **{key: value[key] for key in ('snapshot_digest', 'source_digest', 'target_digest')},
             'current_selected_observer_digest': selected,
             'native_snapshot_status': 'available' if selected else 'unavailable',
+            'gateway_state': gateway, 'execution_service_states': states,
             'read_only': True}
+
+
+def observer_recovery_snapshot(install, wrapper, failed_request_id, restore_dispatcher):
+    failed = read_observer_receipt(install, failed_request_id)
+    if (failed is None or failed['phase'] != 'requires_operator' or failed.get('stage') != 'restored_health'
+            or failed.get('stop_errors', []) or failed['source_digest'] == failed['target_digest']):
+        raise ValueError('only a cleanly stopped post-upgrade readiness failure can be recovered')
+    prior = failed.get('prior_services')
+    if prior is not None:
+        if (not isinstance(prior, list) or any(not isinstance(row, list) or len(row) != 2
+                                             or not all(isinstance(item, str) for item in row) for row in prior)
+                or dict(prior).get('bridge-executor-worker') != 'exited'
+                or dict(prior).get('execution-dispatch-worker') not in {'running', 'exited'}
+                or (restore_dispatcher and dict(prior)['execution-dispatch-worker'] != 'running')):
+            raise ValueError('recorded prior services do not authorize dispatcher restoration')
+    checked(DROPIN)
+    if (DROPIN.read_bytes() != PROFILE_DROPIN
+            or json.loads(checked(PROVISION).read_text()).get('auth_root') != str(ROOT / 'profiles' / ROLES['reviewer'])):
+        raise ValueError('active role routing differs')
+    rows = sorted((row['Service'], row.get('State')) for row in install.service_rows())
+    if (any(dict(rows).get(name) != 'exited' for name in ('bridge-executor-worker', 'execution-dispatch-worker'))
+            or gateway_status()['ActiveState'] not in {'inactive', 'failed'}):
+        raise ValueError('observer recovery requires stopped gateway and execution services')
+    with sqlite3.connect(bridge_database(install).as_uri() + '?mode=ro', uri=True, timeout=5) as connection:
+        assert_quiescent(connection)
+    native = run_native(wrapper, 'observer-snapshot', {})
+    target = tree_digest(observer_files(observer_payload()))
+    if native['links']['posthog']['digest'] != failed['target_digest'] or target != failed['target_digest']:
+        raise ValueError('observer recovery requires the exact already-selected target')
+    return {'failed_request_id': failed_request_id, 'failed_receipt_digest': recovery_digest(failed),
+            'source_digest': failed['source_digest'], 'target_digest': target, 'native': native,
+            'host_inputs': observer_host_digest(install), 'services': rows,
+            'restore_dispatcher': restore_dispatcher,
+            'dispatcher_evidence': 'recorded_prior_services' if prior is not None else 'operator_selection'}
+
+
+def recover_observer(install, wrapper, args):
+    import argparse
+    class Parser(argparse.ArgumentParser):
+        def error(self, message):
+            raise ValueError('invalid observer recovery arguments')
+    parser = Parser(prog='factory profiles recover-observer', add_help=False)
+    parser.add_argument('failed_request_id')
+    parser.add_argument('operation', choices=('preview', 'apply', 'status'))
+    parser.add_argument('--restore-dispatcher', action='store_true')
+    parser.add_argument('--snapshot-digest')
+    parser.add_argument('--request-id')
+    parser.add_argument('--reason')
+    parser.add_argument('--yes', action='store_true')
+    options = parser.parse_args(args)
+    if str(uuid.UUID(options.failed_request_id)) != options.failed_request_id:
+        raise ValueError('canonical failed request UUID required')
+    if options.operation == 'status':
+        if (any((options.restore_dispatcher, options.snapshot_digest, options.reason, options.yes))
+                or not options.request_id or str(uuid.UUID(options.request_id)) != options.request_id):
+            raise ValueError('recovery status requires only failed request and recovery request UUIDs')
+        value = read_observer_receipt(install, options.request_id, 'observer-recovery-')
+        if value is not None and value.get('failed_request_id') != options.failed_request_id:
+            raise ValueError('observer recovery request mismatch')
+        result = observer_upgrade_status(install, wrapper, options.request_id, 'observer-recovery-')
+        result['failed_request_id'] = options.failed_request_id
+        return result
+    if options.operation == 'preview':
+        if any((options.snapshot_digest, options.reason, options.request_id, options.yes)):
+            raise ValueError('recovery preview does not accept approval arguments')
+        snapshot = observer_recovery_snapshot(install, wrapper, options.failed_request_id, options.restore_dispatcher)
+        return {'failed_request_id': options.failed_request_id, 'snapshot_digest': recovery_digest(snapshot),
+                'source_digest': snapshot['source_digest'], 'target_digest': snapshot['target_digest'],
+                'restore_dispatcher': options.restore_dispatcher, 'dispatcher_evidence': snapshot['dispatcher_evidence'],
+                'paused_execution': ['bridge-executor-worker'], 'observer_mutation': False, 'read_only': True}
+    if (not options.yes or not re.fullmatch(r'[0-9a-f]{64}', options.snapshot_digest or '')
+            or not options.reason or not 8 <= len(options.reason) <= 300
+            or not all(character.isprintable() for character in options.reason)
+            or not options.request_id or str(uuid.UUID(options.request_id)) != options.request_id):
+        raise ValueError('recovery apply requires exact digest, reason, new request UUID and --yes')
+    receipt = install.directory / ('observer-recovery-' + options.request_id + '.json')
+    if receipt.exists() or receipt.is_symlink():
+        raise ValueError('observer recovery request already consumed')
+    snapshot = observer_recovery_snapshot(install, wrapper, options.failed_request_id, options.restore_dispatcher)
+    if recovery_digest(snapshot) != options.snapshot_digest:
+        raise ValueError('observer recovery snapshot changed')
+    audit = {'phase': 'consumed', 'request_id': options.request_id, 'actor': 'root', 'reason': options.reason,
+             'failed_request_id': options.failed_request_id, 'failed_receipt_digest': snapshot['failed_receipt_digest'],
+             'snapshot_digest': options.snapshot_digest, 'source_digest': snapshot['source_digest'],
+             'target_digest': snapshot['target_digest'], 'restore_dispatcher': options.restore_dispatcher,
+             'dispatcher_evidence': snapshot['dispatcher_evidence'], 'prior_services': snapshot['services'],
+             'paused_execution': ['bridge-executor-worker'], 'observer_mutation': False,
+             'timestamp': datetime.now(timezone.utc).isoformat()}
+    write_observer_receipt(receipt, audit)
+    stage = 'gateway_restore'
+    try:
+        with sqlite3.connect(bridge_database(install).as_uri() + '?mode=rw', uri=True, timeout=5) as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            assert_quiescent(connection)
+            if observer_recovery_snapshot(install, wrapper, options.failed_request_id, options.restore_dispatcher) != snapshot:
+                raise ValueError('observer recovery inputs changed')
+            systemctl('start', SERVICE)
+            wait_observer_health(install, snapshot['services'], snapshot['host_inputs'])
+            stage = 'dispatcher_restore'
+            expected = dict(snapshot['services'])
+            if options.restore_dispatcher:
+                install.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'execution-dispatch-worker', private=True)
+                expected['execution-dispatch-worker'] = 'running'
+            stage = 'restored_health'
+            wait_observer_health(install, sorted(expected.items()), snapshot['host_inputs'])
+            if run_native(wrapper, 'observer-snapshot', {}) != snapshot['native']:
+                raise ValueError('observer recovery protected state changed')
+            connection.rollback()
+        audit['phase'] = 'complete'
+        write_observer_receipt(receipt, audit)
+        return {'recovered': True, 'request_id': options.request_id, 'failed_request_id': options.failed_request_id,
+                'restore_dispatcher': options.restore_dispatcher, 'paused_execution': ['bridge-executor-worker'],
+                'observer_mutation': False, 'target_digest': snapshot['target_digest']}
+    except BaseException as error:
+        audit.update(phase='requires_operator', stage=stage, stop_errors=[])
+        if isinstance(error, ObserverHealthFailure):
+            audit['failed_predicate'] = error.predicate
+        for name, action in (('dispatcher_stop', lambda: install.compose('stop', '--timeout', '60', 'execution-dispatch-worker', private=True) if options.restore_dispatcher else None),
+                             ('gateway_stop', lambda: systemctl('stop', SERVICE))):
+            try:
+                action()
+            except BaseException:
+                audit['stop_errors'].append(name)
+        write_observer_receipt(receipt, audit)
+        raise ValueError('observer recovery failed; inspect canonical recovery status') from None
 
 
 def observer_upgrade(install, wrapper, args):
@@ -1144,6 +1319,7 @@ def observer_upgrade(install, wrapper, args):
     audit = {'phase': 'consumed', 'request_id': options.request_id, 'reason': options.reason,
              'actor': 'root', 'snapshot_digest': options.snapshot_digest, 'target_digest': snapshot['target_digest'],
              'source_digest': snapshot['native']['links']['posthog']['digest'],
+             'prior_services': snapshot['services'],
              'paused_execution': ['bridge-executor-worker'], 'timestamp': datetime.now(timezone.utc).isoformat()}
     write_observer_receipt(receipt, audit)
     stage = 'dispatcher_stop'
@@ -1172,22 +1348,21 @@ def observer_upgrade(install, wrapper, args):
             connection.rollback()
         stage = 'gateway_restore'
         systemctl('restart', SERVICE)
-        systemctl('is-active', '--quiet', SERVICE)
+        wait_observer_health(install, sorted(current.items()), snapshot['host_inputs'])
         stage = 'dispatcher_restore'
         if services:
             install.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', *services, private=True)
         stage = 'restored_health'
-        final_rows = sorted((row['Service'], row.get('State')) for row in install.service_rows())
-        if (final_rows != snapshot['services'] or gateway_status()['ActiveState'] != 'active'
-                or not gateway_socket_listening() or observer_host_digest(install) != snapshot['host_inputs']):
-            raise ValueError('observer upgrade restored state differs')
+        wait_observer_health(install, snapshot['services'], snapshot['host_inputs'])
         audit['phase'] = 'complete'
         write_observer_receipt(receipt, audit)
         return {'upgraded': True, 'target_digest': snapshot['target_digest'], 'receipt': str(receipt),
                 'paused_execution': ['bridge-executor-worker']}
-    except BaseException:
+    except BaseException as error:
         # Never retry a consumed mutation or restart a previously paused executor.
         audit.update(phase='requires_operator', stage=stage)
+        if isinstance(error, ObserverHealthFailure):
+            audit['failed_predicate'] = error.predicate
         errors = []
         for name, action in (('dispatcher_stop', lambda: install.compose('stop', '--timeout', '60', *services, private=True) if services else None),
                              ('gateway_stop', lambda: systemctl('stop', SERVICE))):
@@ -1201,6 +1376,8 @@ def observer_upgrade(install, wrapper, args):
 
 
 def dispatch(install, config, wrapper, args):
+    if args and args[0] == 'recover-observer':
+        return recover_observer(install, wrapper, args[1:])
     if args and args[0] == 'upgrade-observer':
         return observer_upgrade(install, wrapper, args[1:])
     if args == ['canary', 'github']:

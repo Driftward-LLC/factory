@@ -9,6 +9,9 @@ import sqlite3
 import sys
 import tarfile
 import tempfile
+import socket
+import threading
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -33,6 +36,147 @@ def plugin_archive(extra=None):
 
 
 class ProfileRuntimeTests(unittest.TestCase):
+    def recovery_fixture(self, root):
+        install, database, snapshot, native, args = self.upgrade_fixture(root)
+        install.service_rows()[1]['State'] = 'exited'
+        failed_id = args[-2]
+        failed = {'phase': 'requires_operator', 'stage': 'restored_health', 'actor': 'root',
+                  'request_id': failed_id, 'source_digest': snapshot['native']['links']['posthog']['digest'],
+                  'target_digest': snapshot['target_digest'], 'snapshot_digest': 'a' * 64, 'stop_errors': [],
+                  'reason': 'PRIVATE_ORIGINAL_REASON'}
+        receipt = root / ('observer-upgrade-' + failed_id + '.json')
+        runtime.write_observer_receipt(receipt, failed)
+        dropin = root / 'gateway.conf'
+        dropin.write_bytes(runtime.PROFILE_DROPIN)
+        provision = root / 'reviewer.json'
+        provision.write_text(json.dumps({'auth_root': str(runtime.ROOT / 'profiles' / runtime.ROLES['reviewer'])}))
+        return install, database, native, failed_id, receipt, dropin, provision
+
+    def test_observer_readiness_waits_for_real_async_socket_and_reports_timeout_predicate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'gateway.sock'
+            stop = threading.Event()
+            errors = []
+            def server():
+                try:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                        if stop.wait(0.2):
+                            return
+                        listener.bind(str(path))
+                        listener.listen(8)
+                        stop.wait(5)
+                except BaseException as error:
+                    errors.append(error)
+            worker = threading.Thread(target=server)
+            install = SimpleNamespace(service_rows=lambda: [{'Service': 'bridge-executor-worker', 'State': 'exited'}])
+            expected = [('bridge-executor-worker', 'exited')]
+            worker.start()
+            started = time.monotonic()
+            try:
+                with patch.object(runtime, 'Path', side_effect=lambda value: path if value == '/run/driftward-hermes-factory/hermes.sock' else Path(value)), \
+                     patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                     patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'active'}):
+                    runtime.wait_observer_health(install, expected, 'host', timeout=3)
+                self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            finally:
+                stop.set()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(errors)
+            with patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                 patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'active'}), \
+                 patch.object(runtime, 'gateway_socket_listening', return_value=False):
+                with self.assertRaises(runtime.ObserverHealthFailure) as raised:
+                    runtime.wait_observer_health(install, expected, 'host', timeout=0)
+            self.assertEqual(raised.exception.predicate, 'gateway_listener')
+
+    def test_observer_recovery_restores_only_explicit_dispatcher_without_observer_mutation(self):
+        for restore in (False, True):
+            with self.subTest(restore=restore), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                install, database, native, failed_id, receipt, dropin, provision = self.recovery_fixture(root)
+                original = receipt.read_bytes(), receipt.stat().st_mtime_ns
+                active = {'ActiveState': 'inactive'}
+                def ctl(command, *args):
+                    active['ActiveState'] = 'active' if command == 'start' else 'inactive'
+                with patch.multiple(runtime, DROPIN=dropin, PROVISION=provision), \
+                     patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                     patch.object(runtime, 'bridge_database', return_value=database), \
+                     patch.object(runtime, 'gateway_status', side_effect=lambda: dict(active)), \
+                     patch.object(runtime, 'gateway_socket_listening', return_value=True), \
+                     patch.object(runtime, 'run_native', return_value=native) as run, \
+                     patch.object(runtime, 'systemctl', side_effect=ctl):
+                    selection = ['--restore-dispatcher'] if restore else []
+                    before = set(root.iterdir())
+                    preview = runtime.recover_observer(install, '/wrapper', [failed_id, 'preview', *selection])
+                    self.assertEqual(before, set(root.iterdir()))
+                    self.assertFalse(install.compose.called)
+                    self.assertEqual(preview['dispatcher_evidence'], 'operator_selection')
+                    recovery_id = '87654321-4321-4321-8321-123456789abc'
+                    args = [failed_id, 'apply', *selection, '--snapshot-digest', preview['snapshot_digest'],
+                            '--request-id', recovery_id, '--reason', 'Reviewed stopped service recovery', '--yes']
+                    result = runtime.recover_observer(install, '/wrapper', args)
+                    self.assertTrue(result['recovered'])
+                    self.assertFalse(result['observer_mutation'])
+                    with self.assertRaisesRegex(ValueError, 'already consumed'):
+                        runtime.recover_observer(install, '/wrapper', args)
+                    status = runtime.recover_observer(install, '/wrapper', [failed_id, 'status', '--request-id', recovery_id])
+                    self.assertEqual(status['phase'], 'complete')
+                    self.assertNotIn('PRIVATE_', json.dumps(status))
+                    self.assertTrue(all(call.args[1] == 'observer-snapshot' for call in run.call_args_list))
+                self.assertEqual(original, (receipt.read_bytes(), receipt.stat().st_mtime_ns))
+                self.assertEqual(install.service_rows()[0]['State'], 'exited')
+                self.assertEqual(install.service_rows()[1]['State'], 'running' if restore else 'exited')
+                self.assertTrue(all('bridge-executor-worker' not in call.args for call in install.compose.call_args_list))
+
+    def test_observer_recovery_rejects_other_stages_target_drift_and_operator_choice_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, native, failed_id, receipt, dropin, provision = self.recovery_fixture(root)
+            with patch.multiple(runtime, DROPIN=dropin, PROVISION=provision), \
+                 patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                 patch.object(runtime, 'bridge_database', return_value=database), \
+                 patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'inactive'}), \
+                 patch.object(runtime, 'run_native', return_value=native), patch.object(runtime, 'systemctl') as ctl:
+                original = json.loads(receipt.read_text())
+                for stage in ('observer_upgrade', 'gateway_stop', 'gateway_restore', 'dispatcher_restore'):
+                    runtime.write_observer_receipt(receipt, {**original, 'stage': stage})
+                    with self.assertRaises(ValueError):
+                        runtime.recover_observer(install, '/wrapper', [failed_id, 'preview'])
+                runtime.write_observer_receipt(receipt, original)
+                preview = runtime.recover_observer(install, '/wrapper', [failed_id, 'preview'])
+                args = [failed_id, 'apply', '--restore-dispatcher', '--snapshot-digest', preview['snapshot_digest'],
+                        '--request-id', '87654321-4321-4321-8321-123456789abc', '--reason', 'Reviewed recovery intent', '--yes']
+                with self.assertRaisesRegex(ValueError, 'snapshot changed'):
+                    runtime.recover_observer(install, '/wrapper', args)
+                native['links']['posthog']['digest'] = '0' * 64
+                with self.assertRaisesRegex(ValueError, 'already-selected target'):
+                    runtime.recover_observer(install, '/wrapper', [failed_id, 'preview'])
+                self.assertFalse(ctl.called or install.compose.called)
+                self.assertFalse(list(root.glob('observer-recovery-*')))
+
+    def test_observer_recovery_failed_readiness_records_predicate_and_restops(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install, database, native, failed_id, receipt, dropin, provision = self.recovery_fixture(root)
+            with patch.multiple(runtime, DROPIN=dropin, PROVISION=provision), \
+                 patch.object(runtime, 'observer_host_digest', return_value='host'), \
+                 patch.object(runtime, 'bridge_database', return_value=database), \
+                 patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'inactive'}), \
+                 patch.object(runtime, 'run_native', return_value=native), patch.object(runtime, 'systemctl') as ctl, \
+                 patch.object(runtime, 'wait_observer_health', side_effect=runtime.ObserverHealthFailure('gateway_listener')):
+                preview = runtime.recover_observer(install, '/wrapper', [failed_id, 'preview', '--restore-dispatcher'])
+                recovery_id = '87654321-4321-4321-8321-123456789abc'
+                args = [failed_id, 'apply', '--restore-dispatcher', '--snapshot-digest', preview['snapshot_digest'],
+                        '--request-id', recovery_id, '--reason', 'Reviewed recovery intent', '--yes']
+                with self.assertRaisesRegex(ValueError, 'canonical recovery status'):
+                    runtime.recover_observer(install, '/wrapper', args)
+                status = runtime.recover_observer(install, '/wrapper', [failed_id, 'status', '--request-id', recovery_id])
+                self.assertEqual(status['failed_predicate'], 'gateway_listener')
+                self.assertEqual(status['phase'], 'requires_operator')
+                self.assertTrue(all(row['State'] == 'exited' for row in install.service_rows()))
+                self.assertEqual(ctl.call_args_list[-1].args, ('stop', runtime.SERVICE))
+
     def test_observer_upgrade_status_is_bounded_read_only_and_accepts_stopped_gateway(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -119,7 +263,7 @@ class ProfileRuntimeTests(unittest.TestCase):
             with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
                  patch.object(runtime, 'observer_host_digest', return_value='host'), \
                  patch.object(runtime, 'bridge_database', return_value=database), \
-                 patch.object(runtime, 'gateway_status', side_effect=[{'ActiveState': 'inactive'}, {'ActiveState': 'active'}]), \
+                 patch.object(runtime, 'gateway_status', side_effect=[{'ActiveState': 'inactive'}, {'ActiveState': 'active'}, {'ActiveState': 'active'}]), \
                  patch.object(runtime, 'gateway_socket_listening', return_value=True), \
                  patch.object(runtime, 'run_native', return_value=after) as native, patch.object(runtime, 'systemctl'):
                 preview = runtime.observer_upgrade(install, '/wrapper', ['preview'])
@@ -200,8 +344,8 @@ class ProfileRuntimeTests(unittest.TestCase):
             with patch.object(runtime, 'observer_upgrade_snapshot', return_value=snapshot), \
                  patch.object(runtime, 'observer_host_digest', return_value='host'), \
                  patch.object(runtime, 'bridge_database', return_value=database), \
-                 patch.object(runtime, 'gateway_status', side_effect=[{'ActiveState': 'inactive'}, {'ActiveState': 'active'}]), \
-                 patch.object(runtime, 'gateway_socket_listening', return_value=False), \
+                 patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'inactive'}), \
+                 patch.object(runtime, 'wait_observer_health', side_effect=[None, runtime.ObserverHealthFailure('gateway_listener')]), \
                  patch.object(runtime, 'run_native', return_value=after), patch.object(runtime, 'systemctl'), \
                  self.assertRaisesRegex(ValueError, 'inspect private receipt'):
                 runtime.observer_upgrade(install, '/wrapper', args)

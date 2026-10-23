@@ -365,6 +365,7 @@ def dispatch_bound(config, args):
     elif command == 'profiles':
         if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['canary', 'executor'], ['canary', 'reviewer'], ['canary', 'github'])
                 or (len(args) >= 3 and args[1] == 'upgrade-observer')
+                or (len(args) >= 4 and args[1] == 'recover-observer')
                 or (len(args) == 4 and args[1:3] == ['configure', '--plugin-source'])
                 or (len(args) >= 4 and args[1] == 'recover-inspection')):
             raise ValueError('usage: factory profiles status | list | create | configure --plugin-source REPO | activate | canary executor|reviewer|github | upgrade-observer preview|apply [approval arguments] | recover-inspection JOB preview|status|apply [approval arguments]')
@@ -453,6 +454,7 @@ def dispatch_bound(config, args):
               'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
               'factory profiles upgrade-observer preview|apply|status [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
               'factory profiles canary github\n'
+              'factory profiles recover-observer FAILED_REQUEST_UUID preview|apply|status [--restore-dispatcher] [approval arguments]\n'
               'factory profiles recover-inspection JOB preview|status|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
               'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair [arguments]\n'
               'Operator command arguments and approval gates are provided by the active image.\n'

@@ -193,6 +193,42 @@ observer digest. If native inspection is unavailable, the receipt summary still
 returns with `native_snapshot_status=unavailable`. Reasons, paths, exception
 messages and native stderr are not returned. Status never retries an upgrade.
 
+Readiness waits up to 30 seconds for the expected service states, active gateway
+and listening socket. A timeout records a fixed `failed_predicate`, such as
+`gateway_listener`; a changed host configuration fails immediately. Future
+upgrade receipts also retain the prior service states.
+
+Only an upgrade that selected the exact target and then failed at
+`restored_health`, with no stop errors, supports this separate recovery path:
+
+```bash
+factory profiles recover-observer FAILED_UPGRADE_REQUEST_UUID preview
+factory profiles recover-observer FAILED_UPGRADE_REQUEST_UUID apply \
+  --snapshot-digest RECOVERY_DIGEST_FROM_PREVIEW \
+  --reason 'Reviewed gateway recovery' --request-id NEW_RECOVERY_UUID --yes
+factory profiles recover-observer FAILED_UPGRADE_REQUEST_UUID status \
+  --request-id RECOVERY_UUID
+```
+
+Recovery requires the gateway, dispatcher and executor stopped, quiescent bridge,
+idle native runtime and the selected observer equal to both the failed receipt's
+target and installed observer assets. The preview binds the failed receipt and
+current protected state. Apply consumes its own durable request, rechecks those
+inputs under the bridge write barrier, starts the gateway, waits for its listener,
+and verifies preserved profile state. The original failed receipt is retained
+unchanged; recovery never selects or rewrites the observer. Execution stays paused.
+
+By default the dispatcher stays stopped. Add `--restore-dispatcher` to both preview
+and apply only when approving restoration of its previously running state. A
+stored prior-service snapshot must support that choice when present. Older
+receipts have no such evidence: the preview and recovery receipt explicitly label
+the choice `operator_selection`, so the operator must use independently captured
+prior Factory status. Changing the selection invalidates the preview. Recovery
+status returns bounded phase, predicate and current execution/gateway states.
+Readiness failure attempts to stop only the gateway and explicitly selected
+dispatcher, retaining the consumed recovery receipt; other failure stages are
+not eligible for this recovery command.
+
 The GitHub canary requires the selected observer to match the installed bundle.
 It invokes only `gh --version` through the native tool dispatcher, with native
 approval and secret filtering. It makes no model/provider request. The two real

@@ -117,6 +117,11 @@ configuration, reviewer policy and paused execution. This host helper operation
 does not change deployment/blob gates. The existing `canary executor` uses no
 tools; `factory profiles canary github` exercises the fixed native version call
 without a model request and returns the real parent/child IDs for verification.
+If the exact observer target was selected but final service readiness failed,
+the bounded `factory profiles recover-observer` preview/apply/status path can
+restore the gateway and an explicitly selected previously running dispatcher.
+It preserves the failed receipt and paused executor without repeating the
+observer mutation; other failure stages require separate operator diagnosis.
 
 `tools/check_factory_profile_runtime_native.py` exercises the pinned Hermes
 catalog and real dispatcher offline with a synthetic `gh` subprocess, checking
