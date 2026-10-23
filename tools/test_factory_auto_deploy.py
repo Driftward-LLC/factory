@@ -130,7 +130,8 @@ class DeploymentTests(unittest.TestCase):
         item = {'id': 56, 'name': 'factory-production-' + COMMIT, 'expired': False,
                 'size_in_bytes': source.stat().st_size, 'digest': 'sha256:' + auto.sha256(source),
                 'workflow_run': {'id': 34, 'head_sha': COMMIT}}
-        credentials = {'username': 'octocat', 'token': 'synthetic_token'}
+        token = 'ghs_' + '12345_' + '.'.join(['synthetic', 'jwt', 'signature-_"\\`$();:'])
+        credentials = {'username': 'octocat', 'token': token}
         helpers = self.directory / 'helpers'
         helpers.mkdir()
         marker = self.directory / 'credential-helper-called'
@@ -159,21 +160,21 @@ class DeploymentTests(unittest.TestCase):
                 if args[0] == 'gh':
                     output.write(source.read_bytes()); return ''
                 self.assertEqual(env, {'DOCKER_CONFIG': str(Path(output_dir) / 'docker-config')})
-                self.assertNotIn('synthetic_token', str(args))
+                self.assertNotIn(token, str(args))
                 config_dir = Path(env['DOCKER_CONFIG'])
                 self.assertEqual(config_dir.stat().st_mode & 0o777, 0o700)
                 if args[:3] == ('docker', 'manifest', 'inspect'):
                     auth_file = config_dir / 'config.json'
                     self.assertEqual(auth_file.stat().st_mode & 0o777, 0o600)
                     self.assertEqual(json.loads(auth_file.read_text()), {'auths': {'ghcr.io': {
-                        'auth': base64.b64encode(b'octocat:synthetic_token').decode()}}})
+                        'auth': base64.b64encode(('octocat:' + token).encode()).decode()}}})
                     if failure == 'native_helper':
                         # A real Docker CLI must select its file store even
                         # when native credential helpers are discoverable.
                         result = subprocess.run([docker, 'logout', 'ghcr.io'],
                                                 env={**probe_env, **env}, capture_output=True, text=True, timeout=10)
                         self.assertEqual(result.returncode, 0, result.stderr)
-                        self.assertNotIn('synthetic_token', result.stdout + result.stderr)
+                        self.assertNotIn(token, result.stdout + result.stderr)
                         self.assertFalse(marker.exists())
                     return json.dumps({'schemaVersion': 2, 'config': {'digest':
                         IMAGE if failure == 'config' else manifest['image_config']}})
@@ -352,12 +353,13 @@ import json, runpy, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]).parent))
 scope = runpy.run_path(sys.argv[1])
+expected = json.loads(sys.argv[3])
 scope['main'].__globals__['private_json'] = lambda _: {'enabled': True}
 scope['main'].__globals__['os'].geteuid = lambda: 0
 def deploy(config, run_id, commit, credentials):
-    assert run_id == 34 and commit == 'a' * 40
-    assert credentials == {'username': 'octocat', 'token': 'synthetic_token'}
     print('validated credentials; no rollout')
+    assert run_id == 34 and commit == 'a' * 40
+    assert credentials == expected
 scope['main'].__globals__['deploy'] = deploy
 sys.argv = [sys.argv[1], sys.argv[2]]
 try:
@@ -366,16 +368,35 @@ except Exception:
     sys.exit(2)
 """
         valid = json.dumps({'username': 'octocat', 'token': 'synthetic_token'})
-        for command, envelope, success in [('deploy 34 ' + COMMIT, valid, True),
-                                         ('status', '', True), ('deploy 34 ' + COMMIT, '', False),
-                                         ('deploy 34 ' + COMMIT, valid + ' ' * 8193, False),
-                                         ('deploy 34 ' + COMMIT, valid.replace('octocat', '--bad'), False),
-                                         ('deploy 34 ' + COMMIT, valid.replace('synthetic_token', 'bad token'), False),
-                                         ('deploy 34 main', valid, False)]:
-            result = subprocess.run([sys.executable, '-c', program, str(ROOT / 'deploy/factory-auto-deploy.py'), command],
+        stateless_token = 'ghs_' + '12345_' + '.'.join([
+            ''.join(['eyJhbGci', 'OiJSUzI1', 'NiJ9']), 'eyJpYXQiOjF9', 'signature-_'])
+        tokens = ['synthetic_token', stateless_token,
+                  ''.join(chr(value) for value in range(33, 127)), 'x' * 4096]
+        cases = [('deploy 34 ' + COMMIT, json.dumps({'username': 'octocat', 'token': token}), True)
+                 for token in tokens]
+        for token in ['', 'bad token', 'bad\ttoken', 'bad\ntoken', 'bad\rtoken', 'bad\x00token',
+                      'bad\x1ftoken', 'bad\x7ftoken', 'bad\u0085token', 'bad\u00e9token', 'x' * 4097, None, 123]:
+            cases.append(('deploy 34 ' + COMMIT, json.dumps({'username': 'octocat', 'token': token}), False))
+        for payload in [[], {}, {'username': 'octocat'}, {'token': 'synthetic_token'},
+                        {'username': 'octocat', 'token': 'synthetic_token', 'extra': True},
+                        {'username': None, 'token': 'synthetic_token'}]:
+            cases.append(('deploy 34 ' + COMMIT, json.dumps(payload), False))
+        cases += [('deploy 34 ' + COMMIT, valid + ' ' * (8192 - len(valid)), True),
+                  ('deploy 34 ' + COMMIT, '{malformed_synthetic_secret', False),
+                  ('status', '', True), ('deploy 34 ' + COMMIT, '', False),
+                  ('deploy 34 ' + COMMIT, valid + ' ' * 8193, False),
+                  ('deploy 34 ' + COMMIT, valid.replace('octocat', '--bad'), False),
+                  ('deploy 34 main', valid, False)]
+        for command, envelope, success in cases:
+            expected = envelope if success and command != 'status' else '{}'
+            result = subprocess.run([sys.executable, '-c', program, str(ROOT / 'deploy/factory-auto-deploy.py'), command, expected],
                                     input=envelope, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode == 0, success, result.stderr)
-            self.assertNotIn('synthetic_token', result.stdout + result.stderr)
+            self.assertEqual('validated credentials; no rollout' in result.stdout, success and command != 'status')
+            if not success:
+                self.assertEqual(result.stdout + result.stderr, '')
+            for token in tokens + ['{malformed_synthetic_secret']:
+                self.assertNotIn(token, result.stdout + result.stderr)
 
     def test_ssh_entrypoint_preserves_stdin_through_fixed_sudo_command(self):
         program = """
