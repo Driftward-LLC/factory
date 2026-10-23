@@ -1,5 +1,62 @@
 # Canonical CLI for a managed installation
 
+## Reviewed baseline adoption
+
+```bash
+factory deploy baseline preview --run RUN_ID --json
+factory deploy baseline apply --preview DIGEST --reason "Reviewed full protected baseline and helper equality" --yes --json
+```
+
+Review the entire protected diff, fingerprint, deployed current-main commit and
+installed helper identities. All six installed helpers must match that commit
+exactly, including source modes. Apply rechecks the snapshot under both deployment
+locks, retains the completed release receipt, and durably records root's reason
+before updating the baseline. It preserves services and execution/reviewer settings.
+Interrupted adoption fences subsequent deployment for explicit operator recovery;
+never repair its journals by hand.
+
+## Audited deployment and execution
+
+Use `factory deploy status --json`, `factory deploy preview --run RUN_ID --json`,
+`factory deploy approve --preview DIGEST --reason TEXT --yes`, then
+`factory deploy apply --preview DIGEST --yes`. Install matching root-protected
+copies of `factory-auto-deploy`, `auto_deploy_artifact.py`,
+`factory_deploy_operator.py`, and the launcher before using these commands.
+Preview binds the installation/image, successful main CI attempt, exact format-2
+artifact, installed helper bytes, configuration, and protected source changes.
+Approval covers one release; it never adopts a new compatibility baseline.
+Only the checked-in immutable activation blob map and byte-matched installed
+helpers may cross the protected-change boundary; unknown changes stay refused.
+
+Apply reruns one uniquely identified completed Factory Deploy workflow for the
+approved head. Its existing fixed SSH callback supplies ephemeral package
+credentials. Queueing does not consume approval or prove deployment. Under the
+installation/tenant locks, the callback checks the exact approved producer run,
+commit, artifact, and configuration before consuming approval. A duplicate or
+uncertain dispatch stays latched for review through `factory deploy status --json`.
+No workflow, SSH grammar, credential grants, or automatic compatibility policy
+changes are involved. The cold backup and actual rollout receipt remain retained.
+
+A stopped bridge executor stays stopped across automatic and audited deployment.
+After the audited rollout completes, enable the independent reviewer with
+`factory execution configure preview --json`, then the returned
+`factory execution configure apply --snapshot-digest DIGEST --reason REASON --yes --json`.
+This fixed operation changes only the reviewer flag in the executor worker's
+private environment file. It requires the executor worker to remain stopped,
+validates effective Compose configuration, and records a durable approval and
+result. An interrupted or failed operation requires operator investigation;
+it never starts services or repairs configuration automatically.
+
+Use `factory execution preview --json`, then `factory execution resume
+--snapshot-digest DIGEST --reason TEXT --yes --json`. The preview binds the image,
+installation, successful trusted CI and rollout receipt, exact reviewed terminal
+inspection guard source in the immutable image, quiescence, named role readiness,
+reviewer sign-in, and gateway listener. Resume consumes a root receipt under the
+same locks and a SQLite writer barrier, starts only the executor, and checks
+health. Failure stops that executor and retains the failed receipt for review.
+`factory execution status --json` is read-only. These commands do not migrate
+state or change execution, repair, merge, or authentication policies.
+
 The legacy `install-docker.sh` CLI assumes `/docker/driftward/factory`. For a
 source-free production installation, publish `deploy/factory-cli.py` as the
 canonical `factory` command after reviewing its explicit binding. This is a
@@ -218,3 +275,43 @@ For recovery, use `factory review-recovery ENG-X preview --review REVIEW-ID
 --reviewed-head SHA --reason TEXT`. Confirm only after reviewing that preview,
 adding `--request-id ID --snapshot-digest DIGEST --yes` and changing `preview`
 to `confirm`. Inspection is separately gated by the image CLI's explicit `--yes`.
+
+## Legacy production artifact preservation
+
+The optional `artifact_runtime` binding points to a reviewed executable copy of
+`deploy/factory-artifact-runtime.py`, under root-owned directories protected from
+group/world writes. Add this key without replacing existing installation,
+profile runtime or Hermes bindings. The helper uses existing host `gh`
+authentication with the fixed `Driftward-LLC/factory` repository on github.com.
+
+```bash
+factory artifacts preview --before 2026-10-20T22:35:06Z
+factory artifacts preserve --before 2026-10-20T22:35:06Z --snapshot-digest PREVIEW_DIGEST --yes
+factory artifacts prune --before 2026-10-20T22:35:06Z --snapshot-digest PREVIEW_DIGEST --yes
+factory artifacts status
+```
+
+Preview is read-only. Its digest binds the cutoff and exact nonexpired legacy
+`factory-production-<commit>` inventory. The cutoff cannot exceed the format-1
+retirement boundary above. Only successful main-push runs of
+`hatchet-quality.yml` in this repository qualify. Preservation downloads in
+expiry order and verifies GitHub's ZIP digest, CRCs, the two exact regular ZIP
+members, format-1 metadata and image archive content hash. It never extracts or
+loads the image. Format-2 metadata and unrelated artifacts are refused.
+
+Verified ZIPs and audit receipts remain under `/srv/factory-artifact-archive`
+(root-owned directories `0700`, regular files `0600`). Preservation requires
+12 GiB free headroom in addition to selected compressed bytes; downloads are
+limited to 1 GiB each and image content to 4 GiB. Existing verified copies are
+reused. There is no automatic expiry or local backup deletion.
+
+Prune requires the same fresh snapshot digest and all verified local copies and
+receipts before deleting any remote artifact. It rechecks remaining remote
+inventory before each explicit artifact-ID deletion, and persists a private
+intent and result per deletion. A failure stops the operation; retain receipts,
+preview the remaining inventory again, and preserve it before using its new
+digest. Never delete a remote archive to make room for its backup. These commands
+lock the bound installation and shared archive, and never touch runtime
+databases, Docker, services, workflow runs, logs or packages.
+`status` verifies every retained local ZIP and receipt without network access,
+reporting IDs, byte counts and deletion status even after remote pruning.

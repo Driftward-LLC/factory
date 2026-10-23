@@ -49,14 +49,68 @@ def api(path):
 def private_json(path):
     info = path.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o600
-            and info.st_nlink == 1, 'unsafe_private_configuration')
-    return json.loads(path.read_text())
+            and info.st_nlink == 1 and info.st_size <= 1024 * 1024, 'unsafe_private_configuration')
+    def unique(items):
+        value = {}
+        for key, item in items:
+            require(key not in value, 'invalid_private_json')
+            value[key] = item
+        return value
+    return json.loads(path.read_text(), object_pairs_hook=unique,
+                      parse_constant=lambda _: require(False, 'invalid_private_json'))
 
 
-def record(path, value):
+def assert_manual_idle(work, approved_digest=None):
+    """An interrupted operator rollout also fences the automatic deployment path."""
+    configuration = work / 'operator-execution-configure'
+    if configuration.exists() or configuration.is_symlink():
+        info = configuration.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o700,
+                'unsafe_manual_deployment_journal')
+        require(sorted(path.name for path in configuration.iterdir()) == ['receipt.json'],
+                'execution_configuration_requires_operator')
+        receipt = private_json(configuration / 'receipt.json')
+        snap = receipt.get('snapshot')
+        require(receipt.get('phase') == 'complete' and isinstance(snap, dict)
+                and re.fullmatch(DIGEST, str(snap.get('reviewer_configuration', {}).get('after')))
+                and hashlib.sha256(json.dumps(snap, sort_keys=True, separators=(',', ':'),
+                                             allow_nan=False).encode()).hexdigest() == receipt.get('snapshot_digest')
+                and receipt.get('result') == {
+                    'environment_sha256': snap.get('reviewer_configuration', {}).get('after'),
+                    'independent_reviewer_enabled': True}, 'execution_configuration_requires_operator')
+    directory = work / 'operator-deploy'
+    if not directory.exists() and not directory.is_symlink():
+        return
+    info = directory.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o700,
+            'unsafe_manual_deployment_journal')
+    require(not list(directory.glob('*.pending')), 'prior_deployment_requires_operator')
+    for path in directory.iterdir():
+        require(path.suffix == '.json', 'unsafe_manual_deployment_journal')
+        value = private_json(path)
+        require(isinstance(value, dict), 'unsafe_manual_deployment_journal')
+        if path.name == 'latest.json':
+            require(set(value) == {'digest', 'updated_at'} and re.fullmatch(DIGEST, str(value.get('digest')))
+                    and (directory / (value['digest'] + '.json')).is_file(), 'unsafe_manual_deployment_journal')
+        elif path.name == 'baseline-anchor.json':
+            require(value.get('format') == 1 and re.fullmatch(SHA, str(value.get('commit')))
+                    and re.fullmatch(DIGEST, str(value.get('compatibility'))), 'unsafe_manual_deployment_journal')
+        else:
+            require(re.fullmatch(DIGEST + r'\.json', path.name) and value.get('format') == 1
+                    and value.get('digest') == path.stem and isinstance(value.get('snapshot'), dict)
+                    and hashlib.sha256(json.dumps(value['snapshot'], sort_keys=True, separators=(',', ':'),
+                                                 allow_nan=False).encode()).hexdigest() == path.stem,
+                    'unsafe_manual_deployment_journal')
+            require(value.get('phase') in {'preview', 'approved', 'complete'}, 'prior_deployment_requires_operator')
+            require(not value.get('dispatch') or value.get('phase') == 'complete'
+                    or value.get('phase') == 'approved' and value.get('digest') == approved_digest,
+                    'prior_deployment_requires_operator')
+
+
+def record(path, value, *, timestamp=True):
     temporary = path.with_suffix('.pending')
     with temporary.open('x', encoding='utf8') as handle:
-        json.dump({**value, 'updated_at': datetime.now(timezone.utc).isoformat()}, handle)
+        json.dump({**value, **({'updated_at': datetime.now(timezone.utc).isoformat()} if timestamp else {})}, handle)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
@@ -113,14 +167,16 @@ def unpack(archive, directory):
     return json.loads((directory / 'deployment.json').read_text())
 
 
-def get_image(run_id, commit, config, directory, run_attempt, credentials):
+def source_entries(commit):
     # Use the root-installed policy and GitHub's source tree, not the build's
     # self-reported fingerprint: a changed CI script cannot approve itself.
     tree = api(f'git/trees/{commit}?recursive=1')
     require(tree.get('truncated') is False, 'incomplete_source_tree')
-    entries = [f"{item['mode']} {item['type']} {item['sha']}\t{item['path']}".encode()
-               for item in tree['tree'] if item['type'] != 'tree']
-    require(compatibility_entries(entries) == config['compatibility'], 'compatibility_review_required')
+    return [f"{item['mode']} {item['type']} {item['sha']}\t{item['path']}".encode()
+            for item in tree['tree'] if item['type'] != 'tree']
+
+
+def deployment_artifact(run_id, commit):
     artifacts = api(f'actions/runs/{run_id}/artifacts?per_page=100')
     matches = [item for item in artifacts['artifacts'] if item['name'] == 'factory-production-' + commit]
     require(len(matches) == 1 and artifacts['total_count'] <= 100, 'deployment_artifact_missing_or_ambiguous')
@@ -129,6 +185,19 @@ def get_image(run_id, commit, config, directory, run_attempt, credentials):
             and re.fullmatch('sha256:' + DIGEST, str(artifact.get('digest')))
             and artifact['workflow_run']['id'] == run_id
             and artifact['workflow_run']['head_sha'] == commit, 'invalid_artifact_provenance')
+    return {**{key: artifact[key] for key in ('id', 'name', 'expired', 'size_in_bytes', 'digest')},
+            'workflow_run': {key: artifact['workflow_run'][key] for key in ('id', 'head_sha')}}
+
+def get_image(run_id, commit, config, directory, run_attempt, credentials, *, expected_artifact=None):
+    # Use the root-installed policy and GitHub's source tree, not the build's
+    # self-reported fingerprint: a changed CI script cannot approve itself.
+    tree = api(f'git/trees/{commit}?recursive=1')
+    require(tree.get('truncated') is False, 'incomplete_source_tree')
+    entries = [f"{item['mode']} {item['type']} {item['sha']}\t{item['path']}".encode()
+               for item in tree['tree'] if item['type'] != 'tree']
+    require(compatibility_entries(entries) == config['compatibility'], 'compatibility_review_required')
+    artifact = deployment_artifact(run_id, commit)
+    require(expected_artifact is None or artifact == expected_artifact, 'deployment_artifact_changed')
     archive = directory / 'artifact.zip'
     with archive.open('xb') as handle:
         command('gh', 'api', f'repos/{REPO}/actions/artifacts/{artifact["id"]}/zip', output=handle)
@@ -172,24 +241,33 @@ def assert_quiescent(conn):
     require(not any(counts), 'active_or_unresolved_execution')
 
 
-def healthy(install):
+def paused_execution(install):
+    return tuple(row['Service'] for row in install.service_rows()
+                 if row['Service'] == 'bridge-executor-worker' and row.get('State') == 'exited')
+
+
+def healthy(install, paused=()):
     rows = {row['Service']: row for row in install.service_rows()}
     require(set(rows) == set(install.services) and all(
-        row.get('State') == 'running' and row.get('Health', '') in ('', 'healthy') for row in rows.values()), 'service_health_failed')
+        (row.get('State') == 'exited' if name in paused else
+         row.get('State') == 'running' and row.get('Health', '') in ('', 'healthy'))
+        for name, row in rows.items()), 'service_health_failed')
     install.preflight()
 
 
-def resume(install):
+def resume(install, paused=()):
     install.preflight()
-    install.compose('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '180', *install.services, private=True)
-    healthy(install)
+    selected = [name for name in install.services if name not in paused]
+    install.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '180', *selected, private=True)
+    healthy(install, paused)
 
 
 def rollout(production, install, image, commit, run_id, work):
     status = work / 'status.json'
     if status.exists():
         require(private_json(status).get('phase') in {'complete', 'blocked'}, 'prior_deployment_requires_operator')
-    healthy(install)
+    paused = paused_execution(install)
+    healthy(install, paused)
     info = json.loads(command('docker', 'image', 'inspect', install.images['factory']))[0]
     if info['Config']['Labels'].get('org.opencontainers.image.revision') == commit:
         print('Already deployed; no restart.')
@@ -216,7 +294,7 @@ def rollout(production, install, image, commit, run_id, work):
     record(status, {'phase': 'starting', 'commit': commit, 'run_id': run_id})
     # No migrations, gateway restart, journal restore or automatic state rollback.
     # A partial failure stays latched for an operator, rather than guessing about effects.
-    resume(updated)
+    resume(updated, paused)
     record(status, {'phase': 'complete', 'commit': commit, 'run_id': run_id, 'backup': str(snapshot), 'image': image})
     print('Deployment healthy; exact image active and cold backup retained.')
 
@@ -229,10 +307,12 @@ def deploy(config, run_id, commit, credentials):
     production = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(production)
     work = Path(config['work_directory'])
+    assert_manual_idle(work)
     require(work.is_dir() and work.stat().st_uid == 0 and stat.S_IMODE(work.stat().st_mode) == 0o700, 'unsafe_work_directory')
     with production.portable.installation_lock(Path(config['installation'])):
         install = production.Production(Path(config['installation']))
         with production.portable.installation_lock(Path('/tmp') / ('factory-tenant-' + install.tenant)):
+            assert_manual_idle(work)
             install.preflight()
             run = api(f'actions/runs/{run_id}')
             validate_run(run, api('actions/workflows/hatchet-quality.yml'), run_id, commit)
@@ -266,8 +346,12 @@ def main():
             and isinstance(credentials['username'], str)
             and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?', credentials['username'])
             and isinstance(credentials['token'], str) and 1 <= len(credentials['token']) <= 4096
-            and re.fullmatch(r'[A-Za-z0-9_]+', credentials['token']), 'invalid_registry_credentials')
-    deploy(config, int(match[1]), match[2], credentials)
+            # GitHub tokens are opaque; enforce transport safety, not a token format.
+            and re.fullmatch(r'[!-~]+', credentials['token']), 'invalid_registry_credentials')
+    from factory_deploy_operator import forced_deployment
+    from types import SimpleNamespace
+    if not forced_deployment(SimpleNamespace(**globals()), int(match[1]), match[2], credentials):
+        deploy(config, int(match[1]), match[2], credentials)
 
 
 if __name__ == '__main__':

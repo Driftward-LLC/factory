@@ -265,7 +265,12 @@ def inventory():
                 raise ValueError('invalid capability server name')
             result[role]['mcp_servers'] = names
             result[role]['capability_keys'] = sorted(capabilities)
-    return {'profiles': result, 'posthog_runtime_configured': bool(os.environ.get('POSTHOG_API_KEY'))}
+    # Native status is read-only; shared runtime auth need not be copied into the named profile.
+    from hermes_cli.auth import get_codex_auth_status
+    auth = get_codex_auth_status()
+    return {'profiles': result, 'posthog_runtime_configured': bool(os.environ.get('POSTHOG_API_KEY')),
+            'executor_auth_ready': auth.get('logged_in') is True and auth.get('auth_mode') == 'chatgpt'
+            and auth.get('base_url') == 'https://chatgpt.com/backend-api/codex'}
 
 
 def idle_runtime():

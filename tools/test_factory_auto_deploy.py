@@ -56,12 +56,52 @@ class DeploymentTests(unittest.TestCase):
         auto.validate_run(run, workflow, 34, COMMIT)
         for key, value in [('id', 35), ('workflow_id', 13), ('path', 'another.yml'), ('event', 'pull_request'),
                            ('event', 'workflow_dispatch'), ('head_branch', 'feature'), ('head_sha', 'c' * 40),
-                           ('status', 'in_progress'), ('conclusion', 'failure'),
+                           ('status', 'in_progress'), ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+                           ('conclusion', 'skipped'), ('conclusion', 'neutral'), ('conclusion', 'timed_out'),
                            ('repository', {'full_name': 'foreign/repo'}), ('head_repository', {'full_name': 'fork/repo'})]:
             with self.subTest(key=key, value=value), self.assertRaises(auto.Refusal):
                 auto.validate_run({**run, key: value}, workflow, 34, COMMIT)
         with patch.object(auto, 'api', return_value={'object': {'sha': 'c' * 40}}), self.assertRaisesRegex(auto.Refusal, 'superseded'):
             auto.current_main(COMMIT)
+
+    def test_manual_failure_written_before_tenant_lock_blocks_automatic_rollout(self):
+        config = {'enabled': True, 'work_directory': str(self.directory),
+                  'installation': str(self.directory / 'install'), 'production_bundle': str(self.directory)}
+        calls = []
+        @contextmanager
+        def lock(path):
+            calls.append(path)
+            if len(calls) == 2:
+                directory = self.directory / 'operator-deploy'
+                directory.mkdir(mode=0o700)
+                snapshot = {}
+                identifier = hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                path = directory / (identifier + '.json')
+                path.write_text(json.dumps({'format': 1, 'digest': identifier, 'snapshot': snapshot, 'phase': 'failed'}))
+                path.chmod(0o600)
+            yield
+        production = SimpleNamespace(portable=SimpleNamespace(installation_lock=lock),
+                                     Production=Mock(return_value=SimpleNamespace(tenant='fixture', preflight=Mock())))
+        actual_stat, actual_lstat = Path.stat, Path.lstat
+        def owned(info):
+            fields = list(info); fields[4] = 0
+            return os.stat_result(fields)
+        def fixture_stat(path, **options):
+            info = actual_stat(path, **options)
+            return owned(info) if path == self.directory or self.directory in path.parents else info
+        def fixture_lstat(path):
+            info = actual_lstat(path)
+            return owned(info) if path == self.directory or self.directory in path.parents else info
+        spec = SimpleNamespace(loader=SimpleNamespace(exec_module=Mock()))
+        with patch.object(auto.importlib.util, 'spec_from_file_location', return_value=spec), \
+             patch.object(auto.importlib.util, 'module_from_spec', return_value=production), \
+             patch.object(Path, 'stat', new=fixture_stat), patch.object(Path, 'lstat', new=fixture_lstat), \
+             patch.object(auto, 'get_image') as image, patch.object(auto, 'rollout') as rollout, patch.object(auto, 'api') as api:
+            with self.assertRaisesRegex(auto.Refusal, 'prior_deployment_requires_operator'):
+                auto.deploy(config, 34, COMMIT, {'username': 'fixture', 'token': 'synthetic_token'})
+        self.assertEqual(len(calls), 2)
+        image.assert_not_called(); rollout.assert_not_called(); api.assert_not_called()
+        production.Production.return_value.preflight.assert_not_called()
 
     def manifest(self, compatibility='d' * 64):
         return {'format': 2, 'commit': COMMIT, 'image': artifact.REGISTRY_IMAGE + '@' + IMAGE,
@@ -129,7 +169,8 @@ class DeploymentTests(unittest.TestCase):
         item = {'id': 56, 'name': 'factory-production-' + COMMIT, 'expired': False,
                 'size_in_bytes': source.stat().st_size, 'digest': 'sha256:' + auto.sha256(source),
                 'workflow_run': {'id': 34, 'head_sha': COMMIT}}
-        credentials = {'username': 'octocat', 'token': 'synthetic_token'}
+        token = 'ghs_' + '12345_' + '.'.join(['synthetic', 'jwt', 'signature-_"\\`$();:'])
+        credentials = {'username': 'octocat', 'token': token}
         helpers = self.directory / 'helpers'
         helpers.mkdir()
         marker = self.directory / 'credential-helper-called'
@@ -158,21 +199,21 @@ class DeploymentTests(unittest.TestCase):
                 if args[0] == 'gh':
                     output.write(source.read_bytes()); return ''
                 self.assertEqual(env, {'DOCKER_CONFIG': str(Path(output_dir) / 'docker-config')})
-                self.assertNotIn('synthetic_token', str(args))
+                self.assertNotIn(token, str(args))
                 config_dir = Path(env['DOCKER_CONFIG'])
                 self.assertEqual(config_dir.stat().st_mode & 0o777, 0o700)
                 if args[:3] == ('docker', 'manifest', 'inspect'):
                     auth_file = config_dir / 'config.json'
                     self.assertEqual(auth_file.stat().st_mode & 0o777, 0o600)
                     self.assertEqual(json.loads(auth_file.read_text()), {'auths': {'ghcr.io': {
-                        'auth': base64.b64encode(b'octocat:synthetic_token').decode()}}})
+                        'auth': base64.b64encode(('octocat:' + token).encode()).decode()}}})
                     if failure == 'native_helper':
                         # A real Docker CLI must select its file store even
                         # when native credential helpers are discoverable.
                         result = subprocess.run([docker, 'logout', 'ghcr.io'],
                                                 env={**probe_env, **env}, capture_output=True, text=True, timeout=10)
                         self.assertEqual(result.returncode, 0, result.stderr)
-                        self.assertNotIn('synthetic_token', result.stdout + result.stderr)
+                        self.assertNotIn(token, result.stdout + result.stderr)
                         self.assertFalse(marker.exists())
                     return json.dumps({'schemaVersion': 2, 'config': {'digest':
                         IMAGE if failure == 'config' else manifest['image_config']}})
@@ -351,13 +392,16 @@ import json, runpy, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]).parent))
 scope = runpy.run_path(sys.argv[1])
+expected = json.loads(sys.argv[3])
 scope['main'].__globals__['private_json'] = lambda _: {'enabled': True}
 scope['main'].__globals__['os'].geteuid = lambda: 0
 def deploy(config, run_id, commit, credentials):
-    assert run_id == 34 and commit == 'a' * 40
-    assert credentials == {'username': 'octocat', 'token': 'synthetic_token'}
     print('validated credentials; no rollout')
+    assert run_id == 34 and commit == 'a' * 40
+    assert credentials == expected
 scope['main'].__globals__['deploy'] = deploy
+import factory_deploy_operator
+factory_deploy_operator.forced_deployment = lambda *args: False
 sys.argv = [sys.argv[1], sys.argv[2]]
 try:
     scope['main']()
@@ -365,16 +409,35 @@ except Exception:
     sys.exit(2)
 """
         valid = json.dumps({'username': 'octocat', 'token': 'synthetic_token'})
-        for command, envelope, success in [('deploy 34 ' + COMMIT, valid, True),
-                                         ('status', '', True), ('deploy 34 ' + COMMIT, '', False),
-                                         ('deploy 34 ' + COMMIT, valid + ' ' * 8193, False),
-                                         ('deploy 34 ' + COMMIT, valid.replace('octocat', '--bad'), False),
-                                         ('deploy 34 ' + COMMIT, valid.replace('synthetic_token', 'bad token'), False),
-                                         ('deploy 34 main', valid, False)]:
-            result = subprocess.run([sys.executable, '-c', program, str(ROOT / 'deploy/factory-auto-deploy.py'), command],
+        stateless_token = 'ghs_' + '12345_' + '.'.join([
+            ''.join(['eyJhbGci', 'OiJSUzI1', 'NiJ9']), 'eyJpYXQiOjF9', 'signature-_'])
+        tokens = ['synthetic_token', stateless_token,
+                  ''.join(chr(value) for value in range(33, 127)), 'x' * 4096]
+        cases = [('deploy 34 ' + COMMIT, json.dumps({'username': 'octocat', 'token': token}), True)
+                 for token in tokens]
+        for token in ['', 'bad token', 'bad\ttoken', 'bad\ntoken', 'bad\rtoken', 'bad\x00token',
+                      'bad\x1ftoken', 'bad\x7ftoken', 'bad\u0085token', 'bad\u00e9token', 'x' * 4097, None, 123]:
+            cases.append(('deploy 34 ' + COMMIT, json.dumps({'username': 'octocat', 'token': token}), False))
+        for payload in [[], {}, {'username': 'octocat'}, {'token': 'synthetic_token'},
+                        {'username': 'octocat', 'token': 'synthetic_token', 'extra': True},
+                        {'username': None, 'token': 'synthetic_token'}]:
+            cases.append(('deploy 34 ' + COMMIT, json.dumps(payload), False))
+        cases += [('deploy 34 ' + COMMIT, valid + ' ' * (8192 - len(valid)), True),
+                  ('deploy 34 ' + COMMIT, '{malformed_synthetic_secret', False),
+                  ('status', '', True), ('deploy 34 ' + COMMIT, '', False),
+                  ('deploy 34 ' + COMMIT, valid + ' ' * 8193, False),
+                  ('deploy 34 ' + COMMIT, valid.replace('octocat', '--bad'), False),
+                  ('deploy 34 main', valid, False)]
+        for command, envelope, success in cases:
+            expected = envelope if success and command != 'status' else '{}'
+            result = subprocess.run([sys.executable, '-c', program, str(ROOT / 'deploy/factory-auto-deploy.py'), command, expected],
                                     input=envelope, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode == 0, success, result.stderr)
-            self.assertNotIn('synthetic_token', result.stdout + result.stderr)
+            self.assertEqual('validated credentials; no rollout' in result.stdout, success and command != 'status')
+            if not success:
+                self.assertEqual(result.stdout + result.stderr, '')
+            for token in tokens + ['{malformed_synthetic_secret']:
+                self.assertNotIn(token, result.stdout + result.stderr)
 
     def test_ssh_entrypoint_preserves_stdin_through_fixed_sudo_command(self):
         program = """
@@ -396,7 +459,7 @@ runpy.run_path(sys.argv[1])
     def rollout_fixture(self):
         self.database()
         calls = []
-        install = SimpleNamespace(project='synthetic', directory=self.directory, images={'factory': IMAGE}, services=['bridge'])
+        install = SimpleNamespace(project='synthetic', directory=self.directory, images={'factory': IMAGE}, services=['bridge'], service_rows=lambda: [])
         def compose(*args, **kwargs):
             calls.append(args)
             if args[0] == 'stop':
@@ -413,7 +476,7 @@ runpy.run_path(sys.argv[1])
     def test_rollout_serializes_authorization_backup_pin_and_resume(self):
         install, production, command, calls = self.rollout_fixture()
         with patch.object(auto, 'healthy'), patch.object(auto, 'command', side_effect=command), patch.object(auto, 'current_main'), \
-                patch.object(auto, 'resume', side_effect=lambda _: calls.append(('resume',))):
+                patch.object(auto, 'resume', side_effect=lambda _, paused: calls.append(('resume',))):
             auto.rollout(production, install, IMAGE, COMMIT, 34, self.directory)
         self.assertEqual([call[0] for call in calls], ['stop', 'backup', 'record-upgrade', 'resume'])
         self.assertEqual(json.loads((self.directory / 'status.json').read_text())['phase'], 'complete')
