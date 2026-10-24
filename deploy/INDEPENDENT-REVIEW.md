@@ -69,6 +69,69 @@ invalid endpoints and delivery failures do not change the verdict or authorize
 replay. A hard kill, queue overflow or flush timeout can lose events; traces are
 observability evidence rather than completion or authorization receipts.
 
+The executor's `observability/posthog` plugin also registers `factory_github` in
+the existing `terminal` toolset, only in the named `factory-executor` profile
+with a local terminal backend and an existing `gh` executable. New session
+prompts prefer this tool for GitHub CLI/API work. For example, use
+`{"args":["pr","view","123"],"workdir":"/path/to/checkout"}`. It executes an
+argv array without a shell, runs the native terminal command approval guard,
+and builds a native profile-scoped, scrubbed child environment. It does not
+change credentials or inherit terminal session exports or working directory;
+provide `workdir` explicitly. Input is noninteractive (empty stdin by default),
+with a 1 MiB character limit, 256 arguments / 262,144 total characters, a
+1–180 second timeout, and 100,000 captured bytes per output stream. Timeout or
+excess output kills the dedicated process group. Native per-thread interruption
+is checked before launch and at most every 100 ms during stream and process
+waits; an interrupt kills and reaps that group. Normal stdout/stderr/exit code
+remain in the local tool result and are never exported to PostHog.
+
+The actual CLI execution produces a `$ai_span` child of the native tool span,
+which is itself a child of its generation. `github.observation=cli_invocation`,
+`github.cli_operation` (fixed allowlist, `help_or_version`, or `unknown`),
+`github.cli_status` (`success`, `nonzero_exit`, `timeout`, `output_limit`, or
+`spawn_error`, `interrupted_before_spawn`, or `interrupted`),
+`github.process_started`, and optional integer `github.exit_code`
+describe the local process only. `github.effect_status=unverified` always:
+successful CLI exit is not evidence of a particular HTTP request or remote
+mutation. Interruption before launch reports `process_started=false`; interruption
+after launch reports `true` and the reaped process exit code. Help/version labels
+recognize standalone commands or flags in simple command positions; ambiguous
+later help flags fall back to `unknown`, and body/title values are not commands.
+Arguments, endpoints, resource names, stdin, outputs and raw exception
+text never enter this child event. Native approval denial or unavailable guards
+returns before spawning; missing native middleware identity also fails closed.
+
+Outer tool spans include `factory.external_operation_coverage`:
+`controlled_github_cli` for `factory_github`, otherwise `unknown`. Inner GitHub
+calls in `terminal`, `execute_code`, `process`, arbitrary scripts, direct HTTP,
+`git`, alternate executables or remote terminal backends are not observed by this
+boundary. Queue drops, process termination and delivery failures can also leave
+gaps; these fields do not promise a complete external-action ledger. No old
+events are backfilled. Installing this source requires a separately reviewed
+profile upgrade; the existing guarded deployment/blob gates remain in force.
+`factory profiles configure` rejects already-active roles. Use the separately
+reviewed `factory profiles upgrade-observer preview|apply` path described in
+[CLI.md](CLI.md) for the observer-only active-profile change. Its digest approval,
+quiescence checks and consumed durable receipt preserve credentials, role
+configuration, reviewer policy and paused execution. This host helper operation
+does not change deployment/blob gates. The existing `canary executor` uses no
+tools; `factory profiles canary github` exercises the fixed native version call
+without a model request and returns the real parent/child IDs for verification.
+If the exact observer target was selected but final service readiness failed,
+the bounded `factory profiles recover-observer` preview/apply/status path can
+restore the gateway and an explicitly selected previously running dispatcher.
+It preserves the failed receipt and paused executor without repeating the
+observer mutation; other failure stages require separate operator diagnosis.
+
+`tools/check_factory_profile_runtime_native.py` exercises the pinned Hermes
+catalog and real dispatcher offline with a synthetic `gh` subprocess, checking
+the generation → tool → CLI parent IDs and output secrecy. It does not prove
+PostHog ingestion. After an approved profile upgrade, use the installed
+`factory profiles canary github`, then verify its exact session, trace, tool-call,
+parent and `help_or_version` child IDs server-side. The spans are labeled
+validation-only and the receipt reports `server_verification_pending`. This
+needs no GitHub API write; activation and delivery verification remain separate.
+
 The host starts one credential-free source container with an immutable Git
 bundle/database, independent checkout, test tools and fresh Playwright browser.
 It has no provider/platform credentials, outbound network, shared Hermes data,

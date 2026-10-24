@@ -159,6 +159,89 @@ factory profiles canary executor
 factory profiles canary reviewer
 ```
 
+An active executor profile accepts a separately reviewed observer-only upgrade.
+Install the reviewed CLI, profile helper, and adjacent observer assets as one
+versioned root-owned host tooling bundle. Retain all adjacent gateway, reviewer,
+and engineering assets listed above for the existing commands. This installation
+does not deploy an image, adopt a deployment fingerprint, or alter deployment
+policy. Review and installation of unmerged source is a separate activation
+decision; merging source alone does not select the observer in a running profile.
+
+```bash
+factory profiles upgrade-observer preview
+factory profiles upgrade-observer apply \
+  --snapshot-digest DIGEST_FROM_PREVIEW \
+  --reason 'Reviewed observer-only upgrade' --request-id NEW_UUID --yes
+factory profiles upgrade-observer status --request-id REQUEST_UUID
+factory profiles canary github
+```
+
+Preview writes no runtime state. Its digest binds the exact selected and target
+observer trees, engineering release, protected role files, host configuration,
+and service states. Apply requires the executor already paused, bridge quiescence,
+and native idle state. Under the installation lock it consumes a root-only audit
+receipt, stops the running dispatcher and gateway, rechecks the inputs under the
+bridge write lock, and atomically selects the immutable observer release. It
+preserves role configuration, authentication, capabilities, reviewer policy and
+the paused executor. Only the previously running dispatcher and gateway restart.
+A consumed request cannot be replayed. Failure leaves stopped services stopped
+and records `requires_operator` in the private receipt; inspect it before recovery.
+Use `status --request-id` for read-only diagnosis through the canonical CLI, even
+while the gateway is stopped. It returns only the validated request and digest
+identities, recorded phase/stage, bounded stop-error names and currently selected
+observer digest. If native inspection is unavailable, the receipt summary still
+returns with `native_snapshot_status=unavailable`. Reasons, paths, exception
+messages and native stderr are not returned. Status never retries an upgrade.
+
+Readiness waits up to 30 seconds for the expected service states, active gateway
+and listening socket, passing the remaining deadline to each blocking check
+and rejecting results received after it. A timeout records a fixed `failed_predicate`, such as
+`gateway_listener`; a changed host configuration fails immediately. Future
+upgrade receipts also retain the prior service states.
+
+Only an upgrade that selected the exact target and then failed at
+`restored_health`, with no stop errors, supports this separate recovery path:
+
+```bash
+factory profiles recover-observer FAILED_UPGRADE_REQUEST_UUID preview
+factory profiles recover-observer FAILED_UPGRADE_REQUEST_UUID apply \
+  --snapshot-digest RECOVERY_DIGEST_FROM_PREVIEW \
+  --reason 'Reviewed gateway recovery' --request-id NEW_RECOVERY_UUID --yes
+factory profiles recover-observer FAILED_UPGRADE_REQUEST_UUID status \
+  --request-id RECOVERY_UUID
+```
+
+Recovery requires the gateway, dispatcher and executor stopped, quiescent bridge,
+idle native runtime and the selected observer equal to both the failed receipt's
+target and installed observer assets. The preview binds the failed receipt and
+current protected state. Apply consumes its own durable request, rechecks those
+inputs under the bridge write barrier, starts the gateway, waits for its listener,
+and verifies preserved profile state. The original failed receipt is retained
+unchanged; recovery never selects or rewrites the observer. Execution stays paused.
+Observer Compose status checks have a 15-second bound, and start/stop commands
+have a 90-second bound, including failure cleanup. A failed cleanup is recorded
+as a fixed stop-error name and requires operator inspection.
+
+By default the dispatcher stays stopped. Add `--restore-dispatcher` to both preview
+and apply only when approving restoration of its previously running state. A
+stored prior-service snapshot must support that choice when present. Older
+receipts have no such evidence: the preview and recovery receipt explicitly label
+the choice `operator_selection`, so the operator must use independently captured
+prior Factory status. Changing the selection invalidates the preview. Recovery
+status returns bounded phase, predicate and current execution/gateway states.
+Readiness failure attempts to stop only the gateway and explicitly selected
+dispatcher, retaining the consumed recovery receipt; other failure stages are
+not eligible for this recovery command.
+
+The GitHub canary requires the selected observer to match the installed bundle.
+It invokes only `gh --version` through the native tool dispatcher, with native
+approval and secret filtering. It makes no model/provider request. The two real
+tool spans carry `factory.validation_only=true`; the receipt and CLI return exact
+session, trace, tool-call, parent and child IDs, never command output or credentials.
+The existing asynchronous sender is flushed boundedly without retrying execution.
+`server_verification_pending` requires exact-ID server evidence before claiming
+delivery. Existing model canaries remain separate commands.
+
 An old, accepted read-only PR inspection can block profile activation even when
 its 120-second inspection capability has expired. The root-only CLI supports a
 bounded recovery for one untouched inspection with exactly one pending linked
