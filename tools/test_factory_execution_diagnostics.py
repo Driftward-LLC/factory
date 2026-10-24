@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -126,6 +127,60 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
             intent['fingerprint'] = 'f8f5f28ddee3fb8c9342679ce2cdd4ba7996a2191159d5380dbad6cf0c28e395'
             self.write(directory / 'intent.json', intent)
             self.assertEqual(self.diagnose(database, directory)['journal']['state'], 'exact_binding_verified')
+
+    def test_writer_golden_numbers_and_mixed_case_keys(self):
+        vectors = [
+            ({'retry_delay': 1.0}, 'efdb1504f3bf5de14ece85e552b1c8670e4abea7e0019ff00801c01c0fdcb296'),
+            ({'metadata': {'a': 1, 'A': 2}}, 'a3aefb1b2c1b6c5396da0bc4d114e8ad3811b4c7b5b9fd70244a2daed70cbd1b'),
+            ({'metadata': {'a': 1, 'A': 2}, 'retry_delay': 1.0, 'values': [1e-7, 1e21, 9007199254740993]},
+             '4361214033951690da580bef7a1f6f9058a25f7e3ce4556da6083abbf10374fa'),
+        ]
+        for extra, golden in vectors:
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as temporary:
+                database, directory, intent = self.fixture(Path(temporary))
+                with sqlite3.connect(database) as connection:
+                    payload = json.loads(connection.execute('SELECT payload_json FROM bridge_jobs').fetchone()[0])
+                    payload.update(extra)
+                    connection.execute('UPDATE bridge_jobs SET payload_json=?', (json.dumps(payload),))
+                intent['fingerprint'] = golden
+                self.write(directory / 'intent.json', intent)
+                result = self.diagnose(database, directory)
+                self.assertEqual(result['journal']['state'], 'exact_binding_verified')
+                self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_fingerprint_engine_is_fixed_private_bounded_and_environment_isolated(self):
+        with patch.dict(os.environ, {'NODE_OPTIONS': '--require private-secret', 'NODE_PATH': SECRET,
+                                     'LD_PRELOAD': SECRET}), \
+             patch.object(runtime, 'checked', return_value=Path('/usr/bin/node')), \
+             patch.object(runtime.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'a' * 64)) as run:
+            self.assertEqual(runtime.diagnostic_fingerprint({'prompt': SECRET}), 'a' * 64)
+        args, options = run.call_args
+        self.assertEqual(args[0][:2], ['/usr/bin/node', '-e'])
+        self.assertNotIn(SECRET, ''.join(args[0]))
+        self.assertIn(SECRET.encode(), options['input'])
+        self.assertEqual(options['env'], {'LANG': 'C.UTF-8'})
+        self.assertEqual(options['cwd'], '/')
+        self.assertEqual(options['timeout'], 5)
+        self.assertEqual(options['stderr'], subprocess.DEVNULL)
+        with patch.object(runtime.subprocess, 'run') as run, self.assertRaises(ValueError):
+            runtime.diagnostic_fingerprint({'prompt': 'x' * (runtime.LIMIT + 1)})
+        run.assert_not_called()
+
+    def test_engine_failure_missing_timeout_and_invalid_output_are_bounded_refusals(self):
+        for failure in (FileNotFoundError(SECRET), subprocess.TimeoutExpired(SECRET, 5, output=SECRET),
+                        SimpleNamespace(returncode=1, stdout=SECRET.encode()),
+                        SimpleNamespace(returncode=0, stdout=b'a' * 65)):
+            with self.subTest(failure=type(failure).__name__), \
+                 patch.object(runtime, 'checked', return_value=Path('/usr/bin/node')), \
+                 patch.object(runtime.subprocess, 'run', **({'side_effect': failure} if isinstance(failure, Exception)
+                                                           else {'return_value': failure})), \
+                 self.assertRaises(ValueError) as raised:
+                runtime.diagnostic_fingerprint({'prompt': SECRET})
+            self.assertEqual(str(raised.exception), 'execution diagnostic fingerprint unavailable')
+            self.assertNotIn(SECRET, str(raised.exception))
+        with patch.object(runtime, 'checked', side_effect=FileNotFoundError(SECRET)), \
+             self.assertRaisesRegex(ValueError, '^execution diagnostic fingerprint unavailable$'):
+            runtime.diagnostic_fingerprint({'prompt': SECRET})
 
     def test_unsafe_missing_or_oversize_artifacts_fail_closed(self):
         for kind in ('symlink', 'directory_symlink', 'oversize', 'public', 'hardlink', 'missing_intent'):

@@ -1434,6 +1434,48 @@ def diagnostic_json(content):
     return json.loads(content, object_pairs_hook=unique, parse_constant=invalid_constant)
 
 
+def diagnostic_fingerprint(value):
+    # Use the writer's JS number/string/key semantics; never pass private JSON in argv.
+    script = r'''
+const { createHash } = require('node:crypto');
+function canonical(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.entries(value)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => JSON.stringify(key) + ':' + canonical(item)).join(',') + '}';
+  return JSON.stringify(value);
+}
+let chunks = [], size = 0;
+process.stdin.on('data', chunk => {
+  size += chunk.length;
+  if (size > 8388608) process.exit(1);
+  chunks.push(chunk);
+});
+process.stdin.on('end', () => {
+  try {
+    const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    process.stdout.write(createHash('sha256').update(canonical(value)).digest('hex'));
+  } catch { process.exit(1); }
+});
+'''
+    content = json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False).encode()
+    if len(content) > LIMIT:
+        raise ValueError('execution diagnostic fingerprint input exceeds limit')
+    try:
+        engine = checked(Path('/usr/bin/node'))
+        if engine.stat().st_mode & 0o022 or not os.access(engine, os.X_OK):
+            raise ValueError('unsafe execution diagnostic fingerprint engine')
+        # The fixed script writes exactly 64 bytes, discards errors, and imports only a builtin.
+        result = subprocess.run([str(engine), '-e', script], input=content, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=5, check=False, cwd='/',
+                                env={'LANG': 'C.UTF-8'})
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError('execution diagnostic fingerprint unavailable') from None
+    if result.returncode != 0 or not re.fullmatch(b'[0-9a-f]{64}', result.stdout):
+        raise ValueError('execution diagnostic fingerprint unavailable')
+    return result.stdout.decode('ascii')
+
+
 def diagnostic_journal(job, lease):
     # Open every ancestor by descriptor, so rename/symlink races cannot redirect reads.
     descriptor = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
@@ -1469,8 +1511,7 @@ def diagnostic_journal(job, lease):
         fingerprint['payload'] = payload
         if version == 2:
             fingerprint['fingerprint_version'] = 2
-        canonical = json.dumps(fingerprint, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
-        if intent.get('fingerprint') != hashlib.sha256(canonical.encode()).hexdigest():
+        if intent.get('fingerprint') != diagnostic_fingerprint(fingerprint):
             raise ValueError('execution diagnostic intent fingerprint differs')
         result = diagnostic_file(descriptor, 'result.json', optional=True)
         return {'source': 'fixed_host_gateway_journal', 'state': 'exact_binding_verified',

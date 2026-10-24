@@ -15,6 +15,13 @@ Result presence alone does not validate a receipt. Classifications use fixed
 allowlists; prompts, payloads, fence tokens, session contents and raw output are
 never returned.
 
+Fingerprint verification requires the root-protected host `/usr/bin/node`. A
+fixed script uses the gateway writer's `localeCompare` and `JSON.stringify`
+semantics with `LANG=C.UTF-8`, bounded private stdin, a five-second timeout and
+digest-only output. Missing engines and fingerprint differences refuse the
+command. This targets the current host gateway; journals written with another
+locale or Node/ICU collation version may require separate compatibility work.
+
 The gateway does not retain failed subprocess stdout/stderr, so historical
 underlying errors remain unavailable. A nonzero exit, missing result or absent
 journal does not establish containment, identify an authentication failure, or
