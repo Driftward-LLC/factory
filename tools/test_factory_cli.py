@@ -17,6 +17,21 @@ spec.loader.exec_module(cli)
 
 
 class CanonicalCliTests(unittest.TestCase):
+    def test_execution_diagnostics_route_through_bound_profile_helper(self):
+        backend = SimpleNamespace(dispatch=unittest.mock.Mock(return_value={'recovery_authorized': False}))
+        install = SimpleNamespace()
+        args = ['profiles', 'diagnose-execution', 'attempt-id', '--invocation-id', 'exact-invocation']
+        config = {'hermes_wrapper': '/reviewed/wrapper', 'profile_runtime': '/reviewed/profile-helper'}
+        with patch.object(cli, 'installation', return_value=install), \
+             patch.object(cli, 'checked_hermes_wrapper', side_effect=Path) as checked, \
+             patch.object(cli.importlib.util, 'module_from_spec', return_value=backend), \
+             patch.object(cli.importlib.util, 'spec_from_file_location') as spec, \
+             patch('builtins.print'):
+            self.assertEqual(cli.dispatch_bound(config, args), 0)
+        self.assertEqual(checked.call_args_list, [unittest.mock.call('/reviewed/wrapper'),
+                                               unittest.mock.call('/reviewed/profile-helper')])
+        backend.dispatch.assert_called_once_with(install, config, Path('/reviewed/wrapper'), args[1:])
+
     def test_hermes_wrapper_rejects_unprotected_paths(self):
         for value in (None, 42, 'relative/path'):
             with self.assertRaises(ValueError):

@@ -1,5 +1,25 @@
 # Canonical CLI for a managed installation
 
+## Read-only executor failure diagnostics
+
+```bash
+factory profiles diagnose-execution ATTEMPT-ID --invocation-id JOB-ID:LEASE-ID:EPOCH
+```
+
+This root-only command binds the attempt, job, current execution lease and exact
+invocation events in a read-only bridge snapshot. It checks the fixed host gateway
+journal's private intent fingerprint and lease before reporting artifact presence
+and byte counts. An absent journal is an evidence gap; an unsafe or mismatched
+artifact refuses the command. It does not follow journal location overrides.
+Result presence alone does not validate a receipt. Classifications use fixed
+allowlists; prompts, payloads, fence tokens, session contents and raw output are
+never returned.
+
+The gateway does not retain failed subprocess stdout/stderr, so historical
+underlying errors remain unavailable. A nonzero exit, missing result or absent
+journal does not establish containment, identify an authentication failure, or
+authorize recovery or retry. This command changes no services or execution state.
+
 ## Reviewed baseline adoption
 
 ```bash
