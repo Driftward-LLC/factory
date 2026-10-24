@@ -841,9 +841,9 @@ def systemctl(*args):
     subprocess.run(['systemctl', *args], capture_output=True, check=True, timeout=90)
 
 
-def gateway_status():
+def gateway_status(*, timeout=15):
     result = subprocess.run(['systemctl', 'show', '--property=ActiveState,SubState,Result,ExecMainStatus', SERVICE],
-                            capture_output=True, text=True, check=True, timeout=15)
+                            capture_output=True, text=True, check=True, timeout=timeout)
     values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
     bounded = {}
     for key in ('ActiveState', 'SubState', 'Result'):
@@ -854,14 +854,14 @@ def gateway_status():
     return bounded
 
 
-def gateway_socket_listening():
+def gateway_socket_listening(*, timeout=0.5):
     path = Path('/run/driftward-hermes-factory/hermes.sock')
     try:
         no_symlinks(path)
         if not stat.S_ISSOCK(path.stat().st_mode):
             return False
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(0.5)
+            client.settimeout(timeout)
             client.connect(str(path))
         return True
     except (OSError, ValueError):
@@ -1050,7 +1050,7 @@ def observer_upgrade_snapshot(install, wrapper):
     provision = checked(PROVISION)
     if json.loads(provision.read_text()).get('auth_root') != str(ROOT / 'profiles' / ROLES['reviewer']):
         raise ValueError('active reviewer routing required')
-    rows = sorted((row['Service'], row.get('State')) for row in install.service_rows())
+    rows = sorted((row['Service'], row.get('State')) for row in observer_service_rows(install))
     if dict(rows).get('bridge-executor-worker') != 'exited' or dict(rows).get('execution-dispatch-worker') not in {'running', 'exited'}:
         raise ValueError('observer upgrade requires paused executor and resolved dispatcher')
     if gateway_status()['ActiveState'] != 'active':
@@ -1067,6 +1067,18 @@ def observer_upgrade_snapshot(install, wrapper):
 OBSERVER_HEALTH_PREDICATES = {'host_inputs_changed', 'service_states', 'gateway_active', 'gateway_listener'}
 
 
+def observer_compose(install, *args, timeout=90):
+    # Installed helpers may use an older Production bundle without timeout keywords.
+    result = subprocess.run([*install.args, *args], env=install.env, capture_output=True,
+                            text=True, check=True, timeout=timeout)
+    return result.stdout
+
+
+def observer_service_rows(install, *, timeout=15):
+    raw = observer_compose(install, 'ps', '--all', '--format', 'json', timeout=timeout)
+    return json.loads(raw) if raw.strip().startswith('[') else [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
 class ObserverHealthFailure(ValueError):
     def __init__(self, predicate):
         super().__init__('observer service readiness failed')
@@ -1075,18 +1087,32 @@ class ObserverHealthFailure(ValueError):
 
 def wait_observer_health(install, services, host_inputs, timeout=30):
     deadline = time.monotonic() + timeout
+    predicate = 'service_states'
+    def remaining():
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise ObserverHealthFailure(predicate)
+        return seconds
     while True:
+        remaining()
         if observer_host_digest(install) != host_inputs:
             raise ObserverHealthFailure('host_inputs_changed')
-        current = sorted((row['Service'], row.get('State')) for row in install.service_rows())
-        if current != services:
+        try:
             predicate = 'service_states'
-        elif gateway_status()['ActiveState'] != 'active':
-            predicate = 'gateway_active'
-        elif not gateway_socket_listening():
-            predicate = 'gateway_listener'
-        else:
-            return
+            current = sorted((row['Service'], row.get('State')) for row in observer_service_rows(install, timeout=remaining()))
+            remaining()
+            if current == services:
+                predicate = 'gateway_active'
+                active = gateway_status(timeout=min(15, remaining()))['ActiveState']
+                remaining()
+                if active == 'active':
+                    predicate = 'gateway_listener'
+                    listening = gateway_socket_listening(timeout=min(0.5, remaining()))
+                    remaining()
+                    if listening:
+                        return
+        except subprocess.TimeoutExpired:
+            raise ObserverHealthFailure(predicate) from None
         if time.monotonic() >= deadline:
             raise ObserverHealthFailure(predicate)
         time.sleep(min(0.25, max(0, deadline - time.monotonic())))
@@ -1135,7 +1161,7 @@ def observer_upgrade_status(install, wrapper, request_id, prefix='observer-upgra
     try:
         active = gateway_status()['ActiveState']
         gateway = active if active in {'active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading'} else 'unknown'
-        for row in install.service_rows():
+        for row in observer_service_rows(install):
             if row['Service'] in states:
                 states[row['Service']] = row.get('State') if row.get('State') in {'running', 'exited'} else 'unknown'
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
@@ -1168,7 +1194,7 @@ def observer_recovery_snapshot(install, wrapper, failed_request_id, restore_disp
     if (DROPIN.read_bytes() != PROFILE_DROPIN
             or json.loads(checked(PROVISION).read_text()).get('auth_root') != str(ROOT / 'profiles' / ROLES['reviewer'])):
         raise ValueError('active role routing differs')
-    rows = sorted((row['Service'], row.get('State')) for row in install.service_rows())
+    rows = sorted((row['Service'], row.get('State')) for row in observer_service_rows(install))
     if (any(dict(rows).get(name) != 'exited' for name in ('bridge-executor-worker', 'execution-dispatch-worker'))
             or gateway_status()['ActiveState'] not in {'inactive', 'failed'}):
         raise ValueError('observer recovery requires stopped gateway and execution services')
@@ -1250,7 +1276,7 @@ def recover_observer(install, wrapper, args):
             stage = 'dispatcher_restore'
             expected = dict(snapshot['services'])
             if options.restore_dispatcher:
-                install.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'execution-dispatch-worker', private=True)
+                observer_compose(install, 'up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'execution-dispatch-worker')
                 expected['execution-dispatch-worker'] = 'running'
             stage = 'restored_health'
             wait_observer_health(install, sorted(expected.items()), snapshot['host_inputs'])
@@ -1266,7 +1292,7 @@ def recover_observer(install, wrapper, args):
         audit.update(phase='requires_operator', stage=stage, stop_errors=[])
         if isinstance(error, ObserverHealthFailure):
             audit['failed_predicate'] = error.predicate
-        for name, action in (('dispatcher_stop', lambda: install.compose('stop', '--timeout', '60', 'execution-dispatch-worker', private=True) if options.restore_dispatcher else None),
+        for name, action in (('dispatcher_stop', lambda: observer_compose(install, 'stop', '--timeout', '60', 'execution-dispatch-worker') if options.restore_dispatcher else None),
                              ('gateway_stop', lambda: systemctl('stop', SERVICE))):
             try:
                 action()
@@ -1325,12 +1351,12 @@ def observer_upgrade(install, wrapper, args):
     stage = 'dispatcher_stop'
     try:
         if services:
-            install.compose('stop', '--timeout', '60', *services, private=True)
+            observer_compose(install, 'stop', '--timeout', '60', *services)
         stage = 'gateway_stop'
         systemctl('stop', SERVICE)
         if gateway_status()['ActiveState'] not in {'inactive', 'failed'}:
             raise ValueError('gateway did not stop')
-        current = dict((row['Service'], row.get('State')) for row in install.service_rows())
+        current = dict((row['Service'], row.get('State')) for row in observer_service_rows(install))
         if any(current.get(name) != 'exited' for name in ('execution-dispatch-worker', 'bridge-executor-worker')):
             raise ValueError('execution services did not stop')
         stage = 'observer_upgrade'
@@ -1351,7 +1377,7 @@ def observer_upgrade(install, wrapper, args):
         wait_observer_health(install, sorted(current.items()), snapshot['host_inputs'])
         stage = 'dispatcher_restore'
         if services:
-            install.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', *services, private=True)
+            observer_compose(install, 'up', '-d', '--no-deps', '--no-build', '--pull', 'never', *services)
         stage = 'restored_health'
         wait_observer_health(install, snapshot['services'], snapshot['host_inputs'])
         audit['phase'] = 'complete'
@@ -1364,7 +1390,7 @@ def observer_upgrade(install, wrapper, args):
         if isinstance(error, ObserverHealthFailure):
             audit['failed_predicate'] = error.predicate
         errors = []
-        for name, action in (('dispatcher_stop', lambda: install.compose('stop', '--timeout', '60', *services, private=True) if services else None),
+        for name, action in (('dispatcher_stop', lambda: observer_compose(install, 'stop', '--timeout', '60', *services) if services else None),
                              ('gateway_stop', lambda: systemctl('stop', SERVICE))):
             try:
                 action()

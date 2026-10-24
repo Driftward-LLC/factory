@@ -194,7 +194,8 @@ returns with `native_snapshot_status=unavailable`. Reasons, paths, exception
 messages and native stderr are not returned. Status never retries an upgrade.
 
 Readiness waits up to 30 seconds for the expected service states, active gateway
-and listening socket. A timeout records a fixed `failed_predicate`, such as
+and listening socket, passing the remaining deadline to each blocking check
+and rejecting results received after it. A timeout records a fixed `failed_predicate`, such as
 `gateway_listener`; a changed host configuration fails immediately. Future
 upgrade receipts also retain the prior service states.
 
@@ -217,6 +218,9 @@ current protected state. Apply consumes its own durable request, rechecks those
 inputs under the bridge write barrier, starts the gateway, waits for its listener,
 and verifies preserved profile state. The original failed receipt is retained
 unchanged; recovery never selects or rewrites the observer. Execution stays paused.
+Observer Compose status checks have a 15-second bound, and start/stop commands
+have a 90-second bound, including failure cleanup. A failed cleanup is recorded
+as a fixed stop-error name and requires operator inspection.
 
 By default the dispatcher stays stopped. Add `--restore-dispatcher` to both preview
 and apply only when approving restoration of its previously running state. A
