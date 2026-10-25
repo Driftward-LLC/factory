@@ -363,7 +363,7 @@ def dispatch_bound(config, args):
             return 1
         print(json.dumps(result, sort_keys=True))
     elif command == 'profiles':
-        if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['canary', 'executor'], ['canary', 'reviewer'], ['canary', 'github'])
+        if not (args[1:] in (['status'], ['list'], ['create'], ['activate'], ['source-audit'], ['canary', 'executor'], ['canary', 'reviewer'], ['canary', 'github'])
                 or (len(args) >= 3 and args[1] == 'upgrade-observer')
                 or (len(args) >= 4 and args[1] == 'recover-observer')
                 or (len(args) == 5 and args[1] == 'diagnose-execution')
@@ -452,6 +452,7 @@ def dispatch_bound(config, args):
         print('factory status | console | version | logs [target] [-f] [-n N] | mode\n'
               'factory artifacts status | preview|preserve|prune --before ISO [--snapshot-digest DIGEST --yes]\n'
               'factory profiles status | list | create\n'
+              'factory profiles source-audit\n'
               'factory profiles configure --plugin-source REVIEWED_GIT_REPO | activate | canary executor|reviewer\n'
               'factory profiles upgrade-observer preview|apply|status [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
               'factory profiles canary github\n'

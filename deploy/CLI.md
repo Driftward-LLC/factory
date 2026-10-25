@@ -136,6 +136,16 @@ installation operation. Operator commands (`attempts`, `retry`, `lifecycle`,
 `analytics`, `review-repair`, `review-recovery`) retain the active image's
 arguments. `factory version` shows the installation, project and active image.
 
+`factory profiles source-audit` is a root-only, read-only command with no arguments.
+Through the bound Hermes wrapper it hashes a fixed allowlist of public Python
+source under `/opt/hermes`, returning file names, SHA-256 hashes, byte counts and
+bounded missing/refused statuses. It refuses symlinks, special files and files
+larger than 2 MiB. It never imports Hermes, returns source text, or reads runtime
+configuration, authentication, sessions or user repositories. Revision is
+`unknown`; match the hashes to independently fetched upstream source. This is
+installed source evidence and does not establish the version used by a running
+process, process containment, credential revocation or an execution's exit cause.
+
 `factory profiles status` (or `list`) reports whether the native Hermes profiles
 `factory-executor` and `factory-independent-reviewer` exist. `factory profiles
 create` creates missing profiles with native Hermes profile provisioning, without
