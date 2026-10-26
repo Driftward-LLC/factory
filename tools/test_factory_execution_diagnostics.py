@@ -24,6 +24,18 @@ SECRET = 'PRIVATE_PROMPT_TOKEN_COOKIE_SESSION'
 
 
 class ExecutionDiagnosticsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        node = shutil.which('node')
+        if node is None:
+            raise AssertionError('Node is required for journal fingerprint parity checks')
+        temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(temporary.cleanup)
+        cls.node = Path(temporary.name) / 'node'
+        # setup-node's cached binary can be group-writable; secure only our disposable copy.
+        shutil.copyfile(node, cls.node)
+        cls.node.chmod(0o700)
+
     def fixture(self, root):
         database = root / 'bridge.db'
         lease = {'lease_id': LEASE, 'owner': SECRET, 'epoch': 1, 'fence_token': SECRET}
@@ -65,12 +77,9 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
         path.chmod(0o600)
 
     def diagnose(self, database, directory, invocation=INVOCATION):
-        # CI's setup-node installs outside /usr/bin; still run the real JS golden checks.
-        node = shutil.which('node')
-        self.assertIsNotNone(node, 'Node is required for journal fingerprint parity checks')
         checked = runtime.checked
         def fixture_checked(path, **kwargs):
-            return Path(node) if path == Path('/usr/bin/node') else checked(path, **kwargs)
+            return self.node if path == Path('/usr/bin/node') else checked(path, **kwargs)
         original = os.fstat
         temporary_info = Path('/tmp').stat()
         def fixture_stat(descriptor):
@@ -197,6 +206,15 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
         with patch.object(runtime, 'checked', side_effect=FileNotFoundError(SECRET)), \
              self.assertRaisesRegex(ValueError, '^execution diagnostic fingerprint unavailable$'):
             runtime.diagnostic_fingerprint({'prompt': SECRET})
+
+    def test_group_writable_fingerprint_engine_is_refused_before_execution(self):
+        engine = MagicMock()
+        engine.stat.return_value = SimpleNamespace(st_mode=stat.S_IFREG | 0o775)
+        with patch.object(runtime, 'checked', return_value=engine), \
+             patch.object(runtime.subprocess, 'run') as run, \
+             self.assertRaisesRegex(ValueError, '^unsafe execution diagnostic fingerprint engine$'):
+            runtime.diagnostic_fingerprint({'prompt': SECRET})
+        run.assert_not_called()
 
     def test_unsafe_missing_or_oversize_artifacts_fail_closed(self):
         for kind in ('symlink', 'directory_symlink', 'oversize', 'public', 'hardlink', 'missing_intent'):

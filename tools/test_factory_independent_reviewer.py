@@ -62,8 +62,12 @@ class IndependentReviewerTests(unittest.TestCase):
             profile = native_agent.profile_path(session)
             profile.mkdir(parents=True)
             unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
-            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", session], start_new_session=True)
+            process = subprocess.Popen([sys.executable, "-c",
+                "import time; print('ready', flush=True); time.sleep(30)", session],
+                start_new_session=True, stdout=subprocess.PIPE)
             try:
+                # The interpreter must finish startup before /proc identity is inspected.
+                self.assertEqual(runner.relay_line(process.stdout, bytearray(), time.monotonic() + 5), b'ready')
                 marker = {"pid": process.pid, "start_ticks": native_agent.start_ticks(process.pid), "session": session}
                 (profile / "invocation.json").write_text(json.dumps({**marker, "start_ticks": "wrong"}))
                 with self.assertRaises(RuntimeError):
@@ -82,6 +86,7 @@ class IndependentReviewerTests(unittest.TestCase):
                     if child.poll() is None:
                         child.kill()
                     child.wait(timeout=5)
+                process.stdout.close()
 
     def test_partial_relay_line_cannot_hide_deadline(self):
         child = subprocess.Popen([sys.executable, "-c", "import sys,time; sys.stdout.write('{'); sys.stdout.flush(); time.sleep(30)"],
