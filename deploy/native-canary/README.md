@@ -39,11 +39,23 @@ Native AIAgent, conversation loop, skill helper, dispatcher and terminal remain
 real. Registration precedes start authorization; the check requires three
 dummy fixed skill markers, the exact terminal-created file, exit zero in the
 next actual SDK request, and two recorded requests. Dummy skills do not prove
-production instruction parity. Only after result does cancellation occur:
-this checks stop wiring, **not in-flight cancellation**, which remains covered
-by prior disposable native fixtures. The exact-bound stop stays unknown and
+production instruction parity. The recorded conversation checks stop wiring
+after its result. Additional fixed native fixtures then exercise cancellation
+while foreground work, ordinary/persistent background work, and a `setsid` child
+are alive. The driver requires quiescent dispatch, error-free cleanup, measured
+fixture PID exit, and a stable duplicate stop receipt. This measures that fixture
+tree, not complete escaped-descendant coverage. The exact-bound stop stays unknown and
 must report dispatch quiescence; owner exit is separate. No whole containment
 or external-effect settlement claim follows.
+
+The same isolated command also checks refusal of a legacy checkpoint, refusal
+of profile reuse after successful owner exit, and refusal after killing an exact
+new owner before start authorization. The crash case creates no tool work; it
+does not claim post-crash cleanup. Restart uses a different job and fresh journal
+to prove that the persisted profile claim, not only journal replay protection,
+blocks admission. These checks use fresh disposable homes and emit only six
+fixed boolean results under `recovery_checks`; all must pass before the telemetry
+relay runs. No profile-unlock, retry, reattachment or activation command is added.
 
 Actual Owner.observe stages registered/stopping/unknown use an explicit
 canary-only callback and private protocol. This proves a **relay**, not production

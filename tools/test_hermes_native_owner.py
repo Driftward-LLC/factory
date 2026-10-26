@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,55 @@ def request():
 def native():
     return SimpleNamespace(kill_foreground=Mock(return_value=0),
                            registry=SimpleNamespace(running_owned_by=Mock(return_value=[]), kill_process=Mock()))
+
+
+class ProfileAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('native_launcher', ADAPTER / 'main.py')
+        self.launcher = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {'owner': module}):
+            spec.loader.exec_module(self.launcher)
+
+    def test_claim_survives_exit_and_refuses_another_job_without_changing_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            bound = request()
+            fd = self.launcher.claim_profile(home, bound)
+            claim = home / 'factory-native-owner.claim/binding.json'
+            retained = claim.read_bytes()
+            os.close(fd)
+            with self.assertRaises(module.Refused):
+                self.launcher.claim_profile(home, request())
+            self.assertEqual(claim.read_bytes(), retained)
+            self.assertEqual(json.loads(retained)['invocation_id'], bound['invocation_id'])
+            self.assertEqual(claim.stat().st_mode & 0o777, 0o600)
+
+    def test_legacy_checkpoint_and_symlink_home_refused_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / 'home'
+            home.mkdir(mode=0o700)
+            checkpoint = home / 'processes.json'
+            checkpoint.write_text('[]')
+            with self.assertRaises(module.Refused):
+                self.launcher.claim_profile(home, request())
+            self.assertEqual(checkpoint.read_text(), '[]')
+            self.assertFalse((home / 'factory-native-owner.claim').exists())
+            checkpoint.unlink()
+            alias = home.parent / 'alias'
+            alias.symlink_to(home, target_is_directory=True)
+            with self.assertRaises(module.Refused):
+                self.launcher.claim_profile(alias, request())
+            self.assertFalse((home / 'factory-native-owner.claim').exists())
+
+    def test_incomplete_claim_is_not_recovered_automatically(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            with patch.object(self.launcher, 'atomic', side_effect=OSError('private failure')):
+                with self.assertRaises(module.Refused):
+                    self.launcher.claim_profile(home, request())
+            self.assertTrue((home / 'factory-native-owner.claim').is_dir())
+            with self.assertRaises(module.Refused):
+                self.launcher.claim_profile(home, request())
 
 
 class OwnerTests(unittest.TestCase):
@@ -447,16 +497,22 @@ class RealNativeCleanupTests(unittest.TestCase):
                 process.wait(timeout=10)
                 self.assertEqual(process.returncode, 0)
                 self.assertEqual(process.stderr.read(), "")
-                (home / 'skills/driftward-engineering:verify-app/SKILL.md').unlink()
-                (home / 'transport-proof.json').unlink()
+                # Missing-skill admission needs a fresh profile: the first
+                # profile's durable claim must remain intact after its exit.
+                missing_home = root / 'missing-skill-profile'
+                missing_home.mkdir(mode=0o700)
+                (missing_home / 'config.yaml').write_bytes((home / 'config.yaml').read_bytes())
+                shutil.copytree(home / 'skills', missing_home / 'skills')
+                (missing_home / 'skills/driftward-engineering:verify-app/SKILL.md').unlink()
                 refused = subprocess.run([os.environ['FACTORY_TEST_HERMES_PYTHON'], '-u',
                                           str(Path(__file__).parent / 'fixtures/hermes-real-agent-transport.py'),
                                           str(ADAPTER / 'main.py'), '--experimental-local-terminal', '--controlled', '--journal', str(root / 'missing-skill')],
                                          input=json.dumps(launch) + '\n' + json.dumps({'start': bound}) + '\n', text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                         env={'PATH': '/usr/bin:/bin', 'PYTHONPATH': os.environ['FACTORY_TEST_HERMES_SOURCE'], 'HERMES_HOME': str(home)}, cwd=root, timeout=20)
+                                         env={'PATH': '/usr/bin:/bin', 'PYTHONPATH': os.environ['FACTORY_TEST_HERMES_SOURCE'], 'HERMES_HOME': str(missing_home)}, cwd=root, timeout=20)
                 self.assertEqual(refused.stderr, '')
-                self.assertFalse((home / 'transport-proof.json').exists())
-                self.assertEqual(json.loads((home / 'probe-failure.json').read_text())['refusal'], 'mandatory Factory engineering skills unavailable')
+                self.assertFalse((missing_home / 'transport-proof.json').exists())
+                self.assertEqual(json.loads((missing_home / 'probe-failure.json').read_text())['refusal'], 'mandatory Factory engineering skills unavailable')
+                self.assertTrue((home / 'factory-native-owner.claim/binding.json').exists())
             finally:
                 if not process.stdin.closed:
                     process.stdin.close()

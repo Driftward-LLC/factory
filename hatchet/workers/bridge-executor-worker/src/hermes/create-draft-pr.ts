@@ -639,7 +639,7 @@ export async function runHermesCreateDraftPrViaCommand(
   let result: ExecResult;
   try {
     if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
-      if (!invocation || process.env.DRIFTWARD_HERMES_PROFILE !== 'factory-executor' || !selection) {
+      if (!invocation || process.env.DRIFTWARD_HERMES_PROFILE !== 'factory-native-executor' || !selection) {
         throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native owner requires a verified invocation, explicit executor profile and selected model');
       }
       const context = Object.entries(hermesObservabilityEnvironment(job)).map(([key, value]) => `${key}=${value}`);
@@ -1252,8 +1252,11 @@ function runtimeCommandFailure(error: unknown,
 
 export function hermesProfileArguments(): string[] {
   const profile = process.env.DRIFTWARD_HERMES_PROFILE;
+  const native = process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1';
+  const expected = native ? 'factory-native-executor' : 'factory-executor';
+  if (native && !profile) throw new NonRetryableBridgeExecutionError('hermes_profile_invalid', 'Native owner requires its reserved profile');
   if (!profile) return [];
-  if (profile !== 'factory-executor') throw new NonRetryableBridgeExecutionError('hermes_profile_invalid', 'Factory executor profile must be factory-executor');
+  if (profile !== expected) throw new NonRetryableBridgeExecutionError('hermes_profile_invalid', `Factory executor profile must be ${expected}`);
   return ['--profile', profile, '--skills',
     'driftward-engineering:implement-change,driftward-engineering:verify-app,driftward-engineering:prepare-pr'];
 }
