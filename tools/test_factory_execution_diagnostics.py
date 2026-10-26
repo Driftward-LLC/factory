@@ -3,13 +3,14 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SOURCE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('diagnostics_runtime', SOURCE / 'deploy/factory-profile-runtime.py')
@@ -23,6 +24,18 @@ SECRET = 'PRIVATE_PROMPT_TOKEN_COOKIE_SESSION'
 
 
 class ExecutionDiagnosticsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        node = shutil.which('node')
+        if node is None:
+            raise AssertionError('Node is required for journal fingerprint parity checks')
+        temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(temporary.cleanup)
+        cls.node = Path(temporary.name) / 'node'
+        # setup-node's cached binary can be group-writable; secure only our disposable copy.
+        shutil.copyfile(node, cls.node)
+        cls.node.chmod(0o700)
+
     def fixture(self, root):
         database = root / 'bridge.db'
         lease = {'lease_id': LEASE, 'owner': SECRET, 'epoch': 1, 'fence_token': SECRET}
@@ -64,6 +77,9 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
         path.chmod(0o600)
 
     def diagnose(self, database, directory, invocation=INVOCATION, wrapper=None):
+        checked = runtime.checked
+        def fixture_checked(path, **kwargs):
+            return self.node if path == Path('/usr/bin/node') else checked(path, **kwargs)
         original = os.fstat
         temporary_info = Path('/tmp').stat()
         def fixture_stat(descriptor):
@@ -76,6 +92,7 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
         with patch.object(runtime, 'INVOCATION_DIRECTORY', directory.parent), \
              patch.object(runtime, 'bridge_database', return_value=database), \
              patch.object(runtime.os, 'geteuid', return_value=0), \
+             patch.object(runtime, 'checked', side_effect=fixture_checked), \
              patch.object(runtime.os, 'fstat', side_effect=fixture_stat):
             return runtime.dispatch(SimpleNamespace(), {}, wrapper,
                                     ['diagnose-execution', ATTEMPT, '--invocation-id', invocation])
@@ -171,11 +188,16 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
                 self.assertNotIn(SECRET, json.dumps(result))
 
     def test_fingerprint_engine_is_fixed_private_bounded_and_environment_isolated(self):
+        engine = MagicMock()
+        engine.__str__.return_value = '/usr/bin/node'
+        engine.stat.return_value = SimpleNamespace(st_mode=stat.S_IFREG | 0o755)
         with patch.dict(os.environ, {'NODE_OPTIONS': '--require private-secret', 'NODE_PATH': SECRET,
                                      'LD_PRELOAD': SECRET}), \
-             patch.object(runtime, 'checked', return_value=Path('/usr/bin/node')), \
+             patch.object(runtime, 'checked', return_value=engine) as checked, \
+             patch.object(runtime.os, 'access', return_value=True), \
              patch.object(runtime.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'a' * 64)) as run:
             self.assertEqual(runtime.diagnostic_fingerprint({'prompt': SECRET}), 'a' * 64)
+        checked.assert_called_once_with(Path('/usr/bin/node'))
         args, options = run.call_args
         self.assertEqual(args[0][:2], ['/usr/bin/node', '-e'])
         self.assertNotIn(SECRET, ''.join(args[0]))
@@ -189,11 +211,14 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_engine_failure_missing_timeout_and_invalid_output_are_bounded_refusals(self):
+        engine = MagicMock()
+        engine.stat.return_value = SimpleNamespace(st_mode=stat.S_IFREG | 0o755)
         for failure in (FileNotFoundError(SECRET), subprocess.TimeoutExpired(SECRET, 5, output=SECRET),
                         SimpleNamespace(returncode=1, stdout=SECRET.encode()),
                         SimpleNamespace(returncode=0, stdout=b'a' * 65)):
             with self.subTest(failure=type(failure).__name__), \
-                 patch.object(runtime, 'checked', return_value=Path('/usr/bin/node')), \
+                 patch.object(runtime, 'checked', return_value=engine), \
+                 patch.object(runtime.os, 'access', return_value=True), \
                  patch.object(runtime.subprocess, 'run', **({'side_effect': failure} if isinstance(failure, Exception)
                                                            else {'return_value': failure})), \
                  self.assertRaises(ValueError) as raised:
@@ -203,6 +228,15 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
         with patch.object(runtime, 'checked', side_effect=FileNotFoundError(SECRET)), \
              self.assertRaisesRegex(ValueError, '^execution diagnostic fingerprint unavailable$'):
             runtime.diagnostic_fingerprint({'prompt': SECRET})
+
+    def test_group_writable_fingerprint_engine_is_refused_before_execution(self):
+        engine = MagicMock()
+        engine.stat.return_value = SimpleNamespace(st_mode=stat.S_IFREG | 0o775)
+        with patch.object(runtime, 'checked', return_value=engine), \
+             patch.object(runtime.subprocess, 'run') as run, \
+             self.assertRaisesRegex(ValueError, '^unsafe execution diagnostic fingerprint engine$'):
+            runtime.diagnostic_fingerprint({'prompt': SECRET})
+        run.assert_not_called()
 
     def test_unsafe_missing_or_oversize_artifacts_fail_closed(self):
         for kind in ('symlink', 'directory_symlink', 'oversize', 'public', 'hardlink', 'missing_intent'):
