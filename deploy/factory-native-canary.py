@@ -8,6 +8,8 @@ import tempfile
 import uuid
 
 ENV = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'}
+TMPFS = {'/tmp': 'rw,nosuid,nodev,size=128m,mode=1777',
+         '/opt/data': 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=10000,gid=10000'}
 ASSET_SHA256 = {
     'main.py': '3ed4685bb587eac0a33bae2af806244095419638ccb450191c4decfefa89c3fe',
     'owner.py': 'cce7c551a2e45b63836e2e764a5cab072ac3f3dc4520b4ca80a660442343c4b0',
@@ -27,8 +29,9 @@ REFUSAL_CODES = {
 
 class PreflightRefusal(ValueError):
     """Only fixed codes, never exception text, cross the canonical boundary."""
-    def __init__(self, phase, reason):
+    def __init__(self, phase, reason, *, image_features=None):
         self.phase, self.reason = phase, reason
+        self.image_features = image_features
         super().__init__('native canary preflight refused')
 
 
@@ -81,8 +84,25 @@ def image_identity(identity):
     if images[0].get('Id') != image:
         raise PreflightRefusal('image_inspection', 'identity_mismatch')
     config = images[0].get('Config', {})
-    if config.get('Volumes') or config.get('OnBuild'):
-        raise PreflightRefusal('image_inspection', 'implicit_volumes_or_build_hooks')
+    volumes = config.get('Volumes')
+    hooks = config.get('OnBuild')
+    if (volumes is not None and (not isinstance(volumes, dict) or set(volumes) - {'/opt/data'})) or (
+            hooks is not None and (not isinstance(hooks, list) or any(not isinstance(item, str) for item in hooks))):
+        volumes = config.get('Volumes')
+        hooks = config.get('OnBuild')
+        # Only bounded destination names cross the receipt boundary; image
+        # environment, build commands and healthcheck commands stay private.
+        destinations = list(volumes) if isinstance(volumes, dict) else []
+        features = {
+            'volume_destinations': [path if isinstance(path, str) and
+                                    re.fullmatch(r'/[A-Za-z0-9_./-]{0,255}', path)
+                                    else '[redacted]' for path in destinations[:16]],
+            'volume_destination_count': len(destinations),
+            'volume_destinations_truncated': len(destinations) > 16,
+            'onbuild_count': len(hooks) if isinstance(hooks, list) else None,
+            'healthcheck_present': bool(config.get('Healthcheck')),
+        }
+        raise PreflightRefusal('image_inspection', 'implicit_volumes_or_build_hooks', image_features=features)
     for item in config.get('Env') or []:
         if not isinstance(item, str) or '=' not in item or len(item) > 4096:
             raise PreflightRefusal('image_inspection', 'environment_schema_invalid')
@@ -99,12 +119,30 @@ def create_arguments(name, image, driver):
     if not re.fullmatch(r'factory-native-canary-[0-9a-f]{32}', name) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
         raise ValueError('invalid disposable identity')
     return ['create', '--name', name, '--label', 'com.driftward.factory.validation=native-owner', '-i',
-            '--network=none', '--read-only', '--user=10000:10000', '--cap-drop=ALL',
+            '--network=none', '--read-only', '--no-healthcheck', '--user=10000:10000', '--cap-drop=ALL',
             '--security-opt=no-new-privileges:true', '--pids-limit=64', '--memory=768m', '--cpus=1',
             '--ulimit', 'fsize=1048576:1048576', '--ulimit', 'nofile=256:256',
-            '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m,mode=1777', '--workdir=/tmp',
+            '--tmpfs', '/tmp:' + TMPFS['/tmp'], '--tmpfs', '/opt/data:' + TMPFS['/opt/data'], '--workdir=/tmp',
             '--entrypoint=/usr/bin/env', image, '-i', 'PATH=/opt/hermes/.venv/bin:/usr/bin:/bin',
             'HOME=/tmp', 'LANG=C.UTF-8', '/opt/hermes/.venv/bin/python', '-u', '-c', driver]
+
+
+def verify_created(container, name, image):
+    row = inspect_json(['inspect', '--type=container', container], 'container_inspection')[0]
+    host, config = row.get('HostConfig', {}), row.get('Config', {})
+    mounts = row.get('Mounts')
+    if (row.get('Id') != container or row.get('Name') != '/' + name or row.get('Image') != image
+            or row.get('State', {}).get('Status') != 'created' or row.get('State', {}).get('Running') is not False
+            or config.get('User') != '10000:10000' or config.get('Healthcheck', {}).get('Test') != ['NONE']
+            or host.get('NetworkMode') != 'none' or host.get('ReadonlyRootfs') is not True
+            or host.get('Privileged') is not False or host.get('CapAdd')
+            or host.get('CapDrop') != ['ALL'] or host.get('SecurityOpt') != ['no-new-privileges:true']
+            or host.get('Binds') or host.get('VolumesFrom') or host.get('Devices') or host.get('Mounts')
+            or host.get('Tmpfs') != TMPFS or not isinstance(mounts, list)
+            or any(not isinstance(mount, dict) or mount.get('Type') != 'tmpfs'
+                   or mount.get('Destination') not in TMPFS or mount.get('Source') for mount in mounts)
+            or len({mount.get('Destination') for mount in mounts}) != len(mounts)):
+        raise ValueError('disposable container isolation mismatch')
 
 
 def run(runtime, install, wrapper):
@@ -147,6 +185,9 @@ def run(runtime, install, wrapper):
         if not re.fullmatch(r'[0-9a-f]{64}', container):
             raise ValueError('invalid created container identity')
         created = True
+        phase = 'container_safety'
+        verify_created(container, name, image)
+        receipt['container_safety_verified'] = True
         phase = 'native_execution'
         payload = {'assets': {key: assets[key] for key in ('main.py', 'owner.py', 'transport.py')}, 'binding': binding}
         result = json.loads(docker(['start', '--attach', '--interactive', container],
@@ -169,12 +210,16 @@ def run(runtime, install, wrapper):
                         'reason': 'operation_unavailable' if not create_attempted else 'isolated_canary_failed_or_unknown'})
         if isinstance(error, PreflightRefusal) and error.reason in REFUSAL_CODES.get(error.phase, set()):
             receipt.update(phase=error.phase, reason=error.reason)
+            if error.phase == 'image_inspection' and error.reason == 'implicit_volumes_or_build_hooks':
+                receipt['image_features'] = error.image_features
     finally:
         # Never remove a name on an ambiguous create failure/collision. Only the
         # exact returned container ID is ours; retain the name for reconciliation.
         if created:
             try:
-                docker(['rm', '--force', container])
+                # Only our exact newly-created ID: remove any unexpected
+                # anonymous volume too if the pre-start storage check refused.
+                docker(['rm', '--force', '--volumes', container])
                 receipt['container_removed'] = True
             except Exception:
                 receipt['cleanup'] = 'unknown'

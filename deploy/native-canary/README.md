@@ -6,14 +6,31 @@ call is involved. Do not invoke its backend/container directly.
 
 The existing wrapper returns its sanitized container hostname. The backend
 validates the matching running Docker container and immutable image ID, refusing
-declared volumes, build hooks and credential-shaped image environment keys.
-The disposable container uses that image with **no mounts**, no network, a
-read-only root, bounded writable `/tmp`, UID/GID 10000, no capabilities, no new
+all image volume destinations except the measured `/opt/data`, and
+credential-shaped image environment keys. Build hooks must have the expected
+list-of-strings shape; they do not execute when starting a container.
+The disposable container uses that image with fresh bounded tmpfs at `/tmp`
+and `/opt/data`, no network, a read-only root, UID/GID 10000, no capabilities, no new
 privileges and CPU/memory/process/file limits. Its entrypoint is `env -i`;
 the native subprocess receives a clean environment and fresh HOME/HERMES_HOME,
 config/cache/cwd. No real profile checkpoint is touched. Secret material baked
 into an image is not audited; the current trusted image remains a prerequisite.
 Unsupported source/image/SDK layouts fail closed without installing anything.
+
+The canonical diagnostic receipt `a99cf792-38fe-4fda-9c3b-c732855388ea`
+measured only `/opt/data`, no healthcheck and no build hooks. Docker's
+[VOLUME documentation](https://docs.docker.com/reference/dockerfile/#volume)
+explains why leaving that declaration unoverridden would create an anonymous
+volume. The fixed `/opt/data` tmpfs is 16 MiB, mode0700, UID/GID10000 and
+noexec/nosuid/nodev; it obscures image data rather than copying it, per the
+[tmpfs documentation](https://docs.docker.com/engine/storage/tmpfs/).
+[ONBUILD](https://docs.docker.com/reference/dockerfile/#onbuild) applies to
+downstream builds, not this image's execution. Inherited healthchecks are
+explicitly disabled. Before start, inspect the exact created ID and verify
+image/name, created state, nonroot user, disabled healthcheck, network isolation,
+read-only root, capability/security settings and fixed tmpfs configuration.
+Any bind, volume or unexpected mount refuses before start. These implementation
+checks do not themselves establish a completed live canary proof.
 
 Root-owned public assets go over stdin. Six native source hashes must match
 pinned 818c13be: this is a measured subset, not whole-revision/dependency proof.
@@ -42,7 +59,8 @@ Queue flush is NOT delivery proof: independently query the returned trace,
 attempt and three stages in the expected PostHog project. Raw prompts, responses,
 commands/output and credentials are never evidence.
 
-Timeout/failure removes only the exact returned created-container ID. An
+Timeout/failure removes only the exact returned created-container ID, including
+its anonymous volumes if a pre-start inspection found unexpected storage. An
 ambiguous creation failure never removes a colliding name; its unique
 disposable_name remains for reconciliation. Sanitized bounded receipts live at
 `<bound installation>/native-canary-<canary UUID>.json`, including asset hashes,

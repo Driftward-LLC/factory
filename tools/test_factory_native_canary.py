@@ -81,7 +81,7 @@ class NativeCanaryTests(unittest.TestCase):
         safe = [{'Id': image, 'Config': {'Env': ['PATH=/usr/bin'], 'Entrypoint': ['/fixed-entrypoint']}}]
         with patch.object(canary, 'docker', side_effect=[json.dumps(container), json.dumps(safe)]):
             self.assertEqual(canary.image_identity(ident), image)
-        for changes in ({'Volumes': {'/opt/data': {}}}, {'Env': ['OPENAI_API_KEY=must-not-print']}, {'OnBuild': ['anything']}):
+        for changes in ({'Volumes': {'/other/data': {}}}, {'Env': ['OPENAI_API_KEY=must-not-print']}, {'OnBuild': 'anything'}):
             unsafe = copy.deepcopy(safe)
             unsafe[0]['Config'].update(changes)
             with patch.object(canary, 'docker', side_effect=[json.dumps(container), json.dumps(unsafe)]):
@@ -91,6 +91,50 @@ class NativeCanaryTests(unittest.TestCase):
         with patch.object(canary, 'docker') as call, self.assertRaises(ValueError):
             canary.image_identity('shell; arbitrary')
         call.assert_not_called()
+
+    def test_measured_volume_and_build_hooks_allowed_only_with_fixed_tmpfs(self):
+        image = 'sha256:' + 'b' * 64
+        container = [{'Id': 'a' * 64, 'Image': image, 'Config': {'Hostname': 'a' * 12}, 'State': {'Running': True}}]
+        config = {'Volumes': {'/opt/data': {}}, 'OnBuild': ['RUN downstream-only']}
+        with patch.object(canary, 'docker', side_effect=[json.dumps(container), json.dumps([{'Id': image, 'Config': config}])]):
+            self.assertEqual(canary.image_identity('a' * 12), image)
+        args = canary.create_arguments('factory-native-canary-' + 'a' * 32, image, 'fixed')
+        self.assertIn('/opt/data:' + canary.TMPFS['/opt/data'], args)
+        self.assertIn('--no-healthcheck', args)
+
+    def test_created_container_storage_and_safety_fail_closed(self):
+        container, name, image = 'c' * 64, 'factory-native-canary-' + 'a' * 32, 'sha256:' + 'b' * 64
+        row = {'Id': container, 'Name': '/' + name, 'Image': image, 'State': {'Status': 'created', 'Running': False},
+               'Config': {'User': '10000:10000', 'Healthcheck': {'Test': ['NONE']}}, 'Mounts': [],
+               'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True, 'Privileged': False,
+                              'CapDrop': ['ALL'], 'SecurityOpt': ['no-new-privileges:true'], 'Tmpfs': canary.TMPFS}}
+        with patch.object(canary, 'docker', return_value=json.dumps([row])):
+            canary.verify_created(container, name, image)
+        for field, value in (('Mounts', [{'Type': 'volume', 'Destination': '/opt/data', 'Name': 'unexpected'}]),
+                             ('Mounts', [{'Type': 'bind', 'Destination': '/tmp', 'Source': '/private'}]),
+                             ('Name', '/wrong'), ('Image', 'wrong')):
+            changed = copy.deepcopy(row)
+            changed[field] = value
+            with patch.object(canary, 'docker', return_value=json.dumps([changed])), self.assertRaises(ValueError):
+                canary.verify_created(container, name, image)
+        for field, value in (('Tmpfs', {'/tmp': canary.TMPFS['/tmp']}), ('NetworkMode', 'host'),
+                             ('ReadonlyRootfs', False), ('Privileged', True), ('Binds', ['/private:/tmp']),
+                             ('VolumesFrom', ['shared']), ('CapAdd', ['SYS_ADMIN']), ('SecurityOpt', [])):
+            changed = copy.deepcopy(row)
+            changed['HostConfig'][field] = value
+            with patch.object(canary, 'docker', return_value=json.dumps([changed])), self.assertRaises(ValueError):
+                canary.verify_created(container, name, image)
+        fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0),
+                               checked=lambda p: p, run_native=Mock(return_value={'hostname': 'a' * 12}), write_observer_receipt=Mock())
+        with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
+             patch.object(canary, 'image_identity', return_value=image), \
+             patch.object(canary, 'verify_created', side_effect=ValueError('private')), \
+             patch.object(canary, 'docker', side_effect=[container, '']) as docker:
+            result = canary.run(fake, SimpleNamespace(directory=Path('/unused')), None)
+        self.assertEqual(result['phase'], 'container_safety')
+        self.assertTrue(result['container_removed'])
+        self.assertEqual(docker.call_args_list[-1].args[0], ['rm', '--force', '--volumes', container])
+        self.assertFalse(any(call.args[0][0] == 'start' for call in docker.call_args_list))
 
     def test_timeout_removes_only_created_id_retains_sanitized_evidence(self):
         receipts = []
@@ -106,9 +150,10 @@ class NativeCanaryTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired(['docker'], 85, output='SENSITIVE_NATIVE_OUTPUT')
             return ''
         with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
-             patch.object(canary, 'image_identity', return_value='sha256:' + 'b' * 64), patch.object(canary, 'docker', side_effect=docker):
+             patch.object(canary, 'image_identity', return_value='sha256:' + 'b' * 64), \
+             patch.object(canary, 'verify_created'), patch.object(canary, 'docker', side_effect=docker):
             result = canary.run(fake, SimpleNamespace(directory=Path('/unused')), '/reviewed/wrapper')
-        self.assertEqual(calls[-1], ['rm', '--force', 'c' * 64])
+        self.assertEqual(calls[-1], ['rm', '--force', '--volumes', 'c' * 64])
         self.assertEqual(result['status'], 'unknown')
         self.assertTrue(result['container_removed'])
         self.assertNotIn('SENSITIVE', json.dumps(receipts))
@@ -121,6 +166,28 @@ class NativeCanaryTests(unittest.TestCase):
             result = canary.run(fake, SimpleNamespace(directory=Path('/unused')), '/reviewed/wrapper')
         self.assertFalse(result['container_removed'])
         self.assertEqual(result['cleanup'], 'creation_or_cleanup_unknown')
+
+    def test_success_checks_created_container_before_start_and_relay(self):
+        calls = []
+        fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0),
+                               run_native=Mock(side_effect=[{'hostname': 'a' * 12}, {'events_queued': 3}]),
+                               write_observer_receipt=Mock())
+        def docker(args, **kwargs):
+            calls.append(args[0])
+            if args[0] == 'create':
+                return 'c' * 64
+            if args[0] == 'start':
+                return json.dumps({'marker_and_exit_zero': True, 'owner_exit_observed': True, 'observations': [{}, {}, {}]})
+            return ''
+        with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
+             patch.object(canary, 'image_identity', return_value='sha256:' + 'b' * 64), \
+             patch.object(canary, 'verify_created', side_effect=lambda *args: calls.append('verify')), \
+             patch.object(canary, 'docker', side_effect=docker):
+            result = canary.run(fake, SimpleNamespace(directory=Path('/unused')), None)
+        self.assertEqual(calls, ['create', 'verify', 'start', 'rm'])
+        self.assertEqual(result['status'], 'passed')
+        self.assertTrue(result['container_safety_verified'])
+        self.assertTrue(result['container_removed'])
 
     def test_nonroot_refused_before_runtime_operations(self):
         fake = SimpleNamespace(os=SimpleNamespace(geteuid=lambda: 1000))
@@ -166,6 +233,29 @@ class NativeCanaryTests(unittest.TestCase):
                 self.assertNotIn('SENSITIVE', json.dumps(result))
         self.assertNotIn('SENSITIVE', str(fake.write_observer_receipt.call_args_list))
 
+    def test_image_feature_receipt_is_bounded_and_refuses_before_create(self):
+        fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0),
+                               run_native=Mock(return_value={'hostname': 'a' * 12}), write_observer_receipt=Mock())
+        image = 'sha256:' + 'b' * 64
+        container = [{'Id': 'a' * 64, 'Image': image, 'Config': {'Hostname': 'a' * 12}, 'State': {'Running': True}}]
+        volumes = {'/opt/data': {}, '/private\nSENSITIVE_PATH': {}, '/' + 'x' * 256: {}}
+        volumes.update({f'/data/{index}': {} for index in range(20)})
+        config = {'Volumes': volumes, 'OnBuild': ['RUN SENSITIVE_BUILD_COMMAND'],
+                  'Healthcheck': {'Test': ['CMD', 'SENSITIVE_HEALTHCHECK']}, 'Env': ['TOKEN=SENSITIVE_ENV']}
+        with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
+             patch.object(canary, 'docker', side_effect=[json.dumps(container), json.dumps([{'Id': image, 'Config': config}])]) as docker:
+            result = canary.run(fake, SimpleNamespace(directory=Path('/unused')), None)
+        self.assertEqual((result['status'], result['phase'], result['reason']),
+                         ('refused', 'image_inspection', 'implicit_volumes_or_build_hooks'))
+        self.assertEqual(result['image_features'], {
+            'volume_destinations': ['/opt/data', '[redacted]', '[redacted]'] + [f'/data/{index}' for index in range(13)],
+            'volume_destination_count': 23, 'volume_destinations_truncated': True,
+            'onbuild_count': 1, 'healthcheck_present': True})
+        self.assertEqual(result['cleanup'], 'not_needed_no_create')
+        self.assertEqual(docker.call_count, 2)
+        self.assertNotIn('SENSITIVE', json.dumps(result))
+        self.assertNotIn('SENSITIVE', str(fake.write_observer_receipt.call_args_list))
+
     def test_wrong_native_source_refused_before_child_launch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -185,8 +275,8 @@ class NativeCanaryTests(unittest.TestCase):
             delivered.extend(kwargs['json']['batch'])
             return SimpleNamespace(raise_for_status=lambda: None)
         with patch.dict(os.environ, {'POSTHOG_API_KEY': 'fake-ingest-only', 'POSTHOG_HOST': 'https://us.i.posthog.com', 'OPENAI_API_KEY': 'must-not-leak'}), \
-             patch.dict(sys.modules, {'hermes_constants': SimpleNamespace(get_hermes_home=lambda: '/tmp/isolated-exporter')}), \
-             patch('requests.post', side_effect=post):
+             patch.dict(sys.modules, {'hermes_constants': SimpleNamespace(get_hermes_home=lambda: '/tmp/isolated-exporter'),
+                                      'requests': SimpleNamespace(post=post)}):
             result = runtime.native_canary_export(payload)
         self.assertEqual(result['events_queued'], 3)
         self.assertEqual(len(delivered), 3)
@@ -196,9 +286,10 @@ class NativeCanaryTests(unittest.TestCase):
         for key, value in (('prompt', 'must-not-leak'), ('factory.stop.stage', 'arbitrary')):
             bad = copy.deepcopy(payload)
             bad['observations'][1]['properties'][key] = value
+            send = Mock()
             with patch.dict(os.environ, {'POSTHOG_API_KEY': 'fake-only'}), \
-                 patch.dict(sys.modules, {'hermes_constants': SimpleNamespace(get_hermes_home=lambda: '/tmp/isolated-exporter')}), \
-                 patch('requests.post') as send, self.assertRaises(ValueError):
+                 patch.dict(sys.modules, {'hermes_constants': SimpleNamespace(get_hermes_home=lambda: '/tmp/isolated-exporter'),
+                                          'requests': SimpleNamespace(post=send)}), self.assertRaises(ValueError):
                 runtime.native_canary_export(bad)
             send.assert_not_called()
 
