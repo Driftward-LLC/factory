@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import threading
 import time
 import uuid
@@ -115,8 +116,13 @@ class Owner:
                 or self.record["pid_namespace"] != os.readlink("/proc/self/ns/pid")
                 or self.record["boot_id"] != Path("/proc/sys/kernel/random/boot_id").read_text().strip()):
             raise Refused("owner process identity mismatch")
-        fd = os.open(self.root / "ownership.json", os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(self.root / "ownership.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_nlink != 1
+                    or not 0 < metadata.st_size <= 65536):
+                raise Refused("invalid private ownership record")
             encoded = stream.read(65537)
         if len(encoded) > 65536 or json.loads(encoded) != self.record:
             raise Refused("durable ownership mismatch")

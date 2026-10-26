@@ -11,6 +11,8 @@ incarnation before admitting tools. Session rotations are written before their
 next tool batch. Existing journal directories are refused; an old record never
 authorizes attaching to an old process. Cancellation checks the exact binding,
 current process identity and intact durable ownership record before cleanup.
+Ownership reads are nonblocking and require a private, bounded regular file;
+replaced FIFOs, symlinks and other invalid records are refused before cleanup.
 
 The invocation/epoch/fingerprint fields are **format-validated caller input**.
 They are not independently authenticated Factory jobs or leases. The existing
@@ -60,6 +62,10 @@ lowercase hexadecimal `fingerprint`. Later lines are `{"cancel": BINDING}`.
 All output is bounded metadata. EOF triggers cleanup using the in-memory exact
 binding. Omit `--fixture` only for future model-path testing; that launch also
 requires `model`, `provider` and `prompt` fields and remains unverified.
+Before any Hermes import, the launcher separates its protocol writer and discards
+both native stdout/stderr at the OS descriptor level, including inherited child
+output. A provider-free stand-in test exercises import/initialization/error noise
+through the actual launcher; this does not verify the real AIAgent model path.
 
 Unit checks run in the ordinary tools suite. Native checks are explicit opt-in:
 

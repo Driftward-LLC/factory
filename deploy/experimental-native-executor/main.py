@@ -16,6 +16,28 @@ from types import SimpleNamespace
 from owner import Owner, Refused, guarded_agent
 
 
+_PROTOCOL = None
+_PROTOCOL_LOCK = threading.Lock()
+
+
+def isolate_native_output():
+    """Retain one non-inherited protocol writer; discard all native output.
+
+    Redirect OS descriptors before importing Hermes: quiet_mode does not suppress
+    every native error, and Python-only redirection misses os.write/C/child output.
+    """
+    global _PROTOCOL
+    protocol_fd = os.dup(sys.stdout.fileno())
+    os.set_inheritable(protocol_fd, False)
+    null_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null_fd, 1)
+        os.dup2(null_fd, 2)
+    finally:
+        os.close(null_fd)
+    _PROTOCOL = os.fdopen(protocol_fd, "w", encoding="utf-8", buffering=1)
+
+
 def frame(stream):
     line = stream.readline(65537)
     if not line or len(line) > 65536 or not line.endswith("\n"):
@@ -27,7 +49,8 @@ def frame(stream):
 
 
 def emit(value):
-    print(json.dumps(value, separators=(",", ":")), flush=True)
+    with _PROTOCOL_LOCK:
+        print(json.dumps(value, separators=(",", ":")), file=_PROTOCOL, flush=True)
 
 
 def fixture(owner, native):
@@ -146,6 +169,11 @@ def main():
 
 
 if __name__ == "__main__":
+    try:
+        isolate_native_output()
+    except BaseException:
+        # Isolation must succeed before anything can import/initialize Hermes.
+        os._exit(1)
     try:
         main()
     except Exception:

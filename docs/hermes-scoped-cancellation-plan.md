@@ -92,7 +92,7 @@ wiring or external-write settlement. No production process is touched by the tes
 
 The disabled [experimental native owner](../deploy/experimental-native-executor/README.md)
 now provides a private-pipe launch/cancel prototype, durable native ownership and
-owner-side cleanup for local-terminal-only disposable fixtures. Thirteen focused
+owner-side cleanup for local-terminal-only disposable fixtures. Sixteen focused
 checks include actual pinned Hermes foreground/background cleanup, persistent
 background work, a measured escaped child, concurrent invocation/reviewer controls,
 and cancellation during native spawn. Its request fingerprint is caller-supplied,

@@ -11,6 +11,7 @@ import select
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 from types import SimpleNamespace
@@ -130,6 +131,68 @@ class OwnerTests(unittest.TestCase):
         self.assertIn("inflight_dispatch_not_quiescent", receipt["errors"])
         backend.registry.running_owned_by.assert_not_called()
 
+    def test_fifo_registration_is_refused_without_blocking_or_cleanup(self):
+        path = self.root / "ownership.json"
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        backend = native()
+        completed = threading.Event()
+        failures = []
+        def cancel():
+            try:
+                self.owner.cancel(self.binding, backend)
+            except Exception as error:
+                failures.append(error)
+            finally:
+                completed.set()
+        worker = threading.Thread(target=cancel, daemon=True)
+        worker.start()
+        bounded = completed.wait(0.5)
+        if not bounded:
+            # Unstick the old blocking implementation after detecting the bug,
+            # so a failing regression cannot leave a test thread hanging.
+            writer = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+            os.close(writer)
+            worker.join(timeout=0.5)
+        self.assertTrue(bounded, "FIFO ownership verification blocked")
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], module.Refused)
+        backend.kill_foreground.assert_not_called()
+        self.assertFalse(self.owner.fenced)
+
+    def test_nonprivate_nonregular_or_oversized_registration_refuses_cleanup(self):
+        path = self.root / "ownership.json"
+        original = path.read_bytes()
+        for replacement in ("symlink", "directory", "public", "oversized", "hardlink"):
+            with self.subTest(replacement=replacement):
+                path.unlink()
+                other = self.root / "other"
+                if replacement == "symlink":
+                    other.write_bytes(original)
+                    path.symlink_to(other)
+                elif replacement == "directory":
+                    path.mkdir()
+                elif replacement == "public":
+                    path.write_bytes(original)
+                    path.chmod(0o644)
+                elif replacement == "oversized":
+                    path.write_bytes(b" " * 65537)
+                    path.chmod(0o600)
+                else:
+                    other.write_bytes(original)
+                    other.chmod(0o600)
+                    os.link(other, path)
+                backend = native()
+                with self.assertRaises((module.Refused, OSError)):
+                    self.owner.cancel(self.binding, backend)
+                backend.kill_foreground.assert_not_called()
+                if replacement == "directory":
+                    path.rmdir()
+                else:
+                    path.unlink()
+                other.unlink(missing_ok=True)
+                module.atomic(path, self.owner.record)
+
     def test_bounded_native_receipt_excludes_output(self):
         backend = native()
         backend.registry.running_owned_by.return_value = [SimpleNamespace(id="native-id")]
@@ -189,6 +252,97 @@ def read_event(process, timeout=20):
         if value == b"\n":
             return json.loads(encoded)
     raise AssertionError("oversized owner event")
+
+
+class LauncherOutputTests(unittest.TestCase):
+    def test_real_launcher_suppresses_import_init_python_fd_and_child_noise(self):
+        # Exercise the actual non-fixture launch/control path using provider-free
+        # native module stand-ins, not a real AIAgent or provider request.
+        with tempfile.TemporaryDirectory(prefix="factory-native-output-") as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            home = root / "profile"
+            home.mkdir(mode=0o700)
+            modules = {
+                "noisy.py": '''
+                    import os, pathlib, subprocess, sys
+                    def noise(stage):
+                        value = "SENSITIVE_NATIVE_" + stage
+                        print(value, flush=True)
+                        print(value, file=sys.stderr, flush=True)
+                        os.write(1, (value + "_FD1\\n").encode())
+                        os.write(2, (value + "_FD2\\n").encode())
+                        subprocess.run([sys.executable, "-I", "-c", "import os; os.write(1,b'SENSITIVE_CHILD_FD1\\\\n'); os.write(2,b'SENSITIVE_CHILD_FD2\\\\n')"], check=True)
+                        with (pathlib.Path(os.environ["HERMES_HOME"]) / "noise-stages").open("a") as output:
+                            output.write(stage + "\\n")
+                ''',
+                "tools/__init__.py": "",
+                "tools/environments/__init__.py": "",
+                "tools/process_registry.py": '''
+                    from noisy import noise
+                    noise("registry_import")
+                    class Registry:
+                        def running_owned_by(self, owner):
+                            noise("cleanup_background")
+                            return []
+                    process_registry = Registry()
+                ''',
+                "tools/environments/base.py": '''
+                    from noisy import noise
+                    noise("base_import")
+                    def kill_live_foreground_processes(*, now):
+                        noise("cleanup_foreground")
+                        return 0
+                ''',
+                "tools/terminal_scope.py": '''
+                    def build_profile_terminal_scope(home):
+                        return {"TERMINAL_ENV": "local"}
+                    def set_terminal_scope(policy):
+                        return None
+                    def reset_terminal_scope(token):
+                        pass
+                ''',
+                "run_agent.py": '''
+                    from noisy import noise
+                    noise("agent_import")
+                    class AIAgent:
+                        def __init__(self, **kwargs):
+                            noise("agent_init")
+                            self.session_id = kwargs["session_id"]
+                            self.valid_tool_names = {"terminal", "process_manage"}
+                        def hard_interrupt(self, reason):
+                            noise("interrupt")
+                        def run_conversation(self, prompt, **kwargs):
+                            noise("conversation")
+                            print(prompt, flush=True)
+                            raise RuntimeError(prompt)
+                        def close(self):
+                            noise("agent_close")
+                ''',
+            }
+            for name, body in modules.items():
+                path = source / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(textwrap.dedent(body))
+            bound = request()
+            launch = {"binding": bound, "backend": "local", "enabled_tools": ["terminal", "process_manage"],
+                      "model": "disposable", "provider": "disposable", "prompt": "SENSITIVE_PROMPT_ERROR"}
+            result = subprocess.run([sys.executable, "-u", str(ADAPTER / "main.py"),
+                                     "--experimental-local-terminal", "--journal", str(root / "journal")],
+                                    input=json.dumps(launch) + "\n" + json.dumps({"cancel": bound}) + "\n",
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+                                    env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(source), "HERMES_HOME": str(home)}, cwd=root)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, "")
+            self.assertNotIn("SENSITIVE", result.stdout)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual([event["event"] for event in events], ["registered", "stop", "owner_exiting"])
+            self.assertEqual(events[-1]["errors"], ["execution_failed_or_refused"])
+            stages = set((home / "noise-stages").read_text().splitlines())
+            self.assertTrue({"registry_import", "base_import", "agent_import", "agent_init",
+                             "conversation", "agent_close", "cleanup_foreground", "cleanup_background"}.issubset(stages))
+            for path in (root / "journal").iterdir():
+                self.assertNotIn("SENSITIVE", path.read_text())
 
 
 @unittest.skipUnless(os.environ.get("FACTORY_TEST_HERMES_SOURCE") and os.environ.get("FACTORY_TEST_HERMES_PYTHON"),
