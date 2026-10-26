@@ -353,6 +353,100 @@ def idle_runtime():
             raise ValueError('Factory runtime invocation is active')
 
 
+def execution_process_lookup(payload):
+    """Observe correlations only. Environment metadata is copyable, never stop authority."""
+    if os.geteuid() != 0:
+        raise ValueError('execution lookup requires root')
+    identity = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    if (not isinstance(payload, dict) or set(payload) != {'attempt_id', 'job_id'}
+            or any(not isinstance(value, str) or not re.fullmatch(identity, value) for value in payload.values())):
+        raise ValueError('invalid execution lookup identity')
+    result = {'source': 'fixed_runtime_proc', 'state': 'unknown', 'matches': [],
+              'coverage': 'bounded_snapshot_only', 'scanned': 0, 'unresolved': 0,
+              'limit_reached': False, 'ownership': 'not_established',
+              'native_session_and_raw_owner': 'not_established', 'stop_authorized': False}
+    expected = {b'FACTORY_OBSERVABILITY_ATTEMPT_ID': payload['attempt_id'].encode(),
+                b'FACTORY_OBSERVABILITY_JOB_ID': payload['job_id'].encode()}
+    deadline = time.monotonic() + 3
+
+    def read(directory, name, limit):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(fd, 'rb') as stream:
+            value = stream.read(limit + 1)
+        if len(value) > limit:
+            raise ValueError('process metadata exceeds bound')
+        return value
+
+    def metadata(directory):
+        raw = read(directory, 'stat', 4096)
+        # comm may contain spaces and parentheses; fields after its final ')' are stable.
+        fields = raw[raw.rindex(b')') + 2:].split()
+        if len(fields) < 20:
+            raise ValueError('partial process identity')
+        start = fields[19]
+        if not start.isdigit() or len(start) > 24:
+            raise ValueError('invalid process identity')
+        namespace = os.readlink('ns/pid', dir_fd=directory)
+        if not re.fullmatch(r'pid:\[[0-9]{1,24}\]', namespace):
+            raise ValueError('invalid process namespace')
+        return start.decode('ascii'), namespace
+
+    def environment(directory):
+        raw = read(directory, 'environ', 131072)
+        if raw and not raw.endswith(b'\0'):
+            raise ValueError('partial process environment')
+        values = {}
+        for item in raw.split(b'\0')[:-1]:
+            key, separator, value = item.partition(b'=')
+            if not separator or not key or key in values:
+                raise ValueError('malformed process environment')
+            values[key] = value
+        matches = all(values.get(key) == value for key, value in expected.items())
+        profile = ('initial_home_matches' if values.get(b'HERMES_HOME') == b'/opt/data/profiles/factory-executor'
+                   else 'initial_home_differs_or_missing')
+        return matches, profile
+
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if not re.fullmatch(identity, boot):
+            raise ValueError('invalid runtime boot identity')
+        namespace = os.readlink('/proc/self/ns/pid')
+        if not re.fullmatch(r'pid:\[[0-9]{1,24}\]', namespace):
+            raise ValueError('invalid runtime namespace')
+        result['runtime'] = {'boot_id': boot, 'pid_namespace': namespace}
+        with os.scandir('/proc') as entries:
+            for entry in entries:
+                if not entry.name.isdigit():
+                    continue
+                if result['scanned'] >= 4096 or time.monotonic() >= deadline:
+                    result['limit_reached'] = True
+                    break
+                result['scanned'] += 1
+                directory = None
+                try:
+                    directory = os.open('/proc/' + entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    before = metadata(directory)
+                    candidate = environment(directory)
+                    if not candidate[0]:
+                        continue
+                    if before != metadata(directory) or candidate != environment(directory) or before[1] != namespace:
+                        raise ValueError('process identity changed')
+                    if len(result['matches']) >= 64:
+                        result['limit_reached'] = True
+                        break
+                    result['matches'].append({'pid': int(entry.name), 'start_ticks': before[0],
+                                              'pid_namespace': before[1], 'profile_evidence': candidate[1]})
+                except (OSError, ValueError, IndexError):
+                    result['unresolved'] += 1
+                finally:
+                    if directory is not None:
+                        os.close(directory)
+        result['state'] = 'correlated_processes_observed' if result['matches'] else 'no_correlated_process_observed'
+    except (OSError, ValueError):
+        result['unresolved'] += 1
+    return result
+
+
 def move_auth(reverse=False):
     idle_runtime()
     legacy = ROOT / 'factory-reviewer-auth' / 'auth.json'
@@ -591,6 +685,8 @@ def container_main(command, payload):
             if payload:
                 raise ValueError('source audit accepts no payload')
             result = source_audit()
+        elif command == 'execution-process-lookup':
+            result = execution_process_lookup(payload)
         elif command == 'configure':
             result = configure(payload)
         elif command == 'canary':
@@ -1584,7 +1680,7 @@ def diagnostic_journal(job, lease):
         os.close(descriptor)
 
 
-def diagnose_execution(install, args):
+def diagnose_execution(install, args, wrapper=None):
     """Read-only evidence, never a containment attestation or retry authorization."""
     import argparse
     parser = argparse.ArgumentParser(prog='factory profiles diagnose-execution')
@@ -1643,7 +1739,14 @@ def diagnose_execution(install, args):
         if not any(event['event_type'] == 'execution_backend_invoked' for event in events):
             raise ValueError('execution diagnostic exact invocation event missing')
         journal = diagnostic_journal(dict(job), dict(lease))
+    lookup = {'state': 'unknown', 'reason': 'exact_journal_binding_required', 'stop_authorized': False}
+    if journal['state'] == 'exact_binding_verified' and wrapper is not None:
+        try:
+            lookup = run_native(wrapper, 'execution-process-lookup', {'attempt_id': options.attempt_id, 'job_id': job['job_id']})
+        except (OSError, ValueError, subprocess.SubprocessError):
+            lookup = {'state': 'unknown', 'reason': 'runtime_lookup_unavailable', 'stop_authorized': False}
     return {'attempt_id': options.attempt_id, 'job_id': job['job_id'], 'invocation_id': options.invocation_id,
+            'native_process_lookup': lookup,
             'events': events, 'journal': journal, 'underlying_error': 'unavailable_not_retained',
             'stdout_stderr': 'not_retained_by_gateway', 'auth_cause': 'not_established',
             'containment': 'not_established', 'recovery_authorized': False}
@@ -1657,7 +1760,7 @@ def dispatch(install, config, wrapper, args):
             raise ValueError('source audit requires root')
         return run_native(wrapper, 'source-audit', {})
     if args and args[0] == 'diagnose-execution':
-        return diagnose_execution(install, args[1:])
+        return diagnose_execution(install, args[1:], wrapper)
     if args and args[0] == 'recover-observer':
         return recover_observer(install, wrapper, args[1:])
     if args and args[0] == 'upgrade-observer':

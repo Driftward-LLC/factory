@@ -76,7 +76,7 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
         path.write_text(json.dumps(value))
         path.chmod(0o600)
 
-    def diagnose(self, database, directory, invocation=INVOCATION):
+    def diagnose(self, database, directory, invocation=INVOCATION, wrapper=None):
         checked = runtime.checked
         def fixture_checked(path, **kwargs):
             return self.node if path == Path('/usr/bin/node') else checked(path, **kwargs)
@@ -94,8 +94,30 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
              patch.object(runtime.os, 'geteuid', return_value=0), \
              patch.object(runtime, 'checked', side_effect=fixture_checked), \
              patch.object(runtime.os, 'fstat', side_effect=fixture_stat):
-            return runtime.dispatch(SimpleNamespace(), {}, None,
+            return runtime.dispatch(SimpleNamespace(), {}, wrapper,
                                     ['diagnose-execution', ATTEMPT, '--invocation-id', invocation])
+
+    def test_native_lookup_only_after_exact_binding_and_sanitizes_runtime_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database, directory, intent = self.fixture(Path(temporary))
+            observed = {'state': 'correlated_processes_observed', 'stop_authorized': False}
+            with patch.object(runtime, 'run_native', return_value=observed) as native:
+                result = self.diagnose(database, directory, wrapper='fixed-wrapper')
+            native.assert_called_once_with('fixed-wrapper', 'execution-process-lookup', {'attempt_id': ATTEMPT, 'job_id': JOB})
+            self.assertEqual(result['native_process_lookup'], observed)
+            with patch.object(runtime, 'run_native', side_effect=RuntimeError(SECRET)):
+                # Unexpected programmer failures are not misclassified as a successful lookup.
+                with self.assertRaises(RuntimeError):
+                    self.diagnose(database, directory, wrapper='fixed-wrapper')
+            with patch.object(runtime, 'run_native', side_effect=subprocess.TimeoutExpired(SECRET, 3)):
+                result = self.diagnose(database, directory, wrapper='fixed-wrapper')
+            self.assertEqual(result['native_process_lookup']['reason'], 'runtime_lookup_unavailable')
+            self.assertNotIn(SECRET, json.dumps(result))
+            intent['fingerprint'] = '0' * 64
+            self.write(directory / 'intent.json', intent)
+            with patch.object(runtime, 'run_native') as native, self.assertRaises(ValueError):
+                self.diagnose(database, directory, wrapper='fixed-wrapper')
+            native.assert_not_called()
 
     def test_exact_v2_binding_and_private_fields_never_leave_boundary(self):
         with tempfile.TemporaryDirectory() as temporary:
