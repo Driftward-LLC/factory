@@ -4,16 +4,19 @@ Not referenced by deployment/production commands. JSON lines: first a launch
 frame, then exact-bound cancel frames. stdout contains bounded metadata only.
 """
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
 import shlex
+import re
+import stat
 import sys
 import threading
 import time
 from types import SimpleNamespace
 
-from owner import Owner, Refused, guarded_agent
+from owner import Owner, Refused, binding, guarded_agent
 
 
 _PROTOCOL = None
@@ -46,6 +49,21 @@ def frame(stream):
     if not isinstance(value, dict):
         raise Refused("invalid frame")
     return value
+
+
+def claim_profile(home):
+    """Serialize cooperating owners without changing Hermes checkpoint policy."""
+    fd = os.open(Path(home) / "factory-native-owner.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise Refused("invalid native profile admission lock")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd  # Held until this dedicated interpreter exits; never unlinked.
+    except BaseException:
+        os.close(fd)
+        raise Refused("native profile already owned or unavailable")
 
 
 def emit(value):
@@ -91,7 +109,19 @@ def fixture(owner, native):
 
 def conversation(owner, request):
     from run_agent import AIAgent
+    from hermes_cli.config import load_config_readonly
     from tools.terminal_scope import build_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
+    config = load_config_readonly() or {}
+    if config.get("platform_toolsets", {}).get("cli") != ["terminal"]:
+        raise Refused("explicit local-terminal-only profile required")
+    if config.get("tools", {}).get("tool_search", {}).get("enabled") != "off":
+        raise Refused("explicit direct native tool dispatch required")
+    from agent.skill_commands import build_preloaded_skills_prompt
+    required_skills = ['driftward-engineering:implement-change', 'driftward-engineering:verify-app',
+                       'driftward-engineering:prepare-pr']
+    skills_prompt, loaded, missing = build_preloaded_skills_prompt(required_skills, task_id=owner.session)
+    if missing or set(loaded) != set(required_skills) or not skills_prompt:
+        raise Refused("mandatory Factory engineering skills unavailable")
     policy = build_profile_terminal_scope(os.environ["HERMES_HOME"])
     if policy.get("TERMINAL_ENV", "local") != "local":
         raise Refused("remote terminal backend unsupported")
@@ -102,18 +132,70 @@ def conversation(owner, request):
                     session_id=owner.session, enabled_toolsets=["terminal"],
                     max_iterations=20, run_budget_seconds=120, fallback_model=[],
                     quiet_mode=True, save_trajectories=False, verbose_logging=False,
-                    skip_context_files=True, load_soul_identity=False, skip_memory=True,
+                    ephemeral_system_prompt=skills_prompt, skip_context_files=False, load_soul_identity=True, skip_memory=True,
                     skip_background_review=True, checkpoints_enabled=False, session_db=None,
-                    cwd=str(owner.root))
+                    cwd=os.getcwd())
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            plugin = get_plugin_manager()._plugins.get('observability/posthog')
+            callback = getattr(getattr(plugin, 'module', None), 'observe_owner', None)
+            if plugin and plugin.enabled and not plugin.error and callable(callback):
+                owner.observer = callback
+                owner.observe('registered')
+        except Exception:
+            pass  # Optional telemetry never changes execution or stop authority.
         if set(agent.valid_tool_names) != {"terminal", "process_manage"}:
             raise Refused("native tool surface unsupported")
         owner.attach(agent)
         try:
-            agent.run_conversation(request["prompt"], task_id=owner.raw_owner)
+            result = agent.run_conversation(request["prompt"], task_id=owner.raw_owner)
+            if result.get("interrupted") or result.get("failed") or not result.get("completed"):
+                raise Refused("native conversation did not complete")
+            return bounded_candidate(result.get("final_response"), request["receipt_policy"])
         finally:
             agent.close()
     finally:
         reset_terminal_scope(token)
+
+
+def bounded_candidate(text, policy):
+    """Only immutable-policy receipt fields cross the private result channel."""
+    if not isinstance(text, str) or len(text) > 65536 or not isinstance(policy, dict):
+        raise Refused("invalid result candidate")
+    value = json.loads(text)
+    repo, branch = policy.get("repo"), policy.get("branch")
+    if (not isinstance(value, dict) or not isinstance(repo, str) or not isinstance(branch, str)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+            or len(branch) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch)
+            or value.get("status") not in {"created", "reused"}
+            or value.get("branch", branch) != branch
+            or not isinstance(value.get("pr_url"), str)
+            or not re.fullmatch(re.escape("https://github.com/" + repo + "/pull/") + r"[1-9][0-9]{0,14}", value["pr_url"])):
+        raise Refused("invalid result candidate identity")
+    commit = value.get("commit_sha")
+    if commit is not None and (not isinstance(commit, str) or not re.fullmatch(r"[a-fA-F0-9]{40}", commit)):
+        raise Refused("invalid result candidate revision")
+    validation = None
+    expected = policy.get("verification_policy")
+    raw = value.get("validation")
+    if isinstance(expected, dict) and isinstance(raw, dict):
+        commands = expected.get("required_local_commands")
+        secret = expected.get("secret_check_command")
+        rows = raw.get("local_commands")
+        def command(item, name):
+            return (isinstance(item, dict) and item.get("command") == name
+                    and type(item.get("exit_code")) is int and -(2**31) <= item["exit_code"] < 2**31)
+        if (isinstance(commands, list) and 0 < len(commands) <= 32
+                and all(isinstance(c, str) and 0 < len(c) <= 4096 for c in commands)
+                and isinstance(secret, str) and 0 < len(secret) <= 4096 and isinstance(rows, list)
+                and command(raw.get("secret_check"), secret)):
+            selected = [[row for row in rows if command(row, name)] for name in commands]
+            if all(len(matches) == 1 for matches in selected):
+                validation = {"local_commands": [{"command": name, "exit_code": matches[0]["exit_code"]}
+                                                  for name, matches in zip(commands, selected)],
+                              "secret_check": {"command": secret, "exit_code": raw["secret_check"]["exit_code"]}}
+    return {"status": value["status"], "pr_url": value["pr_url"], "branch": branch,
+            "commit_sha": commit, "validation": validation}
 
 
 def main():
@@ -121,17 +203,20 @@ def main():
     parser.add_argument("--experimental-local-terminal", action="store_true", required=True)
     parser.add_argument("--journal", required=True)
     parser.add_argument("--fixture", action="store_true")
+    parser.add_argument("--controlled", action="store_true")
     args = parser.parse_args()
     request = frame(sys.stdin)
     expected = {"binding", "backend", "enabled_tools"}
     if not args.fixture:
-        expected |= {"model", "provider", "prompt"}
+        expected |= {"model", "provider", "prompt", "receipt_policy"}
     if set(request) != expected:
         raise Refused("invalid launch fields")
     # Only an explicitly selected profile home is permitted, never root fallback
     # by an omitted environment variable. Tests supply a newly created temp home.
     if not os.environ.get("HERMES_HOME"):
         raise Refused("explicit Hermes profile home required")
+    if args.controlled or not args.fixture:
+        profile_lock = claim_profile(os.environ["HERMES_HOME"])
     owner = Owner(args.journal, request["binding"], backend=request["backend"],
                   enabled_tools=request["enabled_tools"])
     from tools.process_registry import process_registry
@@ -144,14 +229,25 @@ def main():
             if args.fixture:
                 fixture(owner, native)
             else:
-                conversation(owner, request)
+                candidate = conversation(owner, request)
+                emit({"event": "result", "candidate": candidate})
         except Exception:
             errors.append("execution_failed_or_refused")
+            emit({"event": "execution_failed", "reason": "execution_failed_or_refused"})
     worker = threading.Thread(target=run, daemon=True)
-    worker.start()
+    started = not args.controlled
+    if started:
+        worker.start()
     try:
         while True:
             request = frame(sys.stdin)
+            if args.controlled and set(request) == {"start"}:
+                if started or owner.fenced or binding(request["start"]) != owner.binding:
+                    emit({"event": "refused", "reason": "start_not_authorized"})
+                else:
+                    started = True
+                    worker.start()
+                continue
             if set(request) != {"cancel"}:
                 emit({"event": "refused", "reason": "unsupported_frame"})
                 continue
@@ -163,8 +259,9 @@ def main():
         # Pipe closure is not permission to orphan work. Use the in-memory
         # binding, never infer an old process's ownership from the filesystem.
         owner.cancel(owner.binding, native)
-    worker.join(timeout=4)
-    emit({"event": "owner_exiting", "worker_exited": not worker.is_alive(), "errors": errors,
+    if started:
+        worker.join(timeout=4)
+    emit({"event": "owner_exiting", "binding": owner.binding, "worker_exited": not started or not worker.is_alive(), "errors": errors,
           "completion": "not_established"})
 
 

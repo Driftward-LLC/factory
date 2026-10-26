@@ -302,6 +302,16 @@ class LauncherOutputTests(unittest.TestCase):
                     def reset_terminal_scope(token):
                         pass
                 ''',
+                "hermes_cli/__init__.py": "",
+                "hermes_cli/config.py": '''
+                    def load_config_readonly():
+                        return {"platform_toolsets": {"cli": ["terminal"]}, "tools": {"tool_search": {"enabled": "off"}}}
+                ''',
+                "agent/__init__.py": "",
+                "agent/skill_commands.py": '''
+                    def build_preloaded_skills_prompt(names, task_id=None):
+                        return "disposable fixed skill instructions", names, []
+                ''',
                 "run_agent.py": '''
                     from noisy import noise
                     noise("agent_import")
@@ -326,7 +336,8 @@ class LauncherOutputTests(unittest.TestCase):
                 path.write_text(textwrap.dedent(body))
             bound = request()
             launch = {"binding": bound, "backend": "local", "enabled_tools": ["terminal", "process_manage"],
-                      "model": "disposable", "provider": "disposable", "prompt": "SENSITIVE_PROMPT_ERROR"}
+                      "model": "disposable", "provider": "disposable", "prompt": "SENSITIVE_PROMPT_ERROR",
+                      "receipt_policy": {"repo": "example/project", "branch": "codex/disposable"}}
             result = subprocess.run([sys.executable, "-u", str(ADAPTER / "main.py"),
                                      "--experimental-local-terminal", "--journal", str(root / "journal")],
                                     input=json.dumps(launch) + "\n" + json.dumps({"cancel": bound}) + "\n",
@@ -336,7 +347,7 @@ class LauncherOutputTests(unittest.TestCase):
             self.assertEqual(result.stderr, "")
             self.assertNotIn("SENSITIVE", result.stdout)
             events = [json.loads(line) for line in result.stdout.splitlines()]
-            self.assertEqual([event["event"] for event in events], ["registered", "stop", "owner_exiting"])
+            self.assertEqual(sorted(event["event"] for event in events), sorted(["registered", "stop", "execution_failed", "owner_exiting"]))
             self.assertEqual(events[-1]["errors"], ["execution_failed_or_refused"])
             stages = set((home / "noise-stages").read_text().splitlines())
             self.assertTrue({"registry_import", "base_import", "agent_import", "agent_init",
@@ -348,6 +359,110 @@ class LauncherOutputTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("FACTORY_TEST_HERMES_SOURCE") and os.environ.get("FACTORY_TEST_HERMES_PYTHON"),
                      "native checkout and isolated interpreter explicitly required")
 class RealNativeCleanupTests(unittest.TestCase):
+    def test_controlled_owners_refuse_same_profile_before_registration_and_native_effects(self):
+        with tempfile.TemporaryDirectory(prefix='factory-profile-lock-') as temporary:
+            root = Path(temporary)
+            home = root / 'shared-profile'
+            home.mkdir(mode=0o700)
+            environment = {'PATH': '/usr/bin:/bin', 'PYTHONPATH': os.environ['FACTORY_TEST_HERMES_SOURCE'], 'HERMES_HOME': str(home)}
+            first = subprocess.Popen([os.environ['FACTORY_TEST_HERMES_PYTHON'], '-u', str(ADAPTER / 'main.py'),
+                                      '--experimental-local-terminal', '--fixture', '--controlled', '--journal', str(root / 'first')],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment, cwd=root)
+            bound = request()
+            launch = {'binding': bound, 'backend': 'local', 'enabled_tools': ['terminal', 'process_manage']}
+            try:
+                first.stdin.write(json.dumps(launch) + '\n'); first.stdin.flush()
+                self.assertEqual(read_event(first)['event'], 'registered')
+                # Registration alone cannot execute a tool until host authorization.
+                self.assertFalse((root / 'first/fixture-child.pid').exists())
+                first.stdin.write(json.dumps({'start': bound}) + '\n'); first.stdin.flush()
+                while True:
+                    ready = read_event(first)
+                    if ready['event'] == 'fixture_ready':
+                        break
+                checkpoint = (home / 'processes.json').read_bytes()
+                second = subprocess.run([os.environ['FACTORY_TEST_HERMES_PYTHON'], '-u', str(ADAPTER / 'main.py'),
+                                         '--experimental-local-terminal', '--fixture', '--controlled', '--journal', str(root / 'second')],
+                                        input=json.dumps({**launch, 'binding': request()}) + '\n', text=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, env=environment, cwd=root)
+                self.assertEqual(second.returncode, 1)
+                self.assertEqual(json.loads(second.stdout)['event'], 'refused')
+                self.assertEqual(second.stderr, '')
+                self.assertFalse((root / 'second').exists())
+                self.assertEqual((home / 'processes.json').read_bytes(), checkpoint)
+                self.assertTrue(alive(ready['foreground_pid']))
+            finally:
+                first.stdin.close()
+                try:
+                    first.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    first.kill(); first.wait(timeout=5)
+                first.stdout.close(); first.stderr.close()
+
+    def test_real_aiagent_dispatches_terminal_over_recorded_transport(self):
+        with tempfile.TemporaryDirectory(prefix="factory-real-aiagent-") as temporary:
+            root = Path(temporary)
+            home = root / "profile"
+            home.mkdir(mode=0o700)
+            (home / "config.yaml").write_text("model:\n  default: local-test\n  provider: custom\n  base_url: http://127.0.0.1:1/v1\nplatform_toolsets:\n  cli: [terminal]\nterminal:\n  backend: local\ntools:\n  tool_search:\n    enabled: 'off'\n")
+            for name in ('implement-change', 'verify-app', 'prepare-pr'):
+                directory = home / 'skills' / ('driftward-engineering:' + name)
+                directory.mkdir(parents=True)
+                (directory / 'SKILL.md').write_text('---\nname: "driftward-engineering:' + name + '"\ndescription: Disposable native preload proof\n---\nFIXED_FACTORY_SKILL_' + name + '\n')
+            bound = request()
+            process = subprocess.Popen([os.environ["FACTORY_TEST_HERMES_PYTHON"], "-u",
+                                        str(Path(__file__).parent / "fixtures/hermes-real-agent-transport.py"),
+                                        str(ADAPTER / "main.py"), "--experimental-local-terminal", "--journal", str(root / "journal")],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                       env={"PATH": "/usr/bin:/bin", "PYTHONPATH": os.environ["FACTORY_TEST_HERMES_SOURCE"],
+                                            "HERMES_HOME": str(home)}, cwd=root)
+            try:
+                launch = {"binding": bound, "backend": "local", "enabled_tools": ["terminal", "process_manage"],
+                          "model": "local-test", "provider": "custom", "prompt": "Run the disposable terminal check and return its receipt.",
+                          "receipt_policy": {"repo": "example/project", "branch": "codex/disposable"}}
+                process.stdin.write(json.dumps(launch) + "\n")
+                process.stdin.flush()
+                events = []
+                while True:
+                    event = read_event(process, 30)
+                    events.append(event)
+                    if event["event"] in {"execution_failed", "refused"}:
+                        diagnostic = (home / "probe-failure.json")
+                        self.fail(diagnostic.read_text() if diagnostic.exists() else "recorded agent failed before diagnostic")
+                    if event["event"] == "result":
+                        break
+                self.assertEqual(event["candidate"]["pr_url"], "https://github.com/example/project/pull/1")
+                proof = json.loads((home / "transport-proof.json").read_text())
+                self.assertTrue(proof["native_tool_result_observed"])
+                self.assertTrue(proof["filesystem_effect_observed"])
+                self.assertTrue(proof["mandatory_skills_observed"])
+                self.assertEqual(proof["network"], "disabled")
+                self.assertEqual(proof["provider_requests"], 2)
+                process.stdin.close()
+                process.wait(timeout=10)
+                self.assertEqual(process.returncode, 0)
+                self.assertEqual(process.stderr.read(), "")
+                (home / 'skills/driftward-engineering:verify-app/SKILL.md').unlink()
+                (home / 'transport-proof.json').unlink()
+                refused = subprocess.run([os.environ['FACTORY_TEST_HERMES_PYTHON'], '-u',
+                                          str(Path(__file__).parent / 'fixtures/hermes-real-agent-transport.py'),
+                                          str(ADAPTER / 'main.py'), '--experimental-local-terminal', '--journal', str(root / 'missing-skill')],
+                                         input=json.dumps(launch) + '\n', text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         env={'PATH': '/usr/bin:/bin', 'PYTHONPATH': os.environ['FACTORY_TEST_HERMES_SOURCE'], 'HERMES_HOME': str(home)}, cwd=root, timeout=20)
+                self.assertEqual(refused.stderr, '')
+                self.assertFalse((home / 'transport-proof.json').exists())
+                self.assertEqual(json.loads((home / 'probe-failure.json').read_text())['refusal'], 'mandatory Factory engineering skills unavailable')
+            finally:
+                if not process.stdin.closed:
+                    process.stdin.close()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+
     def test_cancel_during_admitted_native_spawn_is_included_in_cleanup(self):
         source = os.environ["FACTORY_TEST_HERMES_SOURCE"]
         python = os.environ["FACTORY_TEST_HERMES_PYTHON"]
@@ -412,8 +527,10 @@ class RealNativeCleanupTests(unittest.TestCase):
                 for name in ("target", "concurrent", "reviewer-control"):
                     root = Path(temporary) / name
                     root.mkdir(mode=0o700)
-                    home = root / "profile"
-                    home.mkdir(mode=0o700)
+                    # Deliberately model nonparticipating legacy interpreters:
+                    # two share a profile without the new admission lock.
+                    home = (Path(temporary) / 'legacy-shared-profile') if name != 'reviewer-control' else root / 'profile'
+                    home.mkdir(mode=0o700, exist_ok=True)
                     env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(source), "HERMES_HOME": str(home), "TERMINAL_ENV": "local"}
                     process = subprocess.Popen([python, "-u", str(ADAPTER / "main.py"), "--experimental-local-terminal",
                                                 "--fixture", "--journal", str(root / "journal")],
@@ -423,6 +540,7 @@ class RealNativeCleanupTests(unittest.TestCase):
                     running.append(run)
                     send(process, {"binding": run["binding"], "backend": "local", "enabled_tools": ["terminal", "process_manage"]})
                     registration = receive(process, "registered")
+                    run['raw_owner'] = registration['ownership']['raw_owners'][0]
                     self.assertTrue((root / "journal/ownership.json").exists())
                     self.assertEqual(registration["ownership"]["pid"], process.pid)
                     run["ready"] = receive(process, "fixture_ready")
@@ -432,6 +550,9 @@ class RealNativeCleanupTests(unittest.TestCase):
                     self.assertTrue(all(alive(pid) for pid in run["pids"]))
                     run["tree"] = descendants(run["pids"])
                 target = running[0]
+                checkpoint_path = Path(temporary) / 'legacy-shared-profile/processes.json'
+                before = json.loads(checkpoint_path.read_text())
+                self.assertIn(running[1]['raw_owner'], {row['owner_task_id'] for row in before})
                 send(target["process"], {"cancel": {**target["binding"], "fingerprint": "b" * 64}})
                 receive(target["process"], "refused")
                 self.assertTrue(all(alive(pid) for run in running for pid in run["pids"]))
@@ -447,6 +568,11 @@ class RealNativeCleanupTests(unittest.TestCase):
                     time.sleep(0.02)
                 self.assertFalse(any(alive(pid) for pid in target["tree"]))
                 self.assertTrue(all(alive(pid) for run in running[1:] for pid in run["pids"]))
+                # Native process liveness is scoped, but native checkpoint writes
+                # are process-local replacements. This measured metadata loss
+                # is an activation blocker with nonparticipating legacy owners.
+                after = json.loads(checkpoint_path.read_text())
+                self.assertNotIn(running[1]['raw_owner'], {row['owner_task_id'] for row in after})
                 send(target["process"], {"cancel": target["binding"]})
                 self.assertEqual(receive(target["process"], "stop")["receipt"], receipt)
                 for run in running[1:]:

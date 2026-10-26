@@ -91,15 +91,18 @@ wiring or external-write settlement. No production process is touched by the tes
 ### Remaining adapter work
 
 The disabled [experimental native owner](../deploy/experimental-native-executor/README.md)
-now provides a private-pipe launch/cancel prototype, durable native ownership and
-owner-side cleanup for local-terminal-only disposable fixtures. Sixteen focused
-checks include actual pinned Hermes foreground/background cleanup, persistent
-background work, a measured escaped child, concurrent invocation/reviewer controls,
-and cancellation during native spawn. Its request fingerprint is caller-supplied,
-not authenticated against the Factory gateway or job manifest. The real AIAgent
-model path, full tool/delegation coverage, gateway trust binding and crash recovery
-remain unverified activation blockers. Every aggregate stop stays `unknown`;
-the prototype does not authorize historical recovery or production execution.
+now has a disabled gateway integration using its authenticated/private-journal
+context, exact stored-lease claims and a registration/start barrier. Actual pinned
+AIAgent/terminal execution is tested over recorded SDK transport, with filesystem
+effect, successful tool result and native loading of all three fixed engineering
+skills. Eighteen owner checks cover cleanup, persistent work, escaped descendants
+and admission. A same-profile legacy fixture proves native checkpoint replacement
+can erase another live interpreter's metadata. Experimental owners are serialized;
+legacy coexistence remains an activation blocker. Gateway/controller tests use
+fixture Docker transport, not a real container. Existing transport/journal trust
+is preserved, not independent bridge attestation. Full capabilities, installed
+provider/configuration parity and recovery remain unverified. Every aggregate
+stop stays `unknown`; activation and historical recovery are not authorized.
 
 Keep the existing Factory gRPC gateway and one-shot Hermes execution model.
 Do not add another service or switch to the Hermes chat gateway. Add a thin

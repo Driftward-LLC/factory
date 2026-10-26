@@ -1,8 +1,9 @@
 # Experimental native invocation owner
 
-Disabled by default: no production launcher, deployment, gateway, credentials or
-service references these files. This is a disposable prototype, **not ready for
-activation**. It does not recover ENG-162 or authorize retrying any failed job.
+Disabled by default: the gateway selects this path only with
+`DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER=1`. This prototype is **not ready for
+activation**. No runtime/installer execution, credential change or live run is
+part of this change. It does not recover ENG-162 or authorize retrying failed work.
 
 The standalone interpreter handles exactly one request through an inherited
 private stdin pipe. A new, exclusive, mode-0700 journal stores the native session,
@@ -14,18 +15,46 @@ current process identity and intact durable ownership record before cleanup.
 Ownership reads are nonblocking and require a private, bounded regular file;
 replaced FIFOs, symlinks and other invalid records are refused before cleanup.
 
-The invocation/epoch/fingerprint fields are **format-validated caller input**.
-They are not independently authenticated Factory jobs or leases. The existing
-gateway verifier and immutable job fingerprint are not wired to this prototype.
-The inherited pipe supplies prototype authority; the journal is evidence only.
+Through the gateway, the binding is derived only after its existing authenticated
+handler reserves the immutable job fingerprint and full lease in InvocationJournal.
+No caller fingerprint is accepted. Recovery reads an authenticated, exact-job,
+fingerprint-verified snapshot and submits that complete lease as a compare-and-swap
+claim; stale owner/epoch/fence fails before cancel-marker mutation. This preserves
+the existing transport/private-journal trust boundary, **not independent current
+bridge-lease attestation**. Standalone fixture bindings remain format-validated
+caller input. Disk evidence never authorizes attaching to an old process.
+
+The owner runs inside the existing Driftward Hermes runtime/profile/user through
+the same Docker Compose arguments as identity checks. A reviewer-style fixed
+bootstrap contains checked-in public Python assets; job data travels through
+private stdin and never becomes Python source or arbitrary executable argv. The
+existing installer copies the host assets but is not run here. The existing
+artifact/job gates, identity preflight, prompt construction, model selection and
+Factory result normalizer remain in place. Only an ephemeral, bounded,
+policy-filtered result candidate crosses the private protocol; raw responses are
+not persisted in the invocation or stop journal. The default executor is unchanged.
 
 Only native local `terminal` and `process_manage` are accepted. Delegation,
 browser/MCP tools, remote backends and multiple-tool batches fail closed. The
-adapter does not silently remove requested capabilities. Its `AIAgent` subclass
-uses the same batch override pattern as the reviewer adapter, but the actual
-model/provider initialization and complete AIAgent path are **untested**. They
-remain an explicit activation blocker. This is not a supported replacement for
-Factory's current complete executor tool surface.
+adapter does not silently remove requested capabilities: the profile must already
+explicitly select `platform_toolsets.cli: [terminal]` and
+`tools.tool_search.enabled: 'off'`. All three fixed engineering skills must load
+through the pinned native skill-preload helper, or initialization refuses before
+provider/tool execution. Native context/SOUL loading is enabled at the runtime cwd.
+The actual `AIAgent` path is now tested with a recorded SDK HTTP transport and real
+native terminal dispatch; full production provider/configuration parity is not
+attested. A broader profile, including an observer-added `factory_github` tool,
+is refused. This is not a replacement for Factory's complete executor tool surface.
+
+The controlled protocol requires registration followed by host start authorization.
+Cancellation before/during registration withholds that frame; writing launch and
+cancel back-to-back is not treated as a proven dispatch barrier. Cooperating owners
+also hold a profile lock before native initialization/effects. Disposable tests
+show why: separate legacy interpreters sharing HERMES_HOME overwrite each other's
+process checkpoint even while their unrelated processes stay alive. Experimental
+owners are serialized; the lock cannot coordinate nonparticipating legacy agents.
+Verified legacy quiescence/checkpoint compatibility remains an activation blocker.
+No checkpoint repair, private-path override, new profile or credential copying occurs.
 
 Cancellation fences new batch admission, hard-interrupts the attached native
 agent, runs native graceful foreground cleanup followed by the native hard-exit
@@ -44,12 +73,16 @@ effect settlement. Dispatch that fails to quiesce is unknown; there is no crash
 recovery, safe resume or periodic retry policy. An interrupted/failed stop-record
 write cannot disable already-authorized native cleanup, but is reported as an
 evidence failure. The owner cannot observe its own exit; the caller must retain
-that separate observation. Old/corrupted records fail closed without cleanup.
+that separate observation. Docker-client exit alone is not owner-exit proof: a
+validated owner-exit frame and successful remote command exit are both required.
+Old/corrupted records fail closed without cleanup.
 
-An optional caller-supplied observer receives allowlisted PostHog-compatible
-metadata. Observer failure cannot change cancellation. The prototype does not
-attach a live observer or send fixture events. Existing PostHog queue/export
-integration and exact identifier ingestion remain unverified.
+The adapter may attach the already-loaded observer's public `observe_owner` sink.
+It reuses that observer's queue and deterministic attempt/job trace to emit bounded
+AI spans. Native generation/tool hooks remain owned by the existing plugin. There
+is no second exporter; absent/older plugins and sink failures do not affect stop
+semantics. Tests mock delivery; no fixture event is sent to live PostHog and exact
+identifier ingestion remains unverified.
 
 ## Disposable protocol and tests
 
@@ -59,13 +92,14 @@ JSON line contains `binding`, `backend: "local"`, and `enabled_tools:
 ["terminal", "process_manage"]`. `binding` contains canonical
 `invocation_id: JOB-UUID:LEASE-UUID:EPOCH`, integer `epoch`, and a 64-character
 lowercase hexadecimal `fingerprint`. Later lines are `{"cancel": BINDING}`.
-All output is bounded metadata. EOF triggers cleanup using the in-memory exact
-binding. Omit `--fixture` only for future model-path testing; that launch also
-requires `model`, `provider` and `prompt` fields and remains unverified.
+All output is bounded metadata or a filtered result candidate. EOF requests cleanup
+using the in-memory exact binding. Non-fixture launch additionally requires model,
+provider, prompt and receipt policy. Controlled launch requires
+`{"start": BINDING}` after registration; the gateway supplies that authorization.
 Before any Hermes import, the launcher separates its protocol writer and discards
 both native stdout/stderr at the OS descriptor level, including inherited child
 output. A provider-free stand-in test exercises import/initialization/error noise
-through the actual launcher; this does not verify the real AIAgent model path.
+through the actual launcher. A separate recorded-transport check uses real AIAgent.
 
 Unit checks run in the ordinary tools suite. Native checks are explicit opt-in:
 
@@ -80,16 +114,27 @@ The native checkout must be clean at
 modules, not copied methods, stubs or synthetic termination callbacks. Isolated
 interpreter dependencies used for this run: ruamel.yaml, PyYAML, python-dotenv,
 requests, httpx, tenacity, rich, platformdirs, pydantic, psutil, openai, anthropic
-and jinja2. No provider request is made. These dependencies are test setup only;
-they do not update an installed Hermes runtime or this repository's dependencies.
+jinja2 and snowballstemmer. The recorded fixture uses Python 3.12, OpenAI SDK
+3.37.0, httpx2 2.16.0 and snowballstemmer 3.1.1; this is a separate test dependency
+set, not attestation of the installed runtime. All socket connections are forbidden
+and no credentials/live provider request are used. These dependencies are test setup
+only and do not update the runtime or repository dependencies.
 
 Native fixtures launch actual `LocalEnvironment.execute` foreground work,
 an escaped `setsid` child, and ordinary/persistent `ProcessRegistry.spawn_local`
 background work. Three independent interpreters represent the target, another
-invocation, and a reviewer control. Tests check wrong-fingerprint refusal, exact
+invocation sharing its profile, and a reviewer control. Tests check wrong-fingerprint refusal, exact
 target cleanup, survival of both controls, repeated cancellation, and cancellation
 during an already-admitted native spawn. The reviewer control is a disposable
 process fixture, not the real reviewer profile or an authenticated model run.
+The 18 owner checks include actual AIAgent initialization, SDK streaming parsing,
+native terminal dispatch, exact filesystem marker and exit-zero tool-result proof,
+all three fixed skill markers in the provider request, missing-skill refusal,
+same-profile admission, and the measured legacy checkpoint conflict. The SDK HTTP
+transport is replaced; AIAgent, conversation loop, dispatcher and terminal are not.
+Worker tests separately verify gateway auth, exact lease claims, start barriers,
+completion races, timeout/crash/transport-loss evidence and result normalization.
+Their Docker transport is a fixture, not a real container execution.
 
 The hard-exit native helper alone was observed to leave the fixture's escaped
 child alive. The adapter therefore runs native graceful cleanup first, followed
@@ -97,5 +142,6 @@ by the hard-exit spawn fence. This tests the measured fixture tree only, never
 complete escaped-descendant coverage. Aggregate stop remains `unknown` even
 when every measured fixture process exits. Native dependencies, configuration,
 plugins, remote services and production source coverage are not attested by this
-experiment. Authentication, gateway wiring, complete capability coverage,
-crash/restart behavior and external writes remain activation blockers.
+experiment. Full capability/configuration/provider parity, nonparticipating legacy
+coexistence, installed runtime verification, crash/restart recovery, telemetry
+ingestion, remote resources and external settlement remain activation blockers.

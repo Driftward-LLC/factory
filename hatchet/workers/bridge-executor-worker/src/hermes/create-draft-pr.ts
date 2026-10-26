@@ -15,6 +15,8 @@ import {
 import { NonRetryableBridgeExecutionError } from './errors';
 import { isGitHubDiffSizeLimit, PINNED_PR_DIFF_QUERY } from './pr-diff';
 import { boundedModelSelection, HERMES_MODEL_SELECTION_QUERY, reportModelSelection, type ModelSelectionObserver } from './model-selection';
+import type { InvocationExecutionContext } from './invocation-journal';
+import { nativeOwnerBootstrap, nativeOwnerJournal, runNativeOwner } from './native-owner';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
@@ -602,6 +604,7 @@ export async function runHermesCreateDraftPrViaCommand(
   timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000),
   maxBuffer: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024),
   onModelSelected?: ModelSelectionObserver,
+  invocation?: InvocationExecutionContext,
 ): Promise<HermesDraftPrResult> {
   // The gateway must repeat the typed check when the credential-bearing process
   // actually starts; a queued worker check can precede invocation by minutes.
@@ -635,7 +638,20 @@ export async function runHermesCreateDraftPrViaCommand(
 
   let result: ExecResult;
   try {
-    result = await execFileAsync(command, [...hermesProfileArguments(), ...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], {
+    if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
+      if (!invocation || process.env.DRIFTWARD_HERMES_PROFILE !== 'factory-executor' || !selection) {
+        throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native owner requires a verified invocation, explicit executor profile and selected model');
+      }
+      const context = Object.entries(hermesObservabilityEnvironment(job)).map(([key, value]) => `${key}=${value}`);
+      const stdout = await runNativeOwner(invocation, {
+        backend: 'local', enabled_tools: ['terminal', 'process_manage'], model: selection.selected_model,
+        provider: selection.selected_provider, prompt,
+        receipt_policy: { repo: job.payload.repo, branch: job.branch, verification_policy: job.payload.verification_policy },
+      }, { arguments: hermesRuntimeDockerArgs(['env', ...context, '/opt/hermes/.venv/bin/python', '-c', nativeOwnerBootstrap(),
+        '--experimental-local-terminal', '--controlled', '--journal', nativeOwnerJournal(invocation)]),
+        environment: process.env, timeout, maxBuffer });
+      result = { stdout, stderr: '' };
+    } else result = await execFileAsync(command, [...hermesProfileArguments(), ...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], {
       timeout,
       maxBuffer,
       env: {

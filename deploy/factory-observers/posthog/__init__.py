@@ -307,6 +307,36 @@ def _trace_id(kwargs: dict[str, Any]) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:trace:{scope}"))
 
 
+def observe_owner(event: object) -> bool:
+    """Optional native-owner metadata uses this installed observer's queue/trace."""
+    if not isinstance(event, dict) or not isinstance(event.get('properties'), dict):
+        return False
+    p = event['properties']
+    fields = {'factory.invocation_id', 'factory.lease_epoch', 'factory.experimental', 'factory.stop.stage',
+              'hermes.session_id', 'hermes.task_id', 'factory.runtime_incarnation', '$process_person_profile'}
+    if (set(p) != fields or p['factory.experimental'] is not True or p['$process_person_profile'] is not False
+            or not isinstance(p['factory.stop.stage'], str) or p['factory.stop.stage'] not in {'registered', 'stopping', 'unknown'}
+            or type(p['factory.lease_epoch']) is not int or not 0 < p['factory.lease_epoch'] <= 9007199254740991
+            or not isinstance(p['factory.invocation_id'], str)
+            or not re.fullmatch(r'[a-f0-9-]{36}:[a-f0-9-]{36}:' + str(p['factory.lease_epoch']), p['factory.invocation_id'])
+            or any(not isinstance(p[key], str) or not re.fullmatch(r'factory-[a-f0-9]{32}', p[key])
+                   for key in ('hermes.session_id', 'hermes.task_id'))
+            or not isinstance(p['factory.runtime_incarnation'], str)
+            or not re.fullmatch(r'[a-f0-9-]{36}', p['factory.runtime_incarnation'])):
+        return False
+    trace = _trace_id({'session_id': p['hermes.session_id']})
+    span = str(uuid.uuid5(uuid.NAMESPACE_URL, 'factory-native-owner:' + p['factory.invocation_id'] + ':' + p['factory.stop.stage']))
+    properties = {**p, **_factory_properties(), '$ai_trace_id': trace, '$ai_parent_id': trace,
+                  '$ai_span_id': span, '$ai_session_id': p['hermes.session_id'],
+                  '$ai_span_name': 'factory.native_owner.' + p['factory.stop.stage']}
+    try:
+        _enqueue({'event': '$ai_span', 'distinct_id': 'driftward-hermes',
+                  'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'properties': properties})
+        return True
+    except Exception:
+        return False
+
+
 def _span_id(kwargs: dict[str, Any]) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:span:{_request_key(kwargs)}"))
 
