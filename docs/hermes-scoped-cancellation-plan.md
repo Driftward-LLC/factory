@@ -72,6 +72,12 @@ selection. Candidates are diagnostic correlation only, never verified native
 session/raw owner identity, complete descendant coverage or stop authority.
 This implementation does not create a new stop endpoint or ownership journal.
 
+The [installed lookup evidence](evidence/hermes-runtime/2026-10-26-process-lookup.json)
+records the ENG-162 check: 23 process entries scanned, no correlated candidates,
+6 unresolved entries, no scan limit reached. This does not prove absence of live
+work. Only the read-only helper was installed; gateway health and the Factory
+application revision remained unchanged. No production stop or retry occurred.
+
 The disposable test `tools/test_hermes_scoped_selection.py` executes a fingerprinted
 copy of upstream `ProcessRegistry.kill_all` from pinned commit `818c13be` against
 four real, isolated child processes using a synthetic termination callback limited
