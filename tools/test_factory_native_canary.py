@@ -43,7 +43,7 @@ def observations(bound):
 
 class NativeCanaryTests(unittest.TestCase):
     def test_exact_canonical_command_only_and_bound_backend(self):
-        backend = SimpleNamespace(dispatch=Mock(return_value={}))
+        backend = SimpleNamespace(dispatch=Mock(return_value={'status': 'passed'}))
         install = SimpleNamespace()
         config = {'hermes_wrapper': '/reviewed/wrapper', 'profile_runtime': '/reviewed/helper'}
         with patch.object(cli, 'installation', return_value=install), patch.object(cli, 'checked_hermes_wrapper', side_effect=Path), \
@@ -54,6 +54,15 @@ class NativeCanaryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     cli.dispatch_bound(config, ['profiles', 'canary', 'native-owner', *tail])
         backend.dispatch.assert_called_once_with(install, config, Path('/reviewed/wrapper'), ['canary', 'native-owner'])
+
+    def test_canonical_refused_and_unknown_exit_nonzero(self):
+        backend = SimpleNamespace(dispatch=Mock())
+        with patch.object(cli, 'installation'), patch.object(cli, 'checked_hermes_wrapper', side_effect=Path), \
+             patch.object(cli.importlib.util, 'module_from_spec', return_value=backend), \
+             patch.object(cli.importlib.util, 'spec_from_file_location'), patch('builtins.print'):
+            for status in ('refused', 'unknown'):
+                backend.dispatch.return_value = {'status': status, 'phase': 'public_assets', 'reason': 'operation_unavailable'}
+                self.assertEqual(cli.dispatch_bound({'hermes_wrapper': '/safe', 'profile_runtime': '/safe'}, ['profiles', 'canary', 'native-owner']), 1)
 
     def test_disposable_arguments_never_inherit_mounts_network_credentials_or_entrypoint(self):
         args = canary.create_arguments('factory-native-canary-' + 'a' * 32, 'sha256:' + 'b' * 64, 'fixed public code')
@@ -119,10 +128,43 @@ class NativeCanaryTests(unittest.TestCase):
             canary.run(fake, None, None)
 
     def test_changed_public_asset_refused_before_runtime(self):
-        fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0), run_native=Mock())
-        with patch.object(canary, 'public_asset', return_value='unreviewed replacement'), self.assertRaises(ValueError):
-            canary.run(fake, None, None)
+        fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0), run_native=Mock(), write_observer_receipt=Mock())
+        with patch.object(canary, 'public_asset', return_value='unreviewed replacement'), patch.object(canary, 'docker') as docker:
+            result = canary.run(fake, SimpleNamespace(directory=Path('/unused')), None)
+        self.assertEqual((result['status'], result['phase'], result['reason']), ('refused', 'public_assets', 'asset_digest_mismatch'))
+        self.assertTrue(result['receipt_persisted'])
+        self.assertEqual(result['cleanup'], 'not_needed_no_create')
         fake.run_native.assert_not_called()
+        fake.write_observer_receipt.assert_called_once()
+        docker.assert_not_called()
+
+    def test_preflight_phase_reason_differentiation_and_secret_error_suppression(self):
+        fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0),
+                               run_native=Mock(), write_observer_receipt=Mock())
+        install = SimpleNamespace(directory=Path('/unused'))
+        with patch.object(canary, 'public_asset', side_effect=RuntimeError('SENSITIVE_ASSET_ERROR')), patch.object(canary, 'docker') as docker:
+            result = canary.run(fake, install, None)
+        self.assertEqual((result['phase'], result['reason']), ('public_assets', 'operation_unavailable'))
+        docker.assert_not_called()
+        with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()):
+            fake.run_native.side_effect = RuntimeError('SENSITIVE_ENVIRONMENT_ERROR')
+            result = canary.run(fake, install, None)
+            self.assertEqual((result['status'], result['phase'], result['reason']), ('refused', 'runtime_identity', 'operation_unavailable'))
+            fake.run_native.side_effect = None
+            fake.run_native.return_value = {'hostname': 'a' * 12}
+            with patch.object(canary, 'docker', side_effect=RuntimeError('SENSITIVE_DOCKER_STDERR')) as docker:
+                result = canary.run(fake, install, None)
+                self.assertEqual((result['phase'], result['reason']), ('container_inspection', 'inspection_unavailable'))
+                self.assertEqual(docker.call_count, 1)
+            container = [{'Id': 'a' * 64, 'Image': 'sha256:' + 'b' * 64, 'Config': {'Hostname': 'a' * 12}, 'State': {'Running': True}}]
+            for image, reason in (({'Volumes': {'/data': {}}}, 'implicit_volumes_or_build_hooks'),
+                                  ({'Env': ['OPENAI_API_KEY=SENSITIVE_KEY_VALUE']}, 'credential_environment_refused')):
+                with patch.object(canary, 'docker', side_effect=[json.dumps(container), json.dumps([{'Id': 'sha256:' + 'b' * 64, 'Config': image}])]) as docker:
+                    result = canary.run(fake, install, None)
+                self.assertEqual((result['status'], result['phase'], result['reason']), ('refused', 'image_inspection', reason))
+                self.assertEqual(docker.call_count, 2)
+                self.assertNotIn('SENSITIVE', json.dumps(result))
+        self.assertNotIn('SENSITIVE', str(fake.write_observer_receipt.call_args_list))
 
     def test_wrong_native_source_refused_before_child_launch(self):
         with tempfile.TemporaryDirectory() as temporary:

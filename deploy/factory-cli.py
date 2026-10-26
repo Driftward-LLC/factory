@@ -380,6 +380,8 @@ def dispatch_bound(config, args):
             spec.loader.exec_module(backend)
             result = backend.dispatch(install, config, wrapper, args[1:])
         print(json.dumps(result, sort_keys=True))
+        if args == ['profiles', 'canary', 'native-owner'] and result.get('status') != 'passed':
+            return 1
     elif command == 'status' and len(args) == 1:
         install.status()
     elif command == 'logs':

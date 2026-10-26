@@ -65,6 +65,10 @@ Replace/add only these reviewed candidate files:
   **never** overwrite the active runtime observer)
 
 Files/directories must be root-owned, non-group/world-writable and nonsymlink.
+The bound `deploy/factory-profile-runtime.py` must be executable (0755), as must
+the canonical CLI; public Python assets are 0644 and directories 0755. Preflight
+refusals return only fixed phase/reason codes, persist a sanitized receipt where
+possible, create no container and exit nonzero. Unknown errors expose no text.
 Install the reviewed `deploy/factory-cli.py` as the canonical CLI and change only
 the protected binding's profile_runtime to the new version. Preserve original
 CLI and binding for rollback. No production bundle, other binding field, service,
