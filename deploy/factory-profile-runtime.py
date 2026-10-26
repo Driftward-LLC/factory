@@ -674,6 +674,53 @@ def github_canary(payload):
             'validation_only': True, 'posthog_delivery': 'server_verification_pending'}
 
 
+def native_canary_export(payload):
+    """Private one-shot relay; never loads or mutates the active native plugin."""
+    from types import ModuleType
+    if (set(payload) != {'observer', 'observations', 'binding', 'job_id', 'attempt_id'}
+            or not isinstance(payload['observer'], str) or len(payload['observer']) > 131072
+            or not isinstance(payload['observations'], list) or len(payload['observations']) != 3):
+        raise ValueError('invalid canary relay')
+    job, attempt = payload['job_id'], payload['attempt_id']
+    if (str(uuid.UUID(job)) != job or str(uuid.UUID(attempt)) != attempt
+            or payload['binding'].get('invocation_id') != job + ':' + attempt + ':1'
+            or payload['binding'].get('epoch') != 1):
+        raise ValueError('invalid canary correlation')
+    # Retain only the existing ingest capability, never provider/App credentials.
+    key, host = os.environ.get('POSTHOG_API_KEY', ''), os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
+    if not key.strip() or host not in {'https://us.i.posthog.com', 'https://eu.i.posthog.com'}:
+        raise ValueError('configured ingestion unavailable')
+    os.environ.clear()
+    os.environ.update({'PATH': '/usr/bin:/bin', 'HOME': '/tmp', 'HERMES_HOME': '/tmp/factory-native-canary-exporter',
+                       'POSTHOG_API_KEY': key, 'POSTHOG_HOST': host,
+                       'FACTORY_OBSERVABILITY_JOB_ID': job, 'FACTORY_OBSERVABILITY_ATTEMPT_ID': attempt})
+    observer = ModuleType('factory_native_canary_observer')
+    exec(compile(payload['observer'], '<reviewed-native-canary-observer>', 'exec'), observer.__dict__)
+    captured = []
+    enqueue = observer._enqueue
+    observer._enqueue = captured.append
+    first = None
+    for stage, event in zip(('registered', 'stopping', 'unknown'), payload['observations']):
+        if set(event) != {'event', 'distinct_id', 'properties'} or event['event'] != 'factory.experimental_owner' or event['distinct_id'] != 'driftward-hermes':
+            raise ValueError('invalid canary owner envelope')
+        p = event['properties']
+        if (p.get('factory.invocation_id') != payload['binding']['invocation_id'] or p.get('factory.stop.stage') != stage
+                or not observer.observe_owner(event)):
+            raise ValueError('invalid canary owner observation')
+        identity = tuple(p.get(key) for key in ('hermes.session_id', 'hermes.task_id', 'factory.runtime_incarnation'))
+        if first is not None and identity != first:
+            raise ValueError('mixed owner observations')
+        first = identity
+    observer._enqueue = enqueue
+    for event in captured:
+        event['properties']['factory.validation_kind'] = 'isolated_native_owner_relay'
+        enqueue(event)
+    observer._flush_at_exit()
+    return {'events_queued': len(captured), 'trace_id': observer._trace_id({'session_id': first[0]}),
+            'session_id': first[0], 'delivery': 'server_verification_pending',
+            'path': 'actual_owner_private_protocol_to_reviewed_observer_queue'}
+
+
 def container_main(command, payload):
     import contextlib
     import sys
@@ -681,7 +728,16 @@ def container_main(command, payload):
     # Native/plugin imports may print configuration diagnostics. Only our bounded
     # result reaches the canonical CLI; exceptions are sanitized by the launcher.
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        if command == 'source-audit':
+        if command == 'native-canary-identity':
+            if payload:
+                raise ValueError('identity accepts no payload')
+            hostname = socket.gethostname()
+            if not re.fullmatch(r'[0-9a-f]{12,64}', hostname):
+                raise ValueError('runtime container identity unavailable')
+            result = {'hostname': hostname}
+        elif command == 'native-canary-export':
+            result = native_canary_export(payload)
+        elif command == 'source-audit':
             if payload:
                 raise ValueError('source audit accepts no payload')
             result = source_audit()
@@ -1753,6 +1809,15 @@ def diagnose_execution(install, args, wrapper=None):
 
 
 def dispatch(install, config, wrapper, args):
+    if args == ['canary', 'native-owner']:
+        import importlib.util
+        from types import SimpleNamespace
+        path = checked(Path(__file__).parent / 'factory-native-canary.py')
+        spec = importlib.util.spec_from_file_location('factory_native_canary', path)
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+        return backend.run(SimpleNamespace(__file__=__file__, os=os, checked=checked,
+                           run_native=run_native, write_observer_receipt=write_observer_receipt), install, wrapper)
     if args and args[0] == 'source-audit':
         if args != ['source-audit']:
             raise ValueError('usage: factory profiles source-audit')

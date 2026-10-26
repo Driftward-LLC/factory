@@ -1,5 +1,10 @@
 # Canonical CLI for a managed installation
 
+The reviewed opt-in `factory profiles canary native-owner` command runs a
+credential-free, unmounted, network-disabled disposable container and relays
+bounded owner metadata to the existing PostHog sink. It never activates the
+production route. See [canary scope and public helper packaging](native-canary/README.md).
+
 ## Read-only executor failure diagnostics
 
 ```bash
