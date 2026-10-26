@@ -1,7 +1,8 @@
 """Opt-in experimental owner; private inherited stdin is its only control channel.
 
-Not referenced by deployment/production commands. JSON lines: first a launch
-frame, then exact-bound cancel frames. stdout contains bounded metadata only.
+Referenced by a default-disabled gateway route and packaged as public installer
+assets. JSON lines carry launch, exact-bound start and cancellation frames.
+stdout contains only bounded protocol metadata and filtered result candidates.
 """
 import argparse
 import fcntl
@@ -205,11 +206,11 @@ def main():
     parser.add_argument("--fixture", action="store_true")
     parser.add_argument("--controlled", action="store_true")
     args = parser.parse_args()
-    request = frame(sys.stdin)
+    launch_request = frame(sys.stdin)
     expected = {"binding", "backend", "enabled_tools"}
     if not args.fixture:
         expected |= {"model", "provider", "prompt", "receipt_policy"}
-    if set(request) != expected:
+    if set(launch_request) != expected:
         raise Refused("invalid launch fields")
     # Only an explicitly selected profile home is permitted, never root fallback
     # by an omitted environment variable. Tests supply a newly created temp home.
@@ -217,8 +218,8 @@ def main():
         raise Refused("explicit Hermes profile home required")
     if args.controlled or not args.fixture:
         profile_lock = claim_profile(os.environ["HERMES_HOME"])
-    owner = Owner(args.journal, request["binding"], backend=request["backend"],
-                  enabled_tools=request["enabled_tools"])
+    owner = Owner(args.journal, launch_request["binding"], backend=launch_request["backend"],
+                  enabled_tools=launch_request["enabled_tools"])
     from tools.process_registry import process_registry
     from tools.environments.base import kill_live_foreground_processes
     native = SimpleNamespace(registry=process_registry, kill_foreground=kill_live_foreground_processes)
@@ -229,7 +230,7 @@ def main():
             if args.fixture:
                 fixture(owner, native)
             else:
-                candidate = conversation(owner, request)
+                candidate = conversation(owner, launch_request)
                 emit({"event": "result", "candidate": candidate})
         except Exception:
             errors.append("execution_failed_or_refused")
@@ -240,19 +241,19 @@ def main():
         worker.start()
     try:
         while True:
-            request = frame(sys.stdin)
-            if args.controlled and set(request) == {"start"}:
-                if started or owner.fenced or binding(request["start"]) != owner.binding:
+            control_frame = frame(sys.stdin)
+            if args.controlled and set(control_frame) == {"start"}:
+                if started or owner.fenced or binding(control_frame["start"]) != owner.binding:
                     emit({"event": "refused", "reason": "start_not_authorized"})
                 else:
                     started = True
                     worker.start()
                 continue
-            if set(request) != {"cancel"}:
+            if set(control_frame) != {"cancel"}:
                 emit({"event": "refused", "reason": "unsupported_frame"})
                 continue
             try:
-                emit({"event": "stop", "receipt": owner.cancel(request["cancel"], native)})
+                emit({"event": "stop", "receipt": owner.cancel(control_frame["cancel"], native)})
             except (Refused, ValueError, TypeError):
                 emit({"event": "refused", "reason": "binding_or_owner_state_mismatch"})
     except (Refused, ValueError, TypeError):

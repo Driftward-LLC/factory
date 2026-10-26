@@ -399,7 +399,7 @@ class RealNativeCleanupTests(unittest.TestCase):
                     first.kill(); first.wait(timeout=5)
                 first.stdout.close(); first.stderr.close()
 
-    def test_real_aiagent_dispatches_terminal_over_recorded_transport(self):
+    def test_controlled_real_aiagent_dispatches_terminal_over_recorded_transport(self):
         with tempfile.TemporaryDirectory(prefix="factory-real-aiagent-") as temporary:
             root = Path(temporary)
             home = root / "profile"
@@ -412,7 +412,7 @@ class RealNativeCleanupTests(unittest.TestCase):
             bound = request()
             process = subprocess.Popen([os.environ["FACTORY_TEST_HERMES_PYTHON"], "-u",
                                         str(Path(__file__).parent / "fixtures/hermes-real-agent-transport.py"),
-                                        str(ADAPTER / "main.py"), "--experimental-local-terminal", "--journal", str(root / "journal")],
+                                        str(ADAPTER / "main.py"), "--experimental-local-terminal", "--controlled", "--journal", str(root / "journal")],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": os.environ["FACTORY_TEST_HERMES_SOURCE"],
                                             "HERMES_HOME": str(home)}, cwd=root)
@@ -426,6 +426,11 @@ class RealNativeCleanupTests(unittest.TestCase):
                 while True:
                     event = read_event(process, 30)
                     events.append(event)
+                    if event["event"] == "registered":
+                        self.assertFalse((home / "native-effect-marker").exists())
+                        self.assertFalse((home / "transport-proof.json").exists())
+                        process.stdin.write(json.dumps({"start": bound}) + "\n")
+                        process.stdin.flush()
                     if event["event"] in {"execution_failed", "refused"}:
                         diagnostic = (home / "probe-failure.json")
                         self.fail(diagnostic.read_text() if diagnostic.exists() else "recorded agent failed before diagnostic")
@@ -446,8 +451,8 @@ class RealNativeCleanupTests(unittest.TestCase):
                 (home / 'transport-proof.json').unlink()
                 refused = subprocess.run([os.environ['FACTORY_TEST_HERMES_PYTHON'], '-u',
                                           str(Path(__file__).parent / 'fixtures/hermes-real-agent-transport.py'),
-                                          str(ADAPTER / 'main.py'), '--experimental-local-terminal', '--journal', str(root / 'missing-skill')],
-                                         input=json.dumps(launch) + '\n', text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          str(ADAPTER / 'main.py'), '--experimental-local-terminal', '--controlled', '--journal', str(root / 'missing-skill')],
+                                         input=json.dumps(launch) + '\n' + json.dumps({'start': bound}) + '\n', text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                          env={'PATH': '/usr/bin:/bin', 'PYTHONPATH': os.environ['FACTORY_TEST_HERMES_SOURCE'], 'HERMES_HOME': str(home)}, cwd=root, timeout=20)
                 self.assertEqual(refused.stderr, '')
                 self.assertFalse((home / 'transport-proof.json').exists())

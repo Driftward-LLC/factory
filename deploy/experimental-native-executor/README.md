@@ -132,6 +132,8 @@ native terminal dispatch, exact filesystem marker and exit-zero tool-result proo
 all three fixed skill markers in the provider request, missing-skill refusal,
 same-profile admission, and the measured legacy checkpoint conflict. The SDK HTTP
 transport is replaced; AIAgent, conversation loop, dispatcher and terminal are not.
+The genuine AIAgent fixture uses the gateway's controlled registration/start
+handshake, and verifies no effect or provider proof exists before authorization.
 Worker tests separately verify gateway auth, exact lease claims, start barriers,
 completion races, timeout/crash/transport-loss evidence and result normalization.
 Their Docker transport is a fixture, not a real container execution.
