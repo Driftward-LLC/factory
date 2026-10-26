@@ -21,6 +21,29 @@ def load_observer():
 
 
 class ExecutorObserverTests(unittest.TestCase):
+    def test_owner_stage_uses_existing_attempt_trace_and_rejects_unbounded_metadata(self):
+        observer = load_observer()
+        attempt = '11111111-2222-4333-8444-555555555555'
+        event = {'event': 'factory.experimental_owner', 'properties': {
+            'factory.invocation_id': '11111111-2222-4333-8444-555555555555:66666666-7777-4888-8999-000000000000:1',
+            'factory.lease_epoch': 1, 'factory.experimental': True, 'factory.stop.stage': 'unknown',
+            'hermes.session_id': 'factory-' + 'a' * 32, 'hermes.task_id': 'factory-' + 'b' * 32,
+            'factory.runtime_incarnation': '11111111-2222-4333-8444-555555555555', '$process_person_profile': False}}
+        home = SimpleNamespace(get_hermes_home=lambda: Path('/opt/data/profiles/factory-executor'))
+        with patch.dict(os.environ, {'FACTORY_OBSERVABILITY_ATTEMPT_ID': attempt}, clear=True), patch.dict(sys.modules, {'hermes_constants': home}):
+            with patch.object(observer, '_enqueue') as enqueue:
+                self.assertTrue(observer.observe_owner(event))
+                payload = enqueue.call_args.args[0]
+                self.assertEqual(payload['event'], '$ai_span')
+                self.assertEqual(payload['properties']['$ai_trace_id'], observer._trace_id({'session_id': 'another-session'}))
+                self.assertEqual(payload['properties']['factory.attempt_id'], attempt)
+                self.assertEqual(payload['properties']['$ai_span_name'], 'factory.native_owner.unknown')
+                for change in ({'prompt': 'PRIVATE'}, {'factory.stop.stage': []}, {'factory.lease_epoch': 2}, {'hermes.task_id': 'PRIVATE'}):
+                    self.assertFalse(observer.observe_owner({**event, 'properties': {**event['properties'], **change}}))
+                self.assertEqual(enqueue.call_count, 1)
+            with patch.object(observer, '_enqueue', side_effect=RuntimeError('unavailable')):
+                self.assertFalse(observer.observe_owner(event))
+
     def setUp(self):
         self.guards = SimpleNamespace(_check_all_guards=lambda *args: {"approved": True})
         self.environments = SimpleNamespace(build_subprocess_env=lambda **kwargs: {"FIXTURE": "scoped"})

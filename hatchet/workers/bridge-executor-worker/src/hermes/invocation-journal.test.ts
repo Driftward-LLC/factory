@@ -6,10 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import * as grpc from '@grpc/grpc-js';
+import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { InvocationJournal } from './invocation-journal';
 import { createServer } from './hermes-gateway-server';
-import { inspectHermesInvocation, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
+import { inspectHermesInvocation, resolveHermesGatewayProtoPath, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
 
 const job = { job_id: '00000000-0000-4000-8000-000000000010', idempotency_key: 'test:intent:1',
   requested_action: 'create_draft_pr', branch: 'codex/test-receipt', state: 'running',
@@ -25,6 +26,107 @@ const correlatedJob = { ...job, payload: { ...job.payload,
 const updatedJob = { ...correlatedJob, payload: { ...correlatedJob.payload,
   source_event_keys: ['event-1', 'event-2'], source_delivery_ids: ['delivery-1', 'delivery-2'],
 } };
+
+test('native context derives from reserved intent and stale cancel claims cannot mutate its marker', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-native-journal-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const journal = new InvocationJournal(directory);
+  let finish!: () => void;
+  const barrier = new Promise<void>((resolve) => { finish = resolve; });
+  let binding: unknown;
+  let cancelled = false;
+  const execution = journal.execute(job, lease, async (context) => {
+    const reserved = JSON.parse(readFileSync(path.join(directory, job.job_id, 'intent.json'), 'utf8'));
+    assert.equal(context.binding.fingerprint, reserved.fingerprint);
+    assert.equal(context.binding.invocation_id, `${job.job_id}:${lease.lease_id}:1`);
+    assert.equal(Object.isFrozen(context.binding), true);
+    binding = context.binding;
+    context.registerCancel(async () => {
+      cancelled = true;
+      const stop = { binding: context.binding, state: 'unknown' as const, ownerRegistered: true, ownerExitObserved: false,
+        dispatchQuiesced: true, reason: 'native_cleanup_observed' as const };
+      context.persistStop(stop);
+      return stop;
+    });
+    await barrier;
+    return receipt;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const wrong of [{ ...lease, epoch: 2 }, { ...lease, fence_token: 'wrong' }, { ...lease, owner: 'another' }]) {
+    await assert.rejects(journal.cancel(job, wrong), /fence differs/);
+    assert.equal(existsSync(path.join(directory, job.job_id, 'cancel')), false);
+  }
+  await assert.rejects(journal.cancel({ ...job, payload: { ...job.payload, instructions: 'changed' } }, lease), /intent differs/);
+  const status = await journal.cancel(updatedJob, lease);
+  assert.equal(cancelled, true);
+  assert.equal(status.cancellationAcknowledged, false);
+  assert.equal(status.nativeStop?.state, 'unknown');
+  assert.deepEqual(status.nativeStop?.binding, binding);
+  finish();
+  await execution;
+  assert.deepEqual(journal.status(job).receipt, receipt);
+  assert.equal(journal.status(job).nativeStop?.state, 'unknown');
+});
+
+test('native gateway authenticates before reservation and connected recovery uses an exact lease snapshot', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-native-gateway-'));
+  const target = `unix://${path.join(directory, 'gateway.sock')}`;
+  const keys = ['DRIFTWARD_HERMES_GRPC_TARGET', 'DRIFTWARD_HERMES_INVOCATION_DIRECTORY', 'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN', 'DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER'];
+  const previous = keys.map((key) => process.env[key]);
+  const token = 'disposable-gateway-native-token';
+  process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+  process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
+  process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = token;
+  process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER = '1';
+  let start!: () => void;
+  const started = new Promise<void>((resolve) => { start = resolve; });
+  let finish!: () => void;
+  const finishBarrier = new Promise<void>((resolve) => { finish = resolve; });
+  let calls = 0;
+  const server = createServer(target, async (_job, _command, _timeout, _buffer, _selection, context) => {
+    calls++;
+    assert.ok(context);
+    context.registerCancel(async () => {
+      const stop = { binding: context.binding, state: 'unknown' as const, ownerRegistered: true, ownerExitObserved: false,
+        dispatchQuiesced: true, reason: 'native_cleanup_observed' as const };
+      context.persistStop(stop);
+      return stop;
+    });
+    start();
+    await finishBarrier;
+    return receipt;
+  });
+  await new Promise<void>((resolve, reject) => server.bindAsync(target, grpc.ServerCredentials.createInsecure(), (error) => error ? reject(error) : resolve()));
+  const definition = protoLoader.loadSync(resolveHermesGatewayProtoPath(), { keepCase: false, longs: Number, enums: String, defaults: true, oneofs: true });
+  const loaded = grpc.loadPackageDefinition(definition) as any;
+  const client = new loaded.driftward.factory.hermes.v1.HermesFactoryGateway(target, grpc.credentials.createInsecure());
+  t.after(() => {
+    finish(); client.close(); server.forceShutdown();
+    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const request = { bridgeJobId: job.job_id, idempotencyKey: job.idempotency_key, requestedAction: job.requested_action,
+    repo: job.payload.repo, branch: job.branch, jobJson: JSON.stringify(job), executionLeaseJson: JSON.stringify(lease) };
+  const metadata = new grpc.Metadata();
+  metadata.set('authorization', 'Bearer wrong-disposable-token');
+  await assert.rejects(new Promise((resolve, reject) => client.createDraftPullRequest(request, metadata,
+    (error: grpc.ServiceError | null, value: unknown) => error ? reject(error) : resolve(value))), (error: grpc.ServiceError) => error.code === grpc.status.UNAUTHENTICATED);
+  assert.equal(calls, 0);
+  assert.equal(existsSync(path.join(directory, 'journal', job.job_id)), false);
+  const execution = runHermesCreateDraftPrViaGrpc(job, 10_000, lease);
+  await started;
+  await assert.rejects(inspectHermesInvocation(job, true, { ...lease, epoch: 2 }));
+  assert.equal(existsSync(path.join(directory, 'journal', job.job_id, 'cancel')), false);
+  const stopped = await inspectHermesInvocation(job, true);
+  assert.equal(stopped.cancellationRequested, true);
+  assert.equal(stopped.cancellationAcknowledged, false);
+  assert.equal(stopped.nativeStop?.state, 'unknown');
+  assert.deepEqual(stopped.lease, lease);
+  finish();
+  assert.deepEqual(await execution, receipt);
+  assert.equal((await inspectHermesInvocation(job)).nativeStop?.state, 'unknown');
+  assert.equal(calls, 1);
+});
 
 test('correlation updates preserve running, interrupted and completed invocation identity without replay', async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-invocation-correlation-'));

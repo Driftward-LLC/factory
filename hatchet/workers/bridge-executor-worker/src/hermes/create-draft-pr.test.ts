@@ -25,7 +25,7 @@ test('executor profile selects native command and metadata runtime consistently'
     else process.env.DRIFTWARD_HERMES_PROFILE = previous;
   }
 });
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -63,9 +63,75 @@ import {
   type HermesDraftPrResult
 } from './create-draft-pr';
 import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
+import { InvocationJournal } from './invocation-journal';
 
 process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
 process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+
+test('disabled native route retains typed gates, runtime profile, reservation and result normalization', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-native-route-'));
+  const keys = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_PROFILE', 'DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER',
+    'DRIFTWARD_HERMES_ALLOWED_REPOS', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL', 'NATIVE_TEST_MODE', 'NATIVE_TEST_DIRECTORY'];
+  const previous = keys.map((key) => process.env[key]);
+  try {
+    process.env.PATH = directory + path.delimiter + process.env.PATH;
+    Object.assign(process.env, { DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', DRIFTWARD_HERMES_PROFILE: 'factory-executor',
+      DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER: '1', DRIFTWARD_HERMES_ALLOWED_REPOS: 'Driftward-LLC/capykit',
+      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
+      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '12345+factory-hermes[bot]@users.noreply.github.com', NATIVE_TEST_DIRECTORY: directory });
+    writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
+const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
+const args=process.argv.slice(2), root=process.env.NATIVE_TEST_DIRECTORY, mode=process.env.NATIVE_TEST_MODE;
+const emit=v=>process.stdout.write(JSON.stringify(v)+'\\n');
+if(args.includes('user.name')){fs.writeFileSync(path.join(root,'preflight'),'started');setTimeout(()=>process.stdout.write('factory-hermes[bot]'),mode==='pre-cancel'?120:0);}
+else if(args.includes('user.email'))process.stdout.write('12345+factory-hermes[bot]@users.noreply.github.com');
+else if(args.includes('gh'))process.stdout.write('Driftward-LLC/capykit');
+else if(args.includes('python3'))process.stdout.write(JSON.stringify({model_source:'executor_config',selected_model:'gpt-6.1-sol',selected_provider:'openai-codex'}));
+else if(args.includes('/opt/hermes/.venv/bin/python')){
+ if(!args.includes('HERMES_HOME=/opt/data/profiles/factory-executor')||!args.includes('--controlled'))process.exit(2);
+ if(args.some(a=>a.includes('PRIVATE_NATIVE_REQUIREMENTS')))process.exit(3);
+ let launch,started=false;
+ readline.createInterface({input:process.stdin}).on('line',line=>{const v=JSON.parse(line);
+  if(!launch){launch=v;fs.writeFileSync(path.join(root,'binding.json'),JSON.stringify(v.binding));
+   emit({event:'registered',ownership:{...v.binding,pid:process.pid,runtime_incarnation:'00000000-0000-4000-8000-000000000099'}});}
+  else if(v.start){started=true;fs.writeFileSync(path.join(root,'started'),'yes');emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/Driftward-LLC/capykit/pull/61',branch:mode==='invalid-result'?'codex/forged':launch.receipt_policy.branch,commit_sha:'a'.repeat(40),validation:null}});}
+  else if(v.cancel){fs.writeFileSync(path.join(root,'cancelled'),JSON.stringify({started}));emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});}
+ }).on('close',()=>{if(launch){emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});emit({event:'owner_exiting',binding:launch.binding,worker_exited:true});}});
+}else process.exit(4);
+`, { mode: 0o700 });
+    const lease = { lease_id: '00000000-0000-4000-8000-000000000071', owner: 'disposable', epoch: 1, fence_token: 'private-test-fence' };
+    for (const mode of ['success', 'invalid-result', 'pre-cancel', 'invalid-job']) {
+      process.env.NATIVE_TEST_MODE = mode;
+      for (const file of ['preflight', 'started', 'cancelled', 'binding.json']) {
+        rmSync(path.join(directory, file), { force: true });
+      }
+      const job: BridgeJob = { ...greenJob(), job_id: '00000000-0000-4000-8000-000000000070', payload: { ...greenJob().payload, implementation_prompt: 'PRIVATE_NATIVE_REQUIREMENTS' } };
+      if (mode === 'invalid-job') job.payload.repo = 'unapproved/repository';
+      const journal = new InvocationJournal(path.join(directory, mode));
+      const pending = journal.execute(job, lease, (context) => runHermesCreateDraftPrViaCommand(job, '/never/invoke', 5000, 128 * 1024, undefined, context));
+      const rejected = mode !== 'success' ? assert.rejects(pending) : undefined;
+      if (mode === 'pre-cancel') {
+        const deadline = Date.now() + 2000;
+        while (!existsSync(path.join(directory, 'preflight')) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+        await journal.cancel(job, lease);
+      }
+      if (rejected) await rejected;
+      else assert.equal((await pending).prUrl, 'https://github.com/Driftward-LLC/capykit/pull/61');
+      if (mode === 'invalid-job') assert.equal(existsSync(path.join(directory, 'preflight')), false);
+      else {
+        const intent = JSON.parse(readFileSync(path.join(directory, mode, job.job_id, 'intent.json'), 'utf8'));
+        assert.equal(JSON.parse(readFileSync(path.join(directory, 'binding.json'), 'utf8')).fingerprint, intent.fingerprint);
+        assert.equal(journal.status(job).nativeStop?.state, 'unknown');
+        if (mode === 'pre-cancel') assert.equal(JSON.parse(readFileSync(path.join(directory, 'cancelled'), 'utf8')).started, false);
+      }
+      assert.equal(journal.status(job).state, mode === 'success' ? 'completed' : 'outcome_unknown');
+      assert.doesNotMatch(JSON.stringify(journal.status(job).nativeStop || {}), /PRIVATE_NATIVE_REQUIREMENTS|private-test-fence/);
+    }
+  } finally {
+    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('review repair prompt carries bounded review data without inventing verifier failure', () => {
   const job = reviewRepairJob();

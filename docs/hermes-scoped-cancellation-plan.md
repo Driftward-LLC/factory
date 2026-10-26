@@ -1,7 +1,7 @@
 # Scoped Hermes cancellation: proposed adapter
 
-Status: **bounded read-only lookup implemented; cancellation adapter remains
-design only, not activated**. Inspected 2026-10-26 UTC.
+Status: **bounded read-only lookup implemented; experimental native owner
+prototype tested on disposable resources, not wired or activated**. Inspected 2026-10-26 UTC.
 Companion to the [verified runtime contract](hermes-runtime-contract.md).
 
 ## Problem and result of the investigation
@@ -89,6 +89,20 @@ cleanup, runtime registration, dispatch fencing, remote backends, production
 wiring or external-write settlement. No production process is touched by the test.
 
 ### Remaining adapter work
+
+The disabled [experimental native owner](../deploy/experimental-native-executor/README.md)
+now has a disabled gateway integration using its authenticated/private-journal
+context, exact stored-lease claims and a registration/start barrier. Actual pinned
+AIAgent/terminal execution is tested over recorded SDK transport, with filesystem
+effect, successful tool result and native loading of all three fixed engineering
+skills. Eighteen owner checks cover cleanup, persistent work, escaped descendants
+and admission. A same-profile legacy fixture proves native checkpoint replacement
+can erase another live interpreter's metadata. Experimental owners are serialized;
+legacy coexistence remains an activation blocker. Gateway/controller tests use
+fixture Docker transport, not a real container. Existing transport/journal trust
+is preserved, not independent bridge attestation. Full capabilities, installed
+provider/configuration parity and recovery remain unverified. Every aggregate
+stop stays `unknown`; activation and historical recovery are not authorized.
 
 Keep the existing Factory gRPC gateway and one-shot Hermes execution model.
 Do not add another service or switch to the Hermes chat gateway. Add a thin

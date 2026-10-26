@@ -75,10 +75,14 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
     (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor'
       ? path.join(process.env.HERMES_HOME || '/opt/data', 'factory-invocations')
       : '/var/lib/driftward-hermes-factory/invocations'));
-  const inspectInvocation = (request: CreateDraftPullRequestRequest, cancel: boolean) => {
-    const status = invocations().status(parseBridgeJob(request), cancel);
+  const inspectInvocation = async (request: CreateDraftPullRequestRequest, cancel: boolean) => {
+    const job = parseBridgeJob(request);
+    const strict = process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1';
+    const status = cancel && (strict || request.executionLeaseJson)
+      ? await invocations().cancel(job, invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json'))))
+      : invocations().status(job, cancel);
     return { ...status, receipt: status.receipt ? draftPrResponse(status.receipt) : undefined,
-      executionLeaseJson: status.lease ? JSON.stringify(status.lease) : '' };
+      executionLeaseJson: status.lease ? JSON.stringify(status.lease) : '', nativeStopJson: status.nativeStop ? JSON.stringify(status.nativeStop) : '' };
   };
   const server = new grpc.Server();
   server.addService(loadGatewayService().service, {
@@ -97,11 +101,11 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       const job = parseBridgeJob(request);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const result = await withExecutionSpan('factory.executor.invoke', () => invocations().execute(job, lease,
-        () => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined, (selection) => {
+        (invocation) => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined, (selection) => {
           const metadata = new grpc.Metadata();
           metadata.set(MODEL_SELECTION_HEADER, Buffer.from(JSON.stringify({ job_id: job.job_id, selection })));
           call.sendMetadata(metadata);
-        }), { job, service: 'factory-executor' })),
+        }, invocation), { job, service: 'factory-executor' })),
       { job, service: 'factory-executor' });
       return draftPrResponse(result);
     }),

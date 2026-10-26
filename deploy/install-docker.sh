@@ -424,6 +424,10 @@ install -D -m 0755 "$script_dir/factory-docker-smoke" /usr/local/bin/factory-doc
 install -D -m 0755 "$factory_cli_source" "$factory_cli_target"
 install -d -m 0755 -o root -g root "$factory_share_dir/desired-state"
 install -d -m 0755 -o root -g root "$factory_share_dir/hermes-gateway"
+install -d -m 0755 -o root -g root "$factory_share_dir/native-owner"
+for native_owner_asset in owner.py main.py; do
+  install -m 0644 "$script_dir/experimental-native-executor/$native_owner_asset" "$factory_share_dir/native-owner/$native_owner_asset"
+done
 install -d -m 0755 -o root -g root "$factory_share_dir/independent-reviewer/deploy/independent-reviewer"
 for reviewer_asset in Dockerfile runner.py native_agent.py review_observer.py source_server.py source_token_broker.py renew_source_token.py browser_probe.cjs response.schema.json package.json package-lock.json; do
   install -m 0644 "$script_dir/independent-reviewer/$reviewer_asset" "$factory_share_dir/independent-reviewer/deploy/independent-reviewer/$reviewer_asset"

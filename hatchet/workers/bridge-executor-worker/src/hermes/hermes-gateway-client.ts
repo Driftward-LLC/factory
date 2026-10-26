@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { executionTraceparent, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
-import { invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
+import { boundedNativeOwnerStop, invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { boundedModelSelection, MODEL_SELECTION_HEADER, reportModelSelection, type ModelSelectionObserver } from './model-selection';
@@ -250,10 +250,18 @@ function invocationRequest(job: BridgeJob) {
   };
 }
 
-export async function inspectHermesInvocation(job: BridgeJob, cancel = false): Promise<InvocationStatus> {
+export async function inspectHermesInvocation(job: BridgeJob, cancel = false, expectedLease?: InvocationLease): Promise<InvocationStatus> {
+  if (cancel && !expectedLease) {
+    // The journal reserves one immutable invocation per job. Read the verified
+    // exact-job snapshot, then compare that full lease before mutating cancel.
+    const snapshot = await inspectHermesInvocation(job);
+    if (!snapshot.lease) return snapshot;
+    return inspectHermesInvocation(job, true, snapshot.lease);
+  }
   const response = await callGateway<{ state?: string; cancellationRequested?: boolean; cancellationAcknowledged?: boolean;
-    receipt?: DraftPullRequestResult; executionLeaseJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
-    invocationRequest(job), 15_000, 'hermes_grpc_invocation_inspection_failed');
+    receipt?: DraftPullRequestResult; executionLeaseJson?: string; nativeStopJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
+    { ...invocationRequest(job), ...(expectedLease ? { executionLeaseJson: JSON.stringify(invocationLease(expectedLease)) } : {}) },
+    15_000, 'hermes_grpc_invocation_inspection_failed');
   if (!['not_found', 'running', 'outcome_unknown', 'completed'].includes(response.state || '')
       || typeof response.cancellationRequested !== 'boolean' || typeof response.cancellationAcknowledged !== 'boolean'
       || (response.cancellationAcknowledged && (response.state !== 'completed' || !response.cancellationRequested))) {
@@ -261,6 +269,8 @@ export async function inspectHermesInvocation(job: BridgeJob, cancel = false): P
   }
   return { state: response.state as InvocationStatus['state'], cancellationRequested: response.cancellationRequested,
     cancellationAcknowledged: response.cancellationAcknowledged,
+    ...(response.executionLeaseJson ? { lease: invocationLease(parseJsonValue(response.executionLeaseJson, 'execution_lease_json')) } : {}),
+    ...(response.nativeStopJson ? { nativeStop: boundedNativeOwnerStop(parseJsonValue(response.nativeStopJson, 'native_stop_json')) } : {}),
     ...(response.state === 'completed' ? {
       receipt: parseDraftPrResponse(job, response.receipt || {}),
       lease: invocationLease(parseJsonValue(response.executionLeaseJson || '', 'execution_lease_json')),
