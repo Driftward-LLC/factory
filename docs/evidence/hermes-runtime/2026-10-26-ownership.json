@@ -1,0 +1,191 @@
+{
+  "schema": "factory-hermes-ownership-investigation-v1",
+  "observed_at_utc": "2026-10-26 03:51:51 UTC",
+  "scope": "Read-only canonical Factory CLI evidence; no native session database, process checkpoint, or PostHog query was performed. No containment conclusion.",
+  "diagnostic": {
+    "command": "factory profiles diagnose-execution b0ac9017-1f27-49f9-9250-274d6b8b8b23 --invocation-id a007ff3e-8062-4b8b-a8eb-ced9511c25a6:34684470-7c66-4043-8987-011866e6f27d:1",
+    "result": {
+      "attempt_id": "b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+      "auth_cause": "not_established",
+      "containment": "not_established",
+      "events": [
+        {
+          "event_type": "execution_backend_invoked"
+        },
+        {
+          "buffer_exceeded": false,
+          "event_type": "execution_backend_failed",
+          "process_exit_code": 1,
+          "reason_code": "hermes_process_exit_nonzero",
+          "timed_out": false,
+          "transport_status": "grpc_failed_precondition"
+        }
+      ],
+      "invocation_id": "a007ff3e-8062-4b8b-a8eb-ced9511c25a6:34684470-7c66-4043-8987-011866e6f27d:1",
+      "job_id": "a007ff3e-8062-4b8b-a8eb-ced9511c25a6",
+      "journal": {
+        "intent_bytes": 292,
+        "intent_present": true,
+        "result_bytes": null,
+        "result_present": false,
+        "result_semantics": "presence_only_not_receipt_validation",
+        "source": "fixed_host_gateway_journal",
+        "state": "exact_binding_verified"
+      },
+      "recovery_authorized": false,
+      "stdout_stderr": "not_retained_by_gateway",
+      "underlying_error": "unavailable_not_retained"
+    }
+  },
+  "work_evidence": {
+    "command": "factory attempts evidence b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+    "result": {
+      "attempt_id": "b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+      "available": true,
+      "checkpoints": [
+        {
+          "attempt_id": "b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+          "checkpoint_id": "f22006b0-6cd7-55b3-a97a-51138c6625da",
+          "checkpoint_type": "specification_snapshot",
+          "contract_version": 1,
+          "created_at": "2026-10-24T16:34:14.424764Z",
+          "document": {
+            "approval": "unknown",
+            "requirements_digest": "ed1048ddc46f8e678a512b4c632456588b3ca90947e4ce2a5344c6a24050a062",
+            "requirements_source": "implementation_prompt",
+            "result": "recorded",
+            "schema": "factory-specification-snapshot-v1"
+          },
+          "document_digest": "8efd5facd049d6922ee17f8300373b889e4780b40ff6d2544a10f8bb3ff67061",
+          "manifest_id": "9bb2c089-5d61-5877-bc31-5fa0185ebd19"
+        }
+      ],
+      "manifests": [
+        {
+          "attempt_id": "b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+          "contract_version": 1,
+          "created_at": "2026-10-24T16:34:14.422418Z",
+          "document": {
+            "action": "repair_draft_pr",
+            "attempt_id": "b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+            "base_commit_sha": null,
+            "environment_image_digest": null,
+            "expected_head_sha": "066bc5fdd1893100d0cafcfb0ec5fc42b0bbfebf",
+            "generation": 3,
+            "input_artifact_ref": null,
+            "input_digest": "57f24a8c1e9388a413d02accc438dc7f3acc64455aba6cac79038a206765a10e",
+            "job_id": "a007ff3e-8062-4b8b-a8eb-ced9511c25a6",
+            "mode": "real",
+            "phase": "admission",
+            "policy_snapshot_digest": "79f04ab8b38c4d86b81f5ef051783d1a509a9a26cf4acef6f3846b4095900157",
+            "prior_attempt_id": "a26758ce-5fe2-43fc-a14f-d43214774b57",
+            "producer": "factory-bridge",
+            "producer_version": "work-evidence-v1",
+            "repository": "Driftward-LLC/capykit",
+            "requirements_digest": "ed1048ddc46f8e678a512b4c632456588b3ca90947e4ce2a5344c6a24050a062",
+            "requirements_source": "implementation_prompt",
+            "route": null,
+            "runtime_bundle_digest": null,
+            "schema": "factory-execution-manifest-v1",
+            "submitted_verifier_policy_digest": "b1f8dd3c89b39918dbbd358890ca9b4e21fbf947f30836c84ac2d7559a24266a",
+            "work_item_key": "ENG-162"
+          },
+          "document_digest": "285d6f9af8500a3da872680189eda0d3097dd45136ecb1192b65a83407c10396",
+          "manifest_id": "9bb2c089-5d61-5877-bc31-5fa0185ebd19",
+          "parent_manifest_id": null,
+          "phase": "admission"
+        },
+        {
+          "attempt_id": "b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+          "contract_version": 1,
+          "created_at": "2026-10-24T16:34:47.630977Z",
+          "document": {
+            "action": "repair_draft_pr",
+            "attempt_id": "b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+            "base_commit_sha": null,
+            "environment_image_digest": null,
+            "expected_head_sha": "066bc5fdd1893100d0cafcfb0ec5fc42b0bbfebf",
+            "generation": 3,
+            "input_artifact_ref": null,
+            "input_digest": "57f24a8c1e9388a413d02accc438dc7f3acc64455aba6cac79038a206765a10e",
+            "job_id": "a007ff3e-8062-4b8b-a8eb-ced9511c25a6",
+            "mode": "real",
+            "phase": "execution",
+            "policy_snapshot_digest": "79f04ab8b38c4d86b81f5ef051783d1a509a9a26cf4acef6f3846b4095900157",
+            "prior_attempt_id": "a26758ce-5fe2-43fc-a14f-d43214774b57",
+            "producer": "factory-bridge",
+            "producer_version": "work-evidence-v1",
+            "repository": "Driftward-LLC/capykit",
+            "requirements_digest": "ed1048ddc46f8e678a512b4c632456588b3ca90947e4ce2a5344c6a24050a062",
+            "requirements_source": "implementation_prompt",
+            "route": {
+              "analytics_schema_version": 1,
+              "assignment_id": "route.b0ac9017-1f27-49f9-9250-274d6b8b8b23",
+              "assignment_method": "static",
+              "backend_version": "0.17.0",
+              "configured_auth_mode": "chatgpt_codex_oauth",
+              "configured_model": "unknown",
+              "configured_provider": "unknown",
+              "experiment_id": "factory-default-v1",
+              "factory_release_sha": "675682deb51b9e5ab599ecd79315215d741497ba",
+              "factory_release_version": "ci",
+              "fallback_allowed": false,
+              "intended_backend": "hermes",
+              "intended_transport": "grpc_uds",
+              "routing_registry_version": 2,
+              "variant": "hermes",
+              "verifier_policy_digest": "b1f8dd3c89b39918dbbd358890ca9b4e21fbf947f30836c84ac2d7559a24266a"
+            },
+            "runtime_bundle_digest": null,
+            "schema": "factory-execution-manifest-v1",
+            "submitted_verifier_policy_digest": "b1f8dd3c89b39918dbbd358890ca9b4e21fbf947f30836c84ac2d7559a24266a",
+            "work_item_key": "ENG-162"
+          },
+          "document_digest": "89059fdcb355a0f17c3ac34466861429986dcf10f5b489063db8c2abc4e994a1",
+          "manifest_id": "603686da-ae3d-5c10-94f3-ba929f35b2c4",
+          "parent_manifest_id": "9bb2c089-5d61-5877-bc31-5fa0185ebd19",
+          "phase": "execution"
+        }
+      ],
+      "replay": {
+        "available": false,
+        "missing": [
+          "base_commit_sha",
+          "runtime_bundle_digest",
+          "environment_image_digest",
+          "input_artifact_ref",
+          "route.configured_provider",
+          "route.configured_model"
+        ]
+      },
+      "schema": "factory-work-evidence-v1"
+    }
+  },
+  "event_identity_scan": {
+    "command": "factory attempts events b0ac9017-1f27-49f9-9250-274d6b8b8b23 --json --limit 250",
+    "projection": {
+      "row_count": 250,
+      "event_types": [
+        "repair_reserved",
+        "repair_requested",
+        "attempt_accepted",
+        "accepted_event_enqueued",
+        "operator_review_repair_authorized",
+        "execution_route_selected",
+        "attempt_started",
+        "attempt_execution_claimed",
+        "effect_authorized",
+        "execution_backend_invoked",
+        "execution_model_selected",
+        "execution_backend_failed",
+        "effect_authorized_outcome_unknown",
+        "execution_receipt_recovery_queued",
+        "execution_receipt_observed",
+        "cancellation_requested"
+      ],
+      "native_identity_hits": []
+    },
+    "coverage": "Only the 250 returned events inspected, not guaranteed full history. Recursively checked keys including parsed details_json for session/process_id/owner_task/task_id/pid/pgid/trace, case-insensitive. No raw events or prose retained."
+  },
+  "conclusion": "Native ownership not established through inspected Factory surfaces. Survival or absence of other historical evidence remains unknown."
+}

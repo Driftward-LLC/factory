@@ -211,6 +211,9 @@ non-execution, and telemetry is not the lifecycle or recovery source of truth.
 
 ## Recovery implications, not authorization
 
+See the [scoped cancellation proposal](hermes-scoped-cancellation-plan.md) for the
+follow-up ownership investigation, proposed adapter and activation gates.
+
 The next engineering step is to assess a scoped adapter from Factory invocation
 identity to Hermes's native session/process ownership and termination evidence.
 Prefer reusing verified native mechanisms over inventing another process killer.
