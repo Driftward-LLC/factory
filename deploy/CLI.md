@@ -15,6 +15,27 @@ Result presence alone does not validate a receipt. Classifications use fixed
 allowlists; prompts, payloads, fence tokens, session contents and raw output are
 never returned.
 
+After verifying an exact journal binding, the same command performs a read-only
+lookup inside the fixed Driftward runtime through the bound wrapper. It examines
+at most 4,096 process entries for three seconds, reads at most 128 KiB of initial
+environment per entry, and returns at most 64 candidates matching **both** exact
+Factory attempt and job IDs. Duplicate, malformed, oversized or partial metadata,
+unreadable entries and identity races count as unresolved; limits are explicit.
+Each candidate exposes only PID, start ticks, PID namespace and a fixed initial
+profile-home classification. Boot ID and namespace identify the observed runtime.
+Identity and environment are checked twice. Missing or different initial profile
+home does not exclude a candidate: Hermes may change its profile after startup,
+while `/proc` retains the initial environment. No command line or environment
+value is returned.
+
+These are copyable correlation markers, including on inherited child processes;
+they do not establish a native session or raw task-owner binding. A PID/start-time
+snapshot is neither an exhaustive inventory nor permission to stop a process.
+Absent candidates, unresolved entries or limits never prove termination. This
+lookup does not inspect private session databases/checkpoints, import Hermes
+recovery code, signal processes, or authorize recovery. A missing exact journal
+binding skips the lookup; runtime lookup failure reports `unknown`.
+
 Fingerprint verification requires the root-protected host `/usr/bin/node`. A
 fixed script uses the gateway writer's `localeCompare` and `JSON.stringify`
 semantics with `LANG=C.UTF-8`, bounded private stdin, a five-second timeout and

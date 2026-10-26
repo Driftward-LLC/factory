@@ -1,6 +1,7 @@
 # Scoped Hermes cancellation: proposed adapter
 
-Status: **partially ready; design only, not activated**. Inspected 2026-10-26 UTC.
+Status: **bounded read-only lookup implemented; cancellation adapter remains
+design only, not activated**. Inspected 2026-10-26 UTC.
 Companion to the [verified runtime contract](hermes-runtime-contract.md).
 
 ## Problem and result of the investigation
@@ -57,6 +58,31 @@ The runtime contract records which files were matched to installed source.
    its installed match remains unverified.
 
 ## Smallest proposed implementation
+
+### Delivered diagnostic and disposable selection evidence
+
+`factory profiles diagnose-execution ATTEMPT-ID --invocation-id JOB-ID:LEASE-ID:EPOCH`
+now follows exact journal verification with a fixed-runtime process lookup. It
+matches both Factory environment IDs and returns bounded PID/start-time/namespace
+metadata with initial profile-home classification. It checks identity and
+environment twice and reports unreadable/invalid metadata and limits. See the
+[CLI limits](../deploy/CLI.md#read-only-executor-failure-diagnostics).
+Initial environment can be copied or inherited and may predate Hermes profile
+selection. Candidates are diagnostic correlation only, never verified native
+session/raw owner identity, complete descendant coverage or stop authority.
+This implementation does not create a new stop endpoint or ownership journal.
+
+The disposable test `tools/test_hermes_scoped_selection.py` executes a fingerprinted
+copy of upstream `ProcessRegistry.kill_all` from pinned commit `818c13be` against
+four real, isolated child processes using a synthetic termination callback limited
+to those children's `Popen` handles. It proves raw `owner_task_id` selection,
+rejection of the shared environment key, persistent-work handling for lifecycle
+versus explicit stop, repeated-stop behavior, and survival of another invocation
+and reviewer. It does **not** prove Hermes's real `kill_process`, process-tree
+cleanup, runtime registration, dispatch fencing, remote backends, production
+wiring or external-write settlement. No production process is touched by the test.
+
+### Remaining adapter work
 
 Keep the existing Factory gRPC gateway and one-shot Hermes execution model.
 Do not add another service or switch to the Hermes chat gateway. Add a thin
