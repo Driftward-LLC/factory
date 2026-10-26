@@ -35,6 +35,7 @@ CUTOVER_STAGES = {'not_started', 'unknown', 'quiescence', 'workers_stop', 'gatew
                   'gateway_restart', 'gateway_health', 'workers_restore', 'complete', 'workers_restop',
                   'routing_restore', 'auth_restore', 'public_restore'}
 TERMINAL = ('completed', 'failed', 'verified_ready', 'canceled', 'canceled_after_effect', 'superseded', 'legacy_completed')
+INVOCATION_DIRECTORY = Path('/var/lib/driftward-hermes-factory/invocations')
 REVIEW_SKILL_DIGESTS = {
     'engineering/review-code.md': ('review_skill_digest', '913ab9cd76bfa6403357dd5f8f423a663986eb1b6a9663f425a7ac1a873c660b'),
     'engineering/verify-app.md': ('verify_skill_digest', '43455f2cb5b5d810c58569e3a02be8e140291a44b3198f4bd1291693ac2dfd84'),
@@ -1401,7 +1402,194 @@ def observer_upgrade(install, wrapper, args):
         raise ValueError('observer upgrade failed; inspect private receipt; execution remains paused') from None
 
 
+def diagnostic_file(directory, name, *, optional=False):
+    """Read only fixed private journal artifacts, without following a replacement link."""
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError:
+        if optional:
+            return None
+        raise ValueError('execution diagnostic artifact missing') from None
+    with os.fdopen(descriptor, 'rb') as source:
+        info = os.fstat(source.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077
+                or info.st_nlink != 1 or info.st_size > 65536):
+            raise ValueError('unsafe execution diagnostic artifact')
+        content = source.read(65537)
+        if len(content) > 65536 or len(content) != info.st_size:
+            raise ValueError('execution diagnostic artifact changed or exceeds limit')
+        return content
+
+
+def diagnostic_json(content):
+    def invalid_constant(value):
+        raise ValueError('invalid diagnostic JSON')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate execution diagnostic key')
+            result[key] = value
+        return result
+    return json.loads(content, object_pairs_hook=unique, parse_constant=invalid_constant)
+
+
+def diagnostic_fingerprint(value):
+    # Use the writer's JS number/string/key semantics; never pass private JSON in argv.
+    script = r'''
+const { createHash } = require('node:crypto');
+function canonical(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.entries(value)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => JSON.stringify(key) + ':' + canonical(item)).join(',') + '}';
+  return JSON.stringify(value);
+}
+let chunks = [], size = 0;
+process.stdin.on('data', chunk => {
+  size += chunk.length;
+  if (size > 8388608) process.exit(1);
+  chunks.push(chunk);
+});
+process.stdin.on('end', () => {
+  try {
+    const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    process.stdout.write(createHash('sha256').update(canonical(value)).digest('hex'));
+  } catch { process.exit(1); }
+});
+'''
+    content = json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False).encode()
+    if len(content) > LIMIT:
+        raise ValueError('execution diagnostic fingerprint input exceeds limit')
+    try:
+        engine = checked(Path('/usr/bin/node'))
+        if engine.stat().st_mode & 0o022 or not os.access(engine, os.X_OK):
+            raise ValueError('unsafe execution diagnostic fingerprint engine')
+        # The fixed script writes exactly 64 bytes, discards errors, and imports only a builtin.
+        result = subprocess.run([str(engine), '-e', script], input=content, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=5, check=False, cwd='/',
+                                env={'LANG': 'C.UTF-8'})
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError('execution diagnostic fingerprint unavailable') from None
+    if result.returncode != 0 or not re.fullmatch(b'[0-9a-f]{64}', result.stdout):
+        raise ValueError('execution diagnostic fingerprint unavailable')
+    return result.stdout.decode('ascii')
+
+
+def diagnostic_journal(job, lease):
+    # Open every ancestor by descriptor, so rename/symlink races cannot redirect reads.
+    descriptor = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for index, component in enumerate((*INVOCATION_DIRECTORY.parts[1:], job['job_id'])):
+            try:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            except FileNotFoundError:
+                return {'source': 'fixed_host_gateway_journal', 'state': 'not_found',
+                        'intent_present': False, 'result_present': False}
+            os.close(descriptor)
+            descriptor = child
+            info = os.fstat(descriptor)
+            if info.st_uid != 0 or info.st_mode & (0o077 if index >= len(INVOCATION_DIRECTORY.parts) - 2 else 0o022):
+                raise ValueError('unsafe execution diagnostic directory')
+        intent_content = diagnostic_file(descriptor, 'intent.json', optional=True)
+        if intent_content is None:
+            raise ValueError('execution diagnostic reservation has no binding')
+        intent = diagnostic_json(intent_content)
+        if not isinstance(intent, dict) or not isinstance(intent.get('lease'), dict):
+            raise ValueError('invalid execution diagnostic intent')
+        version = intent.get('fingerprint_version', 1)
+        if (type(version) is not int or version not in (1, 2) or intent.get('lease') != lease
+                or type(intent['lease'].get('epoch')) is not int):
+            raise ValueError('execution diagnostic invocation binding differs')
+        payload = diagnostic_json(job['payload_json'])
+        if not isinstance(payload, dict):
+            raise ValueError('execution diagnostic payload differs')
+        if version == 2:
+            payload = {key: value for key, value in payload.items() if key not in
+                       {'source_event_key', 'source_delivery_id', 'source_event_keys', 'source_delivery_ids'}}
+        fingerprint = {key: job[key] for key in ('job_id', 'idempotency_key', 'requested_action', 'branch')}
+        fingerprint['payload'] = payload
+        if version == 2:
+            fingerprint['fingerprint_version'] = 2
+        if intent.get('fingerprint') != diagnostic_fingerprint(fingerprint):
+            raise ValueError('execution diagnostic intent fingerprint differs')
+        result = diagnostic_file(descriptor, 'result.json', optional=True)
+        return {'source': 'fixed_host_gateway_journal', 'state': 'exact_binding_verified',
+                'intent_present': True, 'intent_bytes': len(intent_content),
+                'result_present': result is not None, 'result_bytes': len(result) if result is not None else None,
+                'result_semantics': 'presence_only_not_receipt_validation'}
+    finally:
+        os.close(descriptor)
+
+
+def diagnose_execution(install, args):
+    """Read-only evidence, never a containment attestation or retry authorization."""
+    import argparse
+    parser = argparse.ArgumentParser(prog='factory profiles diagnose-execution')
+    parser.add_argument('attempt_id')
+    parser.add_argument('--invocation-id', required=True)
+    options = parser.parse_args(args)
+    if os.geteuid() != 0:
+        raise ValueError('execution diagnostics require root')
+    identity = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    if not re.fullmatch(identity, options.attempt_id) or not re.fullmatch(identity + ':' + identity + r':[1-9][0-9]{0,8}', options.invocation_id):
+        raise ValueError('invalid execution diagnostic identity')
+    with sqlite3.connect(bridge_database(install).as_uri() + '?mode=ro', uri=True, timeout=5) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute('PRAGMA query_only=ON')
+        connection.execute('BEGIN')
+        attempt = connection.execute('SELECT attempt_id,job_id FROM factory_attempts WHERE attempt_id=?',
+                                     (options.attempt_id,)).fetchone()
+        if attempt is None:
+            raise ValueError('execution diagnostic attempt missing')
+        job = connection.execute('SELECT job_id,idempotency_key,requested_action,branch,payload_json FROM bridge_jobs WHERE job_id=?',
+                                 (attempt['job_id'],)).fetchone()
+        lease = connection.execute('SELECT lease_id,owner,epoch,fence_token FROM factory_execution_leases WHERE attempt_id=?',
+                                   (options.attempt_id,)).fetchone()
+        if job is None or lease is None or options.invocation_id != f"{job['job_id']}:{lease['lease_id']}:{lease['epoch']}":
+            raise ValueError('execution diagnostic invocation differs from attempt lease')
+        if len(job['payload_json'].encode()) > LIMIT:
+            raise ValueError('execution diagnostic payload exceeds limit')
+        rows = connection.execute("SELECT event_type,details_json FROM factory_attempt_events WHERE attempt_id=? AND event_type IN ('execution_backend_invoked','execution_backend_failed','execution_dispatch_failed','execution_effect_commit_failed') ORDER BY created_at,event_id LIMIT 101",
+                                  (options.attempt_id,)).fetchall()
+        if len(rows) > 100:
+            raise ValueError('execution diagnostic events exceed limit')
+        events = []
+        reasons = {'hermes_process_spawn_failed', 'hermes_process_timeout', 'hermes_process_output_limit_exceeded',
+                   'hermes_process_exit_nonzero', 'hermes_protocol_result_invalid', 'hermes_grpc_gateway_unavailable',
+                   'hermes_grpc_gateway_unauthenticated', 'hermes_grpc_gateway_timeout'}
+        for row in rows:
+            if len(row['details_json'].encode()) > 65536:
+                raise ValueError('execution diagnostic event exceeds limit')
+            details = diagnostic_json(row['details_json'])
+            if not isinstance(details, dict):
+                raise ValueError('invalid execution diagnostic event')
+            if details.get('invocation_id') != options.invocation_id:
+                continue
+            event = {'event_type': row['event_type']}
+            if row['event_type'] != 'execution_backend_invoked':
+                reason = details.get('reason_code')
+                event['reason_code'] = reason if isinstance(reason, str) and reason in reasons else 'unclassified'
+                transport = details.get('transport_status')
+                event['transport_status'] = transport if isinstance(transport, str) and transport in {'grpc_failed_precondition', 'grpc_unavailable',
+                    'grpc_unauthenticated', 'grpc_deadline_exceeded', 'grpc_internal', 'grpc_unknown'} else None
+                code = details.get('process_exit_code')
+                event['process_exit_code'] = code if type(code) is int and -(2**31) <= code < 2**31 else None
+                for key in ('timed_out', 'buffer_exceeded'):
+                    event[key] = details.get(key) if type(details.get(key)) is bool else None
+            events.append(event)
+        if not any(event['event_type'] == 'execution_backend_invoked' for event in events):
+            raise ValueError('execution diagnostic exact invocation event missing')
+        journal = diagnostic_journal(dict(job), dict(lease))
+    return {'attempt_id': options.attempt_id, 'job_id': job['job_id'], 'invocation_id': options.invocation_id,
+            'events': events, 'journal': journal, 'underlying_error': 'unavailable_not_retained',
+            'stdout_stderr': 'not_retained_by_gateway', 'auth_cause': 'not_established',
+            'containment': 'not_established', 'recovery_authorized': False}
+
+
 def dispatch(install, config, wrapper, args):
+    if args and args[0] == 'diagnose-execution':
+        return diagnose_execution(install, args[1:])
     if args and args[0] == 'recover-observer':
         return recover_observer(install, wrapper, args[1:])
     if args and args[0] == 'upgrade-observer':
