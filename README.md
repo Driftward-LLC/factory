@@ -110,6 +110,10 @@ for the Hermes-versus-direct-Codex measurement and canary design.
 See [docs/factory-work-evidence.md](docs/factory-work-evidence.md) for immutable
 execution manifests, checkpoint receipts, and explicit replay-data gaps.
 
+See [docs/hermes-runtime-contract.md](docs/hermes-runtime-contract.md) for the
+maintained, source-fingerprinted Hermes profile, authentication, process cleanup
+and Factory cancellation contract, including dated evidence and refresh steps.
+
 See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboard-plan.md)
 for the proposed capability roadmap and first operator-dashboard implementation slice.
 

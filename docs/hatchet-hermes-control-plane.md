@@ -1,5 +1,9 @@
 # Hatchet To Hermes Control Plane Boundary
 
+For the current source-verified runtime behavior, see the maintained
+[Hermes execution contract](hermes-runtime-contract.md), its dated evidence and
+explicit limits. The historical design notes below are not live deployment proof.
+
 ## Execution observability
 
 See [optional OpenTelemetry execution tracing](factory-opentelemetry.md) for

@@ -53,6 +53,66 @@ def plugin_archive(extra=None):
 
 
 class ProfileRuntimeTests(unittest.TestCase):
+    def test_source_audit_reads_only_fixed_public_files_without_imports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'hermes_cli').mkdir()
+            content = b'raise RuntimeError("must never import")\n'
+            (root / 'hermes_constants.py').write_bytes(content)
+            private = root / 'auth.json'
+            private.write_text('private-marker')
+            (root / 'hermes_cli/profiles.py').symlink_to(private)
+            (root / 'hermes_cli/main.py').mkdir()
+            os.mkfifo(root / 'hermes_cli/auth.py')
+            with (root / 'hermes_cli/auth_codex.py').open('wb') as handle:
+                handle.truncate(runtime.SOURCE_FILE_LIMIT + 1)
+            before = {path: path.lstat() for path in root.rglob('*')}
+            with patch.object(runtime, 'HERMES_SOURCE_ROOT', root), \
+                 patch.object(runtime.os, 'geteuid', return_value=0), \
+                 patch.object(runtime.subprocess, 'run', side_effect=AssertionError('no subprocess')):
+                result = runtime.source_audit()
+            self.assertEqual(set(result['files']), set(runtime.HERMES_SOURCE_FILES))
+            self.assertEqual(result['files']['hermes_constants.py'], {
+                'status': 'available', 'bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest()})
+            for name in ('hermes_cli/profiles.py', 'hermes_cli/main.py',
+                         'hermes_cli/auth.py', 'hermes_cli/auth_codex.py'):
+                self.assertEqual(result['files'][name], {'status': 'refused'})
+            self.assertEqual(result['files']['run_agent.py'], {'status': 'missing'})
+            self.assertNotIn('private-marker', json.dumps(result))
+            self.assertEqual(result['revision'], 'unknown')
+            self.assertLess(len(json.dumps(result)), 4096)
+            for path, info in before.items():
+                after = path.lstat()
+                self.assertEqual((info.st_mode, info.st_size, info.st_mtime_ns),
+                                 (after.st_mode, after.st_size, after.st_mtime_ns))
+
+    def test_source_audit_refuses_symlink_ancestor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'target'
+            target.mkdir()
+            (target / 'hermes_constants.py').write_text('public')
+            link = root / 'link'
+            link.symlink_to(target, target_is_directory=True)
+            with patch.object(runtime, 'HERMES_SOURCE_ROOT', link), \
+                 patch.object(runtime.os, 'geteuid', return_value=0):
+                result = runtime.source_audit()
+            self.assertTrue(all(row == {'status': 'refused'} for row in result['files'].values()))
+
+    def test_source_audit_dispatch_rejects_arguments_and_nonroot(self):
+        with patch.object(runtime, 'run_native', return_value={'files': {}}) as run:
+            with patch.object(runtime.os, 'geteuid', return_value=0):
+                self.assertEqual(runtime.dispatch(None, {}, '/wrapper', ['source-audit']), {'files': {}})
+                run.assert_called_once_with('/wrapper', 'source-audit', {})
+                with self.assertRaises(ValueError):
+                    runtime.dispatch(None, {}, '/wrapper', ['source-audit', '/private'])
+            with patch.object(runtime.os, 'geteuid', return_value=1000):
+                with self.assertRaises(ValueError):
+                    runtime.dispatch(None, {}, '/wrapper', ['source-audit'])
+                with self.assertRaises(ValueError):
+                    runtime.source_audit()
+            self.assertEqual(run.call_count, 1)
+
     def setUp(self):
         checked = runtime.checked
         def fixture_checked(path, **kwargs):

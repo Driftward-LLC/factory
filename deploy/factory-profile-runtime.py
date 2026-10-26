@@ -46,6 +46,64 @@ PUBLIC_ASSETS = {
        for name in ('native_agent.py', 'runner.py', 'review_observer.py')},
     **{name: Path('/etc/driftward/factory-reviewer') / Path(name).name for name in REVIEW_SKILL_DIGESTS},
 }
+HERMES_SOURCE_ROOT = Path('/opt/hermes')
+HERMES_SOURCE_FILES = (
+    'hermes_constants.py', 'hermes_cli/profiles.py', 'hermes_cli/main.py',
+    'hermes_cli/auth.py', 'hermes_cli/auth_codex.py', 'hermes_cli/env_loader.py',
+    'hermes_cli/lifecycle.py', 'hermes_cli/cli_shutdown.py', 'agent/secret_scope.py',
+    'tools/terminal_tool.py', 'tools/terminal_tool_lifecycle.py',
+    'tools/process_registry.py', 'tools/process_registry_termination.py', 'tools/environments/local.py',
+    'tools/environments/base.py', 'cli.py', 'run_agent.py',
+)
+SOURCE_FILE_LIMIT = 2 * 1024 * 1024
+
+
+def source_audit():
+    """Fingerprint public source only; never import Hermes or inspect runtime state."""
+    if os.geteuid() != 0:
+        raise ValueError('source audit requires root')
+    files = {}
+    for name in HERMES_SOURCE_FILES:
+        descriptors = []
+        try:
+            # Walk each component through held descriptors, including /opt/hermes.
+            parent = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+            descriptors.append(parent)
+            parts = (*HERMES_SOURCE_ROOT.parts[1:], *PurePosixPath(name).parts)
+            for part in parts[:-1]:
+                parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                descriptors.append(parent)
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            descriptors.append(fd)
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > SOURCE_FILE_LIMIT:
+                files[name] = {'status': 'refused'}
+                continue
+            data = bytearray()
+            while len(data) <= SOURCE_FILE_LIMIT:
+                chunk = os.read(fd, min(65536, SOURCE_FILE_LIMIT + 1 - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+            after = os.fstat(fd)
+            if (len(data) > SOURCE_FILE_LIMIT or len(data) != before.st_size
+                    or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                files[name] = {'status': 'refused'}
+            else:
+                files[name] = {'status': 'available', 'bytes': len(data),
+                               'sha256': hashlib.sha256(data).hexdigest()}
+        except FileNotFoundError:
+            files[name] = {'status': 'missing'}
+        except OSError:
+            files[name] = {'status': 'refused'}
+        finally:
+            for fd in reversed(descriptors):
+                os.close(fd)
+    return {'source_root': '/opt/hermes', 'revision': 'unknown', 'files': files,
+            'evidence': 'installed_public_source_only', 'running_process_version': 'not_established',
+            'containment': 'not_established', 'credential_revocation': 'not_established',
+            'exit_cause': 'not_established'}
 
 
 def no_symlinks(path):
@@ -529,7 +587,11 @@ def container_main(command, payload):
     # Native/plugin imports may print configuration diagnostics. Only our bounded
     # result reaches the canonical CLI; exceptions are sanitized by the launcher.
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        if command == 'configure':
+        if command == 'source-audit':
+            if payload:
+                raise ValueError('source audit accepts no payload')
+            result = source_audit()
+        elif command == 'configure':
             result = configure(payload)
         elif command == 'canary':
             result = canary(payload)
@@ -1588,6 +1650,12 @@ def diagnose_execution(install, args):
 
 
 def dispatch(install, config, wrapper, args):
+    if args and args[0] == 'source-audit':
+        if args != ['source-audit']:
+            raise ValueError('usage: factory profiles source-audit')
+        if os.geteuid() != 0:
+            raise ValueError('source audit requires root')
+        return run_native(wrapper, 'source-audit', {})
     if args and args[0] == 'diagnose-execution':
         return diagnose_execution(install, args[1:])
     if args and args[0] == 'recover-observer':

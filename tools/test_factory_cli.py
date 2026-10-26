@@ -17,6 +17,19 @@ spec.loader.exec_module(cli)
 
 
 class CanonicalCliTests(unittest.TestCase):
+    def test_source_audit_routes_only_exact_command(self):
+        backend = SimpleNamespace(dispatch=unittest.mock.Mock(return_value={'files': {}}))
+        install = SimpleNamespace()
+        config = {'hermes_wrapper': '/reviewed/wrapper', 'profile_runtime': '/reviewed/helper'}
+        with patch.object(cli, 'installation', return_value=install), \
+             patch.object(cli, 'checked_hermes_wrapper', side_effect=Path), \
+             patch.object(cli.importlib.util, 'module_from_spec', return_value=backend), \
+             patch.object(cli.importlib.util, 'spec_from_file_location'), patch('builtins.print'):
+            self.assertEqual(cli.dispatch_bound(config, ['profiles', 'source-audit']), 0)
+            with self.assertRaises(ValueError):
+                cli.dispatch_bound(config, ['profiles', 'source-audit', '/private'])
+        backend.dispatch.assert_called_once_with(install, config, Path('/reviewed/wrapper'), ['source-audit'])
+
     def test_execution_diagnostics_route_through_bound_profile_helper(self):
         backend = SimpleNamespace(dispatch=unittest.mock.Mock(return_value={'recovery_authorized': False}))
         install = SimpleNamespace()
