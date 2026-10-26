@@ -5,6 +5,15 @@ Disabled by default: the gateway selects this path only with
 activation**. No runtime/installer execution, credential change or live run is
 part of this change. It does not recover ENG-162 or authorize retrying failed work.
 
+The experimental route now requires `DRIFTWARD_HERMES_PROFILE=factory-native-executor`.
+Factory's legacy route refuses that reserved profile, and the native route refuses
+the legacy `factory-executor` profile (including an omitted profile). Runtime
+identity/model queries and native journals use the selected native profile too.
+This is Factory route separation, not an OS boundary against manually launched
+Hermes processes with the same UID. Do not point other interpreters at the reserved
+home. Provisioning a fresh native profile and its credentials remains a separate
+reviewed activation step; this change creates neither profiles nor credentials.
+
 The standalone interpreter handles exactly one request through an inherited
 private stdin pipe. A new, exclusive, mode-0700 journal stores the native session,
 raw task owner, PID/start ticks, PID namespace, boot identity and random runtime
@@ -24,7 +33,7 @@ the existing transport/private-journal trust boundary, **not independent current
 bridge-lease attestation**. Standalone fixture bindings remain format-validated
 caller input. Disk evidence never authorizes attaching to an old process.
 
-The owner runs inside the existing Driftward Hermes runtime/profile/user through
+The owner runs inside the existing Driftward Hermes runtime/user and reserved native profile through
 the same Docker Compose arguments as identity checks. A reviewer-style fixed
 bootstrap contains checked-in public Python assets; job data travels through
 private stdin and never becomes Python source or arbitrary executable argv. The
@@ -53,8 +62,20 @@ also hold a profile lock before native initialization/effects. Disposable tests
 show why: separate legacy interpreters sharing HERMES_HOME overwrite each other's
 process checkpoint even while their unrelated processes stay alive. Experimental
 owners are serialized; the lock cannot coordinate nonparticipating legacy agents.
-Verified legacy quiescence/checkpoint compatibility remains an activation blocker.
-No checkpoint repair, private-path override, new profile or credential copying occurs.
+Admission additionally refuses any existing `processes.json`, even empty, and
+exclusively creates a private `factory-native-owner.claim/` directory before
+Hermes imports. The directory and bounded exact binding are persisted with fsync.
+An incomplete claim also blocks reuse. Symlinked or writable-by-others profile
+homes are refused. There is no checkpoint repair, private-path override or
+credential copying.
+
+The claim is deliberately retained after every exit, including a successful
+conversation: containment remains unknown. A new invocation or journal, released
+flock, missing PID, or empty checkpoint cannot reopen that profile. This makes
+the prototype **single-use per fresh profile until reviewed recovery exists**.
+Do not delete claims or checkpoints to bypass admission. The change establishes
+restart refusal, not safe reattachment, automatic cleanup after SIGKILL, or a
+reset/reuse command. Existing host helpers and profiles are not migrated.
 
 Cancellation fences new batch admission, hard-interrupts the attached native
 agent, runs native graceful foreground cleanup followed by the native hard-exit
@@ -69,12 +90,14 @@ Stop evidence persists requested/stopping timestamps and an `unknown` result,
 separate from completion. It retains ownership digest, native result metadata,
 quiescence, errors and explicit unmeasured coverage. No natural-language answer,
 kill count, missing PID or receipt authorizes completion, containment or external
-effect settlement. Dispatch that fails to quiesce is unknown; there is no crash
-recovery, safe resume or periodic retry policy. An interrupted/failed stop-record
+effect settlement. Dispatch that fails to quiesce is unknown; crash recovery
+retains the admission barrier and requires operator review, without safe resume
+or periodic retry. An interrupted/failed stop-record
 write cannot disable already-authorized native cleanup, but is reported as an
 evidence failure. The owner cannot observe its own exit; the caller must retain
 that separate observation. Docker-client exit alone is not owner-exit proof: a
-validated owner-exit frame and successful remote command exit are both required.
+validated owner-exit frame, quiescent dispatch, empty cleanup errors and successful
+remote command exit are all required before the controller accepts a candidate.
 Old/corrupted records fail closed without cleanup.
 
 The adapter may attach the already-loaded observer's public `observe_owner` sink.
@@ -127,10 +150,10 @@ invocation sharing its profile, and a reviewer control. Tests check wrong-finger
 target cleanup, survival of both controls, repeated cancellation, and cancellation
 during an already-admitted native spawn. The reviewer control is a disposable
 process fixture, not the real reviewer profile or an authenticated model run.
-The 18 owner checks include actual AIAgent initialization, SDK streaming parsing,
+The owner checks include actual AIAgent initialization, SDK streaming parsing,
 native terminal dispatch, exact filesystem marker and exit-zero tool-result proof,
 all three fixed skill markers in the provider request, missing-skill refusal,
-same-profile admission, and the measured legacy checkpoint conflict. The SDK HTTP
+same-profile admission, durable/incomplete claims, and the measured legacy checkpoint conflict. The SDK HTTP
 transport is replaced; AIAgent, conversation loop, dispatcher and terminal are not.
 The genuine AIAgent fixture uses the gateway's controlled registration/start
 handshake, and verifies no effect or provider proof exists before authorization.

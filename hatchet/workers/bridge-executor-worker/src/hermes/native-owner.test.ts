@@ -27,10 +27,10 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  }
  if(frame.start){started=true;record();
   if(mode==='transport-loss')process.exit(1);
-  if(mode==='complete'||mode==='race')emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/example/project/pull/1',branch:'codex/test'}});
+  if(['complete','race','missing-exit','worker-alive','dispatch-busy','cleanup-error'].includes(mode))emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/example/project/pull/1',branch:'codex/test'}});
  }
  if(frame.cancel){cancels++;record();stop();}
-}).on('close',()=>{if(launch){stop();emit({event:'owner_exiting',binding:launch.binding,worker_exited:true});}process.exit(0);});
+}).on('close',()=>{if(launch){stop();if(mode!=='missing-exit')emit({event:'owner_exiting',binding:launch.binding,worker_exited:mode!=='worker-alive',dispatch_quiesced:mode!=='dispatch-busy',errors:mode==='cleanup-error'?['foreground_cleanup_failed']:[]});}process.exit(0);});
 setTimeout(()=>process.exit(1),3000).unref();
 `;
 
@@ -69,7 +69,7 @@ function setup(mode: string, precancel = false) {
 test('fixed bootstrap contains only checked-in assets and the existing native runtime/profile', () => {
   const code = nativeOwnerBootstrap();
   assert.match(code, /\/opt\/hermes/);
-  assert.match(code, /factory-executor\/factory-native-owners/);
+  assert.match(code, /factory-native-executor\/factory-native-owners/);
   assert.doesNotMatch(code, /PRIVATE_PROMPT/);
 });
 
@@ -119,6 +119,17 @@ test('wrong binding, private output, process crash and timeout never become a co
         assert.equal(fixture.evidence.at(-1)?.ownerRegistered, true);
         assert.equal(fixture.evidence.at(-1)?.ownerExitObserved, false);
       }
+    } finally { await fixture.close(); }
+  }
+});
+
+test('candidate plus Docker exit zero cannot complete without quiescent error-free owner exit', async () => {
+  for (const mode of ['missing-exit', 'worker-alive', 'dispatch-busy', 'cleanup-error']) {
+    const fixture = setup(mode);
+    try {
+      await assert.rejects(fixture.run(), /Experimental native owner/);
+      assert.equal(fixture.evidence.at(-1)?.state, 'unknown');
+      assert.equal(fixture.evidence.at(-1)?.ownerExitObserved, false);
     } finally { await fixture.close(); }
   }
 });

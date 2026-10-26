@@ -177,7 +177,10 @@ class NativeCanaryTests(unittest.TestCase):
             if args[0] == 'create':
                 return 'c' * 64
             if args[0] == 'start':
-                return json.dumps({'marker_and_exit_zero': True, 'owner_exit_observed': True, 'observations': [{}, {}, {}]})
+                return json.dumps({'marker_and_exit_zero': True, 'owner_exit_observed': True, 'observations': [{}, {}, {}],
+                                   'recovery_checks': {name: True for name in ('legacy_checkpoint_refused',
+                                       'completed_profile_reuse_refused', 'crash_restart_refused', 'inflight_cancel_quiesced',
+                                       'escaped_fixture_exited', 'duplicate_cancel_stable')}})
             return ''
         with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
              patch.object(canary, 'image_identity', return_value='sha256:' + 'b' * 64), \
@@ -193,6 +196,19 @@ class NativeCanaryTests(unittest.TestCase):
         fake = SimpleNamespace(os=SimpleNamespace(geteuid=lambda: 1000))
         with self.assertRaises(ValueError):
             canary.run(fake, None, None)
+
+    def test_missing_recovery_proof_cleans_up_without_relaying_success(self):
+        fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0),
+                               run_native=Mock(return_value={'hostname': 'a' * 12}), write_observer_receipt=Mock())
+        result = {'marker_and_exit_zero': True, 'owner_exit_observed': True, 'observations': [{}, {}, {}]}
+        with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
+             patch.object(canary, 'image_identity', return_value='sha256:' + 'b' * 64), patch.object(canary, 'verify_created'), \
+             patch.object(canary, 'docker', side_effect=['c' * 64, json.dumps(result), '']):
+            receipt = canary.run(fake, SimpleNamespace(directory=Path('/unused')), None)
+        self.assertEqual(receipt['status'], 'unknown')
+        self.assertEqual(receipt['phase'], 'native_execution')
+        self.assertTrue(receipt['container_removed'])
+        fake.run_native.assert_called_once()
 
     def test_changed_public_asset_refused_before_runtime(self):
         fake = SimpleNamespace(__file__=str(ROOT / 'deploy/factory-profile-runtime.py'), os=SimpleNamespace(geteuid=lambda: 0), run_native=Mock(), write_observer_receipt=Mock())
@@ -307,6 +323,9 @@ class NativeCanaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, 'isolated native driver failed')
         proof = json.loads(result.stdout)
         self.assertTrue(proof['marker_and_exit_zero'])
+        self.assertEqual(proof['recovery_checks'], {name: True for name in ('legacy_checkpoint_refused',
+                         'completed_profile_reuse_refused', 'crash_restart_refused', 'inflight_cancel_quiesced',
+                         'escaped_fixture_exited', 'duplicate_cancel_stable')})
         self.assertEqual([event['properties']['factory.stop.stage'] for event in proof['observations']], ['registered', 'stopping', 'unknown'])
         self.assertEqual(result.stderr, '')
 

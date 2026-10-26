@@ -17,7 +17,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from owner import Owner, Refused, binding, guarded_agent
+from owner import Owner, Refused, atomic, binding, guarded_agent
 
 
 _PROTOCOL = None
@@ -52,15 +52,34 @@ def frame(stream):
     return value
 
 
-def claim_profile(home):
-    """Serialize cooperating owners without changing Hermes checkpoint policy."""
-    fd = os.open(Path(home) / "factory-native-owner.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+def claim_profile(home, request):
+    """Single-use admission: unresolved ownership survives interpreter/host exit."""
+    bound = binding(request)
+    home = Path(home)
+    info = home.lstat()
+    if (not home.is_absolute() or home.resolve() != home or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid() or info.st_mode & 0o022):
+        raise Refused("unsafe native profile home")
+    fd = os.open(home / "factory-native-owner.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
             raise Refused("invalid native profile admission lock")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Even an empty/stale legacy checkpoint is not proof of quiescence.
+        if os.path.lexists(home / "processes.json"):
+            raise Refused("legacy process checkpoint requires operator review")
+        claim = home / "factory-native-owner.claim"
+        claim.mkdir(mode=0o700)
+        directory = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        atomic(claim / "binding.json", {"schema": 1, **bound, "recovery": "operator_review_required"})
+        # Every stop is still unknown. Never clear the claim, even on clean exit;
+        # PID absence, checkpoint emptiness and a released flock cannot authorize reuse.
         return fd  # Held until this dedicated interpreter exits; never unlinked.
     except BaseException:
         os.close(fd)
@@ -217,7 +236,7 @@ def main():
     if not os.environ.get("HERMES_HOME"):
         raise Refused("explicit Hermes profile home required")
     if args.controlled or not args.fixture:
-        profile_lock = claim_profile(os.environ["HERMES_HOME"])
+        profile_lock = claim_profile(os.environ["HERMES_HOME"], launch_request["binding"])
     owner = Owner(args.journal, launch_request["binding"], backend=launch_request["backend"],
                   enabled_tools=launch_request["enabled_tools"])
     from tools.process_registry import process_registry
@@ -262,7 +281,9 @@ def main():
         owner.cancel(owner.binding, native)
     if started:
         worker.join(timeout=4)
-    emit({"event": "owner_exiting", "binding": owner.binding, "worker_exited": not started or not worker.is_alive(), "errors": errors,
+    emit({"event": "owner_exiting", "binding": owner.binding, "worker_exited": not started or not worker.is_alive(),
+          "dispatch_quiesced": bool(owner.receipt and owner.receipt.get("dispatch_quiesced")),
+          "errors": errors + (owner.receipt or {}).get("errors", []),
           "completion": "not_established"})
 
 

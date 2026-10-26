@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import type { InvocationExecutionContext, NativeOwnerStop } from './invocation-journal';
 import { NonRetryableBridgeExecutionError } from './errors';
 
-const PROFILE = '/opt/data/profiles/factory-executor';
+const PROFILE = '/opt/data/profiles/factory-native-executor';
 
 /** Public checked-in assets only; no request/job value becomes Python source. */
 export function nativeOwnerBootstrap(): string {
@@ -43,6 +43,7 @@ export function runNativeOwner(context: InvocationExecutionContext, launch: Reco
   let registered = false;
   let transportClosed = false;
   let ownerExitAnnounced = false;
+  let ownerExitFrameSeen = false;
   let ownerExitObserved = false;
   let cancelled = false;
   let stop: NativeOwnerStop | undefined;
@@ -130,8 +131,11 @@ export function runNativeOwner(context: InvocationExecutionContext, launch: Reco
           } else if (value.event === 'execution_failed' || value.event === 'refused') {
             abort('hermes_process_exit_nonzero');
           } else if (value.event === 'owner_exiting') {
-            if (!registered || JSON.stringify(value.binding) !== JSON.stringify(context.binding) || typeof value.worker_exited !== 'boolean') throw new Error();
-            ownerExitAnnounced = value.worker_exited;
+            if (!registered || ownerExitFrameSeen || JSON.stringify(value.binding) !== JSON.stringify(context.binding)
+                || typeof value.worker_exited !== 'boolean' || typeof value.dispatch_quiesced !== 'boolean'
+                || !Array.isArray(value.errors) || value.errors.length) throw new Error();
+            ownerExitFrameSeen = true;
+            ownerExitAnnounced = value.worker_exited && value.dispatch_quiesced;
           } else throw new Error();
         } catch { abort('hermes_protocol_result_invalid'); }
       }
@@ -141,9 +145,9 @@ export function runNativeOwner(context: InvocationExecutionContext, launch: Reco
       transportClosed = true;
       ownerExitObserved = code === 0 && ownerExitAnnounced;
       if (stop) persist(stop.reason, stop.dispatchQuiesced);
-      else if (cancelled || code !== 0 || candidate === undefined) persist('owner_crashed');
+      else if (cancelled || code !== 0 || !ownerExitObserved || candidate === undefined) persist('owner_crashed');
       if (failed) return;
-      if (code === 0 && candidate !== undefined && pending.length === 0) resolve(candidate);
+      if (code === 0 && ownerExitObserved && candidate !== undefined && pending.length === 0) resolve(candidate);
       else reject(failure('hermes_process_exit_nonzero'));
     });
     send({ ...launch, binding: context.binding });

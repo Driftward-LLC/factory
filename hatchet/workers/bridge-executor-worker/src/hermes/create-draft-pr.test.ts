@@ -1,6 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+test('legacy and native routes cannot select each others reserved profile', () => {
+  const keys = ['DRIFTWARD_HERMES_PROFILE', 'DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER'];
+  const before = keys.map((key) => process.env[key]);
+  try {
+    for (const flag of [undefined, '1']) {
+      if (flag) process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER = flag;
+      else delete process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER;
+      process.env.DRIFTWARD_HERMES_PROFILE = flag ? 'factory-executor' : 'factory-native-executor';
+      assert.throws(hermesProfileArguments, /Factory executor profile/);
+      process.env.DRIFTWARD_HERMES_PROFILE = flag ? 'factory-native-executor' : 'factory-executor';
+      assert.equal(hermesProfileArguments()[1], process.env.DRIFTWARD_HERMES_PROFILE);
+    }
+    delete process.env.DRIFTWARD_HERMES_PROFILE;
+    assert.throws(hermesProfileArguments, /reserved profile/);
+  } finally {
+    keys.forEach((key, i) => { if (before[i] === undefined) delete process.env[key]; else process.env[key] = before[i]; });
+  }
+});
+
 test('executor profile selects native command and metadata runtime consistently', () => {
   const previous = process.env.DRIFTWARD_HERMES_PROFILE;
   try {
@@ -75,7 +94,7 @@ test('disabled native route retains typed gates, runtime profile, reservation an
   const previous = keys.map((key) => process.env[key]);
   try {
     process.env.PATH = directory + path.delimiter + process.env.PATH;
-    Object.assign(process.env, { DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', DRIFTWARD_HERMES_PROFILE: 'factory-executor',
+    Object.assign(process.env, { DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', DRIFTWARD_HERMES_PROFILE: 'factory-native-executor',
       DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER: '1', DRIFTWARD_HERMES_ALLOWED_REPOS: 'Driftward-LLC/capykit',
       DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
       DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '12345+factory-hermes[bot]@users.noreply.github.com', NATIVE_TEST_DIRECTORY: directory });
@@ -88,7 +107,7 @@ else if(args.includes('user.email'))process.stdout.write('12345+factory-hermes[b
 else if(args.includes('gh'))process.stdout.write('Driftward-LLC/capykit');
 else if(args.includes('python3'))process.stdout.write(JSON.stringify({model_source:'executor_config',selected_model:'gpt-6.1-sol',selected_provider:'openai-codex'}));
 else if(args.includes('/opt/hermes/.venv/bin/python')){
- if(!args.includes('HERMES_HOME=/opt/data/profiles/factory-executor')||!args.includes('--controlled'))process.exit(2);
+ if(!args.includes('HERMES_HOME=/opt/data/profiles/factory-native-executor')||!args.includes('--controlled'))process.exit(2);
  if(args.some(a=>a.includes('PRIVATE_NATIVE_REQUIREMENTS')))process.exit(3);
  let launch,started=false;
  readline.createInterface({input:process.stdin}).on('line',line=>{const v=JSON.parse(line);
@@ -96,7 +115,7 @@ else if(args.includes('/opt/hermes/.venv/bin/python')){
    emit({event:'registered',ownership:{...v.binding,pid:process.pid,runtime_incarnation:'00000000-0000-4000-8000-000000000099'}});}
   else if(v.start){started=true;fs.writeFileSync(path.join(root,'started'),'yes');emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/Driftward-LLC/capykit/pull/61',branch:mode==='invalid-result'?'codex/forged':launch.receipt_policy.branch,commit_sha:'a'.repeat(40),validation:null}});}
   else if(v.cancel){fs.writeFileSync(path.join(root,'cancelled'),JSON.stringify({started}));emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});}
- }).on('close',()=>{if(launch){emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});emit({event:'owner_exiting',binding:launch.binding,worker_exited:true});}});
+ }).on('close',()=>{if(launch){emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});emit({event:'owner_exiting',binding:launch.binding,worker_exited:true,dispatch_quiesced:true,errors:[]});}});
 }else process.exit(4);
 `, { mode: 0o700 });
     const lease = { lease_id: '00000000-0000-4000-8000-000000000071', owner: 'disposable', epoch: 1, fence_token: 'private-test-fence' };
