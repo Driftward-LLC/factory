@@ -134,6 +134,12 @@ to historical work or authorizes retry. Profiles remain single-use even after an
 error-free local drain. A stronger lifecycle boundary and external-effect review
 are still needed before safe reuse or activation.
 
+The [canonical isolated canary](../native-canary/README.md#supervisor-loss-namespace-experiment)
+also exercises supervisor SIGKILL with the supervisor as PID 1 in a dedicated
+disposable container. That experiment uses kernel namespace teardown and host
+exit observations; it does not retrofit the shared-runtime gateway launch path,
+authorize profile reuse or establish recovery after host loss.
+
 Linux semantics: [subreapers](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html),
 [pidfds](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and
 [waitid](https://man7.org/linux/man-pages/man2/waitid.2.html).
