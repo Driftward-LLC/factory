@@ -22,12 +22,13 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(!launch){launch=frame;
   if(mode==='noise'){process.stdout.write('PRIVATE_PROVIDER_ERROR\\n');process.stderr.write('PRIVATE_PROVIDER_SECRET');return;}
   if(mode==='crash'){process.exit(1);}
-  if(mode==='timeout'){return;}
+  if(mode==='timeout'||mode==='timeout-recovery'){return;}
   setTimeout(()=>emit({event:'registered',ownership:{...launch.binding,pid:process.pid,runtime_incarnation:'test-incarnation',
    ...(mode==='wrong-binding'?{fingerprint:'b'.repeat(64)}:{})}}),30);return;
  }
  if(frame.start){started=true;record();
   if(mode==='transport-loss')process.exit(1);
+  if(mode==='failed-recovery'||mode==='refused-recovery'){emit({event:mode==='failed-recovery'?'execution_failed':'refused',reason:'execution_failed_or_refused'});}
   if(mode==='recovered-crash'){reaped();process.exit(1);}
   if(['complete','race','missing-exit','worker-alive','dispatch-busy','cleanup-error','missing-recovery','survivors','recovery-error','wrong-recovery','duplicate-recovery'].includes(mode))emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/example/project/pull/1',branch:'codex/test'}});
  }
@@ -48,7 +49,7 @@ function setup(mode: string, precancel = false) {
     registerCancel: (value) => { cancel = value; if (precancel) void value(); },
   };
   const run = () => runNativeOwner(context, { prompt: 'PRIVATE_PROMPT', backend: 'local' }, {
-    arguments: ['fixed-runtime-bootstrap'], environment: { ...process.env, MODE: mode, MARKER: marker }, timeout: mode === 'timeout' ? 100 : 2000,
+    arguments: ['fixed-runtime-bootstrap'], environment: { ...process.env, MODE: mode, MARKER: marker }, timeout: mode.startsWith('timeout') ? 100 : 2000,
     maxBuffer: 65536, spawnProcess: ((command: string, args: string[], options: Parameters<typeof spawn>[2]) => {
       assert.equal(command, 'docker');
       assert.deepEqual(args, ['fixed-runtime-bootstrap']);
@@ -147,4 +148,22 @@ test('supervised crash records descendant drain without completing work or relea
     assert.equal(stop?.reason, 'owner_crashed');
     assert.deepEqual(stop?.recovery, { ownerExitCode: -9, descendantsDrained: true, errors: [] });
   } finally { await fixture.close(); }
+});
+
+
+test('execution failure and timeout remain failed while final supervisor evidence is retained', async () => {
+  for (const mode of ['failed-recovery', 'refused-recovery', 'timeout-recovery']) {
+    const fixture = setup(mode);
+    try {
+      await assert.rejects(fixture.run(), /Experimental native owner/);
+      const deadline = Date.now() + 2000;
+      while (!fixture.evidence.at(-1)?.recovery && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const stop = fixture.evidence.at(-1);
+      assert.equal(stop?.state, 'unknown');
+      assert.deepEqual(stop?.recovery, { ownerExitCode: 0, descendantsDrained: true, errors: [] });
+      assert.equal(stop?.ownerExitObserved, false);
+    } finally { await fixture.close(); }
+  }
 });

@@ -108,9 +108,12 @@ export function runNativeOwner(context: InvocationExecutionContext, launch: Reco
         const end = pending.indexOf(10);
         const line = pending.subarray(0, end);
         pending = pending.subarray(end + 1);
-        if (line.length > 65536 || failed) { abort('hermes_protocol_result_invalid'); return; }
+        if (line.length > 65536) { abort('hermes_protocol_result_invalid'); return; }
         try {
           const value = JSON.parse(line.toString('utf8'));
+          // Failure is final for work, but the still-owned pipe can deliver the
+          // supervisor's later bounded cleanup evidence after EOF/timeout.
+          if (failed && value.event !== 'owner_reaped') continue;
           if (recovery) throw new Error(); // Reaping is the final supervisor frame.
           if (value.event === 'registered') {
             const owner = value.ownership;
