@@ -10,8 +10,21 @@ const CORRELATION_PAYLOAD_KEYS = new Set(['source_event_key', 'source_delivery_i
 
 export type InvocationLease = { lease_id: string; owner: string; epoch: number; fence_token: string };
 export type NativeOwnerBinding = Readonly<{ invocation_id: string; epoch: number; fingerprint: string }>;
+export type NativeOwnerRecovery = { ownerExitCode: number; descendantsDrained: boolean; errors: string[] };
+const NATIVE_RECOVERY_ERRORS = ['child_wait_failed', 'child_signal_or_identity_failed',
+  'descendant_drain_incomplete', 'supervisor_journal_write_failed', 'recovery_journal_write_failed'];
+export function boundedNativeOwnerRecovery(value: unknown): value is NativeOwnerRecovery {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as NativeOwnerRecovery;
+  return Object.keys(v).sort().join(',') === 'descendantsDrained,errors,ownerExitCode'
+    && Number.isInteger(v.ownerExitCode) && v.ownerExitCode >= -64 && v.ownerExitCode <= 255
+    && typeof v.descendantsDrained === 'boolean' && Array.isArray(v.errors)
+    && v.errors.length <= NATIVE_RECOVERY_ERRORS.length
+    && v.errors.every((error) => NATIVE_RECOVERY_ERRORS.includes(error));
+}
 export type NativeOwnerStop = {
   binding: NativeOwnerBinding; state: 'unknown'; ownerRegistered: boolean; ownerExitObserved: boolean;
+  recovery?: NativeOwnerRecovery;
   dispatchQuiesced: boolean | null; reason: 'native_cleanup_observed' | 'owner_unavailable' | 'owner_timeout' | 'owner_crashed' | 'native_protocol_invalid';
 };
 export type InvocationExecutionContext = {
@@ -22,7 +35,8 @@ export type InvocationExecutionContext = {
 export function boundedNativeOwnerStop(value: unknown, binding?: NativeOwnerBinding): NativeOwnerStop | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const v = value as NativeOwnerStop;
-  if (Object.keys(v).sort().join(',') !== 'binding,dispatchQuiesced,ownerExitObserved,ownerRegistered,reason,state'
+  if (Object.keys(v).filter((key) => key !== 'recovery').sort().join(',') !== 'binding,dispatchQuiesced,ownerExitObserved,ownerRegistered,reason,state'
+      || ('recovery' in v && !boundedNativeOwnerRecovery(v.recovery))
       || !v.binding || Object.keys(v.binding).sort().join(',') !== 'epoch,fingerprint,invocation_id'
       || !/^[0-9a-f-]{36}:[0-9a-f-]{36}:[1-9][0-9]*$/.test(v.binding.invocation_id)
       || !Number.isSafeInteger(v.binding.epoch) || v.binding.epoch < 1

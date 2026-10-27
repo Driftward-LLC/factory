@@ -11,10 +11,10 @@ ENV = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', '
 TMPFS = {'/tmp': 'rw,nosuid,nodev,size=128m,mode=1777',
          '/opt/data': 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=10000,gid=10000'}
 ASSET_SHA256 = {
-    'main.py': '564d7c84280b8a0c35dca21b4c94d4d523c5834f6a4e98516c08def4c3cc74f4',
-    'owner.py': 'cce7c551a2e45b63836e2e764a5cab072ac3f3dc4520b4ca80a660442343c4b0',
-    'transport.py': 'aaf61cbd45be7ebc7d9c4977a70838ae04f3fbd5c3ca631c213f67acef4df7c5',
-    'driver.py': 'a9f08872a97eca1bafa8fdd2bb73710943fc0cf081ab261e43a059cd3437c16e',
+    'main.py': 'bf1747d1aa597f5404901b428eb8dfb7f2e4a5849e89f342a8d8478f98a28a58',
+    'owner.py': 'b5220ca78d658c0ca5c0ede84535cc87184149e5f6541dd5958ab99216ee84ab',
+    'transport.py': 'b1c4879bd9da207067e77d19e41b403c92b31cb661230ccd9d3c14f2764f10e9',
+    'driver.py': 'c111043201e0b963b03604cc75365337bc157a6201b1569270efcd27d818a9fc',
     'observer.py': '89c0654d39bdc8fe3bd1c7583908e33dc1faf884260722601469c0866f523788',
 }
 REFUSAL_CODES = {
@@ -197,7 +197,8 @@ def run(runtime, install, wrapper):
                 or not isinstance(observations, list) or len(observations) != 3
                 or result.get('recovery_checks') != {name: True for name in (
                     'legacy_checkpoint_refused', 'completed_profile_reuse_refused', 'crash_restart_refused',
-                    'inflight_cancel_quiesced', 'escaped_fixture_exited', 'duplicate_cancel_stable')}):
+                    'inflight_cancel_quiesced', 'escaped_fixture_exited', 'duplicate_cancel_stable',
+                    'active_crash_descendants_drained', 'crash_control_survived', 'active_crash_reuse_refused')}):
             raise ValueError('native canary proof incomplete')
         # The container is credential-free and cannot ingest. Only this fixed
         # exporter in the existing runtime sees its configured ingestion key.

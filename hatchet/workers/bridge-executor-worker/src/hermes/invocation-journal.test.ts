@@ -340,3 +340,28 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   await assert.rejects(inspectHermesInvocation({ ...updatedJob, payload: { ...updatedJob.payload, instructions: 'different' } }));
   assert.equal(calls, 1);
 });
+
+
+test('crash drain evidence survives journal reload but never authorizes completion or replay', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-crash-recovery-journal-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const journal = new InvocationJournal(directory);
+  const recovery = { ownerExitCode: -9, descendantsDrained: true, errors: [] };
+  await assert.rejects(journal.execute(job, lease, async (context) => {
+    const stop = { binding: context.binding, state: 'unknown' as const, ownerRegistered: true, ownerExitObserved: false,
+      dispatchQuiesced: null, reason: 'owner_crashed' as const, recovery };
+    for (const bad of [{ ...recovery, errors: ['PRIVATE_NATIVE_ERROR'] }, { ...recovery, ownerExitCode: null },
+      { ...recovery, descendantsDrained: 'yes' }, { ...recovery, output: 'PRIVATE_NATIVE_OUTPUT' }]) {
+      assert.throws(() => context.persistStop({ ...stop, recovery: bad as typeof recovery }));
+    }
+    context.persistStop(stop);
+    throw new Error('owner crashed');
+  }), /owner crashed/);
+  const reloaded = new InvocationJournal(directory);
+  const status = reloaded.status(job);
+  assert.equal(status.state, 'outcome_unknown');
+  assert.equal(status.receipt, undefined);
+  assert.deepEqual(status.nativeStop?.recovery, recovery);
+  assert.doesNotMatch(readFileSync(path.join(directory, job.job_id, 'native-stop.json'), 'utf8'), /PRIVATE_/);
+  await assert.rejects(reloaded.execute(job, lease, async () => { assert.fail('recovery evidence authorized replay'); }), /already reserved/);
+});

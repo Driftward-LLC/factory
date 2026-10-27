@@ -22,16 +22,7 @@ def no_network(*_args, **_kwargs):
 socket.socket.connect = no_network
 socket.socket.connect_ex = no_network
 
-import importlib
-import openai
-# Use the HTTP module the installed SDK actually uses, not a separately assumed version.
-http_module = getattr(openai._base_client, 'httpx2', None) or getattr(openai._base_client, 'httpx', None)
-if http_module is None:
-    raise RuntimeError('unsupported installed SDK transport')
-httpx2 = importlib.import_module(http_module.__name__)
-if not all(hasattr(httpx2, name) for name in ('Client', 'MockTransport', 'Response')):
-    raise RuntimeError('unsupported installed SDK transport')
-from agent import process_bootstrap
+
 
 # This explicit canary relay proves Owner.observe -> private protocol -> exporter,
 # not the production plugin discovery path. No telemetry credential enters this process.
@@ -91,7 +82,23 @@ def recorded_client(**kwargs):
     kwargs["http_client"] = httpx2.Client(transport=httpx2.MockTransport(transport))
     return openai.OpenAI(**kwargs)
 
-process_bootstrap.OpenAI = recorded_client
+# Install the recorded SDK only inside the new owner, after supervisor fork.
+original_run_owner = adapter.run_owner
+def recorded_run_owner(*args):
+    global openai, httpx2
+    import importlib
+    import openai
+    # Use the HTTP module the installed SDK actually uses, not a separately assumed version.
+    http_module = getattr(openai._base_client, 'httpx2', None) or getattr(openai._base_client, 'httpx', None)
+    if http_module is None:
+        raise RuntimeError('unsupported installed SDK transport')
+    httpx2 = importlib.import_module(http_module.__name__)
+    if not all(hasattr(httpx2, name) for name in ('Client', 'MockTransport', 'Response')):
+        raise RuntimeError('unsupported installed SDK transport')
+    from agent import process_bootstrap
+    process_bootstrap.OpenAI = recorded_client
+    return original_run_owner(*args)
+adapter.run_owner = recorded_run_owner
 original_conversation = adapter.conversation
 def observed_conversation(*args):
     try:

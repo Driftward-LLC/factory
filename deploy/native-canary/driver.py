@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -33,8 +34,45 @@ def read_frame(process, deadline):
     raise ValueError('protocol_oversize')
 
 
+def reaped(process, home, bound, deadline, exit_code=0):
+    frame = read_frame(process, deadline)
+    receipt = frame.get('receipt', {})
+    if (frame.get('event') != 'owner_reaped' or any(receipt.get(key) != value for key, value in bound.items())
+            or receipt.get('owner_exit_code') != exit_code or receipt.get('descendants_drained') is not True
+            or receipt.get('errors') != [] or receipt.get('completion') != 'not_established'
+            or receipt.get('profile_reusable') is not False
+            or json.loads((home / 'factory-native-owner.claim/recovery.json').read_text()) != receipt):
+        raise ValueError('supervisor_recovery_unknown')
+    process.wait(timeout=5)
+    if process.returncode != (0 if exit_code == 0 else 1):
+        raise ValueError('supervisor_exit_unknown')
+    return receipt
+
+
+def kill_fixture_owner(process, ownership):
+    # The parent is a recorded disposable Popen. The owner identity came over
+    # that exact private pipe; disk checkpoints never supply signaling authority.
+    pid = ownership['pid']
+    fd = os.pidfd_open(pid)
+    try:
+        stat = Path('/proc', str(pid), 'stat').read_text().rsplit(')', 1)[1].split()
+        if (int(stat[1]) != process.pid or stat[19] != ownership['start_ticks']
+                or process.poll() is not None):
+            raise ValueError('disposable_owner_identity_changed')
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+    finally:
+        os.close(fd)
+
+
+def fixture_alive(pid):
+    try:
+        return Path('/proc', str(pid), 'stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
+    except FileNotFoundError:
+        return False
+
+
 def recovery_checks(root, env, bound):
-    """Recorded child handles only; crashes occur before tool authorization."""
+    """Fixed disposable crash/cancel checks; no historical invocation recovery."""
     launch = {'binding': bound, 'backend': 'local', 'enabled_tools': ['terminal', 'process_manage']}
     def start(home, journal):
         return subprocess.Popen([sys.executable, '-u', str(root / 'main.py'),
@@ -77,11 +115,12 @@ def recovery_checks(root, env, bound):
     process = start(crashed, root / 'crashed-journal')
     try:
         send(process, launch)
-        if read_frame(process, time.monotonic() + 12).get('event') != 'registered':
+        registration = read_frame(process, time.monotonic() + 12)
+        if registration.get('event') != 'registered':
             raise ValueError('crash_registration_missing')
         claim = (crashed / 'factory-native-owner.claim/binding.json').read_bytes()
-        process.kill()  # Exact new child handle; start was never authorized.
-        process.wait(timeout=5)
+        kill_fixture_owner(process, registration['ownership'])
+        reaped(process, crashed, bound, time.monotonic() + 12, -9)
     finally:
         finish(process)
     refuse(crashed, root / 'crash-replay')
@@ -112,22 +151,17 @@ def recovery_checks(root, env, bound):
         if (stop.get('event') != 'stop' or receipt.get('dispatch_quiesced') is not True or receipt.get('errors')
                 or receipt.get('state') != 'unknown' or len(receipt.get('background', [])) != 2):
             raise ValueError('inflight_stop_unknown')
-        def alive(pid):
-            try:
-                return Path('/proc', str(pid), 'stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
-            except FileNotFoundError:
-                return False
         until = time.monotonic() + 5
-        while any(alive(pid) for pid in pids) and time.monotonic() < until:
+        while any(fixture_alive(pid) for pid in pids) and time.monotonic() < until:
             time.sleep(0.02)
-        if any(alive(pid) for pid in pids):
+        if any(fixture_alive(pid) for pid in pids):
             raise ValueError('fixture_survivor_observed')
         send(process, {'cancel': bound})
         if read_frame(process, deadline) != stop:
             raise ValueError('duplicate_stop_changed')
         process.stdin.close()
         exited = read_frame(process, deadline)
-        process.wait(timeout=5)
+        reaped(process, home, bound, deadline)
         if (exited.get('event') != 'owner_exiting' or exited.get('binding') != bound
                 or exited.get('worker_exited') is not True or exited.get('dispatch_quiesced') is not True
                 or exited.get('errors') != [] or process.returncode != 0):
@@ -135,9 +169,50 @@ def recovery_checks(root, env, bound):
     finally:
         finish(process)
     refuse(home, root / 'inflight-replay')
+    running = []
+    try:
+        for name in ('active-crash', 'crash-control'):
+            selected_home = root / (name + '-home')
+            selected_home.mkdir(mode=0o700)
+            child = start(selected_home, root / (name + '-journal'))
+            run = {'process': child, 'home': selected_home}
+            running.append(run)
+            send(child, launch)
+            deadline = time.monotonic() + 20
+            registration = read_frame(child, deadline)
+            if registration.get('event') != 'registered':
+                raise ValueError('crash_registration_missing')
+            run['ownership'] = registration['ownership']
+            send(child, {'start': bound})
+            ready = read_frame(child, deadline)
+            if ready.get('event') == 'fixture_spawn_admitted':
+                ready = read_frame(child, deadline)
+            if ready.get('event') != 'fixture_ready':
+                raise ValueError('crash_fixture_not_active')
+            run['pids'] = [ready['foreground_pid'], ready['escaped_pid'], *[row['pid'] for row in ready['background']]]
+            if not all(fixture_alive(pid) for pid in run['pids']):
+                raise ValueError('crash_fixture_not_live')
+        target, control = running
+        claim_path = target['home'] / 'factory-native-owner.claim/binding.json'
+        claim = claim_path.read_bytes()
+        ownership_path = root / 'active-crash-journal/ownership.json'
+        ownership = ownership_path.read_bytes()
+        kill_fixture_owner(target['process'], target['ownership'])
+        receipt = reaped(target['process'], target['home'], bound, time.monotonic() + 12, -9)
+        if receipt.get('reaped', 0) < 1 or any(fixture_alive(pid) for pid in target['pids']):
+            raise ValueError('crash_fixture_survivor')
+        if control['process'].poll() is not None or not all(fixture_alive(pid) for pid in control['pids']):
+            raise ValueError('unrelated_control_changed')
+        refuse(target['home'], root / 'active-crash-replay')
+        if claim_path.read_bytes() != claim or ownership_path.read_bytes() != ownership:
+            raise ValueError('crash_ownership_evidence_changed')
+    finally:
+        for run in running:
+            finish(run['process'])
     return {'legacy_checkpoint_refused': True, 'completed_profile_reuse_refused': True,
             'crash_restart_refused': True, 'inflight_cancel_quiesced': True,
-            'escaped_fixture_exited': True, 'duplicate_cancel_stable': True}
+            'escaped_fixture_exited': True, 'duplicate_cancel_stable': True,
+            'active_crash_descendants_drained': True, 'crash_control_survived': True, 'active_crash_reuse_refused': True}
 
 
 def execute(payload, native_root=Path('/opt/hermes'), root=Path('/tmp/canary')):
@@ -207,9 +282,7 @@ def execute(payload, native_root=Path('/opt/hermes'), root=Path('/tmp/canary')):
                 exited = True
             else:
                 raise ValueError('unexpected_owner_protocol')
-        process.wait(timeout=5)
-        if process.returncode != 0:
-            raise ValueError('native_command_failed')
+        reaped(process, home, bound, deadline)
         if [event.get('properties', {}).get('factory.stop.stage') for event in observations] != ['registered', 'stopping', 'unknown']:
             raise ValueError('missing_owner_observations')
         return {'native_agent': 'run_agent.AIAgent', 'provider': 'recorded_no_network', 'controlled_start': True,

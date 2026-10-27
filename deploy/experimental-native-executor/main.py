@@ -17,7 +17,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from owner import Owner, Refused, atomic, binding, guarded_agent
+from owner import Owner, Refused, atomic, binding, guarded_agent, supervise
 
 
 _PROTOCOL = None
@@ -237,6 +237,17 @@ def main():
         raise Refused("explicit Hermes profile home required")
     if args.controlled or not args.fixture:
         profile_lock = claim_profile(os.environ["HERMES_HOME"], launch_request["binding"])
+        try:
+            raise SystemExit(supervise(lambda: run_owner(args, launch_request),
+                             Path(os.environ["HERMES_HOME"]) / "factory-native-owner.claim", launch_request["binding"], emit))
+        finally:
+            os.close(profile_lock)
+    else:
+        # Uncontrolled fixtures deliberately model nonparticipating legacy owners.
+        run_owner(args, launch_request)
+
+
+def run_owner(args, launch_request):
     owner = Owner(args.journal, launch_request["binding"], backend=launch_request["backend"],
                   enabled_tools=launch_request["enabled_tools"])
     from tools.process_registry import process_registry

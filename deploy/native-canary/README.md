@@ -43,19 +43,25 @@ production instruction parity. The recorded conversation checks stop wiring
 after its result. Additional fixed native fixtures then exercise cancellation
 while foreground work, ordinary/persistent background work, and a `setsid` child
 are alive. The driver requires quiescent dispatch, error-free cleanup, measured
-fixture PID exit, and a stable duplicate stop receipt. This measures that fixture
+fixture PID exit, a stable duplicate stop receipt, and the supervisor
+receipt matching its private durable recovery record. This measures that fixture
 tree, not complete escaped-descendant coverage. The exact-bound stop stays unknown and
 must report dispatch quiescence; owner exit is separate. No whole containment
 or external-effect settlement claim follows.
 
 The same isolated command also checks refusal of a legacy checkpoint, refusal
 of profile reuse after successful owner exit, and refusal after killing an exact
-new owner before start authorization. The crash case creates no tool work; it
-does not claim post-crash cleanup. Restart uses a different job and fresh journal
+new owner before start authorization. That pre-start crash case creates no tool
+work. A second case kills the exact registered native owner during foreground, ordinary/persistent background and
+escaped-child work. Its live supervisor must drain the adopted descendants and
+exit nonzero, preserve the claim and ownership record, and refuse a new invocation.
+A concurrent native control invocation and its measured processes must survive.
+Restart uses a different job and fresh journal
 to prove that the persisted profile claim, not only journal replay protection,
-blocks admission. These checks use fresh disposable homes and emit only six
+blocks admission. These checks use fresh disposable homes and emit only nine
 fixed boolean results under `recovery_checks`; all must pass before the telemetry
 relay runs. No profile-unlock, retry, reattachment or activation command is added.
+The checks do not prove cleanup after supervisor/host loss or settle external effects.
 
 Actual Owner.observe stages registered/stopping/unknown use an explicit
 canary-only callback and private protocol. This proves a **relay**, not production

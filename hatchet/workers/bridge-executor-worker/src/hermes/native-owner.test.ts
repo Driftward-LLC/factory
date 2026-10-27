@@ -15,22 +15,25 @@ let launch, started=false, cancels=0;
 const mode=process.env.MODE, marker=process.env.MARKER;
 const emit=(v)=>process.stdout.write(JSON.stringify(v)+'\\n');
 const record=()=>fs.writeFileSync(marker,JSON.stringify({started,cancels}));
+const reaped=()=>emit({event:'owner_reaped',receipt:{schema:1,...launch.binding,owner_exit_code:mode==='recovered-crash'?-9:0,descendants_drained:mode!=='survivors',errors:mode==='recovery-error'?['child_signal_or_identity_failed']:[],completion:'not_established',profile_reusable:false,...(mode==='wrong-recovery'?{fingerprint:'b'.repeat(64)}:{})}});
 const stop=()=>emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});
 readline.createInterface({input:process.stdin}).on('line',line=>{
  const frame=JSON.parse(line);
  if(!launch){launch=frame;
   if(mode==='noise'){process.stdout.write('PRIVATE_PROVIDER_ERROR\\n');process.stderr.write('PRIVATE_PROVIDER_SECRET');return;}
   if(mode==='crash'){process.exit(1);}
-  if(mode==='timeout'){return;}
+  if(mode==='timeout'||mode==='timeout-recovery'){return;}
   setTimeout(()=>emit({event:'registered',ownership:{...launch.binding,pid:process.pid,runtime_incarnation:'test-incarnation',
    ...(mode==='wrong-binding'?{fingerprint:'b'.repeat(64)}:{})}}),30);return;
  }
  if(frame.start){started=true;record();
   if(mode==='transport-loss')process.exit(1);
-  if(['complete','race','missing-exit','worker-alive','dispatch-busy','cleanup-error'].includes(mode))emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/example/project/pull/1',branch:'codex/test'}});
+  if(mode==='failed-recovery'||mode==='refused-recovery'){emit({event:mode==='failed-recovery'?'execution_failed':'refused',reason:'execution_failed_or_refused'});}
+  if(mode==='recovered-crash'){reaped();process.exit(1);}
+  if(['complete','race','missing-exit','worker-alive','dispatch-busy','cleanup-error','missing-recovery','survivors','recovery-error','wrong-recovery','duplicate-recovery'].includes(mode))emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/example/project/pull/1',branch:'codex/test'}});
  }
  if(frame.cancel){cancels++;record();stop();}
-}).on('close',()=>{if(launch){stop();if(mode!=='missing-exit')emit({event:'owner_exiting',binding:launch.binding,worker_exited:mode!=='worker-alive',dispatch_quiesced:mode!=='dispatch-busy',errors:mode==='cleanup-error'?['foreground_cleanup_failed']:[]});}process.exit(0);});
+}).on('close',()=>{if(launch){stop();if(mode!=='missing-exit')emit({event:'owner_exiting',binding:launch.binding,worker_exited:mode!=='worker-alive',dispatch_quiesced:mode!=='dispatch-busy',errors:mode==='cleanup-error'?['foreground_cleanup_failed']:[]});if(mode!=='missing-recovery')reaped();if(mode==='duplicate-recovery')reaped();}process.exit(0);});
 setTimeout(()=>process.exit(1),3000).unref();
 `;
 
@@ -46,7 +49,7 @@ function setup(mode: string, precancel = false) {
     registerCancel: (value) => { cancel = value; if (precancel) void value(); },
   };
   const run = () => runNativeOwner(context, { prompt: 'PRIVATE_PROMPT', backend: 'local' }, {
-    arguments: ['fixed-runtime-bootstrap'], environment: { ...process.env, MODE: mode, MARKER: marker }, timeout: mode === 'timeout' ? 100 : 2000,
+    arguments: ['fixed-runtime-bootstrap'], environment: { ...process.env, MODE: mode, MARKER: marker }, timeout: mode.startsWith('timeout') ? 100 : 2000,
     maxBuffer: 65536, spawnProcess: ((command: string, args: string[], options: Parameters<typeof spawn>[2]) => {
       assert.equal(command, 'docker');
       assert.deepEqual(args, ['fixed-runtime-bootstrap']);
@@ -124,12 +127,43 @@ test('wrong binding, private output, process crash and timeout never become a co
 });
 
 test('candidate plus Docker exit zero cannot complete without quiescent error-free owner exit', async () => {
-  for (const mode of ['missing-exit', 'worker-alive', 'dispatch-busy', 'cleanup-error']) {
+  for (const mode of ['missing-exit', 'worker-alive', 'dispatch-busy', 'cleanup-error', 'missing-recovery', 'survivors',
+    'recovery-error', 'wrong-recovery', 'duplicate-recovery']) {
     const fixture = setup(mode);
     try {
       await assert.rejects(fixture.run(), /Experimental native owner/);
       assert.equal(fixture.evidence.at(-1)?.state, 'unknown');
       assert.equal(fixture.evidence.at(-1)?.ownerExitObserved, false);
+    } finally { await fixture.close(); }
+  }
+});
+
+
+test('supervised crash records descendant drain without completing work or releasing ownership', async () => {
+  const fixture = setup('recovered-crash');
+  try {
+    await assert.rejects(fixture.run(), /Experimental native owner/);
+    const stop = fixture.evidence.at(-1);
+    assert.equal(stop?.state, 'unknown');
+    assert.equal(stop?.reason, 'owner_crashed');
+    assert.deepEqual(stop?.recovery, { ownerExitCode: -9, descendantsDrained: true, errors: [] });
+  } finally { await fixture.close(); }
+});
+
+
+test('execution failure and timeout remain failed while final supervisor evidence is retained', async () => {
+  for (const mode of ['failed-recovery', 'refused-recovery', 'timeout-recovery']) {
+    const fixture = setup(mode);
+    try {
+      await assert.rejects(fixture.run(), /Experimental native owner/);
+      const deadline = Date.now() + 2000;
+      while (!fixture.evidence.at(-1)?.recovery && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const stop = fixture.evidence.at(-1);
+      assert.equal(stop?.state, 'unknown');
+      assert.deepEqual(stop?.recovery, { ownerExitCode: 0, descendantsDrained: true, errors: [] });
+      assert.equal(stop?.ownerExitObserved, false);
     } finally { await fixture.close(); }
   }
 });
