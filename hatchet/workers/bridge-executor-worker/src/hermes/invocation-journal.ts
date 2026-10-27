@@ -27,10 +27,26 @@ export type NativeOwnerStop = {
   recovery?: NativeOwnerRecovery;
   dispatchQuiesced: boolean | null; reason: 'native_cleanup_observed' | 'owner_unavailable' | 'owner_timeout' | 'owner_crashed' | 'native_protocol_invalid';
 };
+export type NativeContainerRecord = {
+  schema: 1; binding: NativeOwnerBinding; image: string; nonce: string;
+  containerId: string | null; state: 'reserved' | 'created' | 'started' | 'stopped'; exitCode: number | null;
+};
+export type NativeReadContainerRecord = Omit<NativeContainerRecord, 'binding' | 'state'> & { purpose: 'native-role-read'; state: NativeContainerRecord['state'] | 'removed' };
+export function boundedNativeContainer(value: unknown, binding: NativeOwnerBinding): value is NativeContainerRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as NativeContainerRecord;
+  return Object.keys(v).sort().join(',') === 'binding,containerId,exitCode,image,nonce,schema,state'
+    && v.schema === 1 && canonical(v.binding) === canonical(binding)
+    && /^sha256:[0-9a-f]{64}$/.test(v.image) && /^[0-9a-f-]{36}$/.test(v.nonce)
+    && (v.containerId === null || /^[0-9a-f]{64}$/.test(v.containerId))
+    && ['reserved', 'created', 'started', 'stopped'].includes(v.state)
+    && (v.exitCode === null || Number.isInteger(v.exitCode) && v.exitCode >= 0 && v.exitCode <= 255);
+}
 export type InvocationExecutionContext = {
   binding: NativeOwnerBinding;
   registerCancel: (cancel: () => Promise<NativeOwnerStop>) => void;
   persistStop: (stop: NativeOwnerStop) => void;
+  persistContainer?: (record: NativeContainerRecord) => void;
 };
 export function boundedNativeOwnerStop(value: unknown, binding?: NativeOwnerBinding): NativeOwnerStop | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -85,6 +101,24 @@ export class InvocationJournal {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.privateDirectory(directory);
     this.syncDirectory(path.dirname(directory));
+  }
+
+  reserveReadContainer(image: string): { record: NativeReadContainerRecord; persist: () => void } {
+    if (!/^sha256:[0-9a-f]{64}$/.test(image)) throw invalid('Invalid native image');
+    const nonce = randomUUID();
+    const record: NativeReadContainerRecord = { schema: 1, purpose: 'native-role-read', image, nonce,
+      containerId: null, state: 'reserved', exitCode: null };
+    const file = path.join(this.directory, `read-${nonce}.json`);
+    let identity: string | null = null;
+    const persist = () => {
+      if (record.nonce !== nonce || record.image !== image
+          || record.containerId !== null && !/^[0-9a-f]{64}$/.test(record.containerId)
+          || identity !== null && record.containerId !== identity) throw invalid('Native read container identity changed');
+      this.persist(file, record);
+      identity = record.containerId;
+    };
+    persist();
+    return { record, persist };
   }
 
   private location(job: BridgeJob): string {
@@ -160,6 +194,16 @@ export class InvocationJournal {
         if (this.nativeOwners.get(job.job_id) !== owner || owner.cancel) throw invalid('Native owner context is no longer available');
         owner.cancel = cancel;
         if (existsSync(path.join(directory, 'cancel'))) void cancel().catch(() => undefined);
+      },
+      persistContainer: (record) => {
+        if (!boundedNativeContainer(record, binding)) throw invalid('Invalid native container record');
+        const file = path.join(directory, 'native-container.json');
+        if (existsSync(file)) {
+          const previous = JSON.parse(readFileSync(file, 'utf8')) as NativeContainerRecord;
+          if (!boundedNativeContainer(previous, binding) || previous.image !== record.image || previous.nonce !== record.nonce
+              || previous.containerId !== null && previous.containerId !== record.containerId) throw invalid('Native container identity changed');
+        }
+        this.persist(file, record);
       },
       persistStop: (stop) => {
         const current = this.status(job);

@@ -72,7 +72,7 @@ function setup(mode: string, precancel = false) {
 test('fixed bootstrap contains only checked-in assets and the existing native runtime/profile', () => {
   const code = nativeOwnerBootstrap();
   assert.match(code, /\/opt\/hermes/);
-  assert.match(code, /factory-native-executor\/factory-native-owners/);
+  assert.match(code, /factory-native-profile\/factory-native-owners/);
   assert.doesNotMatch(code, /PRIVATE_PROMPT/);
 });
 
