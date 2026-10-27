@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[1] / 'deploy/experimental-native-executor/container.py'
 
@@ -20,6 +21,17 @@ class NativeContainerSeedTests(unittest.TestCase):
         self.seed.mkdir(mode=0o700)
         self.home = self.root / 'home'
         self.runtime.update(HOME=self.home, SEED=self.seed)
+        self.original_lstat = Path.lstat
+        def executor_stat(file):
+            result = list(self.original_lstat(file))
+            # CI fixtures use its runner UID; model the container's provisioned
+            # UID without requiring root/chown or relaxing production admission.
+            if result[4] == os.getuid():
+                result[4] = 10000
+            return os.stat_result(result)
+        patch = mock.patch.object(Path, 'lstat', executor_stat)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -42,6 +54,15 @@ class NativeContainerSeedTests(unittest.TestCase):
         self.assertTrue((self.home / 'ready').is_file())
         with self.assertRaises(FileExistsError):
             self.runtime['prepare']()
+
+    def test_unapproved_seed_owner_is_refused(self):
+        file = self.write('config.yaml')
+        info = list(self.original_lstat(file))
+        info[4] = 12345
+        with mock.patch.object(Path, 'lstat', return_value=os.stat_result(info)):
+            with self.assertRaises(ValueError):
+                self.runtime['prepare']()
+        self.assertFalse(self.home.exists())
 
     def test_session_checkpoint_auth_and_hook_inputs_are_refused(self):
         for name in ['auth.json', 'state.db', 'processes.json', 'factory-native-owner.claim', 'hooks', 'plugins']:

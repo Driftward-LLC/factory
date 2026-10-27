@@ -16,6 +16,7 @@ const binding={invocation_id:crypto.randomUUID()+':'+crypto.randomUUID()+':1',ep
 let cancel;
 const context={binding,persistContainer:r=>{records.push({...r}); if(r.containerId&&!created.includes(r.containerId))created.push(r.containerId);fs.writeFileSync(dir+'/container.json',JSON.stringify(r),{mode:0o600});},persistStop:r=>fs.writeFileSync(dir+'/stop.json',JSON.stringify(r),{mode:0o600}),registerCancel:c=>{cancel=c;}};
 (async()=>{
+ let target,control;
  try{
   docker(['volume','create','--label','com.driftward.factory.role=native-executor-seed','--label','com.driftward.factory.fresh-credentials=true',seed]);
   // Public inert input only. No provider or GitHub credentials are introduced.
@@ -35,9 +36,7 @@ const context={binding,persistContainer:r=>{records.push({...r}); if(r.container
   const row=JSON.parse(docker(['inspect','--format','[{"State":{{json .State}},"HostConfig":{{json .HostConfig}}}]',created[0]]))[0];
   assert.equal(row.State.Running,false);
   assert.equal(row.HostConfig.PidMode,'');
-  fs.writeFileSync(dir+'/result.json',JSON.stringify({passed:true,container:created[0],image,records,readRecords:fs.readdirSync(dir+'/reads')},null,2));
   const spawnDetached=['python3','-c','import subprocess,sys; p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); print(p.pid)'];
-  let target,control;
   const extraContext=()=>({...context,binding:{...binding,invocation_id:crypto.randomUUID()+':'+crypto.randomUUID()+':1'},registerCancel:()=>{}});
   await assert.rejects(withNativeContainer(extraContext(),async()=>{
    target=nativeContainerScope().id;
@@ -46,16 +45,36 @@ const context={binding,persistContainer:r=>{records.push({...r}); if(r.container
     control=nativeContainerScope().id;
     await execNativeRead(spawnDetached,5000,4096);
     const observer=cp.spawn('python3',[root+'/tools/native-container-pid-observer.py',target,control],{stdio:['ignore','pipe','pipe']});
-    let output=''; const finished=new Promise((resolve,reject)=>{observer.stdout.on('data',b=>{output+=b;if(output.includes('ready\n')&&!output.includes('killing')){output+='killing\n';docker(['kill','--signal=KILL',target]);}});observer.on('error',reject);observer.on('close',code=>code===0?resolve():reject(Error('namespace observer failed')));});
-    await finished;
+    let output='',killSent=false;
+    await new Promise((resolve,reject)=>{
+     const fail=error=>{observer.kill();reject(error);};
+     const deadline=setTimeout(()=>fail(Error('namespace observer timeout')),15000);
+     observer.once('error',error=>{clearTimeout(deadline);fail(error);});
+     observer.once('close',code=>{clearTimeout(deadline);code===0?resolve():reject(Error('namespace observer failed'));});
+     observer.stdout.on('data',bytes=>{
+      try{
+       output+=bytes;
+       if(output.length>4096)throw Error('namespace observer output limit');
+       if(output.includes('ready\n')&&!killSent){killSent=true;docker(['kill','--signal=KILL',target]);}
+      }catch(error){clearTimeout(deadline);fail(error);}
+     });
+    }).finally(async()=>{
+     if(observer.exitCode===null&&observer.signalCode===null){
+      observer.kill();
+      await new Promise(resolve=>{const deadline=setTimeout(resolve,1000);observer.once('close',()=>{clearTimeout(deadline);resolve();});});
+     }
+    });
     fs.writeFileSync(dir+'/namespace-proof.txt',output,{mode:0o600});
     assert.equal(JSON.parse(docker(['inspect','--format','{{json .State}}',control])).Running,true);
    });
    throw Error('simulated supervisor loss');
   }),/simulated supervisor loss/);
-  console.log(JSON.stringify({passed:true,evidence:dir}));
  }finally{
-  for(const id of created){docker(['rm','--force','--volumes',id]);}
-  docker(['volume','rm',seed]);
+  const failures=[];
+  for(const id of created){try{assert.equal(docker(['rm','--force','--volumes',id]).trim(),id);}catch{failures.push(id);}}
+  try{assert.equal(docker(['volume','rm',seed]).trim(),seed);}catch{failures.push(seed);}
+  if(failures.length){fs.writeFileSync(dir+'/cleanup-failed.json',JSON.stringify(failures),{mode:0o600});throw Error('disposable cleanup incomplete; inspect '+dir);}
  }
+ fs.writeFileSync(dir+'/result.json',JSON.stringify({passed:true,image,records,target,control,readRecords:fs.readdirSync(dir+'/reads'),fixturesRemoved:true},null,2),{mode:0o600});
+ console.log(JSON.stringify({passed:true,evidence:dir}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
