@@ -14,8 +14,8 @@ Hermes processes with the same UID. Do not point other interpreters at the reser
 home. Provisioning a fresh native profile and its credentials remains a separate
 reviewed activation step; this change creates neither profiles nor credentials.
 
-The standalone interpreter handles exactly one request through an inherited
-private stdin pipe. A new, exclusive, mode-0700 journal stores the native session,
+A fresh, single-threaded supervisor forks exactly one native owner before native
+imports. The owner handles one request through the inherited private stdin pipe. A new, exclusive, mode-0700 journal stores the native session,
 raw task owner, PID/start ticks, PID namespace, boot identity and random runtime
 incarnation before admitting tools. Session rotations are written before their
 next tool batch. Existing journal directories are refused; an old record never
@@ -74,8 +74,8 @@ conversation: containment remains unknown. A new invocation or journal, released
 flock, missing PID, or empty checkpoint cannot reopen that profile. This makes
 the prototype **single-use per fresh profile until reviewed recovery exists**.
 Do not delete claims or checkpoints to bypass admission. The change establishes
-restart refusal, not safe reattachment, automatic cleanup after SIGKILL, or a
-reset/reuse command. Existing host helpers and profiles are not migrated.
+restart refusal and bounded cleanup after the native owner exits while its
+supervisor survives; it adds no safe reattachment or reset/reuse command. Existing host helpers and profiles are not migrated.
 
 Cancellation fences new batch admission, hard-interrupts the attached native
 agent, runs native graceful foreground cleanup followed by the native hard-exit
@@ -97,8 +97,46 @@ write cannot disable already-authorized native cleanup, but is reported as an
 evidence failure. The owner cannot observe its own exit; the caller must retain
 that separate observation. Docker-client exit alone is not owner-exit proof: a
 validated owner-exit frame, quiescent dispatch, empty cleanup errors and successful
-remote command exit are all required before the controller accepts a candidate.
-Old/corrupted records fail closed without cleanup.
+remote command exit, plus the supervisor's error-free descendant-drain receipt,
+are all required before the controller accepts a candidate. Old/corrupted records
+fail closed without authorizing attachment or PID-based recovery.
+
+## Recovery while the supervisor survives
+
+Linux `PR_SET_CHILD_SUBREAPER` makes orphaned descendants children of this dedicated
+parent, including `setsid` and double-fork descendants. The supervisor launches no
+unrelated work, keeps default SIGCHLD handling and is the only reaper. It checks
+required subreaper/pidfd/waitid support before forking, and persists
+`factory-native-owner.claim/supervisor.json` before allowing native initialization.
+Missing kernel support or a failed initial write refuses before child effects.
+
+After observing its owner exit with `waitpid`, the parent repeatedly discovers only
+its kernel children, opens each pidfd, checks current-child authority through
+`waitid(P_PIDFD, WNOWAIT)`, signals SIGKILL through that handle, and reaps. Repeated
+adoption handles additional generations. Only kernel `ECHILD` establishes a drained
+local descendant tree; an empty process-list snapshot does not. No persisted PID,
+checkpoint, process name, group ID, or system-wide process search authorizes a kill.
+The loop is bounded to five seconds and 4096 signaling attempts. Identity, signal,
+wait, bound and journal failures remain explicit errors and prevent success.
+
+The parent writes a separate private `recovery.json` and emits the bounded
+`owner_reaped` frame after cleanup. Transport loss does not disable cleanup or the
+private write. The gateway retains only the exit code, drain boolean and fixed
+error codes in its unknown stop evidence; old stop records remain readable. A
+successful drain after owner SIGKILL is still a nonzero invocation exit, never a
+completed work receipt. The claim and original ownership record remain intact.
+
+This is cooperative process recovery, not an OS security boundary: same-UID code
+can interfere with the supervisor. Supervisor death, host/runtime loss, kernel
+cleanup failures, processes outside its ancestry, remote resources and external
+effects remain unproven. Nothing resets a profile, migrates old claims, reattaches
+to historical work or authorizes retry. Profiles remain single-use even after an
+error-free local drain. A stronger lifecycle boundary and external-effect review
+are still needed before safe reuse or activation.
+
+Linux semantics: [subreapers](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html),
+[pidfds](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and
+[waitid](https://man7.org/linux/man-pages/man2/waitid.2.html).
 
 The adapter may attach the already-loaded observer's public `observe_owner` sink.
 It reuses that observer's queue and deterministic attempt/job trace to emit bounded
@@ -158,7 +196,10 @@ transport is replaced; AIAgent, conversation loop, dispatcher and terminal are n
 The genuine AIAgent fixture uses the gateway's controlled registration/start
 handshake, and verifies no effect or provider proof exists before authorization.
 Worker tests separately verify gateway auth, exact lease claims, start barriers,
-completion races, timeout/crash/transport-loss evidence and result normalization.
+completion races, timeout/crash/transport-loss evidence, missing/malformed supervisor
+receipts and result normalization. Supervisor tests separately exercise real nested
+and double-fork descendants, sibling survival, capability refusal, identity/signal/
+wait/deadline failures, and journal failures before admission and after cleanup.
 Their Docker transport is a fixture, not a real container execution.
 
 The hard-exit native helper alone was observed to leave the fixture's escaped
@@ -168,5 +209,5 @@ complete escaped-descendant coverage. Aggregate stop remains `unknown` even
 when every measured fixture process exits. Native dependencies, configuration,
 plugins, remote services and production source coverage are not attested by this
 experiment. Full capability/configuration/provider parity, nonparticipating legacy
-coexistence, installed runtime verification, crash/restart recovery, telemetry
-ingestion, remote resources and external settlement remain activation blockers.
+coexistence, installed runtime verification, supervisor/host-loss recovery, safe
+profile reuse, production telemetry ingestion, remote resources and external settlement remain activation blockers.

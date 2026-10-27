@@ -180,7 +180,8 @@ class NativeCanaryTests(unittest.TestCase):
                 return json.dumps({'marker_and_exit_zero': True, 'owner_exit_observed': True, 'observations': [{}, {}, {}],
                                    'recovery_checks': {name: True for name in ('legacy_checkpoint_refused',
                                        'completed_profile_reuse_refused', 'crash_restart_refused', 'inflight_cancel_quiesced',
-                                       'escaped_fixture_exited', 'duplicate_cancel_stable')}})
+                                       'escaped_fixture_exited', 'duplicate_cancel_stable', 'active_crash_descendants_drained',
+                                       'crash_control_survived', 'active_crash_reuse_refused')}})
             return ''
         with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
              patch.object(canary, 'image_identity', return_value='sha256:' + 'b' * 64), \
@@ -325,7 +326,8 @@ class NativeCanaryTests(unittest.TestCase):
         self.assertTrue(proof['marker_and_exit_zero'])
         self.assertEqual(proof['recovery_checks'], {name: True for name in ('legacy_checkpoint_refused',
                          'completed_profile_reuse_refused', 'crash_restart_refused', 'inflight_cancel_quiesced',
-                         'escaped_fixture_exited', 'duplicate_cancel_stable')})
+                         'escaped_fixture_exited', 'duplicate_cancel_stable', 'active_crash_descendants_drained',
+                                       'crash_control_survived', 'active_crash_reuse_refused')})
         self.assertEqual([event['properties']['factory.stop.stage'] for event in proof['observations']], ['registered', 'stopping', 'unknown'])
         self.assertEqual(result.stderr, '')
 

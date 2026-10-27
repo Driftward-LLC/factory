@@ -22,9 +22,7 @@ def no_network(*_args, **_kwargs):
 socket.socket.connect = no_network
 socket.socket.connect_ex = no_network
 
-import httpx2
-import openai
-from agent import process_bootstrap
+
 
 calls = []
 proof = Path(os.environ["HERMES_HOME"]) / "transport-proof.json"
@@ -74,7 +72,16 @@ def recorded_client(**kwargs):
     kwargs["http_client"] = httpx2.Client(transport=httpx2.MockTransport(transport))
     return openai.OpenAI(**kwargs)
 
-process_bootstrap.OpenAI = recorded_client
+# Install the recorded SDK only inside the new owner, after supervisor fork.
+original_run_owner = adapter.run_owner
+def recorded_run_owner(*args):
+    global openai, httpx2
+    import httpx2
+    import openai
+    from agent import process_bootstrap
+    process_bootstrap.OpenAI = recorded_client
+    return original_run_owner(*args)
+adapter.run_owner = recorded_run_owner
 original_conversation = adapter.conversation
 def observed_conversation(*args):
     try:

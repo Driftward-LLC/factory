@@ -4,11 +4,13 @@ The private inherited input pipe is the control authority. Disk records are
 evidence, not permission to attach to or signal an old process after a crash.
 """
 from contextlib import contextmanager
+import ctypes
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import stat
 import threading
 import time
@@ -249,3 +251,133 @@ def guarded_agent(base, owner):
             with owner.dispatch(self.session_id, effective_task_id, names, backend=terminal_env("TERMINAL_ENV", "local")):
                 return super()._execute_tool_calls(message, messages, effective_task_id, api_call_count)
     return LocalOnlyAgent
+
+
+def child_ids():
+    # Only this dedicated, single-threaded parent's kernel child list. Never a
+    # checkpoint, caller PID, process-name search or system-wide /proc scan.
+    with open(f"/proc/self/task/{os.getpid()}/children") as stream:
+        data = stream.read(65537)
+    if len(data) > 65536:
+        raise Refused("child enumeration bound exceeded")
+    return [int(value) for value in data.split()]
+
+
+def prepare_supervisor():
+    if threading.active_count() != 1 or child_ids():
+        raise Refused("dedicated single-threaded supervisor required")
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    # PR_SET_CHILD_SUBREAPER is process-local and not inherited across fork.
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        raise Refused("subreaper unavailable")
+    enabled = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(enabled), 0, 0, 0) != 0 or enabled.value != 1:
+        raise Refused("subreaper verification failed")
+    # Probe required APIs before any native import or start authorization.
+    fd = os.pidfd_open(os.getpid())
+    try:
+        signal.pidfd_send_signal(fd, 0)
+        try:
+            os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            pass  # Self is not a child; the syscall/flags were understood.
+        else:
+            raise Refused("invalid pidfd child check")
+    finally:
+        os.close(fd)
+
+
+def drain_children(timeout=5):
+    """Reap until ECHILD; only live kernel children authorize each signal."""
+    deadline = time.monotonic() + timeout
+    reaped = attempts = 0
+    errors = set()
+    while time.monotonic() < deadline and attempts < 4096:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return {"descendants_drained": True, "reaped": reaped, "errors": sorted(errors)}
+        except OSError:
+            errors.add("child_wait_failed")
+            break
+        if pid:
+            reaped += 1
+            continue
+        try:
+            children = child_ids()
+            for child in children:
+                attempts += 1
+                if attempts > 4096:
+                    break
+                fd = os.pidfd_open(child)
+                try:
+                    # pidfds establish identity, not authority. This check must
+                    # succeed for our current child before we send any signal.
+                    os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                    try:
+                        signal.pidfd_send_signal(fd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # Exit raced the signal; waitpid still must reap it.
+                finally:
+                    os.close(fd)
+        except (OSError, ValueError, Refused):
+            errors.add("child_signal_or_identity_failed")
+            break
+        time.sleep(0.01)
+    errors.add("descendant_drain_incomplete")
+    return {"descendants_drained": False, "reaped": reaped, "errors": sorted(errors)}
+
+
+def supervise(run, claim, request, emit):
+    """Fresh parent only; no disk-driven recovery, retry, or profile release."""
+    bound = binding(request)
+    prepare_supervisor()
+    ready_read, ready_write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(ready_write)
+        try:
+            authorized = os.read(ready_read, 1) == b"1"
+        finally:
+            os.close(ready_read)
+        code = 1
+        if authorized:
+            try:
+                run()
+                code = 0
+            except BaseException:
+                try:
+                    emit({"event": "refused", "reason": "invalid_launch_or_runtime"})
+                except Exception:
+                    pass
+        # No interpreter/atexit work after the owner-exit announcement. The
+        # surviving parent handles every remaining local descendant separately.
+        os._exit(code)
+    os.close(ready_read)
+    errors = []
+    record = {"schema": 1, **bound, "supervisor_pid": os.getpid(), "owner_pid": child,
+              "supervisor_incarnation": str(uuid.uuid4()), "created_at": time.time(),
+              "recovery": "operator_review_required"}
+    try:
+        atomic(claim / "supervisor.json", record)
+        os.write(ready_write, b"1")
+    except OSError:
+        errors.append("supervisor_journal_write_failed")
+    finally:
+        os.close(ready_write)
+    # The child alone consumes the inherited private control input.
+    os.close(0)
+    _, status = os.waitpid(child, 0)
+    receipt = {"schema": 1, **bound, "owner_exit_code": os.waitstatus_to_exitcode(status),
+               **drain_children(), "completion": "not_established", "profile_reusable": False}
+    receipt["errors"] += errors
+    try:
+        atomic(claim / "recovery.json", receipt)
+    except OSError:
+        receipt["errors"].append("recovery_journal_write_failed")
+    try:
+        emit({"event": "owner_reaped", "receipt": receipt})
+    except (OSError, ValueError):
+        pass  # Lost transport cannot disable cleanup or its private evidence.
+    return int(receipt["owner_exit_code"] != 0 or not receipt["descendants_drained"] or bool(receipt["errors"]))

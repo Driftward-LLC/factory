@@ -115,7 +115,7 @@ else if(args.includes('/opt/hermes/.venv/bin/python')){
    emit({event:'registered',ownership:{...v.binding,pid:process.pid,runtime_incarnation:'00000000-0000-4000-8000-000000000099'}});}
   else if(v.start){started=true;fs.writeFileSync(path.join(root,'started'),'yes');emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/Driftward-LLC/capykit/pull/61',branch:mode==='invalid-result'?'codex/forged':launch.receipt_policy.branch,commit_sha:'a'.repeat(40),validation:null}});}
   else if(v.cancel){fs.writeFileSync(path.join(root,'cancelled'),JSON.stringify({started}));emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});}
- }).on('close',()=>{if(launch){emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});emit({event:'owner_exiting',binding:launch.binding,worker_exited:true,dispatch_quiesced:true,errors:[]});}});
+ }).on('close',()=>{if(launch){emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});emit({event:'owner_exiting',binding:launch.binding,worker_exited:true,dispatch_quiesced:true,errors:[]});emit({event:'owner_reaped',receipt:{schema:1,...launch.binding,owner_exit_code:0,descendants_drained:true,errors:[],completion:'not_established',profile_reusable:false}});}});
 }else process.exit(4);
 `, { mode: 0o700 });
     const lease = { lease_id: '00000000-0000-4000-8000-000000000071', owner: 'disposable', epoch: 1, fence_token: 'private-test-fence' };

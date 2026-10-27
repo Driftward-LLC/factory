@@ -397,8 +397,9 @@ class LauncherOutputTests(unittest.TestCase):
             self.assertEqual(result.stderr, "")
             self.assertNotIn("SENSITIVE", result.stdout)
             events = [json.loads(line) for line in result.stdout.splitlines()]
-            self.assertEqual(sorted(event["event"] for event in events), sorted(["registered", "stop", "execution_failed", "owner_exiting"]))
-            self.assertEqual(events[-1]["errors"], ["execution_failed_or_refused"])
+            self.assertEqual(sorted(event["event"] for event in events), sorted(["registered", "stop", "execution_failed", "owner_exiting", "owner_reaped"]))
+            self.assertEqual(events[-2]["errors"], ["execution_failed_or_refused"])
+            self.assertTrue(events[-1]["receipt"]["descendants_drained"])
             stages = set((home / "noise-stages").read_text().splitlines())
             self.assertTrue({"registry_import", "base_import", "agent_import", "agent_init",
                              "conversation", "agent_close", "cleanup_foreground", "cleanup_background"}.issubset(stages))
