@@ -425,7 +425,7 @@ install -D -m 0755 "$factory_cli_source" "$factory_cli_target"
 install -d -m 0755 -o root -g root "$factory_share_dir/desired-state"
 install -d -m 0755 -o root -g root "$factory_share_dir/hermes-gateway"
 install -d -m 0755 -o root -g root "$factory_share_dir/native-owner"
-for native_owner_asset in owner.py main.py; do
+for native_owner_asset in owner.py main.py container.py; do
   install -m 0644 "$script_dir/experimental-native-executor/$native_owner_asset" "$factory_share_dir/native-owner/$native_owner_asset"
 done
 install -d -m 0755 -o root -g root "$factory_share_dir/independent-reviewer/deploy/independent-reviewer"

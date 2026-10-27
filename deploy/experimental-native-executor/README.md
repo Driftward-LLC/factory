@@ -7,12 +7,9 @@ part of this change. It does not recover ENG-162 or authorize retrying failed wo
 
 The experimental route now requires `DRIFTWARD_HERMES_PROFILE=factory-native-executor`.
 Factory's legacy route refuses that reserved profile, and the native route refuses
-the legacy `factory-executor` profile (including an omitted profile). Runtime
-identity/model queries and native journals use the selected native profile too.
-This is Factory route separation, not an OS boundary against manually launched
-Hermes processes with the same UID. Do not point other interpreters at the reserved
-home. Provisioning a fresh native profile and its credentials remains a separate
-reviewed activation step; this change creates neither profiles nor credentials.
+the legacy `factory-executor` profile (including an omitted profile). Identity/model queries and native journals use a fresh isolated profile for
+each invocation. Dedicated executor credentials still require a separate reviewed
+provisioning/activation step; no shared profiles or credentials are migrated.
 
 A fresh, single-threaded supervisor forks exactly one native owner before native
 imports. The owner handles one request through the inherited private stdin pipe. A new, exclusive, mode-0700 journal stores the native session,
@@ -33,8 +30,8 @@ the existing transport/private-journal trust boundary, **not independent current
 bridge-lease attestation**. Standalone fixture bindings remain format-validated
 caller input. Disk evidence never authorizes attaching to an old process.
 
-The owner runs inside the existing Driftward Hermes runtime/user and reserved native profile through
-the same Docker Compose arguments as identity checks. A reviewer-style fixed
+The owner runs as PID 1 in a new container under UID 10000, using the dedicated
+executor seed described below. Invocation identity checks use that exact container. A reviewer-style fixed
 bootstrap contains checked-in public Python assets; job data travels through
 private stdin and never becomes Python source or arbitrary executable argv. The
 existing installer copies the host assets but is not run here. The existing
@@ -66,16 +63,17 @@ Admission additionally refuses any existing `processes.json`, even empty, and
 exclusively creates a private `factory-native-owner.claim/` directory before
 Hermes imports. The directory and bounded exact binding are persisted with fsync.
 An incomplete claim also blocks reuse. Symlinked or writable-by-others profile
-homes are refused. There is no checkpoint repair, private-path override or
-credential copying.
+homes are refused. There is no checkpoint repair, private-path override or shared credential copying.
 
 The claim is deliberately retained after every exit, including a successful
-conversation: containment remains unknown. A new invocation or journal, released
+conversation: the native stop receipt itself remains unknown. The host retains
+separate exact-container exit evidence. A new invocation or journal, released
 flock, missing PID, or empty checkpoint cannot reopen that profile. This makes
 the prototype **single-use per fresh profile until reviewed recovery exists**.
-Do not delete claims or checkpoints to bypass admission. The change establishes
-restart refusal and bounded cleanup after the native owner exits while its
-supervisor survives; it adds no safe reattachment or reset/reuse command. Existing host helpers and profiles are not migrated.
+Do not delete claims or checkpoints to bypass admission. The native owner establishes
+restart refusal and bounded cleanup after its child exits; the container adds
+local process containment if the supervisor also exits. Neither layer adds safe reattachment or reset/reuse. Existing host helpers and
+profiles are not migrated.
 
 Cancellation fences new batch admission, hard-interrupts the attached native
 agent, runs native graceful foreground cleanup followed by the native hard-exit
@@ -133,6 +131,13 @@ effects remain unproven. Nothing resets a profile, migrates old claims, reattach
 to historical work or authorizes retry. Profiles remain single-use even after an
 error-free local drain. A stronger lifecycle boundary and external-effect review
 are still needed before safe reuse or activation.
+
+The [canonical isolated canary](../native-canary/README.md#supervisor-loss-namespace-experiment)
+also exercises supervisor SIGKILL with the supervisor as PID 1 in a dedicated
+disposable container. That experiment uses kernel namespace teardown and host
+exit observations. The host-gateway integration described below uses that
+boundary; neither the proof nor integration authorizes profile reuse or recovery
+after host loss.
 
 Linux semantics: [subreapers](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html),
 [pidfds](https://man7.org/linux/man-pages/man2/pidfd_open.2.html), and
@@ -211,3 +216,79 @@ plugins, remote services and production source coverage are not attested by this
 experiment. Full capability/configuration/provider parity, nonparticipating legacy
 coexistence, installed runtime verification, supervisor/host-loss recovery, safe
 profile reuse, production telemetry ingestion, remote resources and external settlement remain activation blockers.
+
+## Experimental host-gateway isolation
+
+The native-owner route now requires one dedicated container per invocation.
+Only the host gateway owns Docker; workers retain their private-socket boundary.
+The route refuses bundled `local-executor` mode, whose gateway has no Docker
+socket. Source changes do not activate the experimental flag.
+
+Before separately approved activation, provision **new executor-role** inputs:
+
+- `DRIFTWARD_HERMES_NATIVE_IMAGE`: the reviewed full `sha256:` image ID. Images
+  with credential environment variables, build hooks or undeclared data volumes
+  are refused. The isolated checks use the native canary's pinned Hermes image;
+  arbitrary image compatibility is not established.
+- `DRIFTWARD_HERMES_NATIVE_SEED`: a local Docker volume named
+  `factory-native-executor-seed-<32 lowercase hex characters>`, labeled
+  `com.driftward.factory.role=native-executor-seed` and
+  `com.driftward.factory.fresh-credentials=true`. These identify an operator
+  provisioning assertion, not proof of credential identity.
+- Only `config.yaml`, `.env`, `.gitconfig` and `skills/` may be present. Files
+  must be regular, owned by root or UID 10000, readable by UID 10000 and not
+  writable by group/others. Links, special files, session history, checkpoints,
+  OAuth stores, hooks and plugins are refused. Never populate this seed from
+  shared Hermes profiles or host authentication. Its mount is read-only.
+- `.env` accepts only newly provisioned `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+  and a GitHub App installation `GH_TOKEN`. Select an `openai` or `anthropic`
+  model, the explicit local terminal toolset and
+  `tools.tool_search.enabled: "off"` in `config.yaml`. Include the three mandatory
+  engineering skills in the existing Hermes skills layout. Configure the App
+  author and `gh auth git-credential` helper in the new `.gitconfig`.
+
+Identity admission checks GitHub's actual GraphQL `viewer.login`, the expected
+bot author and repository access inside the invocation's exact container. Model
+selection also runs there. OAuth and independent-review enrollment are refused.
+Installation tokens expire; renewal is an operator prerequisite, not a new
+credential migration/renewal service. See GitHub's
+[installation authentication guide](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
+
+Each invocation gets an anonymous persistent `/tmp` volume with a fresh private
+profile and workspace. The image root is read-only; fresh `/opt/data` tmpfs
+masks image defaults and prevents shared root-store fallback. The supervisor is
+PID 1 with private process namespaces, all capabilities dropped, no privilege
+escalation, no init process and no restart policy. Checks finish before the
+private protocol authorizes tools. Bounded job/attempt correlation reaches the
+native process; existing gateway tracing remains in place.
+
+`native-container.json` beside the invocation intent records the full binding,
+image, nonce, exact container ID and observed exit. Reservation precedes create;
+ID persistence precedes start. Ambiguous create responses retain unresolved
+reservations and never permit name/label-based deletion or retry. Cancellation
+allows bounded native cleanup then stops only the recorded object. Startup,
+timeout and protocol failures also stop that object. Stopped invocation
+containers and private volumes remain for inspection, including single-use
+profile claims; no session/state pruning is performed.
+
+Standalone identity/PR-inspection RPCs use short-lived containers with the same
+dedicated role inputs. Their `read-<nonce>.json` records remain in the invocation
+directory after successful removal. Cleanup failures preserve the last record.
+Neither execution nor inspection falls back to the shared Hermes runtime.
+
+After gateway restart, incomplete invocations remain **outcome unknown**, with
+no re-execution, automatic reattachment, profile reuse or historical cleanup.
+Operator recovery must inspect exact recorded Docker identities and retained
+evidence. Container exit proves local containment only, not completed work or
+settled external effects. Credential-bearing volume retention remains an
+operator responsibility.
+
+Run `node tools/verify-native-container.js` after building workers for the opt-in
+host integration acceptance check. It provisions only public, credential-free
+fixture inputs, checks exact-container reads and registered cancellation, kills
+a disposable PID 1 with a detached child, and observes target exit/control
+survival through pidfds. It removes only its newly created fixture containers
+and seed volume and retains bounded evidence under the printed `/tmp` directory.
+The canonical `factory profiles canary native-owner` separately exercises real
+native foreground/background/detached tools and the bounded PostHog relay.
+Neither check is a live-provider or real GitHub write test.

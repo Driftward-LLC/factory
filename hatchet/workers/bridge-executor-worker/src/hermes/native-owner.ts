@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { boundedNativeOwnerRecovery, type InvocationExecutionContext, type NativeOwnerStop, type NativeOwnerRecovery } from './invocation-journal';
 import { NonRetryableBridgeExecutionError } from './errors';
 
-const PROFILE = '/opt/data/profiles/factory-native-executor';
+const PROFILE = '/tmp/factory-native-profile';
 
 /** Public checked-in assets only; no request/job value becomes Python source. */
 export function nativeOwnerBootstrap(): string {
@@ -16,7 +16,7 @@ export function nativeOwnerBootstrap(): string {
   const owner = readFileSync(path.join(directory, 'owner.py'), 'utf8');
   const main = readFileSync(path.join(directory, 'main.py'), 'utf8');
   if (owner.length + main.length > 128 * 1024) throw failure('hermes_process_spawn_failed');
-  return `import sys,types,os,stat\nos.chdir('/opt/hermes')\nsys.path.insert(0,'/opt/hermes')\n` +
+  return `import sys,types,os,stat\nassert os.getpid()==1\nsys.path.insert(0,'/opt/hermes')\n` +
     `root=${JSON.stringify(PROFILE + '/factory-native-owners')}\nos.makedirs(root,mode=0o700,exist_ok=True)\n` +
     `info=os.lstat(root)\nassert stat.S_ISDIR(info.st_mode) and info.st_uid==os.getuid() and not info.st_mode&0o077\n` +
     `module=types.ModuleType('owner')\nsys.modules['owner']=module\nexec(${JSON.stringify(owner)},module.__dict__)\n` +
@@ -79,8 +79,8 @@ export function runNativeOwner(context: InvocationExecutionContext, launch: Reco
       if (failed) return;
       failed = failure(reason);
       persist(reason === 'hermes_process_timeout' ? 'owner_timeout' : 'native_protocol_invalid');
-      // Closing only our private Docker exec input requests native cleanup.
-      // Killing a Docker client would not prove its in-container owner stopped.
+      // Closing the private input requests native cleanup; the container wrapper
+      // also enforces an exact-container stop when this protocol fails.
       child?.stdin?.end();
       reject(failed);
     };

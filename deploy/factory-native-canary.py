@@ -1,10 +1,13 @@
 """Canonical backend only: disposable image-pinned native-owner validation."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import select
 import subprocess
 import tempfile
+import time
 import uuid
 
 ENV = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'}
@@ -14,7 +17,7 @@ ASSET_SHA256 = {
     'main.py': 'bf1747d1aa597f5404901b428eb8dfb7f2e4a5849e89f342a8d8478f98a28a58',
     'owner.py': 'b5220ca78d658c0ca5c0ede84535cc87184149e5f6541dd5958ab99216ee84ab',
     'transport.py': 'b1c4879bd9da207067e77d19e41b403c92b31cb661230ccd9d3c14f2764f10e9',
-    'driver.py': 'c111043201e0b963b03604cc75365337bc157a6201b1569270efcd27d818a9fc',
+    'driver.py': '72fd74cbb125dd25c045af1627caa59e4fa2324941344efbe1ab9c665bdae454',
     'observer.py': '89c0654d39bdc8fe3bd1c7583908e33dc1faf884260722601469c0866f523788',
 }
 REFUSAL_CODES = {
@@ -118,7 +121,7 @@ def image_identity(identity):
 def create_arguments(name, image, driver):
     if not re.fullmatch(r'factory-native-canary-[0-9a-f]{32}', name) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
         raise ValueError('invalid disposable identity')
-    return ['create', '--name', name, '--label', 'com.driftward.factory.validation=native-owner', '-i',
+    return ['create', '--name', name, '--label', 'com.driftward.factory.validation=native-owner', '-i', '--restart=no',
             '--network=none', '--read-only', '--no-healthcheck', '--user=10000:10000', '--cap-drop=ALL',
             '--security-opt=no-new-privileges:true', '--pids-limit=64', '--memory=768m', '--cpus=1',
             '--ulimit', 'fsize=1048576:1048576', '--ulimit', 'nofile=256:256',
@@ -136,6 +139,8 @@ def verify_created(container, name, image):
             or config.get('User') != '10000:10000' or config.get('Healthcheck', {}).get('Test') != ['NONE']
             or host.get('NetworkMode') != 'none' or host.get('ReadonlyRootfs') is not True
             or host.get('Privileged') is not False or host.get('CapAdd')
+            or host.get('PidMode') != '' or host.get('Init') not in (None, False)
+            or host.get('RestartPolicy', {}).get('Name') != 'no'
             or host.get('CapDrop') != ['ALL'] or host.get('SecurityOpt') != ['no-new-privileges:true']
             or host.get('Binds') or host.get('VolumesFrom') or host.get('Devices') or host.get('Mounts')
             or host.get('Tmpfs') != TMPFS or not isinstance(mounts, list)
@@ -143,6 +148,199 @@ def verify_created(container, name, image):
                    or mount.get('Destination') not in TMPFS or mount.get('Source') for mount in mounts)
             or len({mount.get('Destination') for mount in mounts}) != len(mounts)):
         raise ValueError('disposable container isolation mismatch')
+
+
+def send_frame(process, value, deadline):
+    data = memoryview((json.dumps(value) + '\n').encode())
+    if len(data) > 524288:
+        raise ValueError('fixture_payload_oversize')
+    os.set_blocking(process.stdin.fileno(), False)
+    while data:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([], [process.stdin], [], remaining)[1]:
+            raise ValueError('fixture_write_timeout')
+        try:
+            data = data[os.write(process.stdin.fileno(), data):]
+        except BlockingIOError:
+            continue
+
+
+def read_frame(process, deadline):
+    data = bytearray()
+    while len(data) <= 65536:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+            raise ValueError('fixture_read_timeout')
+        byte = os.read(process.stdout.fileno(), 1)
+        if not byte:
+            raise ValueError('fixture_protocol_eof')
+        data.extend(byte)
+        if byte == b'\n':
+            value = json.loads(data)
+            if not isinstance(value, dict):
+                raise ValueError('fixture_frame_invalid')
+            return value
+    raise ValueError('fixture_frame_oversize')
+
+
+def running_container(container, image):
+    row = inspect_json(['inspect', '--type=container', container], 'container_inspection')[0]
+    if (row.get('Id') != container or row.get('Image') != image
+            or row.get('State', {}).get('Running') is not True
+            or row.get('HostConfig', {}).get('PidMode') != ''):
+        raise ValueError('fixture_runtime_identity_changed')
+    return row
+
+
+def fixture_handles(container, image, expected):
+    """Polling handles only. Docker's exact created ID is the kill authority."""
+    row = running_container(container, image)
+    init = row['State']['Pid']
+    if type(init) is not int or init <= 1:
+        raise ValueError('fixture_init_identity_invalid')
+    namespace = os.stat(f'/proc/{init}/ns/pid')
+    host_namespace = os.stat('/proc/self/ns/pid')
+    if (namespace.st_dev, namespace.st_ino) == (host_namespace.st_dev, host_namespace.st_ino):
+        raise ValueError('private_namespace_missing')
+    rows = docker(['top', container, '-eo', 'pid']).splitlines()
+    if not rows or rows[0].strip() != 'PID' or not 1 <= len(rows) - 1 <= 64:
+        raise ValueError('fixture_process_inventory_invalid')
+    handles, members = [], set()
+    try:
+        for value in rows[1:]:
+            if not re.fullmatch(r'\s*[1-9][0-9]*\s*', value):
+                raise ValueError('fixture_process_identity_invalid')
+            pid = int(value)
+            handle = os.pidfd_open(pid)
+            handles.append(handle)
+            selected = os.stat(f'/proc/{pid}/ns/pid')
+            if (selected.st_dev, selected.st_ino) != (namespace.st_dev, namespace.st_ino):
+                raise ValueError('fixture_namespace_mismatch')
+            status = Path(f'/proc/{pid}/status').read_text()
+            line = next(line for line in status.splitlines() if line.startswith('NSpid:'))
+            native_pid = int(line.split()[-1])
+            if pid == init and native_pid != 1:
+                raise ValueError('supervisor_not_namespace_init')
+            if native_pid in members:
+                raise ValueError('fixture_process_inventory_duplicate')
+            members.add(native_pid)
+        if not ({1, *expected} <= members) or select.select(handles, [], [], 0)[0]:
+            raise ValueError('fixture_processes_not_live')
+        if running_container(container, image)['State']['Pid'] != init:
+            raise ValueError('fixture_init_changed')
+        return handles, (namespace.st_dev, namespace.st_ino)
+    except BaseException:
+        for handle in handles:
+            os.close(handle)
+        raise
+
+
+def supervisor_loss_checks(image, assets, bound, receipt, persist):
+    """Two disposable namespaces; never stop the shared Hermes runtime."""
+    runs = []
+    proof = {'status': 'unknown', 'completion': 'not_established', 'profile_reusable': False,
+             'boundary': 'dedicated_container_pid_namespace', 'containers': []}
+    receipt['supervisor_loss'] = proof
+    try:
+        for role in ('target', 'control'):
+            name = 'factory-native-canary-' + uuid.uuid4().hex
+            record = {'role': role, 'name': name, 'created': False, 'removed': False}
+            proof['containers'].append(record)
+            persist()  # Record creation intent before an ambiguous Docker call.
+            container = docker(create_arguments(name, image, assets['driver.py'])).strip()
+            if not re.fullmatch(r'[0-9a-f]{64}', container):
+                raise ValueError('fixture_container_identity_invalid')
+            record.update(id=container, created=True)
+            run = {'record': record, 'handles': []}
+            runs.append(run)
+            persist()
+            verify_created(container, name, image)
+            process = subprocess.Popen(['docker', 'start', '--attach', '--interactive', container], env=ENV,
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                       bufsize=0)
+            run['process'] = process
+            deadline = time.monotonic() + 25
+            send_frame(process, {'assets': {key: assets[key] for key in ('main.py', 'owner.py', 'transport.py')},
+                                 'binding': bound, 'supervisor_loss_fixture': True}, deadline)
+            send_frame(process, {'binding': bound, 'backend': 'local',
+                                 'enabled_tools': ['terminal', 'process_manage']}, deadline)
+            registration = read_frame(process, deadline)
+            ownership = registration.get('ownership', {})
+            if registration.get('event') != 'registered' or any(ownership.get(k) != v for k, v in bound.items()):
+                raise ValueError('fixture_registration_invalid')
+            send_frame(process, {'start': bound}, deadline)
+            if read_frame(process, deadline).get('event') != 'fixture_spawn_admitted':
+                raise ValueError('fixture_admission_missing')
+            ready = read_frame(process, deadline)
+            background = ready.get('background', [])
+            if (ready.get('event') != 'fixture_ready' or len(background) != 2
+                    or [row.get('persistent') for row in background] != [False, True]):
+                raise ValueError('fixture_readiness_missing')
+            expected = [ownership.get('pid'), ready.get('foreground_pid'), ready.get('escaped_pid'),
+                        *[row.get('pid') for row in background]]
+            if any(type(pid) is not int or pid <= 1 for pid in expected) or len(set(expected)) != 5:
+                raise ValueError('fixture_process_ids_invalid')
+            run['handles'], run['namespace'] = fixture_handles(container, image, expected)
+            record.update(ready=True, measured_processes=len(run['handles']), supervisor_is_pid1=True)
+            persist()
+        target, control = runs
+        if target['namespace'] == control['namespace']:
+            raise ValueError('fixture_namespaces_shared')
+        # All handles must still be live immediately before the exact-ID kill.
+        if any(select.select(run['handles'], [], [], 0)[0] for run in runs):
+            raise ValueError('fixture_ended_before_injection')
+        proof['kill_requested'] = True
+        persist()
+        docker(['kill', '--signal=KILL', target['record']['id']])
+        deadline = time.monotonic() + 10
+        pending = set(target['handles'])
+        while pending and time.monotonic() < deadline:
+            pending.difference_update(select.select(list(pending), [], [], max(0, deadline - time.monotonic()))[0])
+        stopped = inspect_json(['inspect', '--type=container', target['record']['id']], 'container_inspection')[0]
+        if (pending or stopped.get('Id') != target['record']['id'] or stopped.get('Image') != image
+                or stopped.get('State', {}).get('Running') is not False
+                or stopped.get('State', {}).get('Status') != 'exited'
+                or stopped.get('State', {}).get('ExitCode') != 137):
+            raise ValueError('fixture_namespace_exit_unproven')
+        running_container(control['record']['id'], image)
+        if select.select(control['handles'], [], [], 0)[0]:
+            raise ValueError('fixture_control_exited')
+        proof.update(status='passed', target_processes_exited=True, unrelated_control_survived=True,
+                     supervisor_exit_code=137, native_recovery_receipt='not_expected_after_sigkill')
+        persist()
+    except BaseException:
+        proof['status'] = 'unknown'
+        raise
+    finally:
+        cleanup_failed = False
+        for run in runs:
+            try:
+                docker(['rm', '--force', '--volumes', run['record']['id']])
+                run['record']['removed'] = True
+            except Exception:
+                cleanup_failed = True
+            process = run.get('process')
+            if process:
+                try:
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill(); process.wait(timeout=5)  # Client only; never counted as remote cleanup.
+                except Exception:
+                    cleanup_failed = True
+                finally:
+                    for stream in (process.stdin, process.stdout):
+                        try:
+                            stream.close()
+                        except OSError:
+                            cleanup_failed = True
+            for handle in run['handles']:
+                os.close(handle)
+        if cleanup_failed:
+            proof['status'] = 'unknown'
+        persist()
+        if cleanup_failed:
+            raise ValueError('fixture_container_cleanup_unknown')
 
 
 def run(runtime, install, wrapper):
@@ -200,6 +398,10 @@ def run(runtime, install, wrapper):
                     'inflight_cancel_quiesced', 'escaped_fixture_exited', 'duplicate_cancel_stable',
                     'active_crash_descendants_drained', 'crash_control_survived', 'active_crash_reuse_refused')}):
             raise ValueError('native canary proof incomplete')
+        phase = 'supervisor_loss'
+        def persist():
+            runtime.write_observer_receipt(install.directory / ('native-canary-' + attempt + '.json'), receipt)
+        supervisor_loss_checks(image, assets, binding, receipt, persist)
         # The container is credential-free and cannot ingest. Only this fixed
         # exporter in the existing runtime sees its configured ingestion key.
         phase = 'telemetry_relay'

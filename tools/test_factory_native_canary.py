@@ -107,6 +107,7 @@ class NativeCanaryTests(unittest.TestCase):
         row = {'Id': container, 'Name': '/' + name, 'Image': image, 'State': {'Status': 'created', 'Running': False},
                'Config': {'User': '10000:10000', 'Healthcheck': {'Test': ['NONE']}}, 'Mounts': [],
                'HostConfig': {'NetworkMode': 'none', 'ReadonlyRootfs': True, 'Privileged': False,
+                              'PidMode': '', 'RestartPolicy': {'Name': 'no'},
                               'CapDrop': ['ALL'], 'SecurityOpt': ['no-new-privileges:true'], 'Tmpfs': canary.TMPFS}}
         with patch.object(canary, 'docker', return_value=json.dumps([row])):
             canary.verify_created(container, name, image)
@@ -119,6 +120,8 @@ class NativeCanaryTests(unittest.TestCase):
                 canary.verify_created(container, name, image)
         for field, value in (('Tmpfs', {'/tmp': canary.TMPFS['/tmp']}), ('NetworkMode', 'host'),
                              ('ReadonlyRootfs', False), ('Privileged', True), ('Binds', ['/private:/tmp']),
+                             ('PidMode', 'host'), ('PidMode', 'container:other'), ('Init', True),
+                             ('RestartPolicy', {'Name': 'always'}),
                              ('VolumesFrom', ['shared']), ('CapAdd', ['SYS_ADMIN']), ('SecurityOpt', [])):
             changed = copy.deepcopy(row)
             changed['HostConfig'][field] = value
@@ -186,9 +189,10 @@ class NativeCanaryTests(unittest.TestCase):
         with patch.object(canary, 'public_asset', side_effect=lambda runtime, path, base: path.read_text()), \
              patch.object(canary, 'image_identity', return_value='sha256:' + 'b' * 64), \
              patch.object(canary, 'verify_created', side_effect=lambda *args: calls.append('verify')), \
+             patch.object(canary, 'supervisor_loss_checks', side_effect=lambda *args: calls.append('supervisor_loss')), \
              patch.object(canary, 'docker', side_effect=docker):
             result = canary.run(fake, SimpleNamespace(directory=Path('/unused')), None)
-        self.assertEqual(calls, ['create', 'verify', 'start', 'rm'])
+        self.assertEqual(calls, ['create', 'verify', 'start', 'supervisor_loss', 'rm'])
         self.assertEqual(result['status'], 'passed')
         self.assertTrue(result['container_safety_verified'])
         self.assertTrue(result['container_removed'])

@@ -63,6 +63,45 @@ fixed boolean results under `recovery_checks`; all must pass before the telemetr
 relay runs. No profile-unlock, retry, reattachment or activation command is added.
 The checks do not prove cleanup after supervisor/host loss or settle external effects.
 
+## Supervisor-loss namespace experiment
+
+After the existing owner/crash checks, the canonical host backend creates two
+additional disposable containers using the same verified image and isolation
+settings. Each has its own private PID namespace, restart disabled and no extra
+init process. The fixed driver verifies the native source subset, prepares a
+fresh temporary home, and execs the actual controlled fixture launcher as PID 1.
+The supervisor, not a surviving Python driver, is therefore the namespace init.
+No Docker socket, capabilities, credentials, host mounts or network are added.
+
+Both target and control must register the exact binding and report live native
+foreground, ordinary/persistent background and escaped-child work. The host
+captures bounded pidfds from each exact container's Docker process inventory,
+checks their PID-namespace membership and required native PIDs, and verifies all
+handles are live. Handles are only polled; no host PID is a signaling target.
+Creation intent, exact created IDs, readiness and kill intent are persisted in
+the private canonical receipt before the corresponding destructive operation.
+
+The host sends SIGKILL through Docker to the exact target container ID. Linux's
+[PID-namespace init semantics](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)
+terminate the other namespace members when PID 1 exits. Success requires every
+captured target handle to become readable, target container exit 137, and the
+independent control container and all its captured processes to remain alive.
+Both exact created containers must then be removed. Missing evidence, failed
+receipt writes, uncertain creation, or failed removal leaves the canary unknown;
+an ambiguous name is never killed or removed. The existing telemetry relay only
+runs after this experiment succeeds too.
+
+This proves an isolated mechanism, **not supervisor-loss recovery for the
+experimental gateway's shared-runtime `docker exec` route**. That route still
+needs a reviewed per-invocation lifecycle boundary. A baseline disposable local
+probe at `52990a7` observed the owner, foreground child and detached descendant
+surviving supervisor SIGKILL, with no recovery receipt; the test harness reaped
+them and the unrelated control survived. Another ordinary watchdog would only
+move that dependency. The namespace experiment expects no native recovery receipt
+after SIGKILL. Its host evidence remains separate from work completion, safe
+profile reuse, host-loss recovery and external-effect settlement. The disposable
+profile lives only in tmpfs; no historical profile or claim is reset or migrated.
+
 Actual Owner.observe stages registered/stopping/unknown use an explicit
 canary-only callback and private protocol. This proves a **relay**, not production
 plugin discovery or direct owner ingest. A separate one-shot process inside
@@ -77,7 +116,7 @@ Queue flush is NOT delivery proof: independently query the returned trace,
 attempt and three stages in the expected PostHog project. Raw prompts, responses,
 commands/output and credentials are never evidence.
 
-Timeout/failure removes only the exact returned created-container ID, including
+Timeout/failure removes only the exact returned created-container IDs, including
 its anonymous volumes if a pre-start inspection found unexpected storage. An
 ambiguous creation failure never removes a colliding name; its unique
 disposable_name remains for reconciliation. Sanitized bounded receipts live at

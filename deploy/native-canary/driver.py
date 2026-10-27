@@ -215,7 +215,7 @@ def recovery_checks(root, env, bound):
             'active_crash_descendants_drained': True, 'crash_control_survived': True, 'active_crash_reuse_refused': True}
 
 
-def execute(payload, native_root=Path('/opt/hermes'), root=Path('/tmp/canary')):
+def prepare(payload, native_root, root):
     for name, digest in SOURCES.items():
         path = native_root / name
         if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024 or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
@@ -237,6 +237,11 @@ def execute(payload, native_root=Path('/opt/hermes'), root=Path('/tmp/canary')):
     env = {'PATH': '/opt/hermes/.venv/bin:/usr/bin:/bin', 'HOME': str(home), 'HERMES_HOME': str(home),
            'XDG_CONFIG_HOME': str(home), 'XDG_CACHE_HOME': str(home), 'PYTHONPATH': str(native_root),
            'FACTORY_NATIVE_CANARY_RELAY': '1', 'LANG': 'C.UTF-8'}
+    return home, env
+
+
+def execute(payload, native_root=Path('/opt/hermes'), root=Path('/tmp/canary')):
+    home, env = prepare(payload, native_root, root)
     process = subprocess.Popen([sys.executable, '-u', str(root / 'transport.py'), str(root / 'main.py'),
                                 '--experimental-local-terminal', '--controlled', '--journal', str(root / 'journal')],
                                cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -299,10 +304,28 @@ def execute(payload, native_root=Path('/opt/hermes'), root=Path('/tmp/canary')):
 
 if __name__ == '__main__':
     try:
-        line = sys.stdin.buffer.readline(524289)
+        # Do not prefetch the next control frame: the PID1 variant execs the
+        # real supervisor with this same private input pipe.
+        line = bytearray()
+        while len(line) <= 524288 and not line.endswith(b'\n'):
+            byte = os.read(0, 1)
+            if not byte:
+                break
+            line.extend(byte)
         if len(line) > 524288 or not line.endswith(b'\n'):
             raise ValueError('invalid_payload')
-        value = execute(json.loads(line))
+        payload = json.loads(line)
+        if payload.pop('supervisor_loss_fixture', False) is True:
+            if os.getpid() != 1:
+                raise ValueError('dedicated_namespace_required')
+            root = Path('/tmp/canary')
+            _, env = prepare(payload, Path('/opt/hermes'), root)
+            # Exec preserves PID1. No extra driver survives to perform cleanup.
+            env.pop('FACTORY_NATIVE_CANARY_RELAY')
+            os.execve(sys.executable, [sys.executable, '-u', str(root / 'main.py'),
+                      '--experimental-local-terminal', '--fixture', '--controlled',
+                      '--journal', str(root / 'journal')], env)
+        value = execute(payload)
         print(json.dumps(value), flush=True)
     except BaseException:
         print(json.dumps({'status': 'failed', 'reason': 'isolated_native_canary_failed'}), flush=True)

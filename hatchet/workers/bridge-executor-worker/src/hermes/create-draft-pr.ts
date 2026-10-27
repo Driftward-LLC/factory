@@ -16,7 +16,8 @@ import { NonRetryableBridgeExecutionError } from './errors';
 import { isGitHubDiffSizeLimit, PINNED_PR_DIFF_QUERY } from './pr-diff';
 import { boundedModelSelection, HERMES_MODEL_SELECTION_QUERY, reportModelSelection, type ModelSelectionObserver } from './model-selection';
 import type { InvocationExecutionContext } from './invocation-journal';
-import { nativeOwnerBootstrap, nativeOwnerJournal, runNativeOwner } from './native-owner';
+import { runNativeOwner } from './native-owner';
+import { execNativeRead, nativeContainerScope, withNativeContainer } from './native-container';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
@@ -606,6 +607,14 @@ export async function runHermesCreateDraftPrViaCommand(
   onModelSelected?: ModelSelectionObserver,
   invocation?: InvocationExecutionContext,
 ): Promise<HermesDraftPrResult> {
+  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1' && !nativeContainerScope()) {
+    validateRealCreateDraftPrJob(job);
+    if (job.payload.independent_review_enrollment) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native isolation does not support OAuth review enrollment');
+    hermesProfileArguments();
+    if (!invocation) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native execution requires its durable invocation');
+    return withNativeContainer(invocation, () => runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer,
+      onModelSelected, nativeContainerScope()!.context), hermesObservabilityEnvironment(job));
+  }
   // The gateway must repeat the typed check when the credential-bearing process
   // actually starts; a queued worker check can precede invocation by minutes.
   if (job.payload.factory_review_repair) {
@@ -639,16 +648,17 @@ export async function runHermesCreateDraftPrViaCommand(
   let result: ExecResult;
   try {
     if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
-      if (!invocation || process.env.DRIFTWARD_HERMES_PROFILE !== 'factory-native-executor' || !selection) {
+      if (!invocation || process.env.DRIFTWARD_HERMES_PROFILE !== 'factory-native-executor' || !selection
+          || !['openai', 'anthropic'].includes(selection.selected_provider)) {
         throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native owner requires a verified invocation, explicit executor profile and selected model');
       }
-      const context = Object.entries(hermesObservabilityEnvironment(job)).map(([key, value]) => `${key}=${value}`);
+      const container = nativeContainerScope();
+      if (!container) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native container reservation missing');
       const stdout = await runNativeOwner(invocation, {
         backend: 'local', enabled_tools: ['terminal', 'process_manage'], model: selection.selected_model,
         provider: selection.selected_provider, prompt,
         receipt_policy: { repo: job.payload.repo, branch: job.branch, verification_policy: job.payload.verification_policy },
-      }, { arguments: hermesRuntimeDockerArgs(['env', ...context, '/opt/hermes/.venv/bin/python', '-c', nativeOwnerBootstrap(),
-        '--experimental-local-terminal', '--controlled', '--journal', nativeOwnerJournal(invocation)]),
+      }, { arguments: ['attach', '--sig-proxy=false', container.id],
         environment: process.env, timeout, maxBuffer });
       result = { stdout, stderr: '' };
     } else result = await execFileAsync(command, [...hermesProfileArguments(), ...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], {
@@ -1124,6 +1134,14 @@ export async function assertHermesIdentityViaCommand(
   repo: string,
   expectation: HermesIdentityExpectation = hermesIdentityExpectation(repo)
 ): Promise<HermesIdentityCheck> {
+  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
+    const actor = (await execHermesRuntimeCommand(['gh', 'api', 'graphql', '-f',
+      'query=query { viewer { login } }', '--jq', '.data.viewer.login'], expectation.timeout, 4096,
+      'hermes_runtime_identity_check_failed')).stdout.trim();
+    if (actor !== expectation.expectedGithubLogin || !actor.endsWith('[bot]') || expectation.forbiddenGithubLogins.includes(actor)) {
+      throw new NonRetryableBridgeExecutionError('hermes_git_author_forbidden', 'Native executor GitHub App identity did not match');
+    }
+  }
   const gitAuthorName = (await execHermesRuntimeCommand(['git', 'config', '--get', 'user.name'], expectation.timeout, 128 * 1024, 'hermes_runtime_identity_check_failed')).stdout.trim();
   if (gitAuthorName !== expectation.expectedGitAuthorName) {
     throw new NonRetryableBridgeExecutionError(
@@ -1213,6 +1231,7 @@ async function execHermesRuntimeJson<T>(args: string[], timeout: number, maxBuff
 }
 
 function execHermesRuntimeCommandRaw(args: string[], timeout: number, maxBuffer: number): Promise<ExecResult> {
+  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') return execNativeRead(args, timeout, maxBuffer);
   return execFileAsync('docker', hermesRuntimeDockerArgs(args), { timeout, maxBuffer, env: process.env });
 }
 
@@ -1262,6 +1281,9 @@ export function hermesProfileArguments(): string[] {
 }
 
 export function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
+  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
+    throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native route cannot enter the shared Hermes runtime');
+  }
   const root = process.env.DRIFTWARD_HERMES_ROOT || '/docker/driftward/hermes';
   const profile = hermesProfileArguments()[1];
   return [
