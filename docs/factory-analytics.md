@@ -20,6 +20,36 @@ factory analytics --days 7
 factory analytics --days 30 --json
 ```
 
+Record human effort against an existing real attempt:
+
+```bash
+factory analytics record-time ATTEMPT-ID --minutes 12.5 --category review --request-id review-20261028-01
+```
+
+Use a UUID from `factory attempts list` for `ATTEMPT-ID`. Minutes accept zero
+through 1440 with up to three decimal places. Categories are `intervention`
+(the default), `review`, and `maintenance`. Record time actually spent; waiting
+for Factory is delivery latency, not human effort. Maintenance must be
+attributable to the chosen attempt. General Factory maintenance is not captured
+by this metric.
+
+Reuse the same request ID when retrying the same entry: an exact repeat returns
+the existing record; a changed duration or category conflicts. Each new block
+of work needs a new ID. An entry is append-only and cannot be edited or deleted
+through this command. There is no correction command yet, so check the attempt
+and duration before recording. IDs should be short labels without secrets or
+free-form notes. An explicit zero records zero minutes; absence of a record
+remains unknown.
+
+This write calls `POST /v1/attempts/{UUID}/human-time` through the same protected
+operator socket. Its only JSON fields are `request_id`, integer `duration_ms`
+(0 through 86400000), and `category`. It requires the bearer token and a root
+Unix peer, captures that peer as the actor, and appends a `human_time_recorded`
+attempt event. Responses are `201` for a new entry, `200` for an exact repeat,
+`400` for invalid input, `404` for a missing attempt, and `409` for conflicting
+intent. Dry runs and legacy attempts are rejected. Recording time does not
+start execution, change attempt state, or publish lifecycle work.
+
 `--days` defaults to `30` and accepts an integer from `1` through `365`.
 Formatted output requires `jq`; `--json` returns the report unchanged.
 The formatted view prints canonical metrics as `unavailable` when their JSON
@@ -83,6 +113,7 @@ The top-level JSON sections are:
 | `outcomes` | Attempt status and exact-match GitHub outcomes |
 | `github` | PR state freshness/maturity plus safe check-suite and review observations |
 | `latency_ms` | Attempt-stage duration distributions |
+| `effort` | Backend runtime and self-reported human effort across selected work items' full attempt history |
 | `failures` | Attempt failure evidence and backend-invocation classifications |
 | `recovery`, `safety`, `human` | Retry/repair performance, effect safety, and review readiness |
 | `backends`, `backend_summary` | Observed invocation outcomes by backend/transport/repository/attempt kind |
@@ -104,8 +135,9 @@ Source ownership and query paths are:
 | Event-ingress ledger | `/var/lib/driftward-hatchet-event-ingress/ingress.db` | `ingress_events`, `ingress_receipts` | Optional intake, delivery, redelivery, check/review, and GitHub outcome projection |
 | Lifecycle ledger | `/var/lib/driftward-factory-lifecycle-writer/outbox.db` | `lifecycle_outbox` | Optional delivery/dead-letter projection |
 
-There is no analytics table, write path, periodic ETL job, or historical
-backfill. Query the full report through `factory analytics` or its aggregate
+There is no analytics table, periodic ETL job, or historical backfill. Reports
+remain read-only; the time-recording command appends to the existing attempt
+ledger. Query the full report through `factory analytics` or its aggregate
 view through the console; use the underlying ledgers directly only for
 focused forensic debugging.
 
@@ -144,6 +176,7 @@ The report deliberately uses different grains:
 | `funnel` | unique `work_item_key` | A work item reaches a stage if any cohort attempt has the required durable marker |
 | `outcomes.by_status` | attempt | Current status of each cohort attempt at the bridge read snapshot |
 | `latency_ms` | attempt with both endpoint events | One nonnegative duration sample per qualifying attempt |
+| `effort` | selected work item and its full real attempt history | Select work items with an attempt created in the window, then include their eligible attempts and events through the report cutoff, including earlier failures, retries and repairs |
 | `failures.attempts_with_failure_evidence` | attempt | Preferred `transition:failed` classification when present; otherwise the latest `execution_backend_failed`, `execution_dispatch_failed`, or `execution_effect_commit_failed` boundary; current failed status remains the compatibility fallback |
 | `failures.backend_invocations` | unique `(attempt_id, invocation_id)` | Explicit `execution_backend_failed` evidence only; invocation IDs are attempt-scoped |
 | `backends` | backend/transport/version/auth group | Attempts and unique attempt-scoped invocations carrying explicit backend telemetry |
@@ -165,6 +198,55 @@ and formatted report.
 The funnel denominator is `attempted`, the number of unique cohort work items.
 Every `rate_from_attempted` uses that same denominator; it is not conversion
 from the immediately preceding stage.
+
+### Time per verified work item
+
+The full operator report keeps three different measurements separate:
+
+- Delivery latency: existing elapsed-time distributions from intake and
+  attempt-stage evidence, including waiting where endpoints span it.
+- Backend runtime: observed execution duration, including unsuccessful work,
+  divided by distinct work items with a durable verified-ready marker.
+- Recorded human effort: manually recorded minutes, also divided by those
+  verified work items, with category totals and recording coverage.
+
+`effort` selects every work item with a real, nonlegacy attempt created in the
+window. It then includes that item's entire eligible attempt history through
+the cutoff, even attempts before the window. Work items that never succeed
+still contribute effort to the numerator. Verification counts each work item
+once; retries and repairs do not increase the denominator. This is a cohort
+snapshot, not time spent during the calendar window. Overlapping reports must
+not be added together. Older active items without a new attempt in the window
+are outside this cohort.
+
+`effort.execution.observed_ms` sums usable durations once per
+`(attempt_id, invocation_id)`, preferring backend completion/failure receipts
+over effect-settlement mirrors. A matching invocation/completion timestamp
+pair is the compatibility fallback. `total_ms` and
+`ms_per_verified_work_item` are `null` when any invocation duration is missing
+or unfinished, or historically started execution lacks invocation identity.
+The observed sum then remains a lower bound. Coverage counts invocations plus
+one gap per attempt lacking identity; explicit dispatch failure before backend
+execution does not manufacture runtime. Backend runtime excludes verifier and
+control-plane work and is not CPU time. Active attempts and invocations remain
+visible; `active_invocations` means a terminal receipt is missing, not proof
+that a process is still running. A ratio with no verified work items is always
+`null`.
+
+`effort.human.recorded_ms` and its per-verified-item ratio are `null` without
+entries; an explicit zero is preserved. `by_category_ms` reports intervention,
+review, and attributable maintenance independently. `recorded_interventions`
+counts positive-duration intervention entries, not exception flags or distinct
+incidents. It is unknown without intervention entries. Attempt recording
+coverage counts attempts with any entry; even 100% cannot attest that every
+minute was recorded. `completeness` therefore remains
+`self_reported_not_attested`, and the existing `human.actual_interventions`
+remains unknown. The report never infers human effort from message timestamps
+or execution gaps and does not convert time into money.
+
+The new effort section is available through the operator CLI/JSON; the console
+keeps its existing aggregate projection. These measurements establish a
+baseline, not proof that an architectural change caused an improvement.
 
 ### Daily activity series
 

@@ -180,6 +180,7 @@ def factory_analytics(
     activity = _activity_report(
         all_real_attempts, events_by_attempt, bridge_by_job, started, ended
     )
+    effort = _effort_report(cohort, all_real_attempts, events_by_attempt, bridge_by_job, ended)
     window_attempt_events = [
         event for event in all_attempt_events
         if (event_time := _parse_time(event["created_at"])) is not None
@@ -265,7 +266,7 @@ def factory_analytics(
         "provider_oauth_model_failure_attribution: Hermes does not return bounded structured provider/auth failures",
         "duplicate_effect_rate: reconciliation does not attest complete duplicate-effect observation",
         "spec_quality_and_human_approval_time: no canonical producer is connected yet",
-        "actual_human_intervention_time: exception flags record required intervention, not a completed human action",
+        "complete_human_time: recorded durations are self-reported; missing entries and unrecorded work remain unknown",
         "first_pass_ci_rate: check-suite observations are not the required-check aggregate bound to the initial head SHA",
         "bridge_conflict_rate: rejected bridge mutations are not durably audited",
         "retry_deduplication_rate: retry reservation reuse is not durably counted",
@@ -310,6 +311,8 @@ def factory_analytics(
         )
     if not lifecycle["available"]:
         unavailable.append("lifecycle_delivery: lifecycle ledger is unavailable or incompatible")
+    if not effort["execution"]["coverage"]["complete"]:
+        unavailable.append("total_execution_time: some invocations are unfinished or lack duration or invocation evidence")
 
     return {
         "schema": ANALYTICS_SCHEMA,
@@ -358,6 +361,7 @@ def factory_analytics(
         },
         "github": github_outcomes,
         "latency_ms": latency,
+        "effort": effort,
         "failures": {
             "currently_failed_attempts": status_counts.get("failed", 0),
             "attempts_with_failure_evidence": len(attempt_failures),
@@ -2725,6 +2729,156 @@ def _route_report(
         },
         "groups": result,
     }
+
+
+def _effort_report(
+    cohort: list[dict[str, Any]],
+    all_attempts: list[dict[str, Any]],
+    events_by_attempt: dict[str, list[dict[str, Any]]],
+    bridge_by_job: dict[str, list[dict[str, Any]]],
+    ended: datetime,
+) -> dict[str, Any]:
+    # Include unsuccessful work and earlier retries so success cannot erase effort.
+    work_items = {row["work_item_key"] for row in cohort}
+    attempts = [row for row in all_attempts if row["work_item_key"] in work_items]
+    verified: set[str] = set()
+    durations: list[int] = []
+    eligible = active_attempts = active_invocations = unidentified_attempts = 0
+    human_entries: dict[tuple[str, str], dict[str, Any]] = {}
+    execution_events = {
+        "execution_backend_invoked", "execution_backend_completed",
+        "execution_backend_failed", "execution_effect_commit_failed",
+    }
+    for attempt in attempts:
+        attempt_id = attempt["attempt_id"]
+        events = [
+            event for event in events_by_attempt.get(attempt_id, [])
+            if (at := _parse_time(event["created_at"])) is not None and at <= ended
+        ]
+        bridges = [
+            event for event in bridge_by_job.get(attempt.get("job_id"), [])
+            if (at := _parse_time(event["created_at"])) is not None and at <= ended
+        ]
+        if _has_event(events, "attempt_verified_ready"):
+            verified.add(attempt["work_item_key"])
+        updated = _parse_time(attempt.get("updated_at"))
+        terminal = any(event["event_type"] in TERMINAL_ATTEMPT_EVENTS for event in events) or (
+            attempt.get("status") in TERMINAL_ATTEMPT_STATUSES
+            and updated is not None and updated <= ended
+        )
+        active_attempts += not terminal
+
+        invocations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        missing_identity = False
+        for event in events + bridges:
+            kind, details = event["event_type"], event["details"]
+            if kind in execution_events or (
+                kind == "transition:effect_committed" and details.get("execution_backend")
+            ):
+                invocation = details.get("invocation_id")
+                if isinstance(invocation, str) and invocation:
+                    invocations[invocation].append(event)
+                else:
+                    missing_identity = True
+            if kind == "human_time_recorded":
+                duration, category = details.get("duration_ms"), details.get("category")
+                request_id = details.get("request_id")
+                if (
+                    type(details.get("schema_version")) is int and details["schema_version"] == 1
+                    and type(duration) is int and 0 <= duration <= 86_400_000
+                    and isinstance(category, str) and category in {"intervention", "review", "maintenance"}
+                    and isinstance(request_id, str) and request_id
+                ):
+                    human_entries.setdefault((attempt_id, request_id), details)
+        for invocation_events in invocations.values():
+            eligible += 1
+            elapsed = _invocation_effort_ms(invocation_events)
+            if elapsed is not None:
+                durations.append(elapsed)
+            if not any(event["event_type"] != "execution_backend_invoked" for event in invocation_events):
+                active_invocations += 1
+
+        execution_markers = [event for event in events + bridges if event["event_type"] in {
+            "attempt_started", "effect_authorized", "attempt_effect_committed",
+            "transition:running", "transition:effect_committed",
+        }]
+        dispatch_times = [
+            _parse_time(event["created_at"]) for event in events
+            if event["event_type"] == "execution_dispatch_failed"
+            and event["details"].get("effect_outcome") == "none"
+        ]
+        # A pre-invocation failure explains earlier starts, never a later run or effect.
+        dispatch_only = bool(dispatch_times) and all(
+            event["event_type"] not in {"attempt_effect_committed", "transition:effect_committed"}
+            and _parse_time(event["created_at"]) <= max(dispatch_times)
+            for event in execution_markers
+        )
+        if missing_identity or (not invocations and execution_markers and not dispatch_only):
+            eligible += 1
+            unidentified_attempts += 1
+
+    coverage = _coverage(len(durations), eligible)
+    observed_ms = sum(durations)
+    total_ms = observed_ms if coverage["complete"] else None
+    recorded_attempts = {attempt_id for attempt_id, _ in human_entries}
+    entries = list(human_entries.values())
+    categories = {
+        category: [entry["duration_ms"] for entry in entries if entry["category"] == category]
+        for category in ("intervention", "review", "maintenance")
+    }
+    recorded_ms = sum(entry["duration_ms"] for entry in entries) if entries else None
+    return {
+        "basis": "cohort_work_item_history_through_cutoff",
+        "work_items": len(work_items),
+        "verified_work_items": len(verified),
+        "attempts": len(attempts),
+        "active_attempts": active_attempts,
+        "execution": {
+            "observed_ms": observed_ms,
+            "total_ms": total_ms,
+            "ms_per_verified_work_item": _average(total_ms, len(verified)) if total_ms is not None else None,
+            "coverage": coverage,
+            "coverage_grain": "invocations_plus_attempts_without_invocation_identity",
+            "attempts_without_invocation_identity": unidentified_attempts,
+            "active_invocations": active_invocations,
+        },
+        "human": {
+            "recorded_ms": recorded_ms,
+            "recorded_ms_per_verified_work_item": (
+                _average(recorded_ms, len(verified)) if recorded_ms is not None else None
+            ),
+            "recorded_interventions": (
+                sum(duration > 0 for duration in categories["intervention"])
+                if categories["intervention"] else None
+            ),
+            "entries": len(entries),
+            "by_category_ms": {
+                category: sum(values) if values else None for category, values in categories.items()
+            },
+            "attempt_recording_coverage": _coverage(len(recorded_attempts), len(attempts)),
+            "completeness": "self_reported_not_attested",
+        },
+    }
+
+
+def _invocation_effort_ms(events: list[dict[str, Any]]) -> int | None:
+    """Prefer a backend duration over later settlement and mirrored receipts."""
+    primary = [event for event in events if event["event_type"] in {
+        "execution_backend_completed", "execution_backend_failed",
+    }]
+    fallback = [event for event in events if event["event_type"] in {
+        "execution_effect_commit_failed", "transition:effect_committed",
+    }]
+    for event in primary + fallback:
+        field = "backend_elapsed_ms" if event["event_type"] == "transition:effect_committed" else "elapsed_ms"
+        elapsed = event["details"].get(field)
+        if type(elapsed) is int and 0 <= elapsed <= 604_800_000:
+            return elapsed
+    # Settlement timestamps can include recovery waits; only a direct completion
+    # and its matching invocation are compatible with the existing latency fallback.
+    started = _event_time(events, "execution_backend_invoked")
+    completed = _event_time(events, "execution_backend_completed")
+    return _elapsed_ms(started, completed)
 
 
 def _backends(
