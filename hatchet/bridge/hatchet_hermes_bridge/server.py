@@ -48,6 +48,7 @@ from .store import (
     record_execution_receipt_observation,
     record_factory_execution_analytics,
     record_factory_execution_route,
+    bind_factory_execution_runtime,
     list_factory_outbox,
     claim_factory_outbox_delivery,
     acknowledge_factory_outbox,
@@ -324,6 +325,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     failure_event_type=body.get("failure_event_type", "execution_backend_failed"),
                 )
                 self._write_json(200, {"ok": True})
+                return
+            if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "runtime":
+                if set(body) != {"lease_id", "owner", "epoch", "fence_token", "runtime"}:
+                    raise BridgeValidationError("factory runtime binding body is invalid")
+                claim = {key: body[key] for key in ("lease_id", "owner", "epoch", "fence_token")}
+                recorded = bind_factory_execution_runtime(self.conn, parts[1], claim, body["runtime"])
+                self._write_json(201 if recorded else 200, {"recorded": recorded})
                 return
             if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "factory-execution" and parts[3] == "route":
                 if set(body) != {"details"}:

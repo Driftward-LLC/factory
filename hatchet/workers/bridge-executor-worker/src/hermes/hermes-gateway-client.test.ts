@@ -390,7 +390,7 @@ function mockGateway(): grpc.UntypedServiceImplementation {
     checkIdentity: (call: MockCall, callback: MockCallback) => {
       assert.equal(call.request.repo, 'Driftward-LLC/capykit');
       callback(null, {
-        invocationProtocolVersion: 1,
+        invocationProtocolVersion: 2,
         githubLogin: 'factory-hermes[bot]',
         gitAuthorName: 'factory-hermes[bot]',
         gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
@@ -469,6 +469,7 @@ function bind(server: grpc.Server, target: string): Promise<number> {
 
 function greenJob(): BridgeJob {
   return {
+    execution_runtime: { lease_id: testLease.lease_id, epoch: testLease.epoch, runtime: { schema: 1 as const, backend: 'hermes', kind: 'docker' as const, instance_id: 'a'.repeat(64), image_digest: 'sha256:' + 'b'.repeat(64), incarnation: 'sha256:' + 'c'.repeat(64) } },
     job_id: 'job-28',
     idempotency_key: 'hatchet:work-item:linear:ENG-28:create_draft_pr:real:active',
     state: 'running',

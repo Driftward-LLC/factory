@@ -199,6 +199,11 @@ export class BridgeClient {
     const result = await this.requestJson<{ authorized: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/authorize`, { method: 'POST', body: JSON.stringify(lease) });
     return result.authorized === true;
   }
+  async bindFactoryExecutionRuntime(jobId: string, lease: { lease_id: string; owner: string; epoch: number; fence_token: string }, runtime: import('./execution-runtime').ExecutionRuntimeBinding): Promise<void> {
+    await this.requestJson(`/jobs/${encodeURIComponent(jobId)}/factory-execution/runtime`, {
+      method: 'POST', body: JSON.stringify({ ...lease, runtime }),
+    });
+  }
   async recordFactoryExecutionRoute(jobId: string, details: JsonObject): Promise<boolean> {
     const result = await this.requestJson<{ recorded: boolean }>(`/jobs/${encodeURIComponent(jobId)}/factory-execution/route`, {
       method: 'POST',

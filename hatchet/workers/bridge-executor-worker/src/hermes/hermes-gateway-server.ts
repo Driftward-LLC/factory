@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { executionRuntimeBinding, sameExecutionRuntime, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
@@ -21,7 +21,7 @@ import {
 } from './create-draft-pr';
 import { NonRetryableBridgeExecutionError } from './errors';
 import { InvocationJournal, invocationLease } from './invocation-journal';
-import { MODEL_SELECTION_HEADER } from './model-selection';
+import { MODEL_SELECTION_HEADER, type ModelSelectionObserver } from './model-selection';
 import { IndependentReviewer } from './independent-review';
 import {
   DEFAULT_HERMES_GRPC_TARGET,
@@ -44,6 +44,7 @@ type CreateDraftPullRequestRequest = {
   jobJson?: string;
   timeoutMs?: number;
   executionLeaseJson?: string;
+  executionRuntimeJson?: string;
 };
 
 type InspectDraftPullRequestRequest = {
@@ -75,13 +76,19 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
     (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor'
       ? path.join(process.env.HERMES_HOME || '/opt/data', 'factory-invocations')
       : '/var/lib/driftward-hermes-factory/invocations'));
+  const selections = new Map<string, ModelSelectionObserver>();
   const inspectInvocation = async (request: CreateDraftPullRequestRequest, cancel: boolean) => {
     const job = parseBridgeJob(request);
+    const snapshot = invocations().status(job);
+    if ((snapshot.runtime || request.executionRuntimeJson) && !sameExecutionRuntime(snapshot.runtime, JSON.parse(request.executionRuntimeJson || 'null'))) {
+      throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Invocation runtime differs from the control-plane binding');
+    }
     const strict = process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1';
     const status = cancel && (strict || request.executionLeaseJson)
       ? await invocations().cancel(job, invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json'))))
       : invocations().status(job, cancel);
     return { ...status, receipt: status.receipt ? draftPrResponse(status.receipt) : undefined,
+      executionRuntimeJson: status.runtime ? JSON.stringify(status.runtime) : '',
       executionLeaseJson: status.lease ? JSON.stringify(status.lease) : '', nativeStopJson: status.nativeStop ? JSON.stringify(status.nativeStop) : '' };
   };
   const server = new grpc.Server();
@@ -97,17 +104,31 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       const identity = await assertHermesIdentityViaCommand(requiredString(request.repo, 'repo'));
       return identityResponse(identity);
     }),
+    prepareInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => {
+      const job = parseBridgeJob(request);
+      const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
+      const runtime = await invocations().prepare(job, lease, (invocation) =>
+        withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined,
+          (selection) => selections.get(job.job_id)?.(selection), invocation), { job, service: 'factory-executor' }));
+      return { state: 'running', executionRuntimeJson: JSON.stringify(runtime), executionLeaseJson: JSON.stringify(lease) };
+    }),
     createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest, call) => {
       const job = parseBridgeJob(request);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
-      const result = await withExecutionSpan('factory.executor.invoke', () => invocations().execute(job, lease,
-        (invocation) => withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined, (selection) => {
-          const metadata = new grpc.Metadata();
-          metadata.set(MODEL_SELECTION_HEADER, Buffer.from(JSON.stringify({ job_id: job.job_id, selection })));
-          call.sendMetadata(metadata);
-        }, invocation), { job, service: 'factory-executor' })),
-      { job, service: 'factory-executor' });
-      return draftPrResponse(result);
+      const runtime = executionRuntimeBinding(JSON.parse(requiredString(request.executionRuntimeJson, 'execution_runtime_json')));
+      // Preparation pauses before model selection. Install its observer before
+      // releasing the start gate so metadata still arrives before execution ends.
+      if (selections.has(job.job_id)) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Invocation already has an active caller');
+      selections.set(job.job_id, (selection) => {
+        const metadata = new grpc.Metadata();
+        metadata.set(MODEL_SELECTION_HEADER, Buffer.from(JSON.stringify({ job_id: job.job_id, selection })));
+        call.sendMetadata(metadata);
+      });
+      try {
+        const result = await withExecutionSpan('factory.executor.invoke', () => invocations().start(job, lease, runtime),
+          { job, service: 'factory-executor' });
+        return draftPrResponse(result);
+      } finally { selections.delete(job.job_id); }
     }),
     inspectInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => inspectInvocation(request, false)),
     cancelInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => inspectInvocation(request, true)),
@@ -307,7 +328,7 @@ function parsePrReference(repository: string, reference: string): { number: numb
 
 function identityResponse(identity: HermesIdentityCheck): Record<string, unknown> {
   return {
-    invocationProtocolVersion: 1,
+    invocationProtocolVersion: 2,
     githubLogin: identity.githubLogin,
     gitAuthorName: identity.gitAuthorName,
     gitAuthorEmail: identity.gitAuthorEmail,

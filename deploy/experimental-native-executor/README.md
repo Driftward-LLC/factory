@@ -160,7 +160,9 @@ JSON line contains `binding`, `backend: "local"`, and `enabled_tools:
 lowercase hexadecimal `fingerprint`. Later lines are `{"cancel": BINDING}`.
 All output is bounded metadata or a filtered result candidate. EOF requests cleanup
 using the in-memory exact binding. Non-fixture launch additionally requires model,
-provider, prompt and receipt policy. Controlled launch requires
+provider, prompt, receipt policy and `runtime_incarnation`: the SHA-256 identity
+of the container's host boot ID and PID 1 start time. The launcher compares this
+before profile or agent admission. Controlled launch requires
 `{"start": BINDING}` after registration; the gateway supplies that authorization.
 Before any Hermes import, the launcher separates its protocol writer and discards
 both native stdout/stderr at the OS descriptor level, including inherited child
@@ -223,6 +225,11 @@ The native-owner route now requires one dedicated container per invocation.
 Only the host gateway owns Docker; workers retain their private-socket boundary.
 The route refuses bundled `local-executor` mode, whose gateway has no Docker
 socket. Source changes do not activate the experimental flag.
+
+The protocol-v2 gateway pauses after reserving the container and its private
+journal. Factory must persist the exact runtime under the execution lease before
+the start request releases agent work. See the
+[runtime binding contract](../../docs/hermes-runtime-contract.md#invocation-binding-protocol-v2).
 
 Before separately approved activation, provision **new executor-role** inputs:
 

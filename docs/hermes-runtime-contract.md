@@ -9,6 +9,52 @@ Source references describe the reviewed behavior, not the health or configuratio
 of every installation. The [interrupted-execution runbook](interrupted-execution.md)
 governs recovery; operators retain installation-specific evidence privately.
 
+## Invocation binding (protocol v2)
+
+The current source adds a durable link from each new execution lease to its exact
+runtime. The older source audit below remains pinned to its stated revision;
+this addition does not establish that an installation has been upgraded.
+
+```text
+attempt -> job -> lease ID + epoch
+                 -> execution_runtime_bound event
+                    -> backend + full container ID + image digest + incarnation
+```
+
+The receipt runner asks the gateway to prepare an invocation. The gateway
+reserves its private journal and identifies the Docker container, then pauses
+before agent execution. The runner saves the same bounded identity in Factory's
+existing attempt journal under the authorized lease. Only then does it register
+the invocation and send the start request with that binding. Workers receive
+metadata only; Docker access and execution credentials stay with the runtime.
+
+The profile adapter resolves its Compose service once, then uses the full
+container ID for commands. A guard inside each command checks an incarnation
+digest derived from the host boot ID and container PID 1 start time before
+executing it. A container replacement or restart therefore cannot inherit the
+invocation. The experimental native adapter records the same binding for its
+reserved container before releasing its controlled agent start.
+
+Status and cancellation compare the bound runtime and lease. Receipt commits,
+including commit-failure recovery, must match the original runtime. The binding
+is visible as `execution_runtime` on the bridge job and active/recent attempt
+summary, and as an `execution_runtime_bound` attempt event. It contains no
+credentials, session data, prompts, or host paths. No runtime registry or database
+migration is introduced.
+
+Preparation waits at most 60 seconds for the start acknowledgement. A lost
+acknowledgement, gateway restart, or incomplete reservation remains fenced for
+recovery; it never causes an automatic second execution. Completed receipts can
+still be recovered from the original journal after a gateway restart.
+
+Rollout requires matching protocol-v2 gateway and worker builds. Older gateways
+and the unfenced direct-command execution route fail preflight. Upgrade the
+separately installed gateway together with the application while execution is
+paused; changing this source does not enable execution. Historical invocations
+remain unbound and cannot acquire a guessed runtime during recovery. This link
+does not prove descendant cleanup or external-effect settlement, and does not
+add process termination to the profile adapter's cancellation marker.
+
 ## Findings in plain language
 
 1. Factory's executor is a **named Hermes profile**, not a different agent engine.

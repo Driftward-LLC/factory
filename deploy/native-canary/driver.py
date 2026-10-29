@@ -253,6 +253,8 @@ def execute(payload, native_root=Path('/opt/hermes'), root=Path('/tmp/canary')):
     deadline = time.monotonic() + 65
     try:
         send({'binding': bound, 'backend': 'local', 'enabled_tools': ['terminal', 'process_manage'],
+              'runtime_incarnation': 'sha256:' + hashlib.sha256((Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+                  + ':' + Path('/proc/1/stat').read_text().rsplit(')', 1)[1].split()[19]).encode()).hexdigest(),
               'model': 'local-test', 'provider': 'custom', 'prompt': 'Run the disposable terminal check and return its receipt.',
               'receipt_policy': {'repo': 'example/project', 'branch': 'codex/disposable'}})
         while not exited:

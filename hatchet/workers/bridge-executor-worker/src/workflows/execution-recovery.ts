@@ -1,4 +1,4 @@
-import type { BridgeClient, BridgeJob } from '@driftward/hatchet-worker-shared';
+import { sameExecutionRuntime, type BridgeClient, type BridgeJob } from '@driftward/hatchet-worker-shared';
 import { inspectHermesInvocation } from '../hermes/hermes-gateway-client';
 import { jobMatchesHermesDraftPrReceipt } from '../hermes/create-draft-pr';
 
@@ -21,10 +21,13 @@ export async function recoverExecutionReceipt(
     state: status.state, cancellation_requested: status.cancellationRequested, cancellation_acknowledged: status.cancellationAcknowledged,
   });
   if (status.state !== 'completed' || !status.receipt || !status.lease) return null;
+  if (job.execution_runtime && (!sameExecutionRuntime(status.runtime, job.execution_runtime.runtime)
+      || status.lease.lease_id !== job.execution_runtime.lease_id || status.lease.epoch !== job.execution_runtime.epoch)) return null;
   const receipt = status.receipt;
   let committed: BridgeJob;
   try {
     committed = (await bridge.commitFactoryExecution(job.job_id, status.lease, {
+      ...(status.runtime ? { execution_runtime: status.runtime } : {}),
       pr_url: receipt.prUrl, commit_sha: receipt.commitSha, branch: receipt.branch, reason_code: `hermes_${receipt.status}`,
       ...(receipt.validation ? { verification_context: receipt.validation } : {}),
     })).job;

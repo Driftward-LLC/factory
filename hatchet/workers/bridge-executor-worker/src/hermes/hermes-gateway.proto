@@ -5,6 +5,7 @@ package driftward.factory.hermes.v1;
 service HermesFactoryGateway {
   rpc ReadOnlyReview(ReadOnlyReviewRequest) returns (ReadOnlyReviewResponse);
   rpc CheckIdentity(CheckIdentityRequest) returns (CheckIdentityResponse);
+  rpc PrepareInvocation(CreateDraftPullRequestRequest) returns (InvocationStatus);
   rpc CreateDraftPullRequest(CreateDraftPullRequestRequest) returns (DraftPullRequestResult);
   rpc InspectInvocation(CreateDraftPullRequestRequest) returns (InvocationStatus);
   rpc CancelInvocation(CreateDraftPullRequestRequest) returns (InvocationStatus);
@@ -49,6 +50,7 @@ message CreateDraftPullRequestRequest {
   string job_json = 7;
   uint32 timeout_ms = 8;
   string execution_lease_json = 9;
+  string execution_runtime_json = 10;
 }
 
 message InvocationStatus {
@@ -58,6 +60,7 @@ message InvocationStatus {
   DraftPullRequestResult receipt = 4;
   string execution_lease_json = 5;
   string native_stop_json = 6;
+  string execution_runtime_json = 7;
 }
 
 message DraftPullRequestResult {

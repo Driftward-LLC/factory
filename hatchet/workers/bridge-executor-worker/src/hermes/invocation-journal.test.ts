@@ -10,7 +10,7 @@ import * as protoLoader from '@grpc/proto-loader';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { InvocationJournal } from './invocation-journal';
 import { createServer } from './hermes-gateway-server';
-import { inspectHermesInvocation, resolveHermesGatewayProtoPath, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
+import { inspectHermesInvocation, prepareHermesInvocation, resolveHermesGatewayProtoPath, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
 
 const job = { job_id: '00000000-0000-4000-8000-000000000010', idempotency_key: 'test:intent:1',
   requested_action: 'create_draft_pr', branch: 'codex/test-receipt', state: 'running',
@@ -19,6 +19,8 @@ const job = { job_id: '00000000-0000-4000-8000-000000000010', idempotency_key: '
 const lease = { lease_id: '00000000-0000-4000-8000-000000000011', owner: 'test-executor', epoch: 1, fence_token: 'test-original-fence' };
 const receipt = { status: 'created' as const, prUrl: 'https://github.com/example/project/pull/1', prNumber: 1,
   commitSha: 'a'.repeat(40), branch: job.branch!, hermesSessionId: null, summary: 'draft_pr_created' as const, validation: null };
+const runtime = { schema: 1 as const, backend: 'hermes', kind: 'docker' as const, instance_id: 'a'.repeat(64), image_digest: 'sha256:' + 'b'.repeat(64), incarnation: 'sha256:' + 'c'.repeat(64) };
+const boundJob = (value: BridgeJob): BridgeJob => ({ ...value, execution_runtime: { lease_id: lease.lease_id, epoch: lease.epoch, runtime } });
 const correlatedJob = { ...job, payload: { ...job.payload,
   source_event_key: 'event-1', source_event_keys: ['event-1'],
   source_delivery_id: 'delivery-1', source_delivery_ids: ['delivery-1'],
@@ -86,6 +88,7 @@ test('native gateway authenticates before reservation and connected recovery use
   const server = createServer(target, async (_job, _command, _timeout, _buffer, _selection, context) => {
     calls++;
     assert.ok(context);
+    await context.bindRuntime!(runtime);
     context.registerCancel(async () => {
       const stop = { binding: context.binding, state: 'unknown' as const, ownerRegistered: true, ownerExitObserved: false,
         dispatchQuiesced: true, reason: 'native_cleanup_observed' as const };
@@ -113,18 +116,22 @@ test('native gateway authenticates before reservation and connected recovery use
     (error: grpc.ServiceError | null, value: unknown) => error ? reject(error) : resolve(value))), (error: grpc.ServiceError) => error.code === grpc.status.UNAUTHENTICATED);
   assert.equal(calls, 0);
   assert.equal(existsSync(path.join(directory, 'journal', job.job_id)), false);
-  const execution = runHermesCreateDraftPrViaGrpc(job, 10_000, lease);
+  assert.deepEqual(await prepareHermesInvocation(job, lease), runtime);
+  const execution = runHermesCreateDraftPrViaGrpc(boundJob(job), 10_000, lease);
   await started;
-  await assert.rejects(inspectHermesInvocation(job, true, { ...lease, epoch: 2 }));
+  await assert.rejects(inspectHermesInvocation(boundJob(job), true, { ...lease, epoch: 2 }));
+  const replaced = boundJob(job);
+  replaced.execution_runtime = { ...replaced.execution_runtime!, runtime: { ...runtime, instance_id: 'e'.repeat(64) } };
+  await assert.rejects(inspectHermesInvocation(replaced, true));
   assert.equal(existsSync(path.join(directory, 'journal', job.job_id, 'cancel')), false);
-  const stopped = await inspectHermesInvocation(job, true);
+  const stopped = await inspectHermesInvocation(boundJob(job), true);
   assert.equal(stopped.cancellationRequested, true);
   assert.equal(stopped.cancellationAcknowledged, false);
   assert.equal(stopped.nativeStop?.state, 'unknown');
   assert.deepEqual(stopped.lease, lease);
   finish();
   assert.deepEqual(await execution, receipt);
-  assert.equal((await inspectHermesInvocation(job)).nativeStop?.state, 'unknown');
+  assert.equal((await inspectHermesInvocation(boundJob(job))).nativeStop?.state, 'unknown');
   assert.equal(calls, 1);
 });
 
@@ -286,7 +293,8 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   let finishExecution!: () => void;
   const executionBarrier = new Promise<void>((resolve) => { finishExecution = resolve; });
   const start = async () => {
-    server = createServer(target, async (_job, _command, _timeout, _buffer, onModelSelected) => {
+    server = createServer(target, async (_job, _command, _timeout, _buffer, onModelSelected, context) => {
+      await context!.bindRuntime!(runtime);
       calls++;
       await onModelSelected?.(selection);
       await executionBarrier;
@@ -303,7 +311,8 @@ test('lost gRPC response is recovered after gateway restart without executing ag
     rmSync(directory, { recursive: true, force: true });
   });
   await start();
-  await assert.rejects(runHermesCreateDraftPrViaGrpc(correlatedJob, 10_000, lease, (value) => {
+  await prepareHermesInvocation(correlatedJob, lease);
+  await assert.rejects(runHermesCreateDraftPrViaGrpc(boundJob(correlatedJob), 10_000, lease, (value) => {
     observed.push(value);
     // Disconnect only after execution has started and its metadata reached the client.
     server.forceShutdown();
@@ -324,7 +333,7 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   let recovered;
   const reconnectDeadline = Date.now() + 10_000;
   while (!recovered) {
-    try { recovered = await inspectHermesInvocation(updatedJob, true); }
+    try { recovered = await inspectHermesInvocation(boundJob(updatedJob), true); }
     catch (error) {
       if ((error as { reasonCode?: string }).reasonCode !== 'hermes_grpc_gateway_unavailable' || Date.now() >= reconnectDeadline) throw error;
       // Reconnect the cached channel after the deliberately forced transport loss.
@@ -334,9 +343,9 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   assert.deepEqual(recovered.receipt, receipt);
   assert.deepEqual(recovered.lease, lease);
   assert.equal(recovered.cancellationAcknowledged, true);
-  assert.deepEqual(await runHermesCreateDraftPrViaGrpc(updatedJob, 1000, lease, (value) => { observed.push(value); }), receipt);
+  assert.deepEqual(await runHermesCreateDraftPrViaGrpc(boundJob(updatedJob), 1000, lease, (value) => { observed.push(value); }), receipt);
   assert.deepEqual([...observed], [selection]); // Reused receipts never claim today's config was used earlier.
-  await assert.rejects(runHermesCreateDraftPrViaGrpc(updatedJob, 1000, { ...lease, epoch: 2 }));
+  await assert.rejects(runHermesCreateDraftPrViaGrpc(boundJob(updatedJob), 1000, { ...lease, epoch: 2 }));
   await assert.rejects(inspectHermesInvocation({ ...updatedJob, payload: { ...updatedJob.payload, instructions: 'different' } }));
   assert.equal(calls, 1);
 });
@@ -364,4 +373,53 @@ test('crash drain evidence survives journal reload but never authorizes completi
   assert.deepEqual(status.nativeStop?.recovery, recovery);
   assert.doesNotMatch(readFileSync(path.join(directory, job.job_id, 'native-stop.json'), 'utf8'), /PRIVATE_/);
   await assert.rejects(reloaded.execute(job, lease, async () => { assert.fail('recovery evidence authorized replay'); }), /already reserved/);
+});
+
+test('runtime preparation cannot execute before acknowledgement or after restart, replacement, or cancellation', async (t) => {
+  for (const mode of ['start', 'restart', 'cancel', 'timeout'] as const) {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-runtime-binding-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const journal = new InvocationJournal(directory);
+    let executed = 0;
+    assert.deepEqual(await journal.prepare(job, lease, async (context) => {
+      await context.bindRuntime!(runtime);
+      executed++;
+      return receipt;
+    }, mode === 'timeout' ? 5 : 100), runtime);
+    assert.equal(executed, 0, 'preparation must pause before effects');
+    assert.deepEqual(new InvocationJournal(directory).status(job).runtime, runtime);
+    for (const changed of [{ ...runtime, instance_id: 'e'.repeat(64) }, { ...runtime, incarnation: 'sha256:' + 'e'.repeat(64) }]) {
+      await assert.rejects(journal.start(job, lease, changed), /runtime or fence differs/);
+    }
+    await assert.rejects(journal.start(job, { ...lease, epoch: 2 }, runtime), /runtime or fence differs/);
+    if (mode === 'start') {
+      assert.deepEqual(await journal.start(job, lease, runtime), receipt);
+      assert.deepEqual(await new InvocationJournal(directory).start(updatedJob, lease, runtime), receipt);
+      assert.equal(executed, 1);
+    } else {
+      if (mode === 'restart') await assert.rejects(new InvocationJournal(directory).start(job, lease, runtime), /unavailable/);
+      if (mode === 'cancel') {
+        await journal.cancel(job, lease);
+        await assert.rejects(journal.start(job, lease, runtime), /unavailable/);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      assert.equal(executed, 0);
+      assert.equal(journal.status(job).state, 'outcome_unknown');
+      await assert.rejects(journal.start(job, lease, runtime), /unavailable/);
+      await journal.prepare(job, lease, async () => assert.fail('must not prepare again'));
+      assert.equal(executed, 0);
+    }
+    const data = readFileSync(path.join(directory, job.job_id, 'runtime.json'), 'utf8');
+    assert.doesNotMatch(data, /PRIVATE_TEST_PROMPT|test-original-fence/);
+  }
+});
+
+test('legacy reservations cannot acquire a runtime identity during recovery', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-unbound-legacy-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const journal = new InvocationJournal(directory);
+  await journal.execute(job, lease, async () => receipt);
+  await assert.rejects(journal.prepare(job, lease, async () => assert.fail('legacy replay')), /cannot be prepared/);
+  await assert.rejects(journal.start(job, lease, runtime), /runtime or fence differs/);
+  assert.equal(journal.status(job).runtime, undefined);
 });

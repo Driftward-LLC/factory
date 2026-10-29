@@ -11,7 +11,7 @@ import { BridgeClient, executionTraceId, executionTraceparent, flushExecutionTel
   telemetryEndpoint, withExecutionSpan, type BridgeJob } from '@driftward/hatchet-worker-shared';
 import { selectedReceiptEnvironment } from './create-draft-pr';
 import { createServer as createGateway } from './hermes-gateway-server';
-import { runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
+import { prepareHermesInvocation, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
 
 const job = { job_id: '11111111-1111-4111-8111-111111111111', payload: {
   factory_retry: { attempt_id: 'bdb1edb7-459e-4c1c-a30f-b657c1c4833d' }, implementation_prompt: 'SECRET_PROMPT',
@@ -114,7 +114,9 @@ test('SDK exports bounded metadata across process and HTTP boundaries; concurren
     const gatewayJob = { ...job, idempotency_key: 'test:otel', requested_action: 'create_draft_pr', branch: 'codex/otel-test', state: 'running',
       payload: { ...job.payload, repo: 'example/project', dry_run: false } } as BridgeJob;
     let invocations = 0;
-    const gateway = createGateway(target, async () => {
+    const runtime = { schema: 1 as const, backend: 'hermes', kind: 'docker' as const, instance_id: 'a'.repeat(64), image_digest: 'sha256:' + 'b'.repeat(64), incarnation: 'sha256:' + 'c'.repeat(64) };
+    const gateway = createGateway(target, async (_job, _command, _timeout, _buffer, _selection, context) => {
+      await context!.bindRuntime!(runtime);
       invocations++;
       return { status: 'created', prUrl: 'https://github.com/example/project/pull/1', prNumber: 1, commitSha: 'a'.repeat(40),
         branch: gatewayJob.branch!, hermesSessionId: null, summary: 'draft_pr_created', validation: null };
@@ -123,6 +125,7 @@ test('SDK exports bounded metadata across process and HTTP boundaries; concurren
       await new Promise<void>((resolve, reject) => gateway.bindAsync(target, grpc.ServerCredentials.createInsecure(), error => error ? reject(error) : resolve()));
       await withExecutionSpan('factory.rpc.test', async () => {
         const lease = { lease_id: '22222222-2222-4222-8222-222222222222', owner: 'test-executor', epoch: 1, fence_token: 'SECRET_FENCE' };
+        gatewayJob.execution_runtime = { lease_id: lease.lease_id, epoch: lease.epoch, runtime: await prepareHermesInvocation(gatewayJob, lease) };
         await runHermesCreateDraftPrViaGrpc(gatewayJob, 5000, lease);
         await runHermesCreateDraftPrViaGrpc(gatewayJob, 5000, lease);
       }, { job });
