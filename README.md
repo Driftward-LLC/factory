@@ -86,3 +86,7 @@ docker build -f deploy/Dockerfile -t factory:local .
 - [Hermes runtime contract](docs/hermes-runtime-contract.md)
 - [Execution backend evaluation](docs/execution-backend-evaluation.md)
 - [Console design](DESIGN.md) and [component catalog](docs/design-system.md)
+
+## License
+
+Factory is available under the [MIT License](LICENSE).

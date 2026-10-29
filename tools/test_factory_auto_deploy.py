@@ -622,7 +622,9 @@ runpy.run_path(sys.argv[1])
         self.assertEqual(json.loads((self.directory / 'status.json').read_text())['release'], release)
         (self.directory / 'status.json').chmod(0o600)
         calls.clear()
+        # Model the already-validated root-owned receipt on unprivileged CI.
         with patch.object(auto, 'healthy'), patch.object(auto, 'command', side_effect=command), \
+             patch.object(auto, 'private_json', return_value={'phase': 'complete'}), \
              patch.object(auto, 'verify_release', side_effect=auto.Refusal('release_changed')):
             with self.assertRaisesRegex(auto.Refusal, 'release_changed'):
                 auto.rollout(production, install, IMAGE, COMMIT, 34, self.directory, release=release)

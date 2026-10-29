@@ -40,6 +40,7 @@ ARG FACTORY_RELEASE_COMMIT
 ARG FACTORY_RELEASE_VERSION
 
 LABEL org.opencontainers.image.source="https://github.com/Driftward-LLC/factory" \
+      org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.revision="$FACTORY_RELEASE_COMMIT" \
       org.opencontainers.image.version="$FACTORY_RELEASE_VERSION"
 

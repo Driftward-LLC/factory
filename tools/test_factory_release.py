@@ -11,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
+    "LICENSE",
     "deploy/docker-compose.yml",
     "deploy/compose.portable.yml",
     "deploy/compose.production.yml",
