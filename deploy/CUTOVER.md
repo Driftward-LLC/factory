@@ -181,6 +181,63 @@ tenant lock. Another restored copy cannot start while a sibling is running or
 restart-enabled. Restores retain predecessor fencing requirements. These are
 same-host safeguards, not a distributed lock for multi-host production copies.
 
+If the retired source containers were subsequently removed under reviewed
+operator authority, the original inventory remains historical evidence. An
+empty or partly missing inventory is still refused until a root operator records
+the complete decommissioning with `record-source-decommissioned`. This command
+does not remove containers or volumes, change supervision, stop/start services,
+or grant execution authority. First verify that source supervision cannot
+recreate the retired deployment, and review the reason and exact source and
+destination identities privately.
+
+For an older installed wrapper lacking this command, prepare a **new versioned
+copy of its entire deployment bundle**, then replace only that copy's
+`factory-production.py` with the reviewed recovery version. Verify that every
+saved deployment-file hash still matches (including optional telemetry files),
+and leave Compose files, support modules, images, gateway configuration, and the
+original bundle intact. The saved deployment hashes cover Compose assets, not
+the wrapper's Python source; this is an explicitly reviewed wrapper upgrade,
+not an image rollout. Use that new bundle for the following commands, and switch
+the automatic deployment configuration's `production_bundle` to it only after
+the recovery record and full production preview pass.
+
+```bash
+python3 /srv/factory-bundles/<reviewed-recovery-bundle>/deploy/factory-production.py \
+  --directory /srv/factory-candidate record-source-decommissioned \
+  --operator '<reviewed-operator>' --reason '<approved-decommissioning-reason>'
+```
+
+The root-only preview reports a digest and binds the original container IDs,
+source images, source volume names and historic unlabelled-volume exceptions to
+the destination project, installation UUID, and tenant. It checks that all
+source containers are absent, including original IDs that were relabelled, and
+that no stopped or running container mounts any source durable volume. Each of
+the seven volumes is checked explicitly: a retained volume gets an identity
+fingerprint including creation time and ownership; an absent volume is recorded
+as `null`. Existing volumes are preserved. Source volumes with conflicting
+ownership or an unrecorded unlabelled exception are refused.
+
+Review that complete preview and repeat the same command with
+`--apply --approve-sha256 <exact-preview-digest>`. Apply holds the installation
+and tenant locks, repeats the fencing checks, and atomically appends a private
+`source_decommissioning` record containing the operator, reason, root UID, and
+UTC approval time to `.factory-cutover.json`. All original provenance remains
+unchanged. Repeating the same approval is a no-op. A different approval,
+inventory drift, or an unfinished `.decommission-pending` file fails closed;
+retain the pending file for private operator investigation rather than deleting
+or overwriting it to force a retry.
+
+After recording, run the new wrapper's full `preview` before proceeding with
+the separately authorized deployment. Subsequent previews, starts, and image
+upgrades still check predecessor and tenant fencing, refuse any resurrected
+source container or source-volume attachment, and require the reviewed volume
+inventory and identities to remain unchanged. A volume recorded absent cannot
+reappear, and a retained volume cannot disappear or be recreated. This approval
+is destination-specific: a restore into another project or installation UUID
+fails closed and requires a separately reviewed recovery procedure; this command
+does not transfer or rebind an existing approval. Never hand-edit the historical
+source fields or the recovery record to bypass a refusal.
+
 After the approved cold copy, `core-start --apply` starts only Postgres,
 Hatchet Lite, and the bridge for internal validation. It does not start ingress,
 execution workers, outbox dispatch, lifecycle delivery, or Linear token refresh.

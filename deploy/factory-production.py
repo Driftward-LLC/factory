@@ -7,6 +7,7 @@ import base64
 from datetime import datetime, timezone
 from contextlib import nullcontext
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,10 @@ class Production(portable.Installation):
         for name in ("docker-compose.yml", "compose.portable.yml", "compose.production.yml"):
             self.args.extend(("-f", str(HERE / name)))
         telemetry.attach(self, SERVICES)
+        if "source_decommissioning" in self.provenance:
+            self.validate_source_decommissioning(self.provenance["source_decommissioning"])
+            if (self.directory / state.PROVENANCE).stat().st_uid != 0:
+                raise ProductionRefusal("source decommissioning requires root-owned provenance")
 
     def assert_storage(self) -> None:
         self.assert_owned_resources()
@@ -128,13 +133,139 @@ class Production(portable.Installation):
             if set(writers) - set(ids):
                 raise ProductionRefusal("a foreign container mounts candidate state")
 
-    def assert_source_fenced(self) -> None:
+    def source_identity(self) -> dict:
         source = self.provenance.get("source_project", "")
         ids = self.provenance.get("source_container_ids", [])
-        if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", source) or source == self.project
+        if (not isinstance(source, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", source) or source == self.project
+                or not isinstance(ids, list) or any(not isinstance(value, str) for value in ids)
                 or len(ids) != len(SERVICES) or len(set(ids)) != len(ids)
                 or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in ids)):
             raise ProductionRefusal("source fencing provenance is incomplete")
+        names = [f"{source}-{suffix}" for suffix in state.VOLUMES]
+        unlabelled = self.provenance.get("unlabelled_source_volumes", [])
+        if (not isinstance(unlabelled, list) or any(not isinstance(name, str) or name not in names for name in unlabelled)
+                or len(set(unlabelled)) != len(unlabelled)):
+            raise ProductionRefusal("unlabelled source volume provenance is invalid")
+        return {"source_project": source, "source_container_ids": sorted(ids),
+                "source_images": self.provenance["source_images"],
+                "source_volume_names": names, "unlabelled_source_volumes": sorted(unlabelled),
+                "destination_project": self.project, "installation_id": self.metadata["installation_id"],
+                "tenant_id": self.tenant}
+
+    @staticmethod
+    def decommissioning_digest(record: dict) -> str:
+        return hashlib.sha256(json.dumps({key: value for key, value in record.items()
+                                         if key not in ("approval_sha256", "recorded_at")},
+                                        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def validate_source_decommissioning(self, record: dict) -> None:
+        if (not isinstance(record, dict) or set(record) != {"format_version", "identity", "source_volumes",
+                "approval_sha256", "recorded_at", "recorded_by_uid", "operator", "reason"}
+                or type(record["format_version"]) is not int or record["format_version"] != 1
+                or type(record["recorded_by_uid"]) is not int or record["recorded_by_uid"] != 0
+                or record["identity"] != self.source_identity()
+                or not isinstance(record["source_volumes"], dict)
+                or set(record["source_volumes"]) != set(record["identity"]["source_volume_names"])
+                or any(value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value))
+                       for value in record["source_volumes"].values())
+                or record["approval_sha256"] != self.decommissioning_digest(record)):
+            raise ProductionRefusal("source decommissioning record differs from its reviewed identity")
+        self.review_text(record["operator"], record["reason"])
+        if datetime.fromisoformat(record["recorded_at"]).utcoffset() != timezone.utc.utcoffset(None):
+            raise ProductionRefusal("source decommissioning record requires a UTC approval time")
+
+    @staticmethod
+    def review_text(operator: str, reason: str) -> None:
+        if any(not isinstance(value, str) or not value.strip() or len(value) > limit
+               or any(ord(character) < 32 or ord(character) == 127 for character in value)
+               for value, limit in ((operator, 128), (reason, 1000))):
+            raise ProductionRefusal("source decommissioning requires an operator and review reason")
+
+    def absent_source_volumes(self) -> dict:
+        identity = self.source_identity()
+        source = identity["source_project"]
+        if state._docker(["ps", "-aq", "--no-trunc", "--filter", "label=com.docker.compose.project=" + source], self.env):
+            raise ProductionRefusal("source decommissioning requires every source container absent")
+        if set(state._docker(["ps", "-aq", "--no-trunc"], self.env).splitlines()) & set(identity["source_container_ids"]):
+            raise ProductionRefusal("an original source container remains under another identity")
+        available = state._available_volumes(self.env)
+        volumes = {}
+        for name in identity["source_volume_names"]:
+            if state._docker(["ps", "-aq", "--no-trunc", "--filter", "volume=" + name], self.env):
+                raise ProductionRefusal("a container still mounts retired source state")
+            volumes[name] = None
+            if name in available:
+                rows = json.loads(state._docker(["volume", "inspect", name], self.env))
+                if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict) or rows[0].get("Name") != name:
+                    raise ProductionRefusal("retired source volume inventory differs")
+                row = rows[0]
+                labels = row.get("Labels") or {}
+                if (not isinstance(labels, dict) or (not labels and name not in identity["unlabelled_source_volumes"])
+                        or (labels and (labels.get("com.docker.compose.project") != source
+                            or labels.get("com.docker.compose.volume") != "factory-" + name[len(source) + 1:]))):
+                    raise ProductionRefusal("retired source volume ownership differs")
+                if (any(key not in row for key in ("Driver", "Scope", "CreatedAt", "Mountpoint", "Labels", "Options"))
+                        or any(not isinstance(row[key], str) or not row[key] for key in ("Driver", "Scope", "CreatedAt", "Mountpoint"))):
+                    raise ProductionRefusal("retired source volume identity is incomplete")
+                # Driver status can change without recreating the retained volume.
+                volumes[name] = hashlib.sha256(json.dumps({key: row[key] for key in
+                    ("Name", "Driver", "Scope", "CreatedAt", "Mountpoint", "Labels", "Options")},
+                    sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return volumes
+
+    def record_source_decommissioning(self, operator: str, reason: str, *, approve_sha256: str | None = None,
+                                     apply: bool = False) -> None:
+        if os.geteuid() != 0:
+            raise ProductionRefusal("source decommissioning review requires root")
+        self.review_text(operator, reason)
+        record = {"format_version": 1, "identity": self.source_identity(),
+                  "source_volumes": self.absent_source_volumes(), "recorded_by_uid": 0,
+                  "operator": operator, "reason": reason}
+        record["approval_sha256"] = self.decommissioning_digest(record)
+        record["recorded_at"] = datetime.now(timezone.utc).isoformat()
+        self.assert_storage()
+        self.assert_candidate_writers()
+        self.assert_config()
+        self.assert_source_fenced(decommissioning=record)
+        print(json.dumps(record, sort_keys=True, indent=2))
+        if not apply:
+            return
+        if approve_sha256 != record["approval_sha256"]:
+            raise ProductionRefusal("source decommissioning requires the exact reviewed --approve-sha256")
+        if state.read_provenance(self.directory / state.PROVENANCE) != self.provenance:
+            raise ProductionRefusal("cutover provenance changed during source decommissioning review")
+        if "source_decommissioning" in self.provenance:
+            if self.provenance["source_decommissioning"]["approval_sha256"] != approve_sha256:
+                raise ProductionRefusal("source decommissioning is already recorded with another approval")
+            print("Source decommissioning already recorded; no state changed.")
+            return
+        if (self.directory / state.PROVENANCE).stat().st_uid != 0:
+            raise ProductionRefusal("source decommissioning requires root-owned provenance")
+        self.assert_source_fenced(decommissioning=record)
+        target = self.directory / state.PROVENANCE
+        pending = target.with_name(target.name + ".decommission-pending")
+        bootstrap._create_private(pending, json.dumps({**self.provenance, "source_decommissioning": record}, sort_keys=True, indent=2) + "\n")
+        os.replace(pending, target)
+        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        print("Source decommissioning recorded; historical provenance retained and no services changed.")
+
+    def assert_source_fenced(self, *, decommissioning: dict | None = None) -> None:
+        identity = self.source_identity()
+        source, ids = identity["source_project"], identity["source_container_ids"]
+        decommissioning = decommissioning if decommissioning is not None else self.provenance.get("source_decommissioning")
+        if decommissioning is not None:
+            self.validate_source_decommissioning(decommissioning)
+            if self.absent_source_volumes() != decommissioning["source_volumes"]:
+                raise ProductionRefusal("retired source volumes changed since reviewed decommissioning")
+        else:
+            self.assert_original_source_fenced(source, ids)
+        self.assert_predecessors_fenced(source)
+
+    def assert_original_source_fenced(self, source: str, ids: list[str]) -> None:
         observed = state._docker(["ps", "-aq", "--no-trunc", "--filter", "label=com.docker.compose.project=" + source], self.env).splitlines()
         if set(observed) != set(ids):
             raise ProductionRefusal("source container inventory changed; review its fencing again")
@@ -153,6 +284,8 @@ class Production(portable.Installation):
         if services != set(SERVICES):
             raise ProductionRefusal("source service inventory is incomplete")
         state._no_writers([f"{source}-{suffix}" for suffix in state.VOLUMES], self.env)
+
+    def assert_predecessors_fenced(self, source: str) -> None:
         predecessors = self.provenance.get("predecessors", [])
         if not isinstance(predecessors, list):
             raise ProductionRefusal("invalid predecessor fencing provenance")
@@ -373,6 +506,11 @@ def main() -> int:
     upgrade.add_argument("--image", required=True)
     upgrade.add_argument("--snapshot", required=True, type=Path)
     upgrade.add_argument("--apply", action="store_true")
+    decommission = sub.add_parser("record-source-decommissioned", help="record reviewed absence of retired source containers without changing Docker")
+    decommission.add_argument("--operator", required=True)
+    decommission.add_argument("--reason", required=True)
+    decommission.add_argument("--approve-sha256")
+    decommission.add_argument("--apply", action="store_true")
     for name in ("core-start", "activate", "stop"):
         command = sub.add_parser(name)
         command.add_argument("--apply", action="store_true")
@@ -412,6 +550,9 @@ def dispatch(args: argparse.Namespace) -> None:
     elif args.command == "record-upgrade":
         with portable.installation_lock(Path("/tmp") / ("factory-tenant-" + install.tenant)) if args.apply else nullcontext():
             install.record_upgrade(args.image, args.snapshot, apply=args.apply)
+    elif args.command == "record-source-decommissioned":
+        with portable.installation_lock(Path("/tmp") / ("factory-tenant-" + install.tenant)) if args.apply else nullcontext():
+            install.record_source_decommissioning(args.operator, args.reason, approve_sha256=args.approve_sha256, apply=args.apply)
     elif args.command == "telemetry":
         with portable.installation_lock(Path("/tmp") / ("factory-tenant-" + install.tenant)) if args.apply else nullcontext():
             telemetry.configure(install, args)
