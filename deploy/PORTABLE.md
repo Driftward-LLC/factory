@@ -1,4 +1,4 @@
-# Portable Factory: first Linux milestone
+# Install Factory from a release
 
 ## Optional execution telemetry
 
@@ -47,12 +47,12 @@ python3 tools/check_factory_portable.py --image driftward/factory:local --teleme
 
 ## Base installation
 
-This release installs the existing Factory control plane on a fresh Linux
-Docker host. It does not depend on this VPS's source checkout, `/etc/driftward`,
-host Node/npm, systemd, Hatchet CLI profile, or Hermes socket. It is deliberately
-**dry-run only**: real agent execution and Linear lifecycle delivery are not
-enabled by this profile. The existing VPS installer remains the migration and
-real-execution deployment path; do not point this bootstrap at its state.
+This release installs Factory's control plane on a fresh Linux Docker host.
+It uses the published image and bundled deployment tools; no source checkout,
+Node/npm build, systemd or pre-existing Hermes socket is required. The profile
+starts in **dry-run mode**: real agent execution and Linear lifecycle delivery
+are not enabled. Provision and review the external execution runtime separately.
+Do not initialize a fresh profile over an existing installation's state.
 
 Moving the existing Compose deployment is a separate workflow: see
 [same-host cutover preparation](CUTOVER.md). Its explicit production overlay
@@ -62,8 +62,8 @@ candidate alongside its source.
 ## Requirements and boundaries
 
 - Linux amd64, Docker Engine, Docker Compose 2.24.4 or newer, Python 3.11+.
-- Access to the private `ghcr.io/driftward-llc/factory` image (authenticate Docker
-  with your own package-read identity). No model/provider credentials needed.
+- Network access to the public `ghcr.io/driftward-llc/factory` image. Registry
+  authentication and model/provider credentials are not required for this profile.
 - Capacity for PostgreSQL, Hatchet and Factory services; use a separate test
   host or distinct project name and loopback ports when validating.
 - A private installation directory on a local filesystem and a unique
@@ -82,8 +82,9 @@ not part of this milestone.
 
 ## Install a release
 
-Download the `factory-VERSION-linux-amd64.tar.gz` release asset and `SHA256SUMS`
-from the same trusted GitHub release. Verify before extracting:
+Download `factory-VERSION-linux-amd64.tar.gz`, `deployment.json` and `SHA256SUMS`
+from the same trusted GitHub release. The checksum file covers both the archive
+and deployment metadata. Verify before extracting:
 
 ```bash
 sha256sum --check SHA256SUMS
@@ -134,7 +135,7 @@ python3 deploy/factory-portable.py --directory /srv/factory up
 ```
 
 `stop` preserves every volume. Status checks this deployment's containers and
-health checks, not the original VPS's systemd units or Hermes dashboard. This
+health checks, rather than unrelated systemd units or an external Hermes dashboard. This
 is service health, not proof of external integration readiness. Log output can
 contain work-item data; review before sharing.
 
@@ -159,14 +160,14 @@ image identities; it is a same-version disaster-recovery mechanism, not an
 arbitrary database downgrade. Restore leaves services stopped. Never run a
 restored real-execution deployment alongside its original executor authority.
 
-## Validation and remaining work
+## Supported scope and validation
 
 The disposable acceptance check is `python3 tools/check_factory_portable.py
 --image driftward/factory:ci` from a source checkout after building that image.
 It owns an isolated project and cleans up only its own test resources. It must
 not receive production credentials or target existing installations.
 
-This milestone does not claim Docker Desktop/ARM64, multi-tenancy, generic
+This release does not support Docker Desktop/ARM64, multi-tenancy, generic
 organization policy, a packaged remote Hermes runtime, or independently
 resumable remote execution. Keep those as explicit subsequent acceptance gates.
 TCP gateway authentication is hardened now, but real remote execution still

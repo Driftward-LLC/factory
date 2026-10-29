@@ -8,21 +8,21 @@ without giving Hatchet workers provider credentials.
 Hatchet webhooks are acceptable for trusted internal triggers, manual smoke
 checks, or simple events that can safely start a workflow as received. Provider
 webhooks from Linear, GitHub, or similar external systems must enter through
-Driftward event ingress first.
+Factory event ingress first.
 
-Driftward ingress is the provider boundary:
+Factory ingress is the provider boundary:
 
 ```text
 external provider webhook
   -> verify provider signature and timestamp
-  -> normalize payload into Driftward event shape
+  -> normalize payload into Factory event shape
   -> record a stable provider event key
   -> apply observation and execution gates
-  -> emit Driftward-owned Hatchet event
+  -> emit Factory-owned Hatchet event
 ```
 
 Do not wire Linear or GitHub provider webhooks directly to Hatchet workflow
-webhook URLs. Direct Hatchet webhooks skip the Driftward checks that keep
+webhook URLs. Direct Hatchet webhooks skip the Factory checks that keep
 provider events observational until they are explicitly eligible for execution.
 
 ## Current Slices
@@ -130,7 +130,7 @@ review activity.
 - Optional env: `/etc/driftward/hatchet-event-ingress.env`
 - Hatchet token: inherited from `/etc/driftward/hatchet-workers.env`
 - Public proxy Compose service: `linear-webhook-proxy`
-- Public Linear webhook URL: `https://srv1379035.tail410dca.ts.net/events/linear/issue`
+- Public Linear webhook URL: `https://your-webhook.example.com/events/linear/issue`
 
 The full ingress service binds to `127.0.0.1` only. The public webhook URL is a
 Tailscale Funnel route to a narrow proxy on `127.0.0.1:19879`; that proxy only

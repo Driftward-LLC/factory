@@ -13,10 +13,8 @@ Use Factory.ai as a closer software-delivery reference for lifecycle coverage,
 repository readiness, application QA and milestone validation. Prioritize
 accepted software and operator effort over matching either product's feature list.
 
-The operator has previously experienced poor Paperclip/Hermes integration.
-The specific failure modes are not yet established. Treat session continuity,
-completion reporting, cancellation, and authentication attribution as explicit
-qualification cases, without assuming which one caused that experience.
+Treat session continuity, completion reporting, cancellation, and authentication
+attribution as explicit qualification cases when evaluating integrations.
 
 ## Additional reference: Factory.ai
 
@@ -39,7 +37,7 @@ Separate documented capabilities include
 at milestone boundaries and reproducible application startup as prerequisites
 for useful QA. Its [headless execution interface](https://docs.factory.ai/droid-exec/overview)
 supports structured results and session continuation. No Hermes compatibility
-or drop-in replacement for Driftward's typed gateway was established here.
+or drop-in replacement for Factory's typed gateway was established here.
 
 ### Changes to this plan
 

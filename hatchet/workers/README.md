@@ -1,11 +1,11 @@
 # Hatchet Worker Catalog
 
-This directory owns Driftward Hatchet worker and workflow source. Keep worker
+This directory owns Factory's Hatchet worker and workflow source. Keep worker
 code, worker documentation, event names, and local smoke harnesses here so all
 Hatchet execution behavior is discoverable from one tree.
 
 Hatchet workers are dispatcher and coordination processes. They must not mount
-Driftward Hermes credentials, model provider keys, Browserbase credentials,
+Hermes credentials, model provider keys, Browserbase credentials,
 GitHub credentials, Linear credentials, MCP credentials, browser sessions, or
 Hermes profile/session state.
 
@@ -19,14 +19,13 @@ ambiguous, or disabled policy fails before a bridge job is submitted. Names,
 titles, descriptions, and labels are never routing inputs. The intake and
 Hermes executor allowlists remain independent defense-in-depth checks.
 
-The Driftward Software Factory project routes to `Driftward-LLC/factory`.
-Its `factory-operator-refresh-v1` verification policy permits ENG-153's operator,
-ledger, CLI, tests and documentation paths only; it cannot edit deployment,
-worker policy, contracts or GitHub workflows. Retain the old host policy for
-immutable historical jobs. `retired_repositories` in the routing registry keeps
-old host receipts recognizable by legacy reconciliation without providing a
-project route or execution permission. Runtime intake and Hermes allowlists
-must include the standalone Factory repository before admitting ENG-153.
+The checked-in registry contains installation-specific project IDs and repository
+policies. Review and adapt it before connecting your own Linear workspace; it
+does not discover or authorize arbitrary projects. Verification policies bound
+the permitted files and checks for each route. Retain older policies needed to
+verify immutable historical jobs. `retired_repositories` preserves recognition
+of historical receipts without providing a project route or execution permission.
+Runtime intake and Hermes allowlists must independently permit the selected repo.
 
 ## Boundary
 
@@ -40,7 +39,7 @@ Hatchet worker
 Hatchet Hermes bridge
   idempotency key, job row, append-only events, external-effect fencing
 
-Driftward Hermes
+Hermes
   agent execution, credentials, MCP, browser/platform tools, sessions
 ```
 
@@ -57,7 +56,7 @@ Build these before adding merge, deploy, or broad repair authority.
 | --- | --- | --- |
 | `intake-worker` | Consume ready Linear issues and submit mode-controlled implementation jobs to the bridge. | `POST /jobs` and Hatchet events only. |
 | `execution-dispatch-worker` | Submit an implementation job to the bridge and return the bridge job state. | `POST /jobs` only. |
-| `bridge-executor-worker` | Consume accepted bridge jobs, dispatch Driftward Hermes, record committed effects, and emit Hatchet completion events. | Bridge transitions, Driftward Hermes bounded execution, Hatchet events. |
+| `bridge-executor-worker` | Consume accepted bridge jobs, dispatch Hermes, record committed effects, and emit Hatchet completion events. | Bridge transitions, Hermes bounded execution, Hatchet events. |
 | `pr-event-worker` | React to PR-related events and advance read-only workflow state. | Read GitHub/bridge state through Hermes or narrow APIs; no mutation. |
 | `reconciliation-worker` | Inspect bridge ledger consistency and emit reconciliation findings. | Bridge reads and Hatchet events only. |
 
@@ -74,7 +73,7 @@ Manual Hatchet dispatch
   -> execution-dispatch-worker
   -> bridge accepted job
   -> bridge-executor-worker
-  -> Driftward Hermes creates draft artifact
+  -> Hermes creates draft artifact
   -> bridge effect_committed/verification_pending
   -> bounded Hermes-side verification
   -> queued GitHub checks remain verification_pending and are durably re-enqueued by reconciliation
@@ -181,7 +180,7 @@ Hermes. Treat event ingress as observation first and execution second.
 
 Hatchet's native webhook triggers may be used for trusted internal/manual
 workflows or simple non-provider triggers. Linear, GitHub, and other external
-provider webhooks must go through Driftward event ingress first so signatures,
+provider webhooks must go through Factory event ingress first so signatures,
 timestamps, provider event keys, payload normalization, and eligibility gates
 are applied before a Hatchet event is emitted.
 
@@ -203,6 +202,11 @@ dispatch. Linear workflow status is the source of truth; labels such as
 `Feature`, `Bug`, `Improvement`, `ready-to-implement`, and `has-active-pr` are
 metadata only.
 
+`Engineering`, the status names, and the legacy delegate above describe current
+source policy, not a convention imposed on every Linear workspace. Adapting
+them requires a reviewed integration change; see
+[integration portability](../../docs/contribution.md#integration-portability).
+
 The installed command named `factory` is only the current Hatchet operator CLI
 for logs and intake mode toggles. It does not revive retired delegates, labels,
 comment commands, review/repair/landing flows, or controller automation.
@@ -223,11 +227,10 @@ GitHub PR closed unmerged
   -> do not dispatch Hermes
 ```
 
-The Driftward Software Factory project is intentionally execution-disabled in
-the reviewed registry. Its signed Linear events remain observable, but ingress
-does not emit a ready event and intake rejects stale or manually delivered ready
-events before any bridge lookup or submission. This policy applies in both
-dry-run and real mode and does not modify existing bridge jobs.
+Execution-disabled routes remain observable through signed Linear events, but
+ingress emits no ready event and intake rejects stale or manually delivered ready
+events before any bridge lookup or submission. This applies in both dry-run and
+real mode and does not modify existing bridge jobs.
 
 ## Idempotency
 
@@ -270,7 +273,7 @@ Allowed:
 Forbidden:
 
 - Model provider credentials
-- Driftward Hermes env files or profile/session state
+- Hermes env files or profile/session state
 - GitHub, Linear, Browserbase, Google Workspace, Railway, Notion, Gmail, or
   other platform credentials
 - Docker socket access
@@ -281,19 +284,19 @@ Forbidden:
 Real PR creation requires:
 
 - `DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=1`
-- `DRIFTWARD_HERMES_ALLOWED_REPOS`, default
-  `Driftward-LLC/driftward-host,Driftward-LLC/capykit`
+- `DRIFTWARD_HERMES_ALLOWED_REPOS`, explicitly set to the installation's
+  reviewed repository allowlist; legacy defaults are installation-specific
 - `DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN`
 - `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME`
 - `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL`
 - A bridge payload with `repo`, plus `implementation_prompt`, `instructions`,
   or `linear_issue`
 
-By default the executor forbids `derek-nguyen` and `derek@driftward.io` for
-real PR creation. Driftward Hermes needs its own GitHub credential and Git
-author identity before this flag is enabled. The expected identity must use the
-GitHub App bot signature, for example `factory-hermes[bot]` and
-`4491454+factory-hermes[bot]@users.noreply.github.com`.
+Configure `DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS` and
+`DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS` to reject human operator identities;
+the legacy fallback values are installation-specific. Hermes needs its own
+GitHub credential and Git author identity before real execution is enabled.
+The expected identity must match the installation's GitHub App bot signature.
 
 The executor leaves timed-out Hermes jobs in `running` so Hatchet retries can
 re-enter through the same idempotency key, deterministic branch, and PR marker.
@@ -392,7 +395,7 @@ Runtime env files:
   intake repo allowlist
 
 /etc/driftward/hatchet-worker-bridge-executor.env
-  Explicit real-PR gate, Hermes gRPC target, Driftward Hermes command fallback,
+  Explicit real-PR gate, Hermes gRPC target, Hermes command fallback,
   allowed repos, expected factory-hermes GitHub App identity
 ```
 

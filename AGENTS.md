@@ -1,7 +1,7 @@
-# Driftward Factory Operations
+# Factory contributor instructions
 
-This repository owns the Driftward Factory product/runtime surface extracted
-from `Driftward-LLC/driftward-host`.
+This repository owns the Factory product and runtime. Published releases are
+consumed by independent installations with private configuration and state.
 
 ## Orientation
 
@@ -32,10 +32,9 @@ stories for new components/states and run both console and catalog checks.
 
 Factory deploys through Docker Compose from this repository. The Compose app
 owns Hatchet Lite/Postgres plus Factory bridge, ingress, worker, lifecycle,
-Linear token-renewal, and operator services. `driftward-host` remains
-responsible for host-level bootstrap, shared VPS tooling, root Codex state,
-Docker availability, host package installs, and secret-file placement.
-Driftward Hermes remains responsible for agent execution, credentials, MCP,
+Linear token-renewal, and operator services. The installation operator supplies
+Docker, host prerequisites, service supervision, and protected secret files.
+The separately provisioned Hermes runtime owns agent execution, credentials, MCP,
 browser state, and Hermes session retention.
 
 ## Safety
@@ -45,7 +44,7 @@ browser state, and Hermes session retention.
 - Keep Hatchet workers credential-minimal. Workers may use Hatchet client
   settings and bridge-local credentials; they must not receive provider,
   GitHub, Linear, Browserbase, MCP, or Hermes credentials.
-- Do not mount Driftward Hermes data, provider credentials, browser state, root
+- Do not mount Hermes data, provider credentials, browser state, root
   GitHub auth, the Docker socket, or the host root filesystem into Factory
   containers.
 - `factory doctor hatchet` is read-only. Pause/remove/apply paths for live
@@ -54,8 +53,8 @@ browser state, and Hermes session retention.
   snapshot digest. Retain the audited row; do not delete or edit outbox data
   directly from the browser console.
 - Historical bridge, ingress, lifecycle, and Hatchet records are not migrated
-  by source-copy changes. Migrate records only after the standalone deployment
-  path is approved.
+  by source changes. Migrate records only through an explicitly reviewed
+  installation migration.
 
 ## Validation
 

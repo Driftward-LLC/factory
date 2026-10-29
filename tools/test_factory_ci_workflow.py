@@ -106,36 +106,23 @@ class QualityWorkflowTests(unittest.TestCase):
                 self.assertIn(f'${{{{ needs.console-browser.outputs.{name}-{field} }}}}', gate)
         self.assertIn('${{ needs.console-browser.result }}', gate)
 
-    def test_release_keeps_exact_image_rehearsals_and_main_only_publisher(self):
+    def test_quality_keeps_image_rehearsals_without_publication_or_host_access(self):
         release = self.jobs['release-readiness']
-        names = ['Verify production package read-only for internal pull requests', 'Validate Docker deployment',
-                 'Prove isolated fresh install, restart, and restore', 'Rehearse stopped production-state relocation',
-                 'Authenticate private production image publication', 'Publish the tested production image and package metadata',
-                 'Retain immutable production image metadata']
+        names = ['Validate Docker deployment', 'Prove isolated fresh install, restart, and restore',
+                 'Rehearse stopped production-state relocation']
         self.assertEqual(sorted(names, key=release.index), names)
         for command in ['docker compose -f deploy/docker-compose.yml config >/dev/null',
                         'FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)"', 'FACTORY_RELEASE_VERSION=ci',
                         '-f deploy/Dockerfile -t driftward/factory:ci .',
                         'python3 tools/check_factory_portable.py --image driftward/factory:ci --telemetry',
-                        'python3 tools/check_factory_cutover.py --image driftward/factory:ci',
-                        'python3 deploy/auto_deploy_artifact.py "$RUNNER_TEMP/factory-production" driftward/factory:ci']:
+                        'python3 tools/check_factory_cutover.py --image driftward/factory:ci']:
             self.assertIn(command, release)
-        self.assertEqual(self.workflow.count('packages: write'), 1)
-        self.assertIn('      packages: write\n', release)
+        for forbidden in ('packages: write', 'contents: write', 'docker login', 'docker push',
+                          'auto_deploy_artifact.py', 'secrets.', 'ssh ', 'factory-production-'):
+            self.assertNotIn(forbidden, self.workflow)
         self.assertNotIn('permissions:', self.jobs['validate'])
         self.assertNotIn('download-artifact', self.workflow)
         self.assertNotIn('continue-on-error:', release)
-        for name in names[-3:-1]:
-            step = self.step('release-readiness', name)
-            self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Driftward-LLC/factory'", step)
-        metadata = self.step('release-readiness', names[-1])
-        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'", metadata)
-        self.assertIn('name: factory-production-${{ github.sha }}', metadata)
-        self.assertIn('if-no-files-found: error', metadata)
-        self.assertIn('retention-days: 7', metadata)
-        verification = self.step('release-readiness', names[0])
-        self.assertIn("github.event.pull_request.head.repo.full_name == 'Driftward-LLC/factory'", verification)
-        self.assertIn('python3 deploy/auto_deploy_artifact.py --verify-package', verification)
 
     def test_code_and_browser_assertions_remain_blocking(self):
         for name in ['validate', 'console-browser']:
@@ -157,14 +144,17 @@ class QualityWorkflowTests(unittest.TestCase):
         for command in ['npm run check:ui --prefix factory/console', 'npm run build-storybook --prefix factory/console']:
             self.assertIn(command, self.jobs['console-browser'])
 
-    def test_deployment_requires_entire_quality_success_and_release_stays_serial(self):
-        deploy = (ROOT / '.github/workflows/factory-deploy.yml').read_text()
+    def test_release_requires_entire_quality_success_and_has_no_host_deployment(self):
+        self.assertFalse((ROOT / '.github/workflows/factory-deploy.yml').exists())
         self.assertIn('name: Hatchet Quality\n', self.workflow)
-        self.assertIn('workflows: [Hatchet Quality]', deploy)
-        self.assertIn("github.event.workflow_run.conclusion == 'success'", deploy)
-        self.assertIn("github.event.workflow_run.event == 'push'", deploy)
         release = (ROOT / '.github/workflows/factory-release.yml').read_text()
         self.assertIn('  group: factory-release\n  cancel-in-progress: false', release)
+        self.assertIn('auto_deploy_artifact.py --check-release-quality', release)
+        self.assertLess(release.index('--check-release-quality'), release.index('docker push'))
+        self.assertIn('ref: ${{ github.sha }}', release)
+        for workflow in (self.workflow, release):
+            self.assertNotIn('FACTORY_DEPLOY_SSH_KEY', workflow)
+            self.assertNotIn('workflow_run:', workflow)
 
     def test_concurrency_is_pr_only_and_main_pushes_have_unique_groups(self):
         concurrency = self.workflow.split('\nconcurrency:\n', 1)[1].split('\njobs:', 1)[0]

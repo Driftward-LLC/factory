@@ -760,7 +760,8 @@ normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("release_tag:", workflow)
         self.assertIn("permissions:\n  contents: write", workflow)
-        self.assertIn("ref: main", workflow)
+        self.assertIn("ref: ${{ github.sha }}", workflow)
+        self.assertIn("--check-release-quality", workflow)
         self.assertIn("release_tag must match vYYYY.M.D or vYYYY.M.D.N", workflow)
         self.assertIn("release tag already exists at a different commit", workflow)
         self.assertIn("using existing annotated tag", workflow)
@@ -776,7 +777,7 @@ normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
         self.assertIn('git tag -a "$RELEASE_TAG"', workflow)
         self.assertIn('git push origin "refs/tags/$RELEASE_TAG"', workflow)
         self.assertIn('gh "${args[@]}"', workflow)
-        self.assertIn("This workflow does not deploy the VPS runtime", workflow)
+        self.assertIn("Installations select and pull this release independently.", workflow)
         self.assertNotIn("ssh ", workflow)
         self.assertNotIn("systemctl restart", workflow)
 

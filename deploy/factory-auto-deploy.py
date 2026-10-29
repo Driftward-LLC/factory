@@ -137,6 +137,96 @@ def validate_run(run, workflow, run_id, commit):
             and run.get('head_repository', {}).get('full_name') == REPO, 'untrusted_or_unsuccessful_ci_run')
 
 
+RELEASE_IMAGE = 'ghcr.io/driftward-llc/factory'
+RELEASE_WORKFLOW = '.github/workflows/factory-release.yml'
+RELEASE_TAG = r'v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:\.[0-9]+)?'
+
+
+def release_metadata(tag):
+    """Bind durable release metadata to its tag, asset and successful publisher."""
+    require(isinstance(tag, str) and re.fullmatch(RELEASE_TAG, tag), 'invalid_release_tag')
+    release = api('releases/tags/' + tag)
+    require(type(release.get('id')) is int and release['id'] > 0
+            and release.get('tag_name') == tag and release.get('draft') is False
+            and isinstance(release.get('published_at'), str) and release['published_at'],
+            'unpublished_or_invalid_release')
+    matches = [item for item in release.get('assets', []) if item.get('name') == 'deployment.json']
+    require(len(matches) == 1, 'release_metadata_missing_or_ambiguous')
+    asset = matches[0]
+    require(type(asset.get('id')) is int and asset['id'] > 0 and asset.get('state') == 'uploaded'
+            and type(asset.get('size')) is int and 0 < asset['size'] <= 4096
+            and re.fullmatch('sha256:' + DIGEST, str(asset.get('digest'))), 'invalid_release_asset')
+    asset = {key: asset[key] for key in ('id', 'name', 'size', 'digest')}
+    with tempfile.TemporaryDirectory(prefix='factory-release-metadata-') as temporary:
+        path = Path(temporary) / 'deployment.json'
+        with path.open('xb') as handle:
+            command('gh', 'api', '-H', 'Accept: application/octet-stream',
+                    f'repos/{REPO}/releases/assets/{asset["id"]}', output=handle)
+        require(path.stat().st_size == asset['size'] and 'sha256:' + sha256(path) == asset['digest'],
+                'release_asset_digest_mismatch')
+        def unique(items):
+            result = {}
+            for key, value in items:
+                require(key not in result, 'invalid_release_manifest')
+                result[key] = value
+            return result
+        manifest = json.loads(path.read_text(), object_pairs_hook=unique,
+                              parse_constant=lambda _: require(False, 'invalid_release_manifest'))
+        require(isinstance(manifest, dict) and set(manifest) == {
+            'format', 'release_tag', 'commit', 'image', 'image_config', 'compatibility', 'run_id', 'run_attempt'}
+            and manifest['format'] == 3 and manifest['release_tag'] == tag
+            and re.fullmatch(SHA, str(manifest['commit']))
+            and re.fullmatch(re.escape(RELEASE_IMAGE) + '@sha256:' + DIGEST, str(manifest['image']))
+            and re.fullmatch('sha256:' + DIGEST, str(manifest['image_config']))
+            and re.fullmatch(DIGEST, str(manifest['compatibility']))
+            and type(manifest['run_id']) is int and manifest['run_id'] > 0
+            and type(manifest['run_attempt']) is int and manifest['run_attempt'] > 0,
+            'invalid_release_manifest')
+        # Verify GitHub's signed build provenance, not merely the asset's
+        # replaceable release metadata. An unsupported gh command also refuses.
+        try:
+            command('gh', 'attestation', 'verify', str(path), '--repo', REPO,
+                    '--signer-workflow', REPO + '/' + RELEASE_WORKFLOW,
+                    '--source-ref', 'refs/heads/main', '--source-digest', manifest['commit'],
+                    '--deny-self-hosted-runners', '--format', 'json')
+        except Refusal:
+            raise Refusal('release_attestation_verification_failed') from None
+    reference = api('git/ref/tags/' + tag).get('object', {})
+    require(reference.get('type') == 'tag' and re.fullmatch(SHA, str(reference.get('sha'))),
+            'release_tag_provenance_mismatch')
+    annotated = api('git/tags/' + reference['sha'])
+    require(annotated.get('tag') == tag and annotated.get('object', {}).get('type') == 'commit'
+            and annotated['object'].get('sha') == manifest['commit'], 'release_tag_provenance_mismatch')
+    workflow = api('actions/workflows/factory-release.yml')
+    run = api('actions/runs/' + str(manifest['run_id']))
+    require(type(workflow.get('id')) is int and workflow['id'] > 0
+            and workflow.get('path') == RELEASE_WORKFLOW
+            and type(run.get('id')) is int and run['id'] == manifest['run_id']
+            and type(run.get('workflow_id')) is int and run['workflow_id'] == workflow['id']
+            and run.get('path') == RELEASE_WORKFLOW and run.get('event') == 'workflow_dispatch'
+            and run.get('head_branch') == 'main' and run.get('head_sha') == manifest['commit']
+            and run.get('status') == 'completed' and run.get('conclusion') == 'success'
+            and type(run.get('run_attempt')) is int and run['run_attempt'] == manifest['run_attempt']
+            and run.get('repository', {}).get('full_name') == REPO
+            and run.get('head_repository', {}).get('full_name') == REPO,
+            'untrusted_or_unsuccessful_release_run')
+    return {'id': release['id'], 'tag': tag, 'published_at': release['published_at'],
+            'tag_object': reference['sha'], 'asset': asset, 'manifest': manifest,
+            'run_updated_at': run.get('updated_at')}
+
+
+def verify_release(expected):
+    require(release_metadata(expected['tag']) == expected, 'release_changed')
+
+
+def get_release_image(expected, config, directory):
+    verify_release(expected)
+    manifest = expected['manifest']
+    require(compatibility_entries(source_entries(manifest['commit'])) == config['compatibility']
+            == manifest['compatibility'], 'compatibility_review_required')
+    return pull_image(manifest, directory)
+
+
 def current_main(commit):
     require(api('git/ref/heads/main')['object']['sha'] == commit, 'superseded_commit')
 
@@ -203,16 +293,21 @@ def get_image(run_id, commit, config, directory, run_attempt, credentials, *, ex
         command('gh', 'api', f'repos/{REPO}/actions/artifacts/{artifact["id"]}/zip', output=handle)
     require(archive.stat().st_size <= MAX_ARCHIVE and 'sha256:' + sha256(archive) == artifact['digest'], 'artifact_digest_mismatch')
     manifest = checked_manifest(unpack(archive, directory), commit, config['compatibility'], run_id, run_attempt)
+    return pull_image(manifest, directory, credentials)
+
+
+def pull_image(manifest, directory, credentials=None):
     docker_config = directory / 'docker-config'
     docker_config.mkdir(mode=0o700)
     env = {'DOCKER_CONFIG': str(docker_config)}
     try:
         # A nonempty auths map disables Docker's native credential-helper
         # autodetection; never let a temporary token reach the host keychain.
-        auth = base64.b64encode((credentials['username'] + ':' + credentials['token']).encode()).decode()
+        auth = ({'auth': base64.b64encode((credentials['username'] + ':' + credentials['token']).encode()).decode()}
+                if credentials is not None else {})
         descriptor = os.open(docker_config / 'config.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'w') as handle:
-            json.dump({'auths': {'ghcr.io': {'auth': auth}}}, handle)
+            json.dump({'auths': {'ghcr.io': auth}}, handle)
         reference = manifest['image']
         registry_manifest = json.loads(command('docker', 'manifest', 'inspect', reference, env=env))
         require(registry_manifest.get('schemaVersion') == 2 and 'manifests' not in registry_manifest
@@ -226,7 +321,9 @@ def get_image(run_id, commit, config, directory, run_attempt, credentials, *, ex
         require(re.fullmatch('sha256:' + DIGEST, image) and reference in info.get('RepoDigests', [])
                 and image in {manifest['image_config'], reference.split('@')[1]}
                 and info['Architecture'] == 'amd64' and info['Os'] == 'linux'
-                and labels.get('org.opencontainers.image.revision') == commit
+                and labels.get('org.opencontainers.image.revision') == manifest['commit']
+                and ('release_tag' not in manifest
+                     or labels.get('org.opencontainers.image.version') == manifest['release_tag'])
                 and labels.get('org.opencontainers.image.source') == 'https://github.com/' + REPO, 'image_provenance_mismatch')
         return image
     finally:
@@ -262,8 +359,9 @@ def resume(install, paused=()):
     healthy(install, paused)
 
 
-def rollout(production, install, image, commit, run_id, work):
+def rollout(production, install, image, commit, run_id, work, *, release=None):
     status = work / 'status.json'
+    provenance = {'release': release} if release is not None else {}
     if status.exists():
         require(private_json(status).get('phase') in {'complete', 'blocked'}, 'prior_deployment_requires_operator')
     paused = paused_execution(install)
@@ -281,21 +379,21 @@ def rollout(production, install, image, commit, run_id, work):
     with closing(sqlite3.connect(db.as_uri() + '?mode=rw', uri=True, timeout=5)) as conn:
         conn.execute('BEGIN IMMEDIATE')
         assert_quiescent(conn)
-        current_main(commit)
-        record(status, {'phase': 'quiescing', 'commit': commit, 'run_id': run_id})
+        verify_release(release) if release is not None else current_main(commit)
+        record(status, {**provenance, 'phase': 'quiescing', 'commit': commit, 'run_id': run_id})
         install.compose('stop', '--timeout', '60', 'execution-dispatch-worker', 'bridge-executor-worker', private=True)
         conn.rollback()
     snapshot = work / f'backup-{commit}-{run_id}'
-    record(status, {'phase': 'backing_up', 'commit': commit, 'run_id': run_id})
+    record(status, {**provenance, 'phase': 'backing_up', 'commit': commit, 'run_id': run_id})
     production.state.backup(install, snapshot, apply=True)
-    record(status, {'phase': 'upgrading', 'commit': commit, 'run_id': run_id})
+    record(status, {**provenance, 'phase': 'upgrading', 'commit': commit, 'run_id': run_id})
     install.record_upgrade(image, snapshot, apply=True)
     updated = production.Production(install.directory)
-    record(status, {'phase': 'starting', 'commit': commit, 'run_id': run_id})
+    record(status, {**provenance, 'phase': 'starting', 'commit': commit, 'run_id': run_id})
     # No migrations, gateway restart, journal restore or automatic state rollback.
     # A partial failure stays latched for an operator, rather than guessing about effects.
     resume(updated, paused)
-    record(status, {'phase': 'complete', 'commit': commit, 'run_id': run_id, 'backup': str(snapshot), 'image': image})
+    record(status, {**provenance, 'phase': 'complete', 'commit': commit, 'run_id': run_id, 'backup': str(snapshot), 'image': image})
     print('Deployment healthy; exact image active and cold backup retained.')
 
 

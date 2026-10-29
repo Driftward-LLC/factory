@@ -6,7 +6,6 @@ path from a finding to the affected attempt. React is the frontend foundation.
 
 The current visual reference is Linear's public [My issues screen](https://linear.app/docs/my-issues)
 and [application redesign](https://linear.app/now/how-we-redesigned-the-linear-ui).
-The user approved these references after Mobbin's app library required sign-in.
 Use the actual product screens, rather than Linear's marketing page, as the
 reference for navigation, list density, status icons, and surface hierarchy.
 Factory retains its own identity, explicit operator approvals, and evidence semantics.

@@ -35,6 +35,135 @@ COMMIT = 'a' * 40
 IMAGE = 'sha256:' + 'b' * 64
 
 
+class PublishedReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tag = 'v2026.10.29'
+        self.manifest = {'format': 3, 'release_tag': self.tag, 'commit': COMMIT,
+            'image': auto.RELEASE_IMAGE + '@' + IMAGE, 'image_config': 'sha256:' + 'c' * 64,
+            'compatibility': artifact.compatibility_entries([]), 'run_id': 34, 'run_attempt': 2}
+        self.payload = json.dumps(self.manifest).encode()
+        self.asset = {'id': 56, 'name': 'deployment.json', 'size': len(self.payload), 'state': 'uploaded',
+                      'digest': 'sha256:' + hashlib.sha256(self.payload).hexdigest()}
+        self.release = {'id': 78, 'tag_name': self.tag, 'draft': False, 'published_at': '2026-10-29T00:00:00Z',
+                        'assets': [self.asset]}
+        self.tag_object = {'tag': self.tag, 'object': {'type': 'commit', 'sha': COMMIT}}
+        self.run = {'id': 34, 'workflow_id': 12, 'path': auto.RELEASE_WORKFLOW, 'event': 'workflow_dispatch',
+                    'head_branch': 'main', 'head_sha': COMMIT, 'status': 'completed', 'conclusion': 'success',
+                    'repository': {'full_name': auto.REPO}, 'head_repository': {'full_name': auto.REPO},
+                    'run_attempt': 2, 'updated_at': 'fixed'}
+        self.workflow = {'id': 12, 'path': auto.RELEASE_WORKFLOW}
+
+    def api(self, path):
+        return {'releases/tags/' + self.tag: self.release,
+                'git/ref/tags/' + self.tag: {'object': {'type': 'tag', 'sha': 'd' * 40}},
+                'git/tags/' + 'd' * 40: self.tag_object,
+                'actions/workflows/factory-release.yml': self.workflow,
+                'actions/runs/34': self.run}[path]
+
+    def download(self, *args, output=None):
+        if args[:3] == ('gh', 'attestation', 'verify'):
+            self.assertEqual(Path(args[3]).read_bytes(), self.payload)
+            self.assertEqual(args[4:], ('--repo', auto.REPO, '--signer-workflow', auto.REPO + '/' + auto.RELEASE_WORKFLOW,
+                '--source-ref', 'refs/heads/main', '--source-digest', COMMIT,
+                '--deny-self-hosted-runners', '--format', 'json'))
+            return '[]'  # The trusted CLI verifies cryptography; its exit status is the gate.
+        self.assertEqual(args, ('gh', 'api', '-H', 'Accept: application/octet-stream',
+                               f'repos/{auto.REPO}/releases/assets/56'))
+        output.write(self.payload)
+
+    def metadata(self):
+        with patch.object(auto, 'api', side_effect=self.api), patch.object(auto, 'command', side_effect=self.download):
+            return auto.release_metadata(self.tag)
+
+    def test_release_uses_durable_asset_and_exact_tag_publisher_without_current_main(self):
+        result = self.metadata()
+        self.assertEqual(result['manifest'], self.manifest)
+        self.assertEqual(result['asset']['id'], 56)
+        self.assertEqual(result['tag_object'], 'd' * 40)
+        # No Actions artifact or current-main endpoint is provided by the fixture.
+        with patch.object(auto, 'release_metadata', return_value=result):
+            auto.verify_release(result)
+            with self.assertRaisesRegex(auto.Refusal, 'release_changed'):
+                auto.verify_release({**result, 'id': 99})
+
+    def test_missing_invalid_or_unsupported_attestation_refuses_release(self):
+        real_command = auto.command
+        for failure in ('invalid signature', 'no attestation', 'unknown command attestation'):
+            calls = []
+            def command(*args, **kwargs):
+                calls.append(args)
+                if args[:3] == ('gh', 'attestation', 'verify'):
+                    return real_command(*args, **kwargs)
+                return self.download(*args, **kwargs)
+            with self.subTest(failure=failure), patch.object(auto, 'api', side_effect=self.api), \
+                 patch.object(auto.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout=b'', stderr=failure.encode())), \
+                 patch.object(auto, 'command', side_effect=command), \
+                 self.assertRaisesRegex(auto.Refusal, 'release_attestation_verification_failed'):
+                auto.release_metadata(self.tag)
+            self.assertEqual(len(calls), 2)
+
+    def test_missing_or_noninteger_workflow_id_cannot_match_a_missing_run_identity(self):
+        for identifier in (None, True, 0, '12'):
+            self.workflow['id'] = identifier
+            self.run['workflow_id'] = identifier
+            with self.subTest(identifier=identifier), self.assertRaisesRegex(auto.Refusal, 'release_run'):
+                self.metadata()
+
+    def test_release_rejects_unpublished_moved_tag_changed_publisher_and_asset(self):
+        changes = [(self.release, 'draft', True), (self.release, 'published_at', None),
+                   (self.release, 'assets', [self.asset, self.asset]),
+                   (self.asset, 'digest', 'sha256:' + '0' * 64), (self.asset, 'size', 4097),
+                   (self.tag_object, 'object', {'type': 'commit', 'sha': 'e' * 40}),
+                   (self.run, 'head_sha', 'e' * 40), (self.run, 'conclusion', 'failure'),
+                   (self.run, 'run_attempt', 3), (self.run, 'event', 'pull_request'),
+                   (self.run, 'head_repository', {'full_name': 'fork/factory'})]
+        for target, key, value in changes:
+            previous = target[key]
+            with self.subTest(key=key, value=value), self.assertRaises(auto.Refusal):
+                target[key] = value
+                try:
+                    self.metadata()
+                finally:
+                    target[key] = previous
+
+    def test_release_manifest_rejects_unknown_fields_duplicate_keys_and_wrong_image(self):
+        payloads = [json.dumps({**self.manifest, 'command': 'untrusted'}).encode(),
+                    json.dumps({**self.manifest, 'image': 'ghcr.io/other/factory@' + IMAGE}).encode(),
+                    json.dumps({**self.manifest, 'run_id': True}).encode(),
+                    self.payload[:-1] + b', "format": 3}']
+        for payload in payloads:
+            self.payload = payload
+            self.asset.update(size=len(payload), digest='sha256:' + hashlib.sha256(payload).hexdigest())
+            with self.subTest(payload=payload), self.assertRaises(auto.Refusal):
+                self.metadata()
+
+    def test_public_image_pull_never_uses_host_registry_credentials(self):
+        expected = self.metadata()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            def command(*args, env=None):
+                auth = directory / 'docker-config/config.json'
+                self.assertEqual(env, {'DOCKER_CONFIG': str(auth.parent)})
+                self.assertEqual(json.loads(auth.read_text()), {'auths': {'ghcr.io': {}}})
+                if args[:3] == ('docker', 'manifest', 'inspect'):
+                    return json.dumps({'schemaVersion': 2, 'config': {'digest': self.manifest['image_config']}})
+                if args[:3] == ('docker', 'image', 'pull'):
+                    return ''
+                return json.dumps([{'Id': IMAGE, 'RepoDigests': [self.manifest['image']],
+                    'Architecture': 'amd64', 'Os': 'linux', 'Config': {'Labels': {
+                        'org.opencontainers.image.revision': COMMIT,
+                        'org.opencontainers.image.version': self.tag,
+                        'org.opencontainers.image.source': 'https://github.com/' + auto.REPO}}}])
+            with patch.object(auto, 'verify_release'), patch.object(auto, 'source_entries', return_value=[]), \
+                 patch.object(auto, 'command', side_effect=command):
+                self.assertEqual(auto.get_release_image(expected, {'compatibility': self.manifest['compatibility']}, directory), IMAGE)
+            self.assertFalse((directory / 'docker-config').exists())
+            with patch.object(auto, 'verify_release'), patch.object(auto, 'source_entries', return_value=[]), \
+                 patch.object(auto, 'pull_image') as pull, self.assertRaisesRegex(auto.Refusal, 'compatibility'):
+                auto.get_release_image(expected, {'compatibility': 'f' * 64}, directory)
+            pull.assert_not_called()
+
+
 class DeploymentTests(unittest.TestCase):
     def test_every_main_push_gets_checks_even_when_only_docs_change(self):
         workflow = (ROOT / '.github/workflows/hatchet-quality.yml').read_text()
@@ -480,6 +609,24 @@ runpy.run_path(sys.argv[1])
             auto.rollout(production, install, IMAGE, COMMIT, 34, self.directory)
         self.assertEqual([call[0] for call in calls], ['stop', 'backup', 'record-upgrade', 'resume'])
         self.assertEqual(json.loads((self.directory / 'status.json').read_text())['phase'], 'complete')
+
+    def test_release_rollout_revalidates_under_write_barrier_and_preserves_receipt(self):
+        install, production, command, calls = self.rollout_fixture()
+        release = {'tag': 'v2026.10.29', 'manifest': {'commit': COMMIT}}
+        with patch.object(auto, 'healthy'), patch.object(auto, 'command', side_effect=command), \
+             patch.object(auto, 'current_main', side_effect=AssertionError('release is independent of main')), \
+             patch.object(auto, 'verify_release', side_effect=lambda value: calls.append(('release', value))), \
+             patch.object(auto, 'resume', side_effect=lambda _, paused: calls.append(('resume',))):
+            auto.rollout(production, install, IMAGE, COMMIT, 34, self.directory, release=release)
+        self.assertEqual([call[0] for call in calls], ['release', 'stop', 'backup', 'record-upgrade', 'resume'])
+        self.assertEqual(json.loads((self.directory / 'status.json').read_text())['release'], release)
+        (self.directory / 'status.json').chmod(0o600)
+        calls.clear()
+        with patch.object(auto, 'healthy'), patch.object(auto, 'command', side_effect=command), \
+             patch.object(auto, 'verify_release', side_effect=auto.Refusal('release_changed')):
+            with self.assertRaisesRegex(auto.Refusal, 'release_changed'):
+                auto.rollout(production, install, IMAGE, COMMIT, 34, self.directory, release=release)
+        self.assertEqual(calls, [])
 
     def test_blocked_execution_never_stops_services_and_failure_latches(self):
         install, production, command, calls = self.rollout_fixture()

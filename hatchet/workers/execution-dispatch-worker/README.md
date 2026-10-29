@@ -1,7 +1,7 @@
 # Execution Dispatch Worker
 
 Submits external-effect jobs to the Hatchet Hermes bridge and returns the
-bridge job state. This worker does not call Driftward Hermes, GitHub, Linear,
+bridge job state. This worker does not call Hermes, GitHub, Linear,
 or any model provider directly.
 
 ## Workflow
@@ -18,9 +18,9 @@ For real PR creation, include bounded execution context in the workflow input:
 
 ```json
 {
-  "workItemId": "ENG-35",
-  "repo": "Driftward-LLC/factory",
-  "linearIssue": "ENG-35",
+  "workItemId": "ENG-123",
+  "repo": "OWNER/REPO",
+  "linearIssue": "ENG-123",
   "implementationPrompt": "bounded implementation request",
   "dryRun": false
 }

@@ -1,6 +1,6 @@
-# Driftward UI and Storybook
+# Factory UI and Storybook
 
-Storybook is the catalog for Driftward's shared React components, theme, and
+Storybook is the catalog for Factory's shared React components, theme, and
 icons. Factory consumes the same `@driftward/ui` workspace that the stories
 render. There is no separate demo implementation and no runtime API connection.
 
@@ -13,7 +13,7 @@ npm ci --prefix factory/console
 npm run storybook --prefix factory/console
 ```
 
-Open `http://127.0.0.1:6006`. When running on the VPS, forward that port over SSH
+Open `http://127.0.0.1:6006`. When running on a remote host, forward that port over SSH
 to view it locally. The development server binds to loopback; it is not part of
 the production Factory console or its Docker Compose runtime.
 

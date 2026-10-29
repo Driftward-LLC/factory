@@ -1,25 +1,29 @@
-# Driftward Hatchet Lite
+# Factory's Hatchet control plane
 
-This is the Factory-owned Hatchet Lite control plane for Driftward
+This is the Factory-owned Hatchet Lite control plane for
 bridge-backed intake. It is deployed with the standalone Factory Docker
 Compose application and remains intentionally local-only and low-volume. See
 `docs/factory-standalone-app-boundary.md` for the ownership split and
 `hatchet/desired-state/factory-hatchet.json` for checked-in desired state.
 
-## Scope
+## Managed host defaults
+
+The paths and service names below describe the managed host integration.
+Portable releases use their installation directory and project name; follow
+[the portable guide](../deploy/PORTABLE.md) for a new installation.
 
 - Runtime root: `/docker/driftward/factory`
 - Systemd unit: `driftward-factory.service`
 - Compose project: `driftward-factory`
 - Local dashboard/API: `http://127.0.0.1:8888`
-- Private dashboard/API URL: `https://srv1379035.tail410dca.ts.net:8888/`
+- Private dashboard/API URL: `https://your-host.your-tailnet.ts.net:8888/`
 - Local Factory Console: `http://127.0.0.1:19881`
 - Worker gRPC: `127.0.0.1:7077`
 - Health port: `127.0.0.1:8733`
 - Secret env: `/etc/driftward/hatchet.env`
 - Smoke test: `factory-docker-smoke`
 
-Hatchet remains a control plane only. Do not mount Driftward Hermes provider
+Hatchet remains a control plane only. Do not mount Hermes provider
 credentials, browser credentials, GitHub credentials, Linear credentials, MCP
 credentials, or profile/session state into this runtime.
 
@@ -80,7 +84,7 @@ Runtime:
 - Public Linear webhook proxy: `linear-webhook-proxy`
 - Database: `/var/lib/driftward-hatchet-event-ingress/ingress.db`
 - Local API: `http://127.0.0.1:19878`
-- Public Linear webhook URL: `https://srv1379035.tail410dca.ts.net/events/linear/issue`
+- Public Linear webhook URL: `https://your-webhook.example.com/events/linear/issue`
 
 Supported events:
 
@@ -111,7 +115,7 @@ the full local ingress API.
 ## Operations
 
 Use `factory` as the main operator entry point for the current factory path.
-It is the front door over Hatchet intake, the bridge ledger, Driftward Hermes,
+It is the front door over Hatchet intake, the bridge ledger, Hermes,
 the lifecycle writer, retry operator, and recovery components:
 
 ```bash
@@ -123,7 +127,7 @@ factory mode dry-run
 factory mode real --yes
 factory logs linear -f
 factory logs all
-factory attempts list ENG-62
+factory attempts list ENG-123
 ```
 
 `factory analytics` reads the append-only bridge, ingress, and lifecycle
@@ -202,7 +206,7 @@ factory mode real --yes
 ```
 
 `dry-run` is the default. `real` allows Ready Linear issues to create real
-bridge jobs for Driftward Hermes draft PR execution. This mode toggle is not
+bridge jobs for Hermes draft PR execution. This mode toggle is not
 the retired unattended factory/controller stack.
 
 Use `factory doctor hatchet` for read-only drift checks against the desired
@@ -217,7 +221,7 @@ project may execute at all. Disabled projects remain observable at ingress but
 never create bridge jobs, regardless of dry-run or real mode.
 
 The root-owned Factory lifecycle writer polls only safe local ingress
-projections and the authenticated bridge ledger. It is the only Shipwright
+projections and the authenticated bridge ledger. It is the dedicated
 Linear client; workers, bridge, ingress, and Hermes do not receive its token.
 It permanently records dry-run rows as suppressed and comments only for real
 started, verified-ready success, terminal failure, and routing setup failure.
@@ -332,7 +336,7 @@ the Hatchet admin image and mounted read-only into `hatchet-lite`.
 
 `/etc/driftward/hatchet-workers.env` contains the Hatchet worker client token
 and connection settings. `/etc/driftward/hatchet-worker-bridge-executor.env`
-contains the explicit Driftward Hermes execution gate and expected GitHub App
+contains the explicit Hermes execution gate and expected GitHub App
 identity. Keep both files mode `0600`.
 
 `/etc/driftward/hatchet-event-ingress.env` is optional and holds ingress-local

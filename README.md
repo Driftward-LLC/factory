@@ -1,128 +1,88 @@
-# Driftward Factory
+# Factory
 
-Standalone source repository for the Driftward Factory app and Hatchet-backed
-runtime.
+Factory is a self-hosted control plane for agent-assisted software work. It
+accepts work requests, schedules workflows with Hatchet, records execution and
+review evidence, and gives operators a CLI and web console to inspect progress
+and recover interrupted work.
 
-This repo was seeded from the Factory-owned surface that previously lived in
-`Driftward-LLC/driftward-host`. It owns the operator CLI, Hatchet workflow and
-worker source, event ingress, Hatchet-to-Hermes bridge, lifecycle writer,
-contracts, desired-state manifest, and drift tooling.
+Factory publishes versioned container images at
+`ghcr.io/driftward-llc/factory`. Installations pull a selected release and keep
+their configuration, credentials, and persistent data outside the repository.
 
-Factory deploys through Docker Compose from this repository. The Compose app
-owns Hatchet Lite/Postgres plus Factory bridge, ingress, worker, lifecycle,
-Linear token-renewal, and operator services. The host should own Docker,
-systemd supervision, the runtime root, protected env files, and migrated key
-placement. Durable Factory state lives in Docker named volumes.
+## Install a release
 
-For a fresh Linux/amd64 dry-run installation, use the image-pinned release
-bundle and [portable installation guide](deploy/PORTABLE.md). This path creates
-isolated configuration and state without the VPS's systemd, checkout, or
-Hermes socket. The host installer below remains the existing deployment's
-migration/real-execution path; it is not greenfield bootstrap.
+Start with the [portable installation guide](deploy/PORTABLE.md). Release
+bundles contain the Compose configuration and installation helper, with the
+Factory image pinned by digest. The supported portable profile runs on
+Linux/amd64 and starts in **dry-run mode**.
 
-For a staged move from the existing Compose runtime into a new isolated
-installation, use the [same-host cutover preparation guide](deploy/CUTOVER.md).
-Its default is read-only preview; an approved cold copy leaves the candidate
-stopped and does not switch live traffic.
+The bundle includes Hatchet Lite/PostgreSQL, workers, the bridge ledger, event
+ingress, lifecycle services, and the operator console. Real agent execution
+requires a separately provisioned Hermes runtime and explicit execution
+configuration. Installing or upgrading Factory does not enable it.
 
-Historical bridge, ingress, lifecycle, and Hatchet control-plane records are
-intentionally not copied into the repository. They should be migrated into the
-Factory Docker volumes during the standalone deployment cutover.
+The console currently requires a trusted Tailscale Serve proxy. GitHub and
+Linear integrations also require installation-specific credentials and routing
+configuration; the portable profile does not provision those connections.
+Some integration policies and Linear links still assume the original workspace.
+Real execution in another workspace requires reviewing those source defaults;
+see [integration limits](docs/contribution.md#integration-portability).
 
-## Layout
+- [Installation and backup/restore](deploy/PORTABLE.md)
+- [CLI setup and operator commands](deploy/CLI.md)
+- [Releases, upgrades, and rollback](docs/factory-release-runbook.md)
+- [Managed release upgrades](docs/automatic-deployment.md)
+- [Moving an existing installation](deploy/CUTOVER.md)
 
-- `factory/`: operator-facing CLI.
-- `hatchet/`: control plane, bridge, workers, event ingress, lifecycle writer,
-  systemd units, and desired-state manifest.
-- `deploy/`: Docker image, Compose runtime, systemd wrapper, install helper,
-  smoke test, and operations docs.
-- `docs/`: architecture and deployment boundary docs.
-- `tools/`: contract generation, doctor checks, and repo-level tests.
+## Use Factory
 
-## Common Commands
-
-See the [contribution guide](docs/contribution.md) for development checks,
-review expectations, and the CI and deployment boundaries.
-
-For source-free managed installations, use the [canonical CLI binding](deploy/CLI.md)
-so `factory` follows the active installation and image, including review recovery.
+Once the CLI is bound to an installation:
 
 ```bash
+factory version
 factory status
 factory console
 factory analytics --days 30
-factory doctor hatchet --profile prod
+factory help
+```
+
+The [operator CLI reference](factory/README.md) covers lifecycle inspection,
+retries, review, and recovery. The [architecture boundary](docs/factory-standalone-app-boundary.md)
+explains which responsibilities belong to Factory, the host, and the executor.
+
+## Develop
+
+Read the [contribution guide](docs/contribution.md) for dependency setup,
+focused checks, and review expectations. Common checks from a source checkout:
+
+```bash
 python3 tools/hatchet-contracts.py check
 python3 -m unittest discover -s tools -p 'test_*.py'
+npm ci --prefix hatchet/workers
 npm run build --prefix hatchet/workers
 npm ci --prefix factory/console
 npm run build --prefix factory/console
-npm run storybook --prefix factory/console
 ```
 
-Validate the Docker deployment artifacts:
+Build a local image with:
 
 ```bash
-HATCHET_POSTGRES_PASSWORD=ci-postgres-password \
-  HATCHET_SERVER_AUTH_COOKIE_SECRETS=ci-cookie-secret \
-  HATCHET_ADMIN_PASSWORD=ci-admin-password \
-  FACTORY_SOURCE_ROOT="$PWD" \
-  docker compose -f deploy/docker-compose.yml config >/dev/null
-docker build -f deploy/Dockerfile -t driftward/factory:local .
+docker build -f deploy/Dockerfile -t factory:local .
 ```
 
-Install the Docker runtime wrapper:
+## Repository layout
 
-```bash
-bash deploy/install-docker.sh
-```
+- `factory/`: operator CLI, web console, and shared UI components.
+- `hatchet/`: workflows, workers, ingress, bridge, lifecycle writer, and contracts.
+- `deploy/`: container packaging, Compose configuration, and installation tools.
+- `docs/`: architecture, operations, and contribution guides.
+- `tools/`: validation, compatibility checks, and tests.
 
-Deploy a tagged release:
+## More documentation
 
-```bash
-gh workflow run factory-release.yml -f release_tag=v2026.9.2
-run_id="$(gh run list --workflow factory-release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-gh run watch "$run_id"
-git fetch --tags origin
-git switch --detach v2026.9.2
-bash deploy/install-docker.sh --image-tag v2026.9.2 --start
-git switch main
-git pull --ff-only
-```
-
-See [docs/factory-release-runbook.md](docs/factory-release-runbook.md) for the
-full release, deploy, verification, and rollback procedure.
-
-For the configured production candidate, see
-[automatic deployment after successful main CI](docs/automatic-deployment.md).
-This image-only path preserves the existing deployment wrapper and stops for
-compatibility changes or active/unresolved execution; it never uses the retired
-host installer to update the production candidate.
-
-See [docs/factory-analytics.md](docs/factory-analytics.md) for the analytics
-cohort, event definitions, coverage rules, privacy boundary, and known evidence
-gaps.
-
-See
-[docs/execution-backend-evaluation.md](docs/execution-backend-evaluation.md)
-for the Hermes-versus-direct-Codex measurement and canary design.
-
-See [docs/factory-work-evidence.md](docs/factory-work-evidence.md) for immutable
-execution manifests, checkpoint receipts, and explicit replay-data gaps.
-
-See [docs/hermes-runtime-contract.md](docs/hermes-runtime-contract.md) for the
-maintained, source-fingerprinted Hermes profile, authentication, process cleanup
-and Factory cancellation contract, including dated evidence and refresh steps.
-
-See [docs/factory-capability-dashboard-plan.md](docs/factory-capability-dashboard-plan.md)
-for the proposed capability roadmap and first operator-dashboard implementation slice.
-
-See [DESIGN.md](DESIGN.md) for the operator interface's design direction and checks.
-
-See [docs/design-system.md](docs/design-system.md) for the shared `@driftward/ui`
-React library, Storybook catalog, component and asset documentation, and agent MCP access.
-
-The Docker runtime lives under `/docker/driftward/factory` and is supervised by
-`driftward-factory.service`. The older direct host/systemd installers remain in
-tree for migration and recovery work, but Docker is the standalone Factory app
-deployment path.
+- [Analytics and time measurements](docs/factory-analytics.md)
+- [Execution tracing](docs/factory-opentelemetry.md)
+- [Work evidence and replay limits](docs/factory-work-evidence.md)
+- [Hermes runtime contract](docs/hermes-runtime-contract.md)
+- [Execution backend evaluation](docs/execution-backend-evaluation.md)
+- [Console design](DESIGN.md) and [component catalog](docs/design-system.md)

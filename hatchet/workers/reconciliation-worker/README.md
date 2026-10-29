@@ -107,7 +107,7 @@ fallback is created. Other ineligible jobs are also explicit skips. A bridge
 enqueue error fails the scan and retains its page for retry. This is control-plane
 recovery independent of the executor's model/provider credentials.
 
-It does not call GitHub, Linear, Driftward Hermes, Docker, or arbitrary shell.
+It does not call GitHub, Linear, Hermes, Docker, or arbitrary shell.
 Missing or unavailable observations are warnings; the reconciliation worker
 does not perform the legacy direct bridge-row repair that used root `gh`
 inspection. The old bridge reconciler service/timer is retired from the

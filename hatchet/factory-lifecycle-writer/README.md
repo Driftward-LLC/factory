@@ -1,6 +1,6 @@
 # Factory Lifecycle Writer
 
-This root-owned, loopback-only service is the sole Shipwright Linear client for
+This root-owned, loopback-only service is the dedicated Linear client for
 the Hatchet Lite lifecycle. Hatchet workers, the bridge, ingress, and Hermes
 never receive its client credentials or access token.
 
@@ -21,9 +21,12 @@ write to Linear. It solves three problems:
 
 It polls only `GET /lifecycle/observations` (a sanitized ingress projection)
 and the authenticated bridge job ledger. It writes a durable SQLite outbox at
-`/var/lib/driftward-factory-lifecycle-writer/outbox.db`, verifies Shipwright,
-the Driftward workspace, and Engineering-only access before every scan, and
-creates at most one marked Linear comment per issue/job/phase.
+`/var/lib/driftward-factory-lifecycle-writer/outbox.db`, verifies its source-defined
+client identity, workspace, and team access before every scan, and creates at
+most one marked Linear comment per issue/job/phase. Its actor, workspace, and
+team IDs are currently fixed in `factory_lifecycle_writer/linear.py`.
+Connecting a different workspace requires a reviewed source-policy change;
+supplying another token alone does not change those identity checks.
 
 `dry_run` source snapshots are written as permanently `suppressed` outbox rows;
 switching Factory to real mode cannot replay them. Internal draft-PR inspection

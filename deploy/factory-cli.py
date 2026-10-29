@@ -58,8 +58,10 @@ def deploy_parser(args):
         command = commands.add_parser(name, help=description, description=description)
         command.add_argument('--json', action='store_true', help='Emit a machine-readable result.')
         if name == 'preview':
-            command.add_argument('--run', required=True, type=int, help='Successful current-main Hatchet Quality run ID.')
-            command.epilog = 'Example: factory deploy preview --run 123456 --json'
+            source = command.add_mutually_exclusive_group(required=True)
+            source.add_argument('--release', help='Published Factory release version, such as v2026.10.29.')
+            source.add_argument('--run', type=int, help='Legacy main CI run ID, for recovery of older deployments.')
+            command.epilog = 'Example: factory deploy preview --release v2026.10.29 --json'
         elif name in {'approve', 'apply'}:
             command.add_argument('--preview', required=True, help='Exact SHA-256 printed by preview.')
             command.add_argument('--yes', required=True, action='store_true', help='Explicitly confirm this operation.')
@@ -67,8 +69,11 @@ def deploy_parser(args):
                 command.add_argument('--reason', required=True, help='Why the exact listed changes were reviewed (1–512 printable characters).')
             command.epilog = 'Example: factory deploy ' + name + ' --preview DIGEST ' + ('--reason "Reviewed CLI release" ' if name == 'approve' else '') + '--yes'
     parsed = parser.parse_args(args)
-    if (parsed.action == 'preview' or parsed.action == 'baseline' and parsed.baseline_action == 'preview') and not 0 < parsed.run < 10**20:
+    if ((parsed.action == 'preview' and parsed.run is not None
+         or parsed.action == 'baseline' and parsed.baseline_action == 'preview') and not 0 < parsed.run < 10**20):
         parser.error('--run must be a positive run ID')
+    if parsed.action == 'preview' and parsed.release is not None and not re.fullmatch(r'v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(?:\.[0-9]+)?', parsed.release):
+        parser.error('--release must be a version tag')
     return parsed
 
 
@@ -138,7 +143,7 @@ def deploy_dispatch(binding, args, *, execution=False):
         installed_module('auto_deploy_artifact', DEPLOY_POLICY)
         auto = installed_module('factory_cli_auto_deploy', DEPLOY_HELPER)
         manual = installed_module('factory_cli_deploy_operator', DEPLOY_OPERATOR)
-        if getattr(manual, 'API_VERSION', None) != 1 or not all(hasattr(auto, name) for name in ('source_entries', 'deployment_artifact')):
+        if getattr(manual, 'API_VERSION', None) != 1 or not all(hasattr(auto, name) for name in ('source_entries', 'deployment_artifact', 'release_metadata', 'get_release_image')):
             raise DeployRefusal('installed_deployment_helper_update_required')
         safe_refusals = (DeployRefusal, auto.Refusal, manual.Refusal)
         result = (manual.execution_run(auto, binding, parsed, installed, profile_readiness)
@@ -159,6 +164,7 @@ def deploy_dispatch(binding, args, *, execution=False):
                            ('Configured compatibility baseline', 'configured_compatibility'),
                            ('Blocked reason', 'blocked_reason'), ('Current image', 'current_image'),
                            ('Target commit', 'target_commit'), ('CI run', 'run_id'), ('Preview', 'preview'),
+                           ('Release', 'release'), ('Image reference', 'image_reference'),
                            ('Artifact digest', 'artifact_digest'),
                            ('Restart impact', 'restart_impact')):
             if key in result:

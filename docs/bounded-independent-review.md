@@ -1,8 +1,8 @@
 # Bounded independent review
 
-Status: review policy enabled for new real intake in `Driftward-LLC/factory` and
-`Driftward-LLC/capykit`; automatic repair remains disabled. Runtime activation
-still requires the compatible deployment and provisioned native backend.
+Status: supported for newly admitted real work covered by the deployed
+repository policy; automatic repair remains disabled by default. Runtime
+activation requires a compatible deployment and provisioned native backend.
 
 Factory separates deterministic checks from independent review. The persisted
 `verified_ready` attempt and `ready_for_human_review` job still mean checks
@@ -11,8 +11,10 @@ changes requested, or needs operator. A passed review grants no merge/deploy
 authority and is valid only for the recorded full commit SHA.
 
 The checked-in `hatchet/workers/independent-review-policy.json` selects
-`enabled: true`, `automatic_repairs_allowed: false`, only these two repositories, and an
-immutable maximum of two review passes. Policy lives with the deployed source,
+`enabled: true`, `automatic_repairs_allowed: false`, a fixed repository allowlist,
+and an immutable maximum of two review passes. Review that allowlist before
+configuring an installation; it is not an automatic grant to arbitrary repositories.
+Policy lives with the deployed source,
 not in model prompts or worker payloads. Only newly admitted real intake under
 an enabled repository policy receives a digest-bound enrollment. Existing
 verified jobs do not become enrolled when the gate is enabled. A later policy

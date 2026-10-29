@@ -12,11 +12,9 @@ on:
       - '.dockerignore'
       - '.github/workflows/factory-release.yml'
       - '.github/workflows/hatchet-quality.yml'
-      - '.github/workflows/factory-deploy.yml'
   push:
     branches: [main]
-    # Deployment accepts only the current main SHA. A path-filtered push could
-    # supersede a tested runtime change without producing its own deployable run.
+    # Every release commit must have the complete quality result.
 
 permissions:
   contents: read
@@ -200,7 +198,7 @@ jobs:
               summary.write(f'| Browser and UI checks | {status} |\n')
               for name in ('catalog', 'screenshots'):
                   summary.write(f'| Required {name} evidence | {"missing or upload failed" if name in missing else "published"} |\n')
-              summary.write('\nRelease readiness is blocked unless preflight, code, browser/UI, and required evidence all succeed. Retry all jobs to bind production metadata to the current run attempt.\n')
+              summary.write('\nRelease readiness is blocked unless preflight, code, browser/UI, and required evidence all succeed. Retry all jobs to produce a complete quality result.\n')
           if missing:
               raise SystemExit('Required evidence missing or upload failed: ' + ', '.join(missing))
           if browser != 'success':
@@ -210,11 +208,6 @@ jobs:
   release-readiness:
     name: Release readiness
     needs: [preflight, validate, console-browser, required-evidence]
-    permissions:
-      contents: read
-      # Permissions are static per job; trusted same-repo PR jobs have this
-      # capability, but only main pushes can run the publisher. Forks are read-only.
-      packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -222,11 +215,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Verify production package read-only for internal pull requests
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'Driftward-LLC/factory' && github.repository == 'Driftward-LLC/factory'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 deploy/auto_deploy_artifact.py --verify-package
       - name: Validate Docker deployment
         run: |
           HATCHET_POSTGRES_PASSWORD=ci-postgres-password \
@@ -244,24 +232,3 @@ jobs:
           python3 tools/check_factory_portable.py --image driftward/factory:ci --telemetry
       - name: Rehearse stopped production-state relocation
         run: python3 tools/check_factory_cutover.py --image driftward/factory:ci
-      - name: Authenticate private production image publication
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Driftward-LLC/factory'
-        env:
-          REGISTRY_TOKEN: ${{ github.token }}
-          REGISTRY_USER: ${{ github.actor }}
-        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
-      - name: Publish the tested production image and package metadata
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Driftward-LLC/factory'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 deploy/auto_deploy_artifact.py "$RUNNER_TEMP/factory-production" driftward/factory:ci
-      - name: Retain immutable production image metadata
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: factory-production-${{ github.sha }}
-          path: ${{ runner.temp }}/factory-production/
-          compression-level: 1
-          retention-days: 7
-          if-no-files-found: error
-          overwrite: true
