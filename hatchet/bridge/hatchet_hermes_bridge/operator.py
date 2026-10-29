@@ -28,6 +28,7 @@ from .store import get_factory_work_evidence
 from . import interrupted_resolution
 from . import review_repair
 from . import review_recovery
+from .human_time import record_human_time
 
 ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -623,11 +624,17 @@ class OperatorHandler(BaseHTTPRequestHandler):
         # Review feedback permits 2,000 code points, including JSON-escaped
         # supplementary characters; retain the smaller cap for other actions.
         limit = 32768 if urlparse(self.path).path in {"/v1/review-repair/inspect", "/v1/review-repair/preview", "/v1/review-repair/confirm"} else 8192
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise OperatorError("operator Content-Length must be an integer") from None
         if length < 0 or length > limit:
             raise OperatorError("operator request body exceeds its bounded limit")
         raw = self.rfile.read(length)
-        value = json.loads(raw or b"{}")
+        try:
+            value = json.loads(raw or b"{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise OperatorError("body must be valid JSON") from None
         if not isinstance(value, dict): raise OperatorError("body must be an object")
         return value
     def _paths(self) -> tuple[str, str, str, str]:
@@ -641,6 +648,16 @@ class OperatorHandler(BaseHTTPRequestHandler):
             if path == "/v1/lifecycle/dead-letters/archive" and set(body) == {"outbox_key", "reason", "snapshot_digest"}:
                 self._reply(200, archive_lifecycle_dead_letter(_operator_lifecycle_path(), actor=self._actor(), **body)); return
             bridge_db, ingress_db, routes, policy = self._paths()
+            human_time_path = re.fullmatch(r"/v1/attempts/([^/]+)/human-time", path)
+            if human_time_path:
+                if "?" in self.path or set(body) != {"request_id", "duration_ms", "category"}:
+                    raise OperatorError("human time accepts request_id, duration_ms, category and no query parameters")
+                conn = connect_runtime(bridge_db)
+                try:
+                    result = record_human_time(conn, human_time_path.group(1), actor=self._actor(), **body)
+                finally: conn.close()
+                self._reply(201 if result["created"] else 200, result)
+                return
             recovery_path = re.fullmatch(r"/v1/review-recovery/(inspect|preview|confirm)", path)
             if recovery_path and not urlparse(self.path).query:
                 phase = recovery_path.group(1)
@@ -727,6 +744,7 @@ class OperatorHandler(BaseHTTPRequestHandler):
                 finally: conn.close()
                 return
             raise OperatorError("operator action is not allowed")
+        except BridgeNotFound: self._reply(404, {"error": "not found"})
         except (OperatorError, BridgeValidationError) as exc: self._reply(400, {"error": str(exc)})
         except BridgeConflict as exc: self._reply(409, {"error": str(exc)})
         except Exception:

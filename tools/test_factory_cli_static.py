@@ -103,6 +103,59 @@ exit 1
         self.assertIn('operator_request POST "/v1/attempts/$id/receipt-recovery/refresh"', source)
         self.assertIn('path.endswith("/receipt-recovery/refresh")', operator)
 
+    def test_record_time_converts_minutes_and_rejects_invalid_input_before_request(self) -> None:
+        if not hasattr(socket, "AF_UNIX") or shutil.which("jq") is None:
+            self.skipTest("Unix sockets and jq required")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            env_file = root / "operator.env"
+            env_file.write_text("HATCHET_FACTORY_OPERATOR_TOKEN=fixture\n")
+            self._write_executable(fake_bin / "id", '#!/bin/sh\necho 0\n')
+            self._write_executable(fake_bin / "stat", '#!/bin/sh\necho 0:600\n')
+            self._write_executable(fake_bin / "curl", '''#!/usr/bin/env python3
+import json, sys
+a = sys.argv
+with open(a[a.index("--output")+1], "w") as output:
+    json.dump({"method": "POST" if "--data" in a else "GET", "url": a[-1], "body": json.loads(a[a.index("--data")+1])}, output)
+''')
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(sock.close)
+            sock.bind(str(root / "operator.sock"))
+            env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                   "FACTORY_OPERATOR_ENV": str(env_file), "FACTORY_OPERATOR_SOCKET": str(root / "operator.sock")}
+            prefix = [str(ROOT / "factory/factory"), "analytics", "record-time",
+                      "11111111-ABCD-4333-8444-555555555555"]
+
+            def run(*args):
+                return subprocess.run(prefix + list(args), env=env, capture_output=True, text=True, timeout=5)
+
+            result = run("--minutes", "12.345", "--request-id", "review-1", "--category", "review")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            request = json.loads(result.stdout)
+            self.assertEqual(request["method"], "POST")
+            self.assertTrue(request["url"].endswith("/v1/attempts/11111111-abcd-4333-8444-555555555555/human-time"))
+            self.assertEqual(request["body"], {"duration_ms": 740700, "category": "review", "request_id": "review-1"})
+            for minutes, duration in [("0", 0), ("0.001", 60), ("1440", 86400000)]:
+                result = run("--minutes", minutes, "--request-id", "entry-1")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["body"], {
+                    "duration_ms": duration, "category": "intervention", "request_id": "entry-1"})
+            invalid = [
+                [], ["--minutes", "1"], ["--minutes"],
+                ["--minutes", "1", "--request-id", "entry-1", "--minutes", "2"],
+                ["--minutes", "1", "--request-id", "entry-1", "--category", "unknown"],
+                ["--minutes", "1", "--request-id", "contains a space"],
+                ["--minutes", "1", "--request-id", "entry-1", "--unknown", "yes"],
+            ] + [["--minutes", value, "--request-id", "entry-1"] for value in
+                 ("-1", "1440.001", "0.0001", "1e3", "nan", "inf", "true", "")]
+            for args in invalid:
+                with self.subTest(args=args):
+                    result = run(*args)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+
     def test_analytics_formatter_preserves_funnel_order_and_discloses_active_cohort(self) -> None:
         if not hasattr(socket, "AF_UNIX") or shutil.which("jq") is None:
             self.skipTest("Unix sockets and jq are required for the analytics formatter")
@@ -215,6 +268,14 @@ exit 1
                     "duplicate_effects_detected": None,
                 },
                 "human": {"work_items_ready_for_review": 0, "exception_intervention_attempts": 0},
+                "effort": {
+                    "work_items": 2, "verified_work_items": 1, "attempts": 3, "active_attempts": 1,
+                    "execution": {"observed_ms": 60000, "ms_per_verified_work_item": None,
+                                  "coverage": {"observed": 1, "eligible": 2, "rate": 0.5, "complete": False}},
+                    "human": {"recorded_ms": 0, "recorded_ms_per_verified_work_item": 0,
+                              "entries": 1, "recorded_interventions": 0,
+                              "attempt_recording_coverage": {"observed": 1, "eligible": 3, "rate": 1 / 3, "complete": False}},
+                },
                 "backends": [],
                 "models": {
                     "coverage": {"observed": 1, "eligible": 2, "rate": 0.5, "complete": False},
@@ -262,7 +323,11 @@ exit 1
                 )
                 self.assertIn("Executor-selected models (configuration, not provider usage)", result.stdout)
                 self.assertIn("openai-codex/gpt-6.1-sol", result.stdout)
+                self.assertIn("Backend runtime / verified item  unavailable", result.stdout)
+                self.assertIn("Recorded human time / verified   0ms", result.stdout)
+                self.assertIn("unrecorded work is unknown", result.stdout)
                 analytics_payload.pop("models")  # Older operators remain compatible.
+                analytics_payload.pop("effort")
                 analytics_payload["intake"]["correlation"] = {"available": False}
                 fixture.write_text(
                     json.dumps(analytics_payload, sort_keys=True), encoding="utf-8"
@@ -295,6 +360,7 @@ exit 1
                 unavailable_result.stdout,
             )
             self.assertNotIn("Active-attempt reuse rate", unavailable_result.stdout)
+            self.assertNotIn("Time per verified work item", unavailable_result.stdout)
             self.assertNotIn(
                 "Authenticated repeated Ready rate", unavailable_result.stdout
             )

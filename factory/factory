@@ -40,6 +40,7 @@ Usage:
   factory status
   factory console
   factory analytics [--days N] [--json]
+  factory analytics record-time ATTEMPT-ID --minutes N --request-id ID [--category intervention|review|maintenance]
   factory logs [target] [-f|--follow] [-n|--lines N]
   factory mode
   factory mode dry-run
@@ -261,6 +262,7 @@ format_analytics() {
       elif . < 60000 then "\(((. / 1000) * 10 | round) / 10)s"
       elif . < 3600000 then "\(((. / 60000) * 10 | round) / 10)m"
       else "\(((. / 3600000) * 10 | round) / 10)h" end;
+    def effort_duration: if . == null then "unavailable" else duration end;
     "Factory analytics — attempts created in the last \(.window.days) days",
     "Generated \(.generated_at)",
     "",
@@ -325,6 +327,18 @@ format_analytics() {
       "  Mature 7d terminal coverage     \(.outcomes.maturity.at_7d.terminal_observation | cov)"
      end),
     "",
+    (if .effort then
+      "Time per verified work item (selected work items, full attempt history)",
+      "  Work items \(.effort.work_items)  verified \(.effort.verified_work_items)  attempts \(.effort.attempts)  active \(.effort.active_attempts)",
+      "  Backend runtime / verified item  \(.effort.execution.ms_per_verified_work_item | effort_duration)",
+      "  Backend runtime observed         \(.effort.execution.observed_ms | duration)  coverage \(.effort.execution.coverage | cov)",
+      "  Recorded human time / verified   \(.effort.human.recorded_ms_per_verified_work_item | effort_duration)",
+      "  Recorded human time              \(.effort.human.recorded_ms | effort_duration)  entries \(.effort.human.entries)",
+      "  Recorded interventions           \(.effort.human.recorded_interventions | value)",
+      "  Attempts with time records       \(.effort.human.attempt_recording_coverage | cov)",
+      "  Human time is self-reported; unrecorded work is unknown. Backend runtime excludes verification and waiting.",
+      ""
+     else empty end),
     "Latency                                      n        p50        p95",
     (.latency_ms | to_entries[] | "  \(.key | words)  \(.value.samples)/\(.value.eligible // .value.samples)  \(.value.p50 | duration)  \(.value.p95 | duration)"),
     "",
@@ -414,7 +428,41 @@ format_analytics() {
   '
 }
 
+record_analytics_time() {
+  [[ $# -ge 1 ]] || die "record-time requires an attempt ID"
+  local attempt_id="$1" minutes="" request_id="" category="" body
+  shift
+  [[ "$attempt_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die "record-time requires a UUID attempt ID"
+  attempt_id="${attempt_id,,}"
+  while [[ $# -gt 0 ]]; do
+    [[ $# -ge 2 ]] || die "$1 requires a value"
+    case "$1" in
+      --minutes) [[ -z "$minutes" ]] || die "--minutes may only be supplied once"; minutes="$2" ;;
+      --request-id) [[ -z "$request_id" ]] || die "--request-id may only be supplied once"; request_id="$2" ;;
+      --category) [[ -z "$category" ]] || die "--category may only be supplied once"; category="$2" ;;
+      *) die "unknown record-time option: $1" ;;
+    esac
+    shift 2
+  done
+  [[ "$minutes" =~ ^[0-9]{1,4}([.][0-9]{1,3})?$ ]] || die "--minutes must be between 0 and 1440, with at most three decimal places"
+  [[ "$request_id" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$ ]] || die "--request-id requires a stable ID of at most 128 letters, digits, dots, underscores, colons or hyphens"
+  category="${category:-intervention}"
+  case "$category" in intervention|review|maintenance) ;; *) die "--category must be intervention, review or maintenance" ;; esac
+  command -v jq >/dev/null 2>&1 || die "jq is required to record time"
+  body="$(jq -cen --arg minutes "$minutes" --arg request_id "$request_id" --arg category "$category" '
+    ($minutes | tonumber) as $minutes |
+    if $minutes > 1440 then error("minutes exceeds 1440")
+    else {request_id:$request_id, category:$category, duration_ms:($minutes * 60000 | round)} end
+  ')" || die "--minutes must be between 0 and 1440"
+  operator_request POST "/v1/attempts/$attempt_id/human-time" "$body"
+}
+
 analytics() {
+  if [[ "${1:-}" == "record-time" ]]; then
+    shift
+    record_analytics_time "$@"
+    return
+  fi
   local days=30 json=0 response
   while [[ $# -gt 0 ]]; do
     case "$1" in
