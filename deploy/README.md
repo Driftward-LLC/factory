@@ -3,7 +3,8 @@
 For a **new Linux/amd64 dry-run installation**, start with
 [the portable release guide](PORTABLE.md). That path uses published images,
 private per-installation configuration and namespaced state. The installer and
-cutover procedure below remain the existing VPS migration/real-execution path.
+cutover procedure below document the legacy managed-host migration and external
+execution integration. They are not the default installation or upgrade path.
 
 To prepare a move from that existing Compose app to a new installation, follow
 [same-host cutover preparation](CUTOVER.md). The new helper previews first and
@@ -17,10 +18,10 @@ env files; the Factory Compose app owns Hatchet Lite/Postgres plus the CLI,
 Hatchet workers, bridge, ingress, lifecycle writer, Linear token renewer,
 manifests, and checked-in runtime code.
 
-## Runtime
+## Legacy managed-host defaults
 
-- Scope: service-scoped Driftward runtime.
-- Source: `/root/driftward/repos/factory`.
+- Scope: one Factory installation.
+- Source: `<source-checkout>`.
 - Runtime root: `/docker/driftward/factory`.
 - Compose file: `/docker/driftward/factory/docker-compose.yml`.
 - Systemd wrapper: `driftward-factory.service`, ordered after
@@ -41,10 +42,10 @@ manifests, and checked-in runtime code.
 
 ## Boundaries
 
-Factory containers must not mount Driftward Hermes data, provider credentials,
+Factory containers must not mount Hermes data, provider credentials,
 browser state, root GitHub auth, the Docker socket, or the host root filesystem.
 Hatchet Lite and its Postgres database are part of the Factory Compose app.
-Real agent execution still belongs to Driftward Hermes. The host systemd unit
+Real agent execution still belongs to Hermes. The host systemd unit
 orders Factory after Hermes, but Dockerized Factory records and fences work
 through the bridge, then reaches Hermes only through an explicit approved
 gRPC gateway. The Factory Compose app mounts only
@@ -126,7 +127,7 @@ runtime secrets and must not be checked into this repository.
 
 ## Cutover Gate
 
-This PR does not migrate historical records. Before starting the standalone
+Installing release files does not migrate historical records. Before starting the
 Factory runtime, migrate existing Hatchet state into Docker named volumes and
 key material into the runtime root:
 
@@ -156,53 +157,18 @@ old host-bind path, start also fails until matching files exist inside the
 Docker volumes. That prevents accidentally starting an empty Factory control
 plane on the same ports and ledgers.
 
-## Release Deployment
+## Release deployment
 
-Factory releases are source-built Docker image tags. Create the release tag and
-GitHub release with the manual GitHub Actions workflow:
+Use published release images and the matching bundle for normal installation
+and upgrades. See the [release runbook](../docs/factory-release-runbook.md) and
+[portable guide](PORTABLE.md). Optional [deployment automation](../docs/automatic-deployment.md)
+pulls the same published image after verifying its provenance and compatibility.
 
-```bash
-gh workflow run factory-release.yml -f release_tag=v2026.9.2
-run_id="$(gh run list --workflow factory-release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-gh run watch "$run_id"
-```
+The source-building `install-docker.sh` helper below is retained for migration
+and recovery of the legacy managed-host layout. It is not the release consumer
+path and must not be used to bypass a managed installation's compatibility gates.
 
-After the workflow succeeds, deploy from a clean checkout of the exact release
-tag and pass that same tag to the installer:
-
-```bash
-git fetch --tags origin
-git switch --detach v2026.9.2
-bash deploy/install-docker.sh --image-tag v2026.9.2 --start
-```
-
-For release-shaped tags such as `v2026.8.26`, the installer verifies that the
-checkout is clean and that `HEAD` matches the requested tag before building.
-It writes the selected image into
-`/etc/systemd/system/driftward-factory.service.d/10-image-tag.conf`, reloads
-systemd, builds `driftward/factory:<tag>` with immutable commit/version labels,
-and reloads `driftward-factory.service`. Compose recreates only changed
-services; unchanged PostgreSQL and Hatchet containers remain running. The
-installer retries `factory-docker-smoke` until healthy and restores the
-previously running image automatically if validation fails.
-After validation succeeds, it disables the retired direct-host worker, bridge,
-ingress, lifecycle, token, operator, outbox, and reconciliation units so the
-Compose application remains the only active Factory runtime.
-The smoke check also calls the retry operator's read-only preview endpoint for
-a sentinel ENG issue, so missing ingress mounts fail before a release is
-reported healthy.
-
-To pin a full image reference instead of the default `driftward/factory:<tag>`
-shape:
-
-```bash
-bash deploy/install-docker.sh --image driftward/factory:v2026.8.26 --start
-```
-
-Use [../docs/factory-release-runbook.md](../docs/factory-release-runbook.md)
-for the full release, deploy, verification, and rollback procedure.
-
-## Install
+## Legacy host installer
 
 Install the Compose wrapper without starting it:
 

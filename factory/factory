@@ -55,7 +55,7 @@ Usage:
   factory review-repair ENG-X inspect --source-attempt ATTEMPT-ID --yes
   factory review-repair ENG-X preview --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT
   factory review-repair ENG-X confirm --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head SHA --feedback TEXT --reason TEXT --request-id ID --snapshot-digest DIGEST --yes
-    Optional on preview/confirm: --from-policy-digest OLD --to-policy-digest CURRENT (Capykit .gitleaksignore addition only)
+    Optional on preview/confirm: --from-policy-digest OLD --to-policy-digest CURRENT (supported .gitleaksignore policy addition only)
   factory lifecycle ENG-X [--json] [--limit N]
   factory lifecycle dead-letters list [--json] [--limit N]
   factory lifecycle dead-letters preview OUTBOX-KEY

@@ -17,8 +17,8 @@ config/cache/cwd. No real profile checkpoint is touched. Secret material baked
 into an image is not audited; the current trusted image remains a prerequisite.
 Unsupported source/image/SDK layouts fail closed without installing anything.
 
-The canonical diagnostic receipt `a99cf792-38fe-4fda-9c3b-c732855388ea`
-measured only `/opt/data`, no healthcheck and no build hooks. Docker's
+The accepted image layout allows only the `/opt/data` volume destination.
+Verify the actual image's volume declarations and hooks before running. Docker's
 [VOLUME documentation](https://docs.docker.com/reference/dockerfile/#volume)
 explains why leaving that declaration unoverridden would create an anonymous
 volume. The fixed `/opt/data` tmpfs is 16 MiB, mode0700, UID/GID10000 and

@@ -3,7 +3,7 @@
 Disabled by default: the gateway selects this path only with
 `DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER=1`. This prototype is **not ready for
 activation**. No runtime/installer execution, credential change or live run is
-part of this change. It does not recover ENG-162 or authorize retrying failed work.
+part of this change. It does not recover historical attempts or authorize retrying failed work.
 
 The experimental route now requires `DRIFTWARD_HERMES_PROFILE=factory-native-executor`.
 Factory's legacy route refuses that reserved profile, and the native route refuses

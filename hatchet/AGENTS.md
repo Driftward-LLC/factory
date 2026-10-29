@@ -1,8 +1,7 @@
-# Driftward Factory Hatchet Instructions
+# Factory Hatchet contributor instructions
 
-This directory is the Factory-owned Hatchet Lite source tree for Driftward
-bridge-backed intake and control-plane operation. For work under
-`/root/driftward/repos/factory/hatchet`, this file and the Hatchet README files
+This directory contains Factory's Hatchet Lite control plane and bridge-backed
+intake. For work under `hatchet/`, this file and the Hatchet README files
 are more specific than the parent repository `AGENTS.md`.
 
 Authoritative docs:
@@ -18,14 +17,18 @@ Authoritative docs:
 - `workers/catalog.json` for worker and workflow purpose, effects, event
   inputs/outputs, and explicit non-goals.
 
-## Scope
+## Managed host defaults
+
+These names and paths describe the managed host integration. Portable releases
+use their installation directory, project name, and generated configuration;
+see [the installation guide](../deploy/PORTABLE.md).
 
 - Runtime root: `/docker/driftward/factory`
 - Compose project: `driftward-factory`
 - Main systemd unit: `driftward-factory.service`
 - Local dashboard/API: `http://127.0.0.1:8888`
 - Private dashboard/API URL:
-  `https://srv1379035.tail410dca.ts.net:8888/`
+  `https://your-host.your-tailnet.ts.net:8888/`
 - Local Factory Console: `http://127.0.0.1:19881`
 - Worker gRPC: `127.0.0.1:7077`
 - Health port: `127.0.0.1:8733`
@@ -41,7 +44,7 @@ the container binding must remain on `127.0.0.1`.
 Do not mount or copy these into Hatchet, its workers, event ingress, or the
 bridge:
 
-- Driftward Hermes provider credentials
+- Hermes provider credentials
 - Browserbase or browser session/profile state
 - GitHub credentials
 - Linear credentials
@@ -59,14 +62,13 @@ gateway, and only for allowlisted bridge actions after a bridge job row exists
 and a deterministic branch has been reserved. Containerized workers must not
 invoke `driftward-hermes` directly; the host-local gateway owns that wrapper.
 
-Root-owned host Codex uses the separate verified `VPS-Agent` Linear identity.
-Its renewable token and OAuth client credentials remain under
-`/root/.config/linear`; do not copy or mount them into Hatchet.
+Host development tools use credentials separate from Factory's lifecycle
+identity. Do not copy or mount those credentials into Hatchet.
 
-Real PR creation requires the explicit Driftward Hermes execution gate and the
+Real PR creation requires the explicit Hermes execution gate and the
 expected GitHub App identity in
 `/etc/driftward/hatchet-worker-bridge-executor.env`. By default, do not allow
-human Derek credentials or author identity for real PR creation.
+human operator credentials or author identity for real PR creation.
 
 ## Architecture Boundary
 
@@ -82,27 +84,27 @@ Hatchet worker
 Hatchet Hermes bridge
   idempotency key, job row, append-only events, external-effect fencing
 
-Driftward Hermes
+Hermes
   agent execution, credentials, MCP, browser/platform tools, sessions
 ```
 
 Hatchet workers submit bounded jobs to the bridge. The bridge is not a generic
 command runner and must not receive Hermes credentials or provider/session
-state. Driftward Hermes owns execution authority and credentials.
+state. Hermes owns execution authority and credentials.
 
-## Driftward Hermes Session Retention
+## Hermes Session Retention
 
-Driftward Hermes sessions are part of the bridge audit trail when a bridge job
+Hermes sessions are part of the bridge audit trail when a bridge job
 stores `hermes_session_id`. The bridge database remains the durable source of
 job state, PR URL, commit SHA, verification context, and append-only lifecycle
-events, but the linked Hermes session transcript is kept in Driftward Hermes'
+events, but the linked Hermes session transcript is kept in Hermes'
 own session store.
 
-Do not manually delete Driftward Hermes session files, `state.db`, or profile
+Do not manually delete Hermes session files, `state.db`, or profile
 state from Hatchet, bridge, worker, or host cleanup tasks. Use the
 `driftward-hermes` wrapper and Hermes' built-in session commands only.
 
-Before pruning Driftward Hermes sessions:
+Before pruning Hermes sessions:
 
 ```bash
 driftward-hermes hermes sessions stats
@@ -119,7 +121,7 @@ driftward-hermes hermes sessions optimize
 
 Do not prune at shorter windows such as 7, 14, 30, or 60 days unless
 bridge-linked `hermes_session_id` values have first been identified and
-preserved, or Derek explicitly approves losing those transcripts. Bridge jobs
+preserved, or the operator explicitly approves losing those transcripts. Bridge jobs
 can remain valid without the transcript, but forensic debugging and audit
 review are degraded.
 
@@ -182,12 +184,12 @@ still be confused with an adjacent workflow.
 ## Event Ingress
 
 Linear, GitHub, and other external provider webhooks must enter through
-Driftward event ingress before Hatchet workflows. Do not wire provider
+Factory event ingress before Hatchet workflows. Do not wire provider
 webhooks directly to Hatchet workflow webhook URLs.
 
 Ingress is observation first and execution second. It verifies provider
 signatures/timestamps when configured, normalizes payloads, dedupes events in
-SQLite, applies gates, and emits Driftward-owned Hatchet events. Ingress must
+SQLite, applies gates, and emits Factory-owned Hatchet events. Ingress must
 not dispatch Hermes directly.
 
 Fresh implementation dispatch from Linear is eligible only when all gates pass:
@@ -224,7 +226,7 @@ and should stop. Dry-run and real PR creation use separate active keys.
 
 ## Contracts
 
-`contracts/events.json` is canonical for Driftward-owned Hatchet event IDs,
+`contracts/events.json` is canonical for Factory-owned Hatchet event IDs,
 wire names, default decisions, reason codes, bridge lookup statuses, and simple
 provider action mappings.
 
@@ -266,11 +268,11 @@ factory logs pr
 factory logs reconciliation
 factory logs bridge
 factory logs linear -f
-factory attempts list ENG-62
+factory attempts list ENG-123
 ```
 
 `factory mode real --yes` allows Ready Linear issues to reserve real
-factory-attempt-backed bridge jobs for Driftward Hermes draft PR execution. It
+factory-attempt-backed bridge jobs for Hermes draft PR execution. It
 does not revive the retired
 unattended factory/controller stack, delegates, labels, comment commands,
 review/repair/landing flows, or controller automation.
@@ -296,33 +298,11 @@ Tailscale behavior, run the relevant focused checks and then
 
 ## GitHub PR Workflow
 
-Always use the `$driftward-gh-pr` skill before creating, updating, publishing,
-labeling, triaging, or handing off a pull request in any Driftward-LLC
-repository.
-
-For meaningful Codex-authored work, prefer a branch and early draft PR as the
-collaboration surface. If a user says to push from `main` or another default
-branch and does not explicitly request a direct push, create a branch, push it,
-and open or update a draft PR instead.
-
-Before ending a turn with meaningful branch work, ensure one outcome is clear:
-
-- A draft PR is open or updated.
-- The branch is explicitly local-only or exploratory.
-- The branch is deleted, or the user has been asked before leaving an
-  abandoned branch around.
-
-PRs must have durable metadata:
-
-- Add `codex-authored` for Codex-created or Codex-substantially-edited PRs.
-- Add one type label, usually `documentation`, `enhancement`, or `bug`.
-- Link related Linear work with plain text such as `Refs Linear ENG-41`.
-- Link related GitHub issues with `Fixes #N`, `Closes #N`, or `Resolves #N`
-  only when merging the PR should close the issue; otherwise use `Refs #N`.
-
-Do not use GitHub workflow labels such as `agent-handoff`, `codex-check`, or
-`needs-review` for Linear-owned work. Put readiness, review, blocked, handoff,
-and follow-up state in Linear.
+Use a branch and a pull request for meaningful changes. Follow the
+[contribution guide](../docs/contribution.md), explain the resulting behavior,
+and report checks actually run. Link public GitHub issues with `Fixes #N` only
+when merging should close them; otherwise use `Refs #N`. Keep private task
+details, deployment evidence, and credentials out of public descriptions.
 
 ## Secrets
 

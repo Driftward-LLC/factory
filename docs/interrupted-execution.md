@@ -86,7 +86,7 @@ Request a typed, read-only inspection of the PR already bound to the attempt:
 ```bash
 factory attempts resolve-interrupted ATTEMPT-ID inspect --yes
 factory attempts resolve-interrupted ATTEMPT-ID preview \
-  --attestation /root/recovery/attestation.json --reason "Reviewed containment and workspace snapshot"
+  --attestation /srv/factory-recovery/attestation.json --reason "Reviewed containment and workspace snapshot"
 ```
 
 For a known prior PR, `inspect` queues only the existing `inspect_draft_pr_state`
@@ -105,9 +105,9 @@ output in a new root-owned `0600` file in a protected directory:
 
 ```bash
 umask 077
-factory attempts resolve-interrupted ATTEMPT-ID inspect --yes > /root/recovery/absence.json
+factory attempts resolve-interrupted ATTEMPT-ID inspect --yes > /srv/factory-recovery/absence.json
 factory attempts resolve-interrupted ATTEMPT-ID preview \
-  --attestation /root/recovery/attestation.json --absence-evidence /root/recovery/absence.json \
+  --attestation /srv/factory-recovery/attestation.json --absence-evidence /srv/factory-recovery/absence.json \
   --reason "Reviewed containment and workspace snapshot"
 ```
 
@@ -122,7 +122,7 @@ blocks retirement. A known prior PR cannot use this absence path, and a repair
 job without its prior PR remains blocked. If GitHub access is denied or the
 repository cannot be inspected, stop; do not interpret that as absence.
 
-For this path, add the **same** `--absence-evidence /root/recovery/absence.json`
+For this path, add the **same** `--absence-evidence /srv/factory-recovery/absence.json`
 to confirmation below. Do not regenerate it between preview and confirmation;
 changed evidence requires a new preview. Reinspect and preview if it expires.
 
@@ -130,7 +130,7 @@ Review the preview and confirm the identical reason and evidence:
 
 ```bash
 factory attempts resolve-interrupted ATTEMPT-ID confirm \
-  --attestation /root/recovery/attestation.json --reason "Reviewed containment and workspace snapshot" \
+  --attestation /srv/factory-recovery/attestation.json --reason "Reviewed containment and workspace snapshot" \
   --request-id operator-resolution-UNIQUE-ID --snapshot-digest PREVIEW-DIGEST --yes
 ```
 
@@ -159,7 +159,7 @@ result, not current safety permission: refresh console control before editing.
 
 Deploy matching bridge/operator and lifecycle-writer code through the reviewed
 release procedure before use. This change needs no schema migration or new
-service. No production invocation, attestation, or ENG-134 resolution is
+service. No production invocation, attestation, or historical task resolution is
 authorized merely by landing this source change. Rollback must preserve the
 recovery ledger; never reopen the resolved lease or replay its old invocation.
 

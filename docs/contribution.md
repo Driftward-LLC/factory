@@ -8,8 +8,8 @@ isolated checkout; preserve existing work and keep runtime state out of Git.
 
 Factory owns the operator CLI, Hatchet workflows and workers, event ingress,
 bridge ledgers, lifecycle writer, contracts, desired state, console and Compose
-deployment. `driftward-host` owns host bootstrap, shared tooling and protected
-secret placement. Shared Driftward Hermes owns its execution credentials,
+deployment. Installation operators supply host prerequisites and protected
+secret files. The separately provisioned Hermes runtime owns its execution credentials,
 sessions, MCP and browser state.
 
 The current portable installation is dry-run only; real execution requires the
@@ -25,11 +25,26 @@ Start with `factory version`, `factory status`, and `factory help` to discover
 supported commands. A source checkout is not an instruction to reinstall host
 tooling or operate a live deployment.
 
-Engineering plugin behavior is maintained in
-[`Driftward-LLC/driftward-engineering`](https://github.com/Driftward-LLC/driftward-engineering),
-not a copied host plugin cache. Factory's profile runtime pins its reviewed
-plugin release; see [profile configuration](../deploy/CLI.md). Changing that pin
-or activating profiles is separate reviewed operational work.
+Factory's managed execution profile pins an engineering plugin and instruction
+snapshots; see [profile configuration](../deploy/CLI.md). This integration is
+separate from building or installing the portable dry-run profile. Changing its
+pin or activating profiles requires a reviewed operational change.
+
+## Integration portability
+
+The portable dry-run installation is independent of a source checkout. Real
+execution integrations still contain installation-specific assumptions:
+
+- Linear project IDs and repository policies in the routing registry.
+- Linear workspace/team identity checks, the `ENG-` issue-key validation, and
+  console issue-link construction.
+- Repository and App allowlists in execution and source-review helpers.
+- The externally provisioned Hermes wrapper, profile plugin, and instruction pins.
+
+Review these against the source and your own installation before enabling real
+work. Supplying credentials alone does not adapt these policies. Preserve
+identity checks and execution gates when changing them; documentation examples
+do not override the deployed policy.
 
 ## Develop and validate
 
@@ -85,8 +100,7 @@ production telemetry as part of an ordinary code change.
 ## Review, CI and deployment
 
 A PR should explain the concrete problem, resulting behavior, checks actually
-run, and any limitations or operational follow-up. Use the canonical
-`driftward-engineering:prepare-pr` body template when preparing the PR. Include relevant documentation
+run, and any limitations or operational follow-up. Include relevant documentation
 and generated files, but no secrets, runtime databases, profiles or session data.
 Follow the model routing and review limits supplied in the task's repository
 instructions; report implementation and review models when requested.
@@ -105,15 +119,16 @@ for all preceding gates. Green browser assertions alone do not satisfy missing
 evidence publication. The workflow filters PR paths (currently including
 `README.md`, but not `docs/**`); every push to `main` runs the complete graph.
 
-During main's successful release-readiness job, the tested image is published
-to private GHCR. After the entire quality workflow succeeds,
-[Factory Deploy](automatic-deployment.md) requests the configured image-only
-rollout. Routine compatible changes use that automatic path. Protected source
-changes stop for operator review: audited release approval/application and
-compatibility baseline adoption are distinct operations documented in
-[deploy/CLI.md](../deploy/CLI.md). A release approval does not adopt a baseline,
-and automatic rollout never upgrades its own host helpers. Do not copy a failed
-fingerprint to bypass review or substitute the legacy host installer.
+Release publication tests and publishes versioned images to
+`ghcr.io/driftward-llc/factory`, together with a digest-pinned installation
+bundle. Installations choose the release they consume. Managed
+[release deployment](automatic-deployment.md) runs on the installation host and
+retains image provenance, backup, quiescence, and compatibility checks.
+Audited release approval/application and compatibility baseline adoption remain
+distinct operations documented in [deploy/CLI.md](../deploy/CLI.md). A release
+approval does not adopt a baseline, and image rollout never upgrades its
+own host helpers. Do not copy a failed fingerprint to bypass review or
+substitute the legacy host installer.
 
 Merging compatible code does not authorize clearing execution holds, migrating
 state, changing executor identity or enabling real execution. Use the relevant

@@ -41,7 +41,7 @@ pre-effect cancellation still prevents execution.
 
 The console shows the latest bounded receipt observation and its timestamp.
 Observation alone never permits editing. `not_found`, `outcome_unknown`, and
-an expired lease remain blocked. Old attempts such as ENG-134 cannot acquire
+an expired lease remain blocked. Old attempts without a retained reservation cannot acquire
 receipts retroactively: their executor and GitHub evidence still need reviewed
 operator recovery. This release does not clear them or authorize new attempts.
 

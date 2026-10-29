@@ -20,7 +20,10 @@ on:
 
 permissions:
   contents: write
+  actions: read
   packages: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: factory-release
@@ -29,6 +32,7 @@ concurrency:
 jobs:
   release:
     name: Validate And Release
+    if: github.repository == 'Driftward-LLC/factory' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -40,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
@@ -57,6 +61,13 @@ jobs:
 
       - name: Install bridge dependencies
         run: python3 -m pip install --requirement hatchet/bridge/requirements.txt
+
+      - name: Require successful quality checks for the exact release commit
+        run: python3 deploy/auto_deploy_artifact.py --check-release-quality
+
+      - name: Verify public release package
+        if: env.DRY_RUN != 'true'
+        run: python3 deploy/auto_deploy_artifact.py --verify-public-package
 
       - name: Validate release request
         run: |
@@ -185,9 +196,11 @@ jobs:
             exit 64
           fi
           docker tag driftward/factory:ci "$image_tag"
-          docker push "$image_tag"
+          docker push --platform linux/amd64 "$image_tag"
           image_ref="$(docker image inspect "$image_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$IMAGE_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
           [[ "$image_ref" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]]
+          python3 deploy/auto_deploy_artifact.py --release "$RUNNER_TEMP/factory-release" \
+            driftward/factory:ci "$RELEASE_TAG" "$image_ref"
           echo "reference=$image_ref" >> "$GITHUB_OUTPUT"
 
       - name: Package digest-pinned portable release
@@ -199,7 +212,7 @@ jobs:
           bash deploy/package-release.sh --version "$RELEASE_TAG" \
             --image "$PUBLISHED_IMAGE" --source-commit "$(git rev-parse HEAD)" \
             --output-dir "$RUNNER_TEMP/factory-release"
-          (cd "$RUNNER_TEMP/factory-release" && sha256sum --check SHA256SUMS)
+          (cd "$RUNNER_TEMP/factory-release" && sha256sum deployment.json >> SHA256SUMS && sha256sum --check SHA256SUMS)
 
       - name: Write release notes
         env:
@@ -224,12 +237,14 @@ jobs:
           - Checked whitespace and scanned committed content with gitleaks.
 
           Deployment:
-          This workflow does not deploy the VPS runtime or any other host.
-          Download the portable archive and SHA256SUMS, verify the checksum, then
+          Installations select and pull this release independently.
+          Download the portable archive, deployment.json and SHA256SUMS, verify the checksums, then
           follow deploy/PORTABLE.md inside the archive. The included factory.env
           pins the runtime image by digest. No source checkout is required.
           Docker Engine with Compose and Python 3 are host prerequisites.
-          Private package access requires docker login ghcr.io on the target host.
+          The public image can be pulled without registry credentials.
+          Existing managed installations can preview this exact release with:
+          factory deploy preview --release $RELEASE_TAG
 
           \`\`\`bash
           sha256sum --check SHA256SUMS
@@ -238,6 +253,12 @@ jobs:
           python3 deploy/factory-portable.py --help
           \`\`\`
           EOF
+
+      - name: Attest the release assets
+        if: env.DRY_RUN != 'true'
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ runner.temp }}/factory-release/*'
 
       - name: Create tag and GitHub release
         if: env.DRY_RUN != 'true'
@@ -255,7 +276,7 @@ jobs:
           if [[ "$PRERELEASE" == "true" ]]; then
             args+=(--prerelease)
           fi
-          args+=("$RUNNER_TEMP/factory-release/factory-$RELEASE_TAG-linux-amd64.tar.gz" "$RUNNER_TEMP/factory-release/SHA256SUMS")
+          args+=("$RUNNER_TEMP/factory-release/factory-$RELEASE_TAG-linux-amd64.tar.gz" "$RUNNER_TEMP/factory-release/SHA256SUMS" "$RUNNER_TEMP/factory-release/deployment.json")
           gh "${args[@]}"
 
       - name: Report dry run

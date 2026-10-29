@@ -1,8 +1,8 @@
 # Factory execution tracing (first slice)
 
-Status: opt-in execution tracing; disabled by default. Deployment and dashboard
-acceptance are recorded separately from source availability. The operator has confirmed native canary readback in PostHog project
-632215; readback of the new OpenTelemetry path remains an activation gate.
+Status: opt-in execution tracing; disabled by default. Each installation must
+verify native observer and OpenTelemetry readback in its own PostHog project
+before treating tracing as operational.
 This is not an end-to-end intake/reconciliation/Linear-delivery trace yet.
 
 Factory remains the operator surface. Hermes is an internal executor, not an
@@ -57,10 +57,9 @@ lower(replaceAll(toString(properties.$ai_trace_id), '-', ''))
 lower(hex(tryBase64Decode(trace_id)))
 ```
 
-The existing synthetic canary maps to
-`fb9fa7e140655818af723e41a35fe39a` (AI UUID:
-`fb9fa7e1-4065-5818-af72-3e41a35fe39a`). It is a correlation golden fixture,
-not evidence that an OTel trace has already been exported to production.
+Use an isolated test attempt to verify that its dashed AI UUID and normalized
+OTel trace ID refer to the same execution. A source fixture alone does not
+establish that a trace has been exported by an installation.
 
 ## Configuration and packaging
 
@@ -122,8 +121,8 @@ exported spans. No real agent/model/GitHub effect is needed for these tests.
 
 Before live activation:
 
-1. Read back the existing native canary in PostHog project 632215 (confirmed by
-   the operator's screenshot; not an OpenTelemetry acceptance result).
+1. Run a reviewed isolated test and read back its native observer events in the
+   installation's PostHog project; this alone is not OTel acceptance.
 2. Run optional deployment-wrapper/package acceptance (including cold restore).
 3. Verify the Distributed Tracing product and ingestion token belong to that
    same project; query/read credentials are not needed in runtime services.

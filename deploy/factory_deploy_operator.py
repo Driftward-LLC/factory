@@ -249,20 +249,29 @@ def current_identity(auto, install):
     return {'current_image': install.images['factory'], 'current_commit': commit}
 
 
-def snapshot(auto, binding, config, prod, install, directory, run_id, installed):
+def snapshot(auto, binding, config, prod, install, directory, run_id, installed, *, release_tag=None):
     work = Path(config['work_directory'])
     require(rollout_status(auto, work) in {None, 'complete', 'blocked'}, 'prior_deployment_requires_operator')
     check_idle(auto, install)
-    run = auto.api(f'actions/runs/{run_id}')
-    commit = run.get('head_sha')
-    require(isinstance(commit, str) and re.fullmatch(auto.SHA, commit), 'untrusted_or_unsuccessful_ci_run')
-    auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), run_id, commit)
-    auto.current_main(commit)
-    artifact = auto.deployment_artifact(run_id, commit)
+    release = auto.release_metadata(release_tag) if release_tag is not None else None
+    if release is not None:
+        manifest = release['manifest']
+        commit, run_id = manifest['commit'], manifest['run_id']
+        run = {'run_attempt': manifest['run_attempt'], 'updated_at': release['run_updated_at']}
+        artifact = release['asset']
+    else:
+        run = auto.api(f'actions/runs/{run_id}')
+        commit = run.get('head_sha')
+        require(isinstance(commit, str) and re.fullmatch(auto.SHA, commit), 'untrusted_or_unsuccessful_ci_run')
+        auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), run_id, commit)
+        auto.current_main(commit)
+        artifact = auto.deployment_artifact(run_id, commit)
     current_commit = current_identity(auto, install)['current_commit']
     require(current_commit != commit, 'release_already_deployed')
     baseline_commit, baseline = anchor(auto, directory, config, current_commit)
     target, fingerprint = tree(auto, commit)
+    if release is not None:
+        require(release['manifest']['compatibility'] == fingerprint, 'release_compatibility_mismatch')
     changes, blockers = protected_changes(auto, baseline, target, installed)
     if current_commit != baseline_commit:
         current, _ = tree(auto, current_commit)
@@ -288,6 +297,8 @@ def snapshot(auto, binding, config, prod, install, directory, run_id, installed)
                                     for name in ('.env', '.factory-install.json', '.factory-cutover.json')},
              'baseline_adoption': False}
     value['paused_execution'] = list(auto.paused_execution(install))
+    if release is not None:
+        value['release'] = release
     return value
 
 
@@ -315,6 +326,8 @@ def report(value):
             'protected_changes': snap['protected_changes'], 'blocked_paths': snap['blocked_paths'],
             'eligible': not blocked and phase in {'preview', 'approved'}, 'restart_impact': 'Factory services stop for a cold backup; Hermes stays running.',
             'baseline_adoption': snap['baseline_adoption'], 'next_command': command}
+    if 'release' in snap:
+        result.update(release=snap['release']['tag'], image_reference=snap['release']['manifest']['image'])
     if phase == 'complete':
         require(isinstance(value.get('result'), dict) and set(value['result']) == {'image', 'commit'}
                 and isinstance(value['result']['image'], str)
@@ -342,8 +355,13 @@ def execution_snapshot(auto, binding, config, install, installed, readiness, *, 
     status = private_json(Path(config['work_directory']) / 'status.json')
     require(status.get('phase') == 'complete' and status.get('image') == identity['current_image']
             and status.get('commit') == identity['current_commit'], 'audited_image_receipt_required')
-    run = auto.api(f'actions/runs/{status["run_id"]}')
-    auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), status['run_id'], identity['current_commit'])
+    if 'release' in status:
+        auto.verify_release(status['release'])
+        require(status['release']['manifest']['commit'] == identity['current_commit']
+                and status['release']['manifest']['run_id'] == status['run_id'], 'release_receipt_differs')
+    else:
+        run = auto.api(f'actions/runs/{status["run_id"]}')
+        auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), status['run_id'], identity['current_commit'])
     source, _ = tree(auto, identity['current_commit'])
     require(source.get(GUARDED_SOURCE) == {'mode': '100644', 'type': 'blob', 'sha': GUARDED_BLOB},
             'terminal_inspection_guard_unverified')
@@ -369,6 +387,7 @@ def execution_snapshot(auto, binding, config, install, installed, readiness, *, 
             and roles.get('reviewer', {}).get('auth_present') is True,
             'execution_roles_not_ready')
     return {'installation': config['installation'], 'installation_id': binding['installation_id'],
+            **({'release': status['release']} if 'release' in status else {}),
             **identity, 'guarded_blob': GUARDED_BLOB, 'configuration': digest(config),
             'paused_execution': list(auto.paused_execution(install)), 'roles': profile, 'flags': flags,
             'host_files': {str(path): auto.sha256(path) for path in installed.values()},
@@ -621,13 +640,21 @@ def baseline_snapshot(auto, binding, config, install, directory, run_id, install
     check_idle(auto, install)
     identity = current_identity(auto, install)
     commit = identity['current_commit']
-    auto.current_main(commit)
-    run = auto.api(f'actions/runs/{run_id}')
-    auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), run_id, commit)
-    artifact = auto.deployment_artifact(run_id, commit)
-    require(type(run.get('run_attempt')) is int and run['run_attempt'] > 0, 'invalid_ci_run_attempt')
     latest = private_json(directory / 'latest.json')
     receipt = read_preview(auto, directory, latest['digest'])
+    release = receipt['snapshot'].get('release')
+    if release is not None:
+        auto.verify_release(release)
+        require(release['manifest']['commit'] == commit and release['manifest']['run_id'] == run_id,
+                'release_receipt_differs')
+        run = {'run_attempt': release['manifest']['run_attempt'], 'updated_at': release['run_updated_at']}
+        artifact = release['asset']
+    else:
+        auto.current_main(commit)
+        run = auto.api(f'actions/runs/{run_id}')
+        auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), run_id, commit)
+        artifact = auto.deployment_artifact(run_id, commit)
+    require(type(run.get('run_attempt')) is int and run['run_attempt'] > 0, 'invalid_ci_run_attempt')
     require(receipt['phase'] == 'complete' and receipt.get('result') == {
         'image': identity['current_image'], 'commit': commit}
         and receipt['snapshot']['commit'] == commit and receipt['snapshot']['run_id'] == run_id
@@ -643,6 +670,7 @@ def baseline_snapshot(auto, binding, config, install, directory, run_id, install
     require(not blockers, 'protected_changes_not_approvable')
     require(fingerprint != config['compatibility'], 'baseline_already_current')
     return {'format': 1, 'baseline_adoption': True, 'installation_id': binding['installation_id'],
+            **({'release': release} if release is not None else {}),
             **identity, 'configuration': digest(config), 'baseline_commit': baseline_commit,
             'baseline_compatibility': config['compatibility'], 'target_compatibility': fingerprint,
             'protected_changes': changes, 'host_files': helpers, 'release_receipt': digest(receipt),
@@ -722,10 +750,13 @@ def reconcile_rollout_status(auto, config, result, latest_value):
     if latest_value:
         result['historical_manual_deployment'] = report(latest_value)
     for key in ('preview', 'run_attempt', 'artifact_id', 'artifact_digest', 'protected_changes', 'blocked_paths',
-                'restart_impact', 'baseline_adoption', 'dispatch_phase', 'deploy_run_id', 'previous_image', 'previous_commit'):
+                'restart_impact', 'baseline_adoption', 'dispatch_phase', 'deploy_run_id', 'previous_image', 'previous_commit',
+                'release', 'image_reference'):
         result.pop(key, None)
     result.update(phase='complete', target_commit=receipt['commit'], run_id=receipt['run_id'],
                   eligible=False, next_command='factory deploy status --json')
+    if 'release' in receipt:
+        result.update(release=receipt['release']['tag'], image_reference=receipt['release']['manifest']['image'])
 
 
 def run_locked(auto, binding, args, installed, *, credentials=None):
@@ -746,7 +777,7 @@ def run_locked(auto, binding, args, installed, *, credentials=None):
                 result['enabled'] = config['enabled']
             else:
                 result = {'phase': phase or 'idle', 'installation': config['installation'], 'enabled': config['enabled'],
-                          **current_identity(auto, install), 'next_command': 'factory deploy preview --run RUN_ID'}
+                          **current_identity(auto, install), 'next_command': 'factory deploy preview --release VERSION'}
             result['rollout_phase'] = phase
             result['configured_compatibility'] = config['compatibility']
             automatic_blocked = phase not in {None, 'complete', 'blocked'}
@@ -771,7 +802,8 @@ def run_locked(auto, binding, args, installed, *, credentials=None):
                 'prior_deployment_requires_operator')
         auto.assert_manual_idle(Path(config['work_directory']), args.preview if credentials is not None else None)
         if args.action == 'preview':
-            snap = snapshot(auto, binding, config, prod, install, directory, args.run, installed)
+            snap = snapshot(auto, binding, config, prod, install, directory, getattr(args, 'run', None), installed,
+                            release_tag=getattr(args, 'release', None))
             identifier = digest(snap)
             path = directory / (identifier + '.json')
             if exists(path):
@@ -788,7 +820,8 @@ def run_locked(auto, binding, args, installed, *, credentials=None):
         value = read_preview(auto, directory, args.preview)
         require(value['phase'] == ('preview' if args.action == 'approve' else 'approved'), 'approval_already_used_or_unavailable')
         previous = value['snapshot']
-        snap = snapshot(auto, binding, config, prod, install, directory, previous['run_id'], installed)
+        snap = snapshot(auto, binding, config, prod, install, directory, previous['run_id'], installed,
+                        release_tag=previous.get('release', {}).get('tag'))
         require(digest(snap) == value['digest'], 'deployment_preview_stale')
         require(not snap['blocked_paths'], 'protected_changes_not_approvable')
         path = directory / (args.preview + '.json')
@@ -801,29 +834,34 @@ def run_locked(auto, binding, args, installed, *, credentials=None):
             return report(value)
         require(args.yes and isinstance(value.get('approval'), dict)
                 and value['approval'].get('uid') == 0, 'approval_required')
-        if credentials is None:
+        if credentials is None and 'release' not in snap:
             return queue_deployment(auto, value, path)
-        require(getattr(args, 'callback_run', None) == snap['run_id']
-                and getattr(args, 'callback_commit', None) == snap['commit']
-                and value.get('dispatch', {}).get('phase') in {'requested', 'queued', 'unknown'},
-                'approved_deployment_callback_differs')
+        if 'release' not in snap:
+            require(getattr(args, 'callback_run', None) == snap['run_id']
+                    and getattr(args, 'callback_commit', None) == snap['commit']
+                    and value.get('dispatch', {}).get('phase') in {'requested', 'queued', 'unknown'},
+                    'approved_deployment_callback_differs')
         # Consume durably before image import, service stops, backup, or pin changes.
         value['phase'] = 'consumed'
         value['consumed_at'] = datetime.now(timezone.utc).isoformat()
         write(auto, path, value)
         try:
             with tempfile.TemporaryDirectory(prefix='operator-artifact-', dir=config['work_directory']) as temporary:
-                image = auto.get_image(snap['run_id'], snap['commit'],
-                    {**config, 'compatibility': snap['target_compatibility']}, Path(temporary),
-                    snap['run_attempt'], credentials,
-                    expected_artifact=snap['artifact'])
-                run = auto.api(f'actions/runs/{snap["run_id"]}')
-                auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), snap['run_id'], snap['commit'])
-                require(run.get('run_attempt') == snap['run_attempt'] and run.get('updated_at') == snap['run_updated_at'],
-                        'deployment_ci_run_changed')
-                auto.current_main(snap['commit'])
+                target_config = {**config, 'compatibility': snap['target_compatibility']}
+                if 'release' in snap:
+                    image = auto.get_release_image(snap['release'], target_config, Path(temporary))
+                    auto.verify_release(snap['release'])
+                else:
+                    image = auto.get_image(snap['run_id'], snap['commit'], target_config, Path(temporary),
+                        snap['run_attempt'], credentials, expected_artifact=snap['artifact'])
+                    run = auto.api(f'actions/runs/{snap["run_id"]}')
+                    auto.validate_run(run, auto.api('actions/workflows/hatchet-quality.yml'), snap['run_id'], snap['commit'])
+                    require(run.get('run_attempt') == snap['run_attempt'] and run.get('updated_at') == snap['run_updated_at'],
+                            'deployment_ci_run_changed')
+                    auto.current_main(snap['commit'])
                 with redirect_stdout(io.StringIO()):
-                    auto.rollout(prod, install, image, snap['commit'], snap['run_id'], Path(config['work_directory']))
+                    auto.rollout(prod, install, image, snap['commit'], snap['run_id'], Path(config['work_directory']),
+                                 **({'release': snap['release']} if 'release' in snap else {}))
             value['phase'] = 'complete'
             value['result'] = {'image': image, 'commit': snap['commit']}
             value['completed_at'] = datetime.now(timezone.utc).isoformat()

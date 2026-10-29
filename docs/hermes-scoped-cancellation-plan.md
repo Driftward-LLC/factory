@@ -12,30 +12,16 @@ marker does not ask that native owner to stop. We need an observable stop reques
 for exactly one invocation, without stopping other Hermes profiles or treating
 process termination as proof that external writes settled.
 
-The [dated investigation evidence](evidence/hermes-runtime/2026-10-26-ownership.json)
-rechecked ENG-162 attempt `b0ac9017-1f27-49f9-9250-274d6b8b8b23` through the canonical
-Factory CLI. Its invocation is
-`a007ff3e-8062-4b8b-a8eb-ced9511c25a6:34684470-7c66-4043-8987-011866e6f27d:1`.
-
-- Exact journal binding remains verified; intent exists, result does not.
-- The admission/execution manifests contain Factory identifiers, not a native
-  session or process identity. Their backend-version field is route metadata,
-  not a deployed-source fingerprint.
-- None of the 250 returned events contained a session/process/task/trace identity
-  key. This bounded response is not guaranteed to cover the complete history.
-- The attempt remains cancellation-requested; the profile status check reported
-  the executor gateway active/listening and authentication ready. Availability
-  does not establish this invocation's ownership or termination.
-
-**Conclusion:** ownership is not established through the inspected Factory
-interfaces. This is not proof that no native record or telemetry survives.
-No private session database/checkpoint scan, PostHog query, signal, replay,
-credential change or recovery confirmation was performed.
+An exact Factory invocation-to-native owner mapping is required before a stop
+can be authorized. Factory identifiers in manifests, profile availability, and
+a cancellation request do not establish the owning native session or process.
+Missing results or telemetry must remain unknown rather than becoming proof
+that nothing is running.
 
 ## Native constraints that shape the adapter
 
 The pinned Hermes source is commit `818c13be1dc4fd28987e1e881a9408224afd4535`.
-The runtime contract records which files were matched to installed source.
+The runtime contract lists source references and the installation audit procedure.
 
 1. Foreground work is held in the owning Python process's
    [`_live_foreground`](https://github.com/NousResearch/hermes-agent/blob/818c13be1dc4fd28987e1e881a9408224afd4535/tools/environments/base.py#L56)
@@ -72,11 +58,9 @@ selection. Candidates are diagnostic correlation only, never verified native
 session/raw owner identity, complete descendant coverage or stop authority.
 This implementation does not create a new stop endpoint or ownership journal.
 
-The [installed lookup evidence](evidence/hermes-runtime/2026-10-26-process-lookup.json)
-records the ENG-162 check: 23 process entries scanned, no correlated candidates,
-6 unresolved entries, no scan limit reached. This does not prove absence of live
-work. Only the read-only helper was installed; gateway health and the Factory
-application revision remained unchanged. No production stop or retry occurred.
+A lookup that returns no correlated candidates is not proof that no live
+work remains. Unreadable entries, inherited environment, remote execution, and
+missing historical ownership records all limit its coverage.
 
 The disposable test `tools/test_hermes_scoped_selection.py` executes a fingerprinted
 copy of upstream `ProcessRegistry.kill_all` from pinned commit `818c13be` against
@@ -167,7 +151,7 @@ ledger remain authoritative; telemetry failure must not change stop semantics.
 
 ## Acceptance checks before activation
 
-Use disposable fixtures, not ENG-162 or another production task:
+Use disposable fixtures rather than production tasks:
 
 - Cancel before registration, during foreground execution and during background
   execution; assert no tool dispatch after the fence.
@@ -190,7 +174,7 @@ those implementations; no new CI threshold or service is proposed here.
 
 ## Historical recovery and readiness
 
-The new adapter cannot retroactively create ENG-162's missing ownership proof.
+The new adapter cannot retroactively create missing historical ownership proof.
 First extend the canonical diagnostic with a bounded, read-only exact-ID lookup
 for surviving native/telemetry evidence. Do not import recovery code, read prompt
 contents, search by time alone, or export whole process/session records. Validate

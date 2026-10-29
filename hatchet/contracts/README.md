@@ -1,6 +1,6 @@
 # Hatchet Contracts
 
-`events.json` is the canonical contract for Driftward-owned Hatchet event IDs,
+`events.json` is the canonical contract for Factory-owned Hatchet event IDs,
 wire names, default decisions, reason codes, bridge lookup statuses, and simple
 provider action mappings.
 

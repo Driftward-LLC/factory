@@ -57,12 +57,12 @@ python3 deploy/factory-cutover.py \
 
 The destination and snapshot must be new private paths with existing parents;
 the destination project must have no containers, network, or named volumes.
-The example ports are independent of both existing deployments; check their
-availability again before any later start. Do not publish raw Compose config,
+The example ports are illustrative; check their availability before any later
+start. Do not publish raw Compose config,
 env files, database contents, or credential-bearing command output as evidence.
 
-Some pre-Compose legacy volumes have no labels (six were observed on the
-existing VPS). After separately reviewing their exact names and canonical mounts
+Some pre-Compose legacy volumes have no labels. After separately reviewing
+their exact names and canonical mounts
 on the verified source containers, append `--allow-unlabelled-source-volumes` to
 the preview and, later, the approved apply command. This flag accepts only empty
 labels; conflicting ownership labels are always rejected. It never changes the

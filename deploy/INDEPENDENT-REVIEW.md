@@ -1,6 +1,6 @@
 # Native Hermes independent reviewer
 
-This dormant path uses a native Driftward Hermes execution profile behind the
+This dormant path uses a native Hermes execution profile behind the
 existing host gateway. It starts no additional chat gateway, bot, daemon or
 Codex CLI runtime. `ReadOnlyReview` still accepts only a reserved bridge job,
 fixes `gpt-6-astra`, and returns the bounded `factory-independent-review-v1`
@@ -8,17 +8,17 @@ receipt with `backend: isolated_hermes`. The model supplies verdict/findings onl
 Historical `isolated_codex` receipts remain readable.
 
 Each invocation creates a fresh `factory-reviewer-<UUID>` profile under
-Driftward Hermes' dedicated `/opt/data/factory-reviewer-auth/profiles/` root.
+Hermes' dedicated `/opt/data/factory-reviewer-auth/profiles/` root.
 Its generated `config.yaml` selects
 Astra and disables fallback, plugins, MCP, Tool Search, connectors, memory and
 compression. It copies no generator config, SOUL, memory, sessions, skills,
 browser state, credentials or tools. Each fresh profile has one writer.
 The SDK skips repository context, identity and background review. A profile
 separates state; it is not a filesystem sandbox. The trusted SDK process runs
-inside the existing Driftward Hermes container, with model authority enforced
+inside the existing Hermes container, with model authority enforced
 by exactly seven prefixed source tools and native pre-request/tool-dispatch
 guards. It has no local shell, filesystem, delegate, platform or tool-discovery
-tools. Personal Hermes is never selected.
+tools. Unrelated execution runtimes are never selected.
 
 Hermes' supported routed-profile home and empty secret scope prevent default and
 project dotenv loading. The reviewer requires a separate native ChatGPT sign-in
@@ -146,8 +146,8 @@ Responses request.
 Build and pin `deploy/independent-reviewer/Dockerfile` for the source role.
 It keeps the reviewed Node base digest and Playwright MCP 0.0.83 lock, Git/Python
 and Chromium. Project-specific offline test dependencies may require a reviewed
-derived image. The image does not provide Factory/Capykit npm or pip dependency
-trees: the synthetic HTML canary does not verify either project's full UI/build.
+derived image. The image does not provide the reviewed project's npm or pip
+dependency trees: the synthetic HTML canary does not verify its full UI/build.
 Read-only review remains useful when the changed code and available focused
 checks suffice; missing required browser/dependencies/checks must yield
 inconclusive. Source networks are fresh internal Docker 28+ IPv4 bridges with
@@ -188,7 +188,7 @@ Activation remains a separate reviewed operator change. Root-owned mode-0600
   "policy_digest": "CURRENT_FACTORY_REVIEW_POLICY_DIGEST",
   "review_skill_digest": "SHA256_OF_REVIEW_CODE_SNAPSHOT",
   "verify_skill_digest": "SHA256_OF_VERIFY_APP_SNAPSHOT",
-  "repositories": {"Driftward-LLC/factory": {"base_ref": "main"}}
+  "repositories": {"OWNER/REPO": {"base_ref": "main"}}
 }
 ```
 
@@ -200,8 +200,10 @@ Source fetch separately requires a source-only GitHub read credential at
 `source_token_broker.py` uses the existing `factory-hermes` App inside the native
 runtime: its App/installation IDs and private key stay under
 `/opt/data/github-apps/factory-hermes`. It signs in place and requests only
-`factory` and `capykit` with `contents:read`; GitHub's implicit `metadata:read` is
-accepted, all other permissions/repos are rejected. It never reads the native
+the broker's fixed repository allowlist with `contents:read`; GitHub's implicit
+`metadata:read` is accepted, all other permissions/repos are rejected. The
+broker still contains installation-specific repository and App assumptions;
+review its source before provisioning another installation. It never reads the native
 generator token cache or copies a private key. This is the same App identity,
 with a narrower credential, not a new grant or App.
 

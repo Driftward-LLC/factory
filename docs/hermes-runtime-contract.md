@@ -3,16 +3,16 @@
 Owner: Factory maintainers. Last inspected: **2026-10-25 UTC**.
 Status: evidence-backed description, **not a containment attestation or recovery approval**.
 
-This is the maintained reference for how Factory uses Driftward Hermes. Update it
+This is the maintained reference for how Factory uses Hermes. Update it
 through ordinary repository pull requests, with the evidence described below.
-The [dated evidence bundle](evidence/hermes-runtime/2026-10-25.json) is a historical
-snapshot; it is not a live health dashboard. The existing
-[interrupted-execution runbook](interrupted-execution.md) still governs recovery.
+Source references describe the reviewed behavior, not the health or configuration
+of every installation. The [interrupted-execution runbook](interrupted-execution.md)
+governs recovery; operators retain installation-specific evidence privately.
 
 ## Findings in plain language
 
 1. Factory's executor is a **named Hermes profile**, not a different agent engine.
-   Its command is launched inside the Driftward Hermes runtime. A profile selects
+   Its command is launched inside the Hermes runtime. A profile selects
    a home/configuration/state boundary; this launch path does not create a new
    container or OS identity for each profile.
 2. Hermes does have scoped process cleanup: foreground process groups, tracked
@@ -21,41 +21,33 @@ snapshot; it is not a live health dashboard. The existing
 3. Factory's current `cancelInvocation` handler **records a cancellation marker**.
    It does not call Hermes's process registry or signal a native process. Factory
    cancellation, Hermes cleanup and external-effect settlement are separate facts.
-4. The executor's missing profile-local `auth.json` is **not proof of missing
-   authentication**. Inspected Hermes code supports root-store fallback, and the
-   live CLI reported executor authentication ready. That check does not identify
-   every credential used by a particular historical invocation.
-5. Nothing inspected proves that ENG-162 left a surviving process, or that all its
-   effects settled. Neither a shared-runtime shutdown nor a safe retry follows
-   automatically from these findings.
+4. A missing profile-local `auth.json` is **not proof of missing authentication**.
+   The reviewed Hermes code supports root-store fallback. A readiness check does
+   not identify every credential used by a historical invocation.
+5. These source contracts do not prove whether a failed invocation left a
+   surviving process or settled all its effects. Neither a shared-runtime shutdown
+   nor a safe retry follows automatically.
 
 ## Evidence levels and revision boundary
 
 Use these labels when updating a claim:
 
 - **Observed:** bounded output from the installed `factory` CLI at a recorded time.
-- **Source verified:** behavior traced in a pinned source file. For Hermes files
-  below, its SHA-256 also matched the file on disk inside the runtime.
+- **Source verified:** behavior traced in a pinned source file. Establish any
+  installation match separately by comparing the file's SHA-256.
 - **Inference:** conclusion combining those observations; state its assumptions.
 - **Unknown:** not measured or not available. Do not turn this into “absent.”
 
-The evidence collector was `1f203ca5272ae196ee24a94fe26fb0d901b1fdd4`.
-All **17/17** allowlisted Hermes files matched upstream tag `v0.21.6`, commit
+Hermes references below are pinned to `v0.21.6`, commit
 [`818c13be1dc4fd28987e1e881a9408224afd4535`](https://github.com/NousResearch/hermes-agent/tree/818c13be1dc4fd28987e1e881a9408224afd4535).
-The manifest records each filename, byte count and SHA-256. This establishes the
-selected **installed files**, not the entire image, every plugin, the revision
-already loaded by a long-running process, or what was installed when an earlier
-incident happened. The collector therefore deliberately returns revision
-`unknown` and `running_process_version: not_established`.
+Run the source audit against the actual installation before relying on a
+deployment match. Matching allowlisted files does not attest the entire image,
+every plugin, or the source already loaded by a long-running process.
 
-`factory version` observed application revision
-`675682deb51b9e5ab599ecd79315215d741497ba`. The four Factory source paths cited for
-launch, gateway cancellation, journal semantics and interrupted resolution were
-unchanged between that revision and main `41f2d0a2ab72495ca0682c118acea8f5d8a6c20f`
-(`git diff` over those paths was empty). The separately installed compiled gateway
-was not attested to a source revision by this audit; its behavior is described as
-a **source contract**, not proof of the loaded gateway binary. Host CLI/helper
-updates and application image deployments must not be conflated.
+Factory source references are pinned to the reviewed revision
+`675682deb51b9e5ab599ecd79315215d741497ba`. The separately installed compiled
+gateway must be verified independently of the application image. Host helper
+updates and application deployments are separate operations.
 
 ## Actual control paths
 
@@ -76,11 +68,9 @@ invocations being launched or controlled through that native gateway.
 Factory source: [`runHermesCreateDraftPrViaCommand`, `hermesProfileArguments`,
 `hermesRuntimeDockerArgs`](https://github.com/Driftward-LLC/factory/blob/675682deb51b9e5ab599ecd79315215d741497ba/hatchet/workers/bridge-executor-worker/src/hermes/create-draft-pr.ts)
 and [`createServer`](https://github.com/Driftward-LLC/factory/blob/675682deb51b9e5ab599ecd79315215d741497ba/hatchet/workers/bridge-executor-worker/src/hermes/hermes-gateway-server.ts).
-The inspected host wrapper `/usr/local/bin/driftward-hermes` had SHA-256
-`2cc113d6bd4176d2db42d04575f1dacccef63a7fe29bca14937326093fc5aa71`:
-its normal CLI branch invokes Compose `exec`, not a new per-profile container;
-it forwards only four validated Factory observability fields from host context.
-The wrapper's source was read, not invoked directly during this audit.
+The host wrapper is a separately provisioned integration. Verify its invocation
+and metadata forwarding behavior when configuring a real execution installation;
+the portable release does not supply that execution runtime.
 
 ## Profiles, authentication and isolation
 
@@ -101,12 +91,10 @@ Proof:
   root, `<root>/profiles/<name>` resolves its default root to `<root>`.
 - [`auth.py::_load_provider_state_with_source`](https://github.com/NousResearch/hermes-agent/blob/818c13be1dc4fd28987e1e881a9408224afd4535/hermes_cli/auth.py#L830)
   implements profile-first/root-fallback lookup; `read_credential_pool` also has
-  provider-level fallback. This audit did not open any auth store.
-- The live `factory profiles status` observation reported executor
-  `auth_present: false` but `executor_auth_ready: true`, executor profile selected,
-  gateway active/listening, and reviewer `auth_present: true`/routed.
-  [`inventory()`](../deploy/factory-profile-runtime.py) makes the distinction
-  explicit: the first field checks a named-profile file, while readiness uses
+  provider-level fallback. Source inspection does not require opening an auth store.
+- [`inventory()`](../deploy/factory-profile-runtime.py) distinguishes
+  `auth_present` from `executor_auth_ready`:
+  the first field checks a named-profile file, while readiness uses
   the native authentication-status API. It is not an exact failed-run credential
   provenance check.
 - [`native_agent.py::dedicated_auth`, `review`, `stop`](../deploy/independent-reviewer/native_agent.py)
@@ -116,8 +104,8 @@ Proof:
 
 The [upstream profiles guide](https://hermes-agent.nousresearch.com/docs/user-guide/profiles)
 is useful background for separate homes, gateways and shared OAuth fallback,
-but changes independently of this deployment. Pinned, hash-matched source is
-the authority for this audit's implementation claims.
+but changes independently of the reviewed implementation. Pinned source supports
+implementation claims; a matching installation audit establishes deployment scope.
 
 ## What Hermes actually does when work stops
 
@@ -185,29 +173,14 @@ The adapter classifies a nonzero process exit but does not retain the underlying
 failed stdout/stderr in the invocation journal. A native cleanup capability
 cannot be treated as wired into Factory merely because Hermes implements it.
 
-## ENG-162: what is proved, and what remains unknown
+## Unknown outcomes
 
-The dated bundle binds attempt `b0ac9017-1f27-49f9-9250-274d6b8b8b23` to job
-`a007ff3e-8062-4b8b-a8eb-ced9511c25a6` and invocation
-`a007ff3e-8062-4b8b-a8eb-ced9511c25a6:34684470-7c66-4043-8987-011866e6f27d:1`.
-The live diagnostic verified the private intent's exact binding, exit code 1,
-timeout/output-limit flags false, and no result receipt. It explicitly reported
-underlying output unavailable and containment/authentication cause not established.
+A failed command without a retained result receipt does not establish the
+original exit error, cleanup completion, native ownership, surviving work, or
+external-write settlement. Preserve available workspace and invocation evidence.
 
-The previous turn recorded cancellation at `2026-10-25T06:16:11.724675Z`; this is
-context, not an attested process-stop result. No recovery decision was made here.
-
-Still unknown:
-
-- The original exit error and whether native cleanup completed in that run.
-- The exact Hermes session/task/process IDs mapped to this Factory invocation.
-- Any surviving local/detached/remote work or the terminal backend actually used.
-- The scope and outstanding use of external write credentials and accepted requests.
-- A preserved workspace snapshot and settlement evidence sufficient for recovery.
-
-Do not assert that any survivor exists. Do not assert that none exists. PostHog
-correlation is useful diagnostic evidence, but missing events are not proof of
-non-execution, and telemetry is not the lifecycle or recovery source of truth.
+PostHog correlation is useful diagnostic evidence, but missing events are not
+proof of non-execution. Telemetry is not the lifecycle or recovery source of truth.
 
 ## Recovery implications, not authorization
 
@@ -217,8 +190,8 @@ follow-up ownership investigation, proposed adapter and activation gates.
 The next engineering step is to assess a scoped adapter from Factory invocation
 identity to Hermes's native session/process ownership and termination evidence.
 Prefer reusing verified native mechanisms over inventing another process killer.
-For this historical attempt, first determine whether a trustworthy ownership
-mapping remains available; adding better markers now cannot recreate lost proof.
+For historical attempts, first determine whether a trustworthy ownership mapping
+remains available; adding better markers now cannot recreate lost proof.
 
 Separate process stop, replay prevention, external-write settlement and workspace
 preservation. The existing recovery API accepts a root attestation only after
@@ -226,7 +199,7 @@ those facts are established; it does not establish them itself. Read
 [`interrupted_resolution.py`](https://github.com/Driftward-LLC/factory/blob/675682deb51b9e5ab599ecd79315215d741497ba/hatchet/bridge/hatchet_hermes_bridge/interrupted_resolution.py)
 and the [runbook](interrupted-execution.md) before using it.
 
-Neither shutting down all Driftward Hermes work nor revoking shared credentials
+Neither shutting down all Hermes work nor revoking shared credentials
 is justified solely by profile co-location. Conversely, stopping a wrapper or
 gateway, observing an expired lease, or seeing an unchanged PR is insufficient
 to manufacture a containment attestation. Any broader action needs a measured
@@ -240,10 +213,11 @@ scope and explicit operational authority.
    of public source files; it does not dump source text or private profile data.
    See [CLI documentation](../deploy/CLI.md). Never use the native wrapper to
    bypass a missing Factory operator interface.
-2. Record UTC collection time and collector revision in a new dated JSON file
-   under `docs/evidence/hermes-runtime/`. Retain only bounded status, identifiers,
-   source hashes and sizes. No prompts, outputs, tokens, auth/config files,
-   session rows or full process command lines. Review the file before committing.
+2. Retain UTC collection time, collector revision, bounded status, identifiers,
+   source hashes, and sizes in the installation's private audit records. Do not
+   publish live task/session identifiers, prompts, outputs, credentials,
+   auth/config files, session rows, or full process command lines. Public source
+   claims should cite upstream code or sanitized synthetic evidence.
 3. Independently compare each available hash with the corresponding file in a
    pinned upstream checkout (for example `sha256sum hermes_constants.py`). If a
    hash differs, mark the claim unverified for that deployment until the changed
@@ -266,4 +240,4 @@ scope and explicit operational authority.
 - 2026-10-25: initial audit; 17 Hermes files matched pinned v0.21.6 source.
   Corrected the assumption that profile co-location implies a required shared
   shutdown, and distinguished Hermes's native cleanup from Factory's marker-only
-  cancellation integration. Historical ENG-162 containment remains unproven.
+  cancellation integration. Historical containment requires separate evidence.

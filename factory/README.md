@@ -1,6 +1,6 @@
 # Factory
 
-Main operator-facing CLI for Driftward factory operations.
+Operator CLI for inspecting and managing a Factory installation.
 
 Factory is the operator surface. Hermes is an internal execution layer;
 operators do not need to chat with it. Use interactive development sessions for
@@ -37,24 +37,19 @@ Telemetry cannot authorize manual editing or change Factory ownership.
 This sits beside `hatchet/` and `deploy/` because it is not the workflow engine,
 the deployment wrapper, or the execution runtime. It is the human control
 surface over those systems.
-The current `factory` CLI/front-door architecture replaces the retired
-unattended factory/controller stack for this host.
-
-ENG-97 tracks extracting this surface into a standalone Factory application
-and repository. The proposed boundary and migration plan live in
-`docs/factory-standalone-app-boundary.md`; the transitional Hatchet desired
-state lives in `hatchet/desired-state/factory-hatchet.json`.
+See the [architecture boundary](../docs/factory-standalone-app-boundary.md) and
+the checked-in desired state at `hatchet/desired-state/factory-hatchet.json`.
 
 ## Shape
 
-The replacement factory path is the working composition of three separate
+Factory combines three separate
 service boundaries:
 
 ```text
 factory CLI
   -> Hatchet intake
   -> bridge ledger
-  -> Driftward Hermes execution
+  -> Hermes execution
 ```
 
 Keep those roots separate:
@@ -63,14 +58,19 @@ Keep those roots separate:
 - `hatchet/`: control plane, workers, event ingress, and bridge source.
 - `deploy/`: Docker image, Compose runtime, Hatchet Lite/Postgres topology,
   Linear token renewer, systemd wrapper, and smoke test.
-- Driftward Hermes: isolated execution runtime outside this repository.
+- Hermes: isolated execution runtime outside this repository.
 
-Do not move `hatchet/`, `deploy/`, or Driftward Hermes runtime state under
+Do not move `hatchet/`, `deploy/`, or Hermes runtime state under
 `factory/`. That would make the front-door command look like the owner of both
 the control plane and execution runtime and blur the service boundaries that
-keep the replacement architecture understandable.
+keep the architecture understandable.
 
 Use this command first when managing the current factory path:
+
+Issue examples below use the synthetic key `ENG-123`; replace it with the work
+item you intend to inspect. The current operator API validates the `ENG-` prefix.
+Using a different Linear team requires adapting the integration policy described
+in [integration portability](../docs/contribution.md#integration-portability).
 
 ```bash
 factory status
@@ -80,8 +80,8 @@ factory doctor hatchet --profile prod
 factory mode
 factory logs linear -f
 factory attempts active
-factory lifecycle ENG-62
-factory attempts list ENG-62 --json
+factory lifecycle ENG-123
+factory attempts list ENG-123 --json
 ```
 
 Current scope:
@@ -97,17 +97,17 @@ factory logs lifecycle
 factory mode
 factory mode dry-run
 factory mode real --yes
-factory retry ENG-62 preview --supersede-pr https://github.com/OWNER/REPO/pull/123
-factory retry ENG-62 preview --supersede-job BRIDGE-JOB-ID
-factory retry ENG-62 --reason "prior draft PR was closed unmerged" --request-id eng-62-retry-20260816 --snapshot-digest PREVIEW_DIGEST --supersede-pr https://github.com/OWNER/REPO/pull/123 --yes
-factory retry ENG-62 --reason "orphaned bridge job is obsolete" --request-id eng-62-orphan-20260823 --snapshot-digest PREVIEW_DIGEST --supersede-job BRIDGE-JOB-ID --yes
-factory lifecycle ENG-62
-factory lifecycle ENG-62 --json --limit 100
+factory retry ENG-123 preview --supersede-pr https://github.com/OWNER/REPO/pull/123
+factory retry ENG-123 preview --supersede-job BRIDGE-JOB-ID
+factory retry ENG-123 --reason "prior draft PR was closed unmerged" --request-id example-retry-001 --snapshot-digest PREVIEW_DIGEST --supersede-pr https://github.com/OWNER/REPO/pull/123 --yes
+factory retry ENG-123 --reason "orphaned bridge job is obsolete" --request-id example-orphan-001 --snapshot-digest PREVIEW_DIGEST --supersede-job BRIDGE-JOB-ID --yes
+factory lifecycle ENG-123
+factory lifecycle ENG-123 --json --limit 100
 factory lifecycle dead-letters list
 factory lifecycle dead-letters preview OUTBOX-KEY
 factory lifecycle dead-letters archive OUTBOX-KEY --reason "reviewed historical record" --snapshot-digest PREVIEW_DIGEST --yes
 factory attempts active
-factory attempts list ENG-62 --json
+factory attempts list ENG-123 --json
 factory attempts show ATTEMPT-ID
 factory attempts evidence ATTEMPT-ID
 factory attempts events ATTEMPT-ID
@@ -123,7 +123,7 @@ It requires proven external containment and preserved workspace evidence;
 lease expiry or an unchanged PR is not sufficient. It never retries execution
 or marks the implementation successful.
 
-`factory logs lifecycle` follows the root-owned Shipwright lifecycle writer.
+`factory logs lifecycle` follows the root-owned lifecycle writer.
 It publishes bounded Linear status only; it never executes work or changes
 intake mode, and its token is unavailable to Hatchet workers, the bridge,
 ingress, and Hermes.
@@ -367,7 +367,7 @@ An authorized, unknown or unreleased execution can never use this recovery path.
 No automatic repairs follow this operator repair, even when the deployment's
 automatic verifier-repair budget is high. Automatic repair defaults are unchanged.
 
-For the reviewed Capykit policy change that adds only `.gitleaksignore` to
+For the narrow supported policy change that adds only `.gitleaksignore` to
 `allowed_changed_paths`, root can explicitly reauthorize an existing source by
 adding `--from-policy-digest OLD-DIGEST --to-policy-digest CURRENT-DIGEST` to both
 `preview` and `confirm`. Both full digests and the old/current policies bind the
@@ -391,8 +391,8 @@ no GitHub/provider credentials, and this path never merges or deploys.
 This touches protected bridge/executor compatibility surfaces. Activation
 requires an operator-reviewed rollout, including the separately installed
 credential-bearing gateway where used, followed by synthetic smoke validation;
-the ordinary image-only automatic deployment cannot activate it. See
-[automatic deployment](../docs/automatic-deployment.md). No schema migration,
+an ordinary image-only release deployment cannot activate it. See
+[release deployment](../docs/automatic-deployment.md). No schema migration,
 historical artifact migration or shared Hermes state migration is introduced.
 
 ## Fresh retries

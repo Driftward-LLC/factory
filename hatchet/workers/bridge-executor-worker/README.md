@@ -2,7 +2,7 @@
 
 Consumes accepted bridge jobs and advances bridge state. Dry-run jobs complete
 locally. Real `create_draft_pr` jobs are gated behind an explicit environment
-flag and invoke Driftward Hermes with a deterministic branch plus bridge
+flag and invoke Hermes with a deterministic branch plus bridge
 idempotency marker.
 
 ## Workflow
@@ -70,19 +70,20 @@ Real PR execution is disabled unless:
 DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=1
 ```
 
-Optional environment:
+Configuration example. Replace repository and identity placeholders with the
+reviewed installation values; legacy defaults are installation-specific:
 
 ```bash
 DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
 DRIFTWARD_HERMES_AUTH_MODE=unknown
 DRIFTWARD_HERMES_VERSION=
 DRIFTWARD_HERMES_COMMAND=driftward-hermes
-DRIFTWARD_HERMES_ALLOWED_REPOS=Driftward-LLC/driftward-host
-DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN=factory-hermes[bot]
-DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME=factory-hermes[bot]
-DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL=4491454+factory-hermes[bot]@users.noreply.github.com
-DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS=derek-nguyen
-DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS=derek@driftward.io
+DRIFTWARD_HERMES_ALLOWED_REPOS=OWNER/REPO
+DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN=your-app[bot]
+DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME=your-app[bot]
+DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL=APP-ID+your-app[bot]@users.noreply.github.com
+DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS=your-human-login
+DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS=operator@example.com
 DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS=1200000
 DRIFTWARD_HERMES_ASYNC_RECEIPTS_ENABLED=1
 DRIFTWARD_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS=14400000
@@ -151,17 +152,17 @@ make an unknown execution outcome safe to retry.
 `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME`, and
 `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL` are required for real PR
 execution. They must match GitHub's App bot signature for the dedicated
-Driftward Hermes GitHub App. The bridge validates the configured Git author and
-GitHub repository access from inside the isolated Driftward Hermes runtime
+Hermes GitHub App. The bridge validates the configured Git author and
+GitHub repository access from inside the isolated Hermes runtime
 through the gateway before it asks Hermes to create or reuse a PR.
 
 The bridge payload must include:
 
 ```json
 {
-  "repo": "Driftward-LLC/driftward-host",
-  "work_item_id": "ENG-35",
-  "linear_issue": "ENG-35",
+  "repo": "OWNER/REPO",
+  "work_item_id": "ENG-123",
+  "linear_issue": "ENG-123",
   "implementation_prompt": "bounded implementation request"
 }
 ```
@@ -171,8 +172,8 @@ alone is accepted only when Hermes can use its Linear tools to inspect the
 issue.
 
 Hermes must use its own workspace under `/opt/data/work` for clones and
-branches. Do not pass host paths such as `/root/driftward/repos/factory` or
-`/root/driftward/repos` as `repo_path`.
+branches. Do not pass host paths such as `<source-checkout>` or
+`<host-repositories>` as `repo_path`.
 
 Retry behavior:
 

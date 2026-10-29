@@ -1,238 +1,109 @@
-# Automatic production deployment
+# Deploying a published release
 
-`Hatchet Quality` pushes the exact Docker image it tested to the **private** GHCR
-package `ghcr.io/driftward-llc/factory-production`, only for same-repository pushes
-to `main` after its validation gates. The separate release workflow's package is
-unchanged. CI requires the production package to be a private container with the
-expected name, and refuses supplied foreign owner/repository identities or an
-unverifiable response. A missing package is created with GHCR's private default;
-the same checks run again after publication. Omitted/null owner and repository
-fields are accepted with the workflow/image provenance checks described below,
-and do not prove repository linkage. No visibility settings are changed.
-`Factory Deploy` runs after that **entire** workflow succeeds, including browser
-checks and required evidence publication. It requests an image-only rollout
-through a deployment-only SSH account. No general-purpose GitHub runner,
-application credentials, or Docker
-socket is added to Factory containers. Hermes stays running and is not the
-deployment scheduler; GitHub Actions owns this deterministic release sequence.
+Factory's public repository builds and publishes software. Each installation
+chooses when to deploy a release. Pull requests and pushes to `main` run checks;
+they do not publish a production image or contact a deployment host.
 
-The host independently verifies the repository, successful workflow identity,
-push event, branch, current `main` SHA, immutable metadata-artifact digest, exact
-registry manifest and config digests, OCI revision and platform. Old/superseded
-revisions cannot be deployed. GitHub concurrency
-and the existing installation/tenant locks serialize deployments with operators.
-The protected-tree fingerprint is independently computed from GitHub's complete
-source tree using the root-installed policy, before downloading the artifact.
-Changing the CI packager cannot approve its own policy changes.
-The Actions artifact contains only bounded `deployment.json` metadata (format 2),
-binding the image digest to the commit, run ID, run attempt and compatibility
-fingerprint. No image tarball is uploaded. CI uses a run/attempt tag for retention;
-the host pulls only the recorded digest. Tag movement cannot retarget deployment.
-Single-platform Linux/amd64 manifests are required. The registry config digest
-must match CI's metadata, and Docker's local repository digest must match the
-requested reference. Classic Docker uses the config digest as its local ID;
-containerd can use the manifest digest. Only those two verified local IDs are
-accepted, and the existing production wrapper and canonical CLI continue to use
-the immutable local ID. A rerun changing the attempt during download is refused.
+The release workflow publishes `ghcr.io/driftward-llc/factory:VERSION` and a
+portable installation bundle. Both the bundle and managed deployment metadata
+pin the image by registry digest. Installation settings, credentials, deployment
+approvals, backups and runtime data remain private on the installation host.
 
-The release-readiness job has static `packages: write` permission because it must
-publish the tested local image without another large artifact transfer. Trusted same-repo
-PR jobs therefore have that capability, while login/publication are guarded to
-same-repo main pushes and fork tokens remain read-only. The deployment job has
-only `packages: read` and sends its short-lived `GITHUB_TOKEN` and actor name over
-the existing SSH stdin. The host validates the bounded envelope and writes only
-its GHCR auth entry into a mode-0600 file in a temporary mode-0700 Docker
-configuration directory. The nonempty auth map disables Docker's native
-credential-helper autodetection; no login command or host keychain is used.
-The host removes that configuration before rollout (including on pull failure). The token never enters
-arguments, logs, application configuration or worker environments. Host `gh`
-authorization for source/Actions reads remains separate; it needs no package scope.
+## Select and apply a release
 
-Publication verifies the fixed organization/package REST endpoint reports a
-private container with the expected name. GitHub's REST package schema permits
-`repository` and `owner` to be omitted or null; when supplied, their identities
-must match. An absent repository field does not prove repository linkage.
-Provenance instead also relies on the canonical main-push workflow using its
-repository-scoped `github.token`, the tested image's OCI source/revision labels,
-and the pushed manifest's config digest matching that image. Local environment
-variables alone do not authenticate a publisher. Internal same-repository PRs
-run the same package check with their workflow token through the read-only
-`--verify-package` command; it never publishes an image or deployment metadata.
-Diagnostics report only fixed verification results and optional-field presence.
+For an existing managed production installation with the reviewed host CLI:
 
-## What runs automatically
-
-`Hatchet Quality` first runs cheap whitespace and pinned, redacted secret checks.
-Only a successful preflight starts the parallel **Code checks** and **Browser and
-UI checks** jobs. Browser assertions remain blocking. Catalog and screenshot
-uploads stay on the browser runner; their failures are reported by the separate
-**Required evidence publication** gate, which requires both successful uploads
-and their artifact IDs, plus a successful browser job. Its bounded summary
-distinguishes failed browser checks from missing evidence. Upload failures can
-leave browser assertions green while evidence and the workflow remain red;
-they never permit release or deployment.
-
-**Release readiness** runs only after preflight, code, browser/UI and evidence
-all succeed. It builds the exact checkout's image and proves fresh installation,
-restart, backup/restore and stopped-state cutover before the main-only publisher
-pushes that same tested image and uploads its immutable metadata. Failed, skipped
-or cancelled prerequisites block this job. Evidence storage quota failures remain
-blocking, but no longer obscure the code/UI result or consume a release rehearsal.
-Every main push still runs this graph. The manual release workflow retains its
-existing checks and serialization.
-
-The first version allows known image-only surfaces: console, analytics, selected
-worker workflows, documentation and tests. Everything else contributes to a
-root-approved compatibility fingerprint. This deliberately includes executor and
-journal code, shared contracts, database implementation, image dependencies,
-Compose, deployment code and CI policy. Added/deleted unknown files also stop the
-rollout. This is a conservative file gate, **not** semantic migration detection.
-An operator must review such changes, deploy their components/migrations, and
-then update the compatibility baseline. Never just copy a failed artifact's hash
-to bypass the gate. Auto-deployment never updates its own host installation.
-
-Before stopping services, the host requires no active/unknown attempts, no
-unreleased execution lease and no unfinished bridge jobs. An expired lease or
-historical cancellation is not evidence of executor containment. A short SQLite
-writer barrier closes the check/stop race; it does not update ledger rows. The
-executor and dispatch workers stop while that barrier is held. Then the existing
-production wrapper cold-backs up all seven volumes, records the new image pin,
-starts services and checks all configured health checks and resource provenance.
-The gateway, journals, keys and ownership holds are untouched.
-
-Blocked preflight leaves running services alone. A failure after quiescing is
-latched in the private deployment status and requires operator recovery. There
-is **no automatic database restore, blind image rollback, or repeated restart**:
-external effects and token renewal may have advanced. Preserve the cold backup
-and recover through the production runbook. Backups are retained; deployment
-stops when less than 12 GiB is free. No automatic backup deletion is authorized.
-
-## One-time host setup
-
-Install the reviewed scripts `deploy/factory-auto-deploy.py` and
-`deploy/factory-deploy-ssh.py` as root-owned executable files at
-`/usr/local/libexec/factory-auto-deploy` and
-`/usr/local/libexec/factory-deploy-ssh`. Python 3.11+, Docker Compose and an
-authenticated host `gh` CLI with read access to this repository's Actions
-artifacts are required. The SSH caller never receives that host credential.
-Install the shared policy module `deploy/auto_deploy_artifact.py` alongside them
-at `/usr/local/libexec/auto_deploy_artifact.py`, root-owned mode 0644. It is part
-of the reviewed host installation, not imported from a downloaded artifact.
-
-Create a locked-password `factory-deploy` account with no Docker group membership
-and a root-owned home/authorized-keys file. Generate a dedicated Ed25519 key; its
-authorized-keys entry must use:
-
-```text
-restrict,command="/usr/local/libexec/factory-deploy-ssh" ssh-ed25519 <public-key>
+```bash
+factory deploy status --json
+factory deploy preview --release v2026.10.29 --json
+factory deploy approve --preview PREVIEW_DIGEST --reason "Reviewed release and compatibility" --yes --json
+factory deploy apply --preview PREVIEW_DIGEST --yes --json
+factory deploy status --json
 ```
 
-Grant only this command through a root-owned, mode-0440 sudoers file (validate
-with `visudo -cf` before installing):
+Use an actually published version and the exact digest returned by preview.
+Preview reads release evidence and records a private snapshot; it changes no
+services. Review its protected changes and eligibility before approval. Approval
+covers one unchanged snapshot. Apply runs locally, pulls the public image without
+registry credentials, retains a cold backup, updates the image pin, and checks
+service health. The host does not need a source checkout or build tools.
 
-```text
-factory-deploy ALL=(root) NOPASSWD: /usr/local/libexec/factory-auto-deploy
-```
+A stopped execution worker stays stopped. Deployment does not clear work-item
+holds, activate real execution, change executor credentials or migrate databases.
+Fresh installations use the [portable guide](../deploy/PORTABLE.md); this managed
+upgrade path expects an existing production installation and reviewed CLI binding.
 
-The helper accepts only `status` or `deploy RUN_ID FULL_SHA`; the privileged
-entrypoint repeats validation. No client-supplied paths, repository, command,
-environment or image are accepted. Use the existing SSH endpoint; do not expose
-the console, databases or gateway publicly. Pin the host's actual SSH public key
-out-of-band; never turn off host-key verification or trust runtime `ssh-keyscan`.
+## What is verified
 
-Create `/etc/driftward/factory-auto-deploy.json`, root-owned mode 0600:
+The permanent GitHub Release asset `deployment.json` binds the release version,
+source commit, image manifest/config digests, protected-source fingerprint, and
+release workflow run and attempt. It is independent of the seven-day retention
+of ordinary CI screenshots and catalogs.
 
-```json
-{
-  "enabled": false,
-  "installation": "/srv/factory-candidate",
-  "production_bundle": "/srv/factory-bundles/4e032de-telemetry-support/deploy",
-  "work_directory": "/srv/factory-auto-deploy",
-  "compatibility": "<reviewed protected-tree SHA-256>"
-}
-```
+The host checks:
 
-The work directory must be root-owned mode 0700. Compute the fingerprint using
-`auto_deploy_artifact.compatibility()` from an exact reviewed checkout; confirm
-that its protected runtime surfaces match the already installed components.
-The current VPS's Compose image and separately installed gateway can have
-different revisions. Do not substitute the retired `/docker/driftward/factory`
-installation or a different source bundle.
+- The published release and its unique, bounded metadata asset and asset digest.
+- The annotated version tag and exact source commit.
+- GitHub's signed artifact attestation for the metadata, restricted to this
+  repository's release workflow, `main` source ref and exact source commit.
+- Successful completion of that release workflow and its recorded run attempt.
+- The independently computed protected-source fingerprint and installed helpers.
+- The registry digest, single Linux amd64 image, config digest, and OCI source,
+  revision and release-version labels.
 
-Configure repository variables `FACTORY_DEPLOY_HOST`, `FACTORY_DEPLOY_USER`,
-`FACTORY_DEPLOY_KNOWN_HOSTS` (the pinned public host-key line), and
-`FACTORY_AUTO_DEPLOY_ENABLED`. Store the deployment-only private key in
-`FACTORY_DEPLOY_SSH_KEY`. Do not store application or root SSH credentials there.
-Keep the repository toggle and host `enabled` flag false until the scripts,
-policy baseline, SSH forced-command restriction, negative cases and safety gates
-have been verified. Environment/branch protection can be added when the GitHub
-plan supports it; host authorization checks do not depend on those features.
+Approval and apply re-read the evidence. A changed tag, asset, run attempt,
+configuration, installed helper or runtime state invalidates the preview.
+The selected release can remain deployable after `main` advances; it cannot
+silently follow `latest` or a moved tag. A missing producer record or unavailable
+attestation fails closed even when the release download still exists.
 
-### Migrating an existing archive deployment
+The GitHub CLI must support `gh attestation verify`, including `--source-ref`,
+`--source-digest` and `--signer-workflow`. The managed operator uses the host's
+existing read-only GitHub identity for provenance queries. That identity is never
+passed to Factory containers or used to authenticate the public image pull.
 
-This is a reviewed host compatibility change, not a routine image rollout.
-Format-1 image archives are deliberately rejected by the new helper, and the old
-helper cannot consume format-2 metadata. Before enabling requests, install the
-reviewed helper/shared policy together, validate the ephemeral credential path
-through the forced command and sudo, confirm Docker supports `image push
---platform` in CI and private digest pulls on the host, and approve the new
-protected-tree baseline against the actual installed runtime. Verify the new
-package is private, has the expected identity/provenance described above, and is readable by its deployment
-workflow token without changing the host's existing credentials. Keep any
-operator execution hold in effect; this change does not authorize a live rollout.
+## Existing installation transition
 
-The tiny metadata artifact still uses Actions storage. If legacy image archives
-have exhausted its quota, publication alone cannot make a run deployable: wait
-for an approved cleanup/expiry and a successful metadata upload before activation.
-No deletion or retention-policy change is included here. GHCR versions and local
-images are not automatically pruned; retain current/previous pins for recovery.
-Pending operator snapshot work (PR #79) uses the old archive/get-image interface;
-it must acquire equivalent short-lived package credentials and adopt this
-manifest/run-attempt contract before integration. No archive fallback is allowed.
+The historical filename `factory-auto-deploy.py` and private configuration path
+`/etc/driftward/factory-auto-deploy.json` are retained for installed-system
+compatibility. The public repository no longer contains `Factory Deploy` or
+requires a deployment SSH key. There is no replacement scheduler.
 
-## Operation
+Before using `--release`, install the reviewed versions of the deployment helper,
+policy module, operator module and canonical launcher together. Review associated
+profile/artifact helpers when their installed inventory requires it. Follow the
+[canonical CLI binding](../deploy/CLI.md); never execute downloaded release scripts
+as a way to update privileged host tooling automatically.
 
-- In GitHub Actions, `Factory Deploy` is the operator-facing deployment result.
-- `status` over the restricted SSH key checks connectivity/configuration only;
-  it does not claim a release is healthy or restart anything.
-- `/srv/factory-auto-deploy/status.json` records the private rollout phase;
-  `backup-<commit>-<run-id>/` retains the cold backup. Never publish its contents.
-- Active/ambiguous work requires the existing reviewed recovery procedure. Once
-  resolved, rerun the deploy workflow job if that SHA is still current `main`.
-  If retrying `Hatchet Quality`, rerun **all jobs**: retrying only a failed browser
-  job advances GitHub's run attempt without republishing the release-readiness
-  job's metadata. The host intentionally refuses that stale producer attempt.
-  New commits trigger new checks; blocked runs are not retried in a hidden loop.
-- Disable `FACTORY_AUTO_DEPLOY_ENABLED` **and** host `enabled` to suspend future
-  requests. Revoking the dedicated authorized key immediately removes ingress.
-  Neither action interrupts a rollout already in progress.
+The initial transition changes protected deployment and CI policy. It therefore
+requires a separately reviewed host-helper and compatibility transition; an image
+release cannot approve its own policy. Do not copy a target fingerprint into the
+configuration merely to bypass a refusal. `factory deploy baseline` is for
+reviewed adoption after a completed audited rollout, not a bypass for blocked
+initial upgrades.
 
-Acceptance of a merge is authorization for routine, compatible image deployment,
-not permission to clear held issues, migrate state or change executor identity.
-CI policy itself belongs to the protected compatibility fingerprint: changing
-this graph does not update the root-approved host baseline or authorize bypassing
-its compatibility review.
+Existing `--run` records and private image support remain for inspection and
+recovery of older installations. Their old workflow/SSH callback is not used by
+the public release path. Retire an installation's old deployment key, account,
+repository variables and workflow enablement through its private operations
+configuration after the transition has been verified.
 
-## Reconciled host tooling and reviewed baseline adoption
+## Failure and recovery
 
-The host CLI, deployment operator, automatic rollout helper, profile runtime and
-artifact preservation runtime are reviewed source files in this repository.
-Host upgrades remain explicit operator work; automatic rollout never downloads
-or replaces its own helpers. The installed operator retains the three existing
-exact HOST_TARGET_BLOB_PAIRS for backward compatibility with older release images.
-Those pairs do not authorize baseline adoption.
+Deployment checks for active or ambiguous attempts, unreleased execution leases
+and unfinished bridge jobs. A SQLite writer barrier closes the check/stop race.
+Installation and tenant locks serialize deployments with operators. Compatibility
+or quiescence refusals leave running services alone.
 
-After installing reviewed helpers and deploying their exact current-main release,
-run `factory deploy baseline preview --run RUN_ID --json`. Review the entire
-protected diff, full compatibility fingerprint, deployed commit, CI and artifact
-identity, and installed helper identities. All six installed helper blobs and
-source modes must match the deployed commit exactly, plus its completed audited
-release receipt. Unsupported protected changes and compatibility pairs are refused.
+Apply consumes approval durably before pulling the image. A failed or interrupted
+apply is retained for operator review; retries cannot silently reuse approval.
+After quiescing, the existing production wrapper backs up all seven volumes,
+records the image upgrade, resumes the previously enabled services, and verifies
+health and resource provenance. Backups stay private and retained. The operation
+requires at least 12 GiB free before rollout.
 
-Apply that unchanged preview using `factory deploy baseline apply --preview DIGEST
---reason "Reviewed full protected baseline and helper equality" --yes --json`.
-Both deployment locks protect revalidation and durable root approval. The receipt
-is consumed before updating the exact-schema private configuration and baseline
-anchor. Interruption leaves a consumed or failed receipt, fencing future rollout
-for explicit operator recovery. The prior release receipt stays available;
-services, paused execution and independent reviewer settings are preserved.
+There is no automatic database restore, blind image downgrade or retry loop.
+External effects and token renewal may have advanced. Preserve the backup and
+private receipts and follow the [operations runbook](containerized-service-runbook.md)
+for an explicit recovery review. Never publish raw status files, generated env
+files, database snapshots or execution journals in issues or release assets.

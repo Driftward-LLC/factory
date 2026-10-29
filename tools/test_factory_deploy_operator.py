@@ -1,6 +1,7 @@
 """Audited CLI with disposable root-owned state; GitHub/Docker are explicit fake boundaries."""
 from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -34,6 +35,16 @@ IMAGE, NEXT_IMAGE = 'sha256:' + 'c' * 64, 'sha256:' + 'd' * 64
 
 
 class DeployPolicyTests(unittest.TestCase):
+    def test_release_selection_is_exact_and_excludes_legacy_run_selector(self):
+        parsed = cli.deploy_parser(['preview', '--release', 'v2026.10.29', '--json'])
+        self.assertEqual(parsed.release, 'v2026.10.29')
+        self.assertIsNone(parsed.run)
+        for arguments in (['preview'], ['preview', '--release', 'latest'],
+                          ['preview', '--release', '../../main'],
+                          ['preview', '--release', 'v2026.10.29', '--run', '34']):
+            with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                cli.deploy_parser(arguments)
+
     def test_help_uses_real_entrypoint_without_binding_or_root(self):
         for args in (['--help'], ['deploy', '--help'], ['execution', 'configure', '--help'], *(['deploy', name, '--help'] for name in ('status', 'preview', 'approve', 'apply'))):
             result = subprocess.run([sys.executable, str(ROOT / 'deploy/factory-cli.py'), *args], capture_output=True, text=True)
@@ -295,6 +306,112 @@ class AuditedDeploymentTests(unittest.TestCase):
 
     def preview(self):
         return self.call('preview')['preview']
+
+    def published_release(self):
+        fingerprint = manual.tree(auto, TARGET)[1]
+        self.release = {'id': 78, 'tag': 'v2026.10.29', 'published_at': 'fixed', 'tag_object': 'e' * 40,
+            'asset': {'id': 56, 'name': 'deployment.json', 'size': 512, 'digest': 'sha256:' + 'f' * 64},
+            'manifest': {'format': 3, 'release_tag': 'v2026.10.29', 'commit': TARGET,
+                         'image': auto.RELEASE_IMAGE + '@' + NEXT_IMAGE, 'image_config': NEXT_IMAGE,
+                         'compatibility': fingerprint, 'run_id': 34, 'run_attempt': 1},
+            'run_updated_at': 'fixed'}
+        item = patch.object(auto, 'release_metadata', side_effect=lambda _: json.loads(json.dumps(self.release)))
+        item.start(); self.addCleanup(item.stop)
+        item = patch.object(auto, 'current_main', side_effect=AssertionError('A published release may precede main'))
+        item.start(); self.addCleanup(item.stop)
+
+    def release_call(self, action, identifier=None):
+        return manual.run(auto, self.binding, SimpleNamespace(action=action, run=None, release='v2026.10.29',
+                          preview=identifier, reason='Reviewed published release', yes=True), self.installed)
+
+    def test_published_release_applies_locally_without_dispatch_credentials_or_current_main(self):
+        self.published_release()
+        with patch.object(auto, 'get_release_image', return_value=NEXT_IMAGE) as image, \
+             patch.object(auto, 'rollout') as rollout, patch.object(manual, 'queue_deployment') as queue:
+            preview = self.release_call('preview')
+            self.assertEqual(preview['release'], 'v2026.10.29')
+            identifier = preview['preview']
+            image.assert_not_called(); rollout.assert_not_called()
+            self.release_call('approve', identifier)
+            def pull(*args):
+                path = self.work / 'operator-deploy' / (identifier + '.json')
+                self.assertEqual(manual.private_json(path)['phase'], 'consumed')
+                return NEXT_IMAGE
+            image.side_effect = pull
+            completed = self.release_call('apply', identifier)
+            self.assertEqual(completed['phase'], 'complete')
+            self.assertEqual(completed['current_image'], NEXT_IMAGE)
+            self.assertEqual(rollout.call_args.kwargs, {'release': self.release})
+            self.assertEqual(image.call_args.args[1]['compatibility'], self.release['manifest']['compatibility'])
+            queue.assert_not_called()
+            self.assertEqual(manual.private_json(self.config_path), self.config)
+            with self.assertRaisesRegex(ValueError, 'approval_already'):
+                self.release_call('apply', identifier)
+
+    def test_changed_published_release_cannot_consume_approval_or_pull(self):
+        self.published_release()
+        identifier = self.release_call('preview')['preview']
+        self.release_call('approve', identifier)
+        self.release['asset']['digest'] = 'sha256:' + 'a' * 64
+        with patch.object(auto, 'get_release_image') as image, patch.object(auto, 'rollout') as rollout:
+            with self.assertRaisesRegex(ValueError, 'preview_stale'):
+                self.release_call('apply', identifier)
+            image.assert_not_called(); rollout.assert_not_called()
+        self.assertEqual(self.release_call('status')['phase'], 'approved')
+
+    def test_failed_public_pull_latches_approval_without_stopping_services(self):
+        self.published_release()
+        identifier = self.release_call('preview')['preview']
+        self.release_call('approve', identifier)
+        with patch.object(auto, 'get_release_image', side_effect=auto.Refusal('docker_failed')), \
+             patch.object(auto, 'rollout') as rollout, self.assertRaisesRegex(auto.Refusal, 'docker_failed'):
+            self.release_call('apply', identifier)
+        rollout.assert_not_called()
+        self.assertEqual(self.release_call('status')['phase'], 'failed')
+        with self.assertRaisesRegex(auto.Refusal, 'prior_deployment'):
+            auto.assert_manual_idle(self.work)
+
+    def test_release_baseline_adoption_keeps_exact_completed_release_evidence(self):
+        directory = self.baseline_fixture()
+        self.published_release()
+        latest = manual.private_json(directory / 'latest.json')
+        receipt = manual.read_preview(auto, directory, latest['digest'])
+        receipt['snapshot'].update(release=self.release, artifact=self.release['asset'])
+        identifier = manual.digest(receipt['snapshot'])
+        receipt['digest'] = identifier
+        self.save(directory / (identifier + '.json'), receipt)
+        self.save(directory / 'latest.json', {'digest': identifier, 'updated_at': 'fixture'})
+        view = self.baseline('preview')
+        self.assertEqual(view['release'], self.release)
+        self.release['asset']['id'] = 99
+        with self.assertRaisesRegex(auto.Refusal, 'release_changed'):
+            self.baseline('apply', view['preview'])
+
+    def test_execution_snapshot_binds_release_receipt_without_legacy_ci_lookup(self):
+        self.published_release()
+        self.save(self.work / 'status.json', {'phase': 'complete', 'image': NEXT_IMAGE, 'commit': TARGET,
+                                             'run_id': 34, 'release': self.release})
+        source = 'synthetic guarded source'
+        raw = (source + '\n').encode()
+        guard = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+        tree = {manual.GUARDED_SOURCE: {'mode': '100644', 'type': 'blob', 'sha': guard}}
+        readiness = Mock(return_value={'reviewer_routed': True, 'gateway_executor_profile_selected': True,
+            'native_runtime_idle': True, 'executor_auth_ready': True, 'gateway_socket_listening': True,
+            'gateway_service': {'ActiveState': 'active'}, 'profiles': {
+                'executor': {'engineering_enabled': True, 'capabilities_ready': True, 'capabilities_match_default': True},
+                'reviewer': {'auth_present': True}}})
+        with patch.object(manual, 'current_identity', return_value={'current_image': NEXT_IMAGE, 'current_commit': TARGET}), \
+             patch.object(manual, 'tree', return_value=(tree, 'fixture')), patch.object(manual, 'GUARDED_BLOB', guard), \
+             patch.object(manual, 'execution_flags', return_value={'execution_enabled': True, 'independent_reviewer_enabled': True}), \
+             patch.object(auto, 'command', return_value=source) as command, \
+             patch.object(auto, 'api', side_effect=AssertionError('No legacy CI lookup')):
+            snap = manual.execution_snapshot(auto, self.binding, self.config, self.install, self.installed, readiness)
+            self.assertEqual(snap['release'], self.release)
+            self.release['asset']['id'] = 99
+            command.reset_mock(); readiness.reset_mock()
+            with self.assertRaisesRegex(auto.Refusal, 'release_changed'):
+                manual.execution_snapshot(auto, self.binding, self.config, self.install, self.installed, readiness)
+            command.assert_not_called(); readiness.assert_not_called()
 
     def test_ci_queue_does_not_consume_approval_and_unknown_dispatch_is_latched(self):
         identifier = self.preview(); self.call('approve', preview=identifier)

@@ -9,7 +9,7 @@ explicit limits. The historical design notes below are not live deployment proof
 See [optional OpenTelemetry execution tracing](factory-opentelemetry.md) for
 the disabled-by-default cross-process tracing slice and activation gates.
 
-PostHog export belongs to Driftward Hermes, not Hatchet workers. The command
+PostHog export belongs to Hermes, not Hatchet workers. The command
 adapter supplies a metadata-only envelope per invocation: bridge job UUID,
 sealed Factory attempt UUID/generation, and bounded Linear issue identifier.
 The host's `driftward-hermes` wrapper explicitly validates and forwards those
@@ -23,10 +23,10 @@ to their requesting generation. No prompts, tool arguments/results, bridge
 fences, or idempotency keys are exported. This metadata is diagnostic only and
 must not authorize execution, change lifecycle state, or replace ledger evidence.
 
-This path needs the matching host wrapper/plugin update from `driftward-host`.
-After both PRs merge, publish the host files and the compiled Factory gateway
-using the deployment runbook while execution is idle. No protobuf change,
-PostHog SDK, extra service, or PostHog credentials in Factory containers are needed.
+This path requires a matching executor wrapper, observer plugin, and compiled
+Factory gateway. Provision those separately from the application image while
+execution is idle, following the deployment runbook. Workers do not receive
+PostHog or provider credentials.
 
 ## Complete draft PR diff inspection
 
@@ -58,25 +58,20 @@ reported secret-check, commit and temp-file-content gates still apply. Evidence
 fetch failures report verification evidence unavailable; identity preflight
 failures retain their identity reason, without recording command output.
 
-Status: Draft
-Last reviewed: 2026-08-09
-Linear: ENG-35
+## Control-plane responsibilities
 
-## Decision
-
-Hatchet is a candidate durable workflow substrate for human-dispatched or
-read-only bridge-backed intake pilots. It is not approved as an unattended
-factory runtime and must not receive Driftward Hermes LLM provider credentials,
+Hatchet provides durable workflow orchestration for bridge-backed intake.
+Workflow availability does not authorize unattended execution. The control
+plane must not receive Hermes LLM provider credentials,
 browser credentials, GitHub credentials, Linear credentials, MCP credentials,
 or broad shell access.
 
-If adopted, Hatchet owns durable waits, retries, workflow state, rate and
-concurrency limits, worker registration, and workflow observability. Driftward
-Hermes remains the execution runtime that owns agent profiles, sessions,
-skills, provider authentication, MCP integrations, browser tooling, and
-company automation credentials.
+Hatchet owns durable waits, retries, workflow state, rate and concurrency limits,
+worker registration, and workflow observability. Hermes owns agent profiles,
+sessions, skills, provider authentication, MCP integrations, browser tooling,
+and application credentials.
 
-The safe initial shape is:
+The responsibility split is:
 
 ```text
 Hatchet control plane
@@ -93,18 +88,14 @@ Hermes bridge
   validates request class, operating mode, identity, budget, and idempotency
   maps Hatchet workflow/run IDs to Hermes profile/session/job IDs
 
-Driftward Hermes
+Hermes
   provider credentials, sessions, skills, MCP, browser tooling, execution
   existing runtime health and credential smoke tests remain authoritative
 ```
 
 ## Non-Goals
 
-- Do not restart the retired unattended factory implementation, verification,
-  review, approval, landing, sentinel, canary, state-audit, factory GitHub App,
-  or factory Linear App automation.
-- Do not recreate the retired Mission Control controller or comment-command
-  approval grammar.
+- Do not grant merge, deployment, or release authority through ordinary intake.
 - Do not run Hatchet workers inside the Hermes container.
 - Do not make Hatchet an arbitrary command runner against the host or Hermes
   filesystem.
@@ -116,46 +107,44 @@ Driftward Hermes
 Hatchet's self-hosting docs define a control plane composed of API server,
 engine, PostgreSQL database, optional RabbitMQ, and dashboard. Workers are
 separate processes that connect to that control plane and execute workflow
-steps. This distinction is useful for Driftward because the worker can be
-credential-minimal while Hermes keeps execution authority.
+steps. This lets the worker remain credential-minimal while Hermes keeps
+execution authority.
 
 Hatchet worker docs show `HATCHET_CLIENT_TOKEN` as the worker connection token.
-That token is not an LLM provider key. Driftward should store it separately,
-for example at `/etc/driftward/hatchet-worker.env` with mode `0600`, and should
-not mount it into Driftward Hermes unless a future Hermes-native Hatchet client
-is explicitly approved.
+That token is not an LLM provider key. Store it separately, for example at
+`/etc/driftward/hatchet-worker.env` with mode `0600`. Do not mount it into Hermes
+unless a future Hermes-native Hatchet client is explicitly approved.
 
 Hatchet's durable-task docs fit the desired control-plane role: durable tasks
 wait, spawn children, checkpoint, and replay from durable event history. They
 also carry an important constraint: durable-task code must be deterministic and
-must push external API/database side effects into child tasks. Driftward should
-treat every bridge call as a child side-effect task with its own idempotency
-key and evidence record.
+must push external API/database side effects into child tasks. Treat every bridge
+call as a child side-effect task with its own idempotency key and evidence record.
 
 Hatchet supports worker slots, concurrency limits, rate limits, and beta
 idempotency controls. These are useful admission controls, but they do not
-replace Driftward's required factory invariants: atomic claims, leases,
+replace Factory's required invariants: atomic claims, leases,
 fencing tokens, idempotent effects, exact-SHA evidence, structured approvals,
 transactional lifecycle/outbox records, monotonic reconciliation, budgets, and
 a tested kill switch.
 
 Hatchet webhooks are useful workflow trigger surfaces, but provider webhooks
 from Linear, GitHub, and similar systems should not target Hatchet directly.
-They must enter through Driftward event ingress first so provider signatures,
+They must enter through Factory event ingress first so provider signatures,
 timestamps, event keys, payload normalization, and eligibility gates are
-checked before Hatchet receives a Driftward-owned event.
+checked before Hatchet receives a Factory-owned event.
 
 Relevant sources:
 
-- Hatchet self-hosting: https://docs.hatchet.run/self-hosting
-- Hatchet workers: https://docs.hatchet.run/v1/workers
-- Hatchet webhooks: https://docs.hatchet.run/v1/webhooks
-- Hatchet durable tasks: https://docs.hatchet.run/v1/durable-tasks
-- Hatchet durable execution: https://docs.hatchet.run/v1/durable-execution
-- Hatchet support-agent cookbook: https://docs.hatchet.run/cookbooks/workflow-support-agent
-- Hatchet concurrency: https://docs.hatchet.run/v1/concurrency
-- Hatchet rate limits: https://docs.hatchet.run/v1/rate-limits
-- Hatchet idempotency: https://docs.hatchet.run/v1/idempotency
+- [Hatchet self-hosting](https://docs.hatchet.run/self-hosting)
+- [Hatchet workers](https://docs.hatchet.run/v1/workers)
+- [Hatchet webhooks](https://docs.hatchet.run/v1/webhooks)
+- [Hatchet durable tasks](https://docs.hatchet.run/v1/durable-tasks)
+- [Hatchet durable execution](https://docs.hatchet.run/v1/durable-execution)
+- [Hatchet support-agent cookbook](https://docs.hatchet.run/cookbooks/workflow-support-agent)
+- [Hatchet concurrency](https://docs.hatchet.run/v1/concurrency)
+- [Hatchet rate limits](https://docs.hatchet.run/v1/rate-limits)
+- [Hatchet idempotency](https://docs.hatchet.run/v1/idempotency)
 
 ## Credential Boundary
 
@@ -172,7 +161,7 @@ Forbidden in Hatchet worker environment:
 
 - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, model-provider OAuth/session material,
   or any other LLM provider secret
-- Driftward Hermes `.env` files or profile/session state
+- Hermes `.env` files or profile/session state
 - Root GitHub CLI token files, factory GitHub App credentials, or GitHub
   installation tokens
 - Linear user, Hermes app, or retired factory app credentials
@@ -260,12 +249,11 @@ Reserved to Hermes or humans:
 
 ## Binding Record
 
-Store the binding table in a Driftward-owned control store, not inside Hatchet
+Store the binding table in a Factory-owned control store, not inside Hatchet
 metadata alone. A SQLite database is acceptable for a local-only pilot if it
 uses transactions, WAL mode, backups, and a clear migration path. PostgreSQL is
-preferred if Hatchet is already self-hosted with PostgreSQL and Driftward wants
-shared transactional semantics. Linear and GitHub are projections, not binding
-stores.
+an option when the installation needs shared transactional semantics. Linear
+and GitHub are projections, not binding stores.
 
 Minimum binding schema:
 
@@ -315,10 +303,10 @@ key or fail with a conflict if the requested outcome differs.
 ## Placement
 
 Hatchet is deployed as part of the standalone Factory Compose application.
-`driftward-host` supplies Docker and protected secret files but does not own the
-Factory product runtime.
+The installation operator supplies Docker and protected secret files separately
+from the Factory application release.
 
-Current paths:
+Legacy managed-host defaults (portable releases use installation-local paths):
 
 ```text
 /docker/driftward/factory/              # Factory Compose runtime
@@ -385,24 +373,9 @@ Pilot smoke tests:
 - Hatchet dashboard, binding table, Linear issue, and any GitHub artifact agree
   on the same work item and artifact reference.
 
-## Decision Matrix
+## Further changes
 
-| Option | Strength | Risk | Recommendation |
-| --- | --- | --- | --- |
-| Hatchet plus Hermes bridge | Durable waits, retries, scheduling, dashboard, worker identity, queue controls | New service and token surface; can become a command runner if bridge is vague | Good candidate for read-only or human-dispatched pilot |
-| Hermes-native only | Fewer moving parts; keeps execution and credentials in one runtime | Rebuilds durability, retries, dashboard, and recovery logic inside Hermes | Prefer for simple cron/MCP/browser workflows |
-| Custom control store plus Hermes | Maximum control over claims, fencing, evidence, approvals | More Driftward-owned code and operational burden | Needed if factory invariants outgrow Hatchet primitives |
-| Retired Mission Control/factory stack | Prior context and scripts exist in archive | Was removed; risks recreating retired identities and comment-command triggers | Do not revive |
-
-## Open Questions
-
-- Is the first Hatchet deployment local-only Hatchet Lite, Docker Compose with
-  PostgreSQL/RabbitMQ, or Hatchet Cloud?
-- Should the binding store share Hatchet's PostgreSQL database or stay as a
-  separate Driftward-owned SQLite/PostgreSQL database?
-- Which additional Hermes bridge actions should graduate into the gRPC
-  contract after draft PR creation, PR observation, and retry inspection?
-- Which Hermes profile should own a read-only pilot, and how is its session ID
-  returned durably?
-- Should Hatchet workflow metadata store only binding IDs, or duplicate selected
-  non-secret facts for dashboard usability?
+Additional gateway actions, alternative storage backends, or new execution
+profiles need explicit contracts and focused validation. Preserve durable
+bindings, effect fencing, credential separation, and operator recovery when
+changing those boundaries.

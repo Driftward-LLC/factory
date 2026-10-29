@@ -21,7 +21,7 @@ allowlists; prompts, payloads, fence tokens, session contents and raw output are
 never returned.
 
 After verifying an exact journal binding, the same command performs a read-only
-lookup inside the fixed Driftward runtime through the bound wrapper. It examines
+lookup inside the configured Hermes runtime through the bound wrapper. It examines
 at most 4,096 process entries for three seconds, reads at most 128 KiB of initial
 environment per entry, and returns at most 64 candidates matching **both** exact
 Factory attempt and job IDs. Duplicate, malformed, oversized or partial metadata,
@@ -60,7 +60,7 @@ factory deploy baseline preview --run RUN_ID --json
 factory deploy baseline apply --preview DIGEST --reason "Reviewed full protected baseline and helper equality" --yes --json
 ```
 
-Review the entire protected diff, fingerprint, deployed current-main commit and
+Review the entire protected diff, fingerprint, deployed release commit (or current main for a legacy receipt) and
 installed helper identities. All six installed helpers must match that commit
 exactly, including source modes. Apply rechecks the snapshot under both deployment
 locks, retains the completed release receipt, and durably records root's reason
@@ -70,27 +70,32 @@ never repair its journals by hand.
 
 ## Audited deployment and execution
 
-Use `factory deploy status --json`, `factory deploy preview --run RUN_ID --json`,
-`factory deploy approve --preview DIGEST --reason TEXT --yes`, then
-`factory deploy apply --preview DIGEST --yes`. Install matching root-protected
-copies of `factory-auto-deploy`, `auto_deploy_artifact.py`,
-`factory_deploy_operator.py`, and the launcher before using these commands.
-Preview binds the installation/image, successful main CI attempt, exact format-2
-artifact, installed helper bytes, configuration, and protected source changes.
-Approval covers one release; it never adopts a new compatibility baseline.
-Only the checked-in immutable activation blob map and byte-matched installed
-helpers may cross the protected-change boundary; unknown changes stay refused.
+Use `factory deploy status --json`, then select a published version with
+`factory deploy preview --release VERSION --json`. Review the returned changes,
+then run `factory deploy approve --preview DIGEST --reason TEXT --yes` and
+`factory deploy apply --preview DIGEST --yes` on the installation host.
 
-Apply reruns one uniquely identified completed Factory Deploy workflow for the
-approved head. Its existing fixed SSH callback supplies ephemeral package
-credentials. Queueing does not consume approval or prove deployment. Under the
-installation/tenant locks, the callback checks the exact approved producer run,
-commit, artifact, and configuration before consuming approval. A duplicate or
-uncertain dispatch stays latched for review through `factory deploy status --json`.
-No workflow, SSH grammar, credential grants, or automatic compatibility policy
-changes are involved. The cold backup and actual rollout receipt remain retained.
+Install matching root-protected copies of `factory-auto-deploy`,
+`auto_deploy_artifact.py`, `factory_deploy_operator.py`, and the launcher before
+using the release selector. The host also needs a current GitHub CLI with
+`gh attestation verify` and its source/workflow restriction flags.
+Preview binds the installation/image, GitHub Release, annotated tag, durable
+format-3 metadata asset and signed attestation, successful release workflow,
+installed helpers, configuration and protected source changes. Approval covers
+one exact release; it never adopts a compatibility baseline.
 
-A stopped bridge executor stays stopped across automatic and audited deployment.
+Apply runs locally under installation/tenant locks, rechecks the snapshot,
+consumes approval, pulls the public image anonymously, takes a cold backup and
+runs the existing verified rollout. It does not dispatch a GitHub workflow or
+send credentials through SSH. A failed or interrupted apply stays latched for
+operator review. See [release deployment](../docs/automatic-deployment.md).
+
+The `--run RUN_ID` selector and older receipts are retained only for legacy
+recovery. Their private-image callback is independent of the public release
+path. The initial protected-policy transition requires reviewed host tooling
+and compatibility work; release publication does not bypass it.
+
+A stopped bridge executor stays stopped across audited deployment.
 After the audited rollout completes, enable the independent reviewer with
 `factory execution configure preview --json`, then the returned
 `factory execution configure apply --snapshot-digest DIGEST --reason REASON --yes --json`.
@@ -142,7 +147,7 @@ After approval, publish from the reviewed checkout:
 install -m 0755 deploy/factory-cli.py /usr/local/bin/factory
 factory version
 factory status
-factory attempts list ENG-162 --json
+factory attempts list ENG-123 --json
 factory help
 ```
 
