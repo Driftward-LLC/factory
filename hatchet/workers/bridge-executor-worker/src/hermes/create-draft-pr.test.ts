@@ -116,9 +116,10 @@ else if(args[0]==='create'){
  HostConfig:{PidMode:'',Privileged:false,ReadonlyRootfs:true,RestartPolicy:{Name:'no'},CapDrop:['ALL'],SecurityOpt:['no-new-privileges:true']},
  Mounts:[{Type:'volume',Name:process.env.DRIFTWARD_HERMES_NATIVE_SEED,Destination:'/run/factory-native-seed',RW:false},{Type:'volume',Name:'private',Destination:'/tmp',RW:true}],
  State:{Running:false,Status:'created',ExitCode:0}});process.stdout.write(id);
-}else if(args[0]==='inspect')emit([read()]);
+}else if(args[0]==='inspect'){const row=read();if(args.includes('{{json .Id}} {{json .Image}}'))process.stdout.write(JSON.stringify(row.Id)+' '+JSON.stringify(row.Image));else emit([row]);}
 else if(args[0]==='start'){const row=read();row.State={Running:true,Status:'running',ExitCode:0};save(row);}
 else if(args[0]==='kill'){const row=read();row.State={Running:false,Status:'exited',ExitCode:137};save(row);}
+else if(args[0]==='exec' && args.at(-1)==='observe')process.stdout.write('sha256:'+'c'.repeat(64));
 else if(args[0]==='exec' && args.at(-1)==='true'){}
 else if(args.includes('user.name')){fs.writeFileSync(path.join(root,'preflight'),'started');setTimeout(()=>process.stdout.write('factory-hermes[bot]'),mode==='pre-cancel'?120:0);}
 else if(args.includes('user.email'))process.stdout.write('12345+factory-hermes[bot]@users.noreply.github.com');
@@ -147,7 +148,8 @@ else if(args[0]==='attach'){
       if (mode === 'invalid-job') job.payload.repo = 'unapproved/repository';
       if (mode === 'enrolled') job.payload.independent_review_enrollment = { provider: 'openai-codex' };
       const journal = new InvocationJournal(path.join(directory, mode));
-      const pending = journal.execute(job, lease, (context) => runHermesCreateDraftPrViaCommand(job, '/never/invoke', 5000, 128 * 1024, undefined, context));
+      const pending = journal.prepare(job, lease, (context) => runHermesCreateDraftPrViaCommand(job, '/never/invoke', 5000, 128 * 1024, undefined, context))
+        .then(runtime => journal.start(job, lease, runtime));
       const rejected = mode !== 'success' ? assert.rejects(pending) : undefined;
       if (mode === 'pre-cancel') {
         const deadline = Date.now() + 2000;

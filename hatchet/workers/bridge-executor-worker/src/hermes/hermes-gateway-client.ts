@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { executionTraceparent, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { executionRuntimeBinding, sameExecutionRuntime, executionTraceparent, withExecutionSpan, type ExecutionRuntimeBinding } from '@driftward/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
 import { boundedNativeOwnerStop, invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
 import * as grpc from '@grpc/grpc-js';
@@ -162,6 +162,7 @@ type InspectGitHubHeadResponse = {
 
 type UnaryCallback<T> = (error: grpc.ServiceError | null, response: T) => void;
 type GatewayClient = grpc.Client & {
+  prepareInvocation(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<unknown>): grpc.ClientUnaryCall;
   readOnlyReview(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<{ receiptJson?: string }>): grpc.ClientUnaryCall;
   inspectInvocation(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<unknown>): grpc.ClientUnaryCall;
   cancelInvocation(request: Record<string, unknown>, metadata: grpc.Metadata, options: grpc.CallOptions, callback: UnaryCallback<unknown>): grpc.ClientUnaryCall;
@@ -224,9 +225,9 @@ export async function checkHermesIdentityViaGrpc(request: {
     forbiddenGitAuthorEmails: request.forbiddenGitAuthorEmails
   }, request.timeoutMs, 'hermes_grpc_identity_check_failed');
 
-  if (response.invocationProtocolVersion !== 1) {
+  if (response.invocationProtocolVersion !== 2) {
     throw new NonRetryableBridgeExecutionError('hermes_grpc_invocation_protocol_unsupported',
-      'Gateway must support durable invocation protocol v1 before execution',
+      'Gateway must support runtime-binding invocation protocol v2 before execution',
       { failureDomain: 'gateway', failureStage: 'preflight', retryable: false });
   }
 
@@ -247,7 +248,19 @@ function invocationRequest(job: BridgeJob) {
     repo: String(job.payload.repo || ''),
     branch: job.branch || '',
     jobJson: JSON.stringify(job),
+    executionRuntimeJson: job.execution_runtime ? JSON.stringify(job.execution_runtime.runtime) : '',
   };
+}
+
+export async function prepareHermesInvocation(job: BridgeJob, lease: InvocationLease): Promise<ExecutionRuntimeBinding> {
+  const configuredTimeout = Number.parseInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS || '', 10);
+  const timeoutMs = Number.isSafeInteger(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 20 * 60 * 1000;
+  const response = await callGateway<{ executionRuntimeJson?: string; executionLeaseJson?: string }>('prepareInvocation', {
+    ...invocationRequest(job), timeoutMs, executionLeaseJson: JSON.stringify(invocationLease(lease)),
+  }, 60_000, 'hermes_grpc_create_draft_pr_failed');
+  const returned = invocationLease(parseJsonValue(response.executionLeaseJson || '', 'execution_lease_json'));
+  if (!(['lease_id', 'owner', 'epoch', 'fence_token'] as const).every((key) => returned[key] === lease[key])) throw malformedGatewayResponse('Prepared invocation fence differs');
+  return executionRuntimeBinding(parseJsonValue(response.executionRuntimeJson || '', 'execution_runtime_json'));
 }
 
 export async function inspectHermesInvocation(job: BridgeJob, cancel = false, expectedLease?: InvocationLease): Promise<InvocationStatus> {
@@ -259,7 +272,7 @@ export async function inspectHermesInvocation(job: BridgeJob, cancel = false, ex
     return inspectHermesInvocation(job, true, snapshot.lease);
   }
   const response = await callGateway<{ state?: string; cancellationRequested?: boolean; cancellationAcknowledged?: boolean;
-    receipt?: DraftPullRequestResult; executionLeaseJson?: string; nativeStopJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
+    receipt?: DraftPullRequestResult; executionLeaseJson?: string; nativeStopJson?: string; executionRuntimeJson?: string }>(cancel ? 'cancelInvocation' : 'inspectInvocation',
     { ...invocationRequest(job), ...(expectedLease ? { executionLeaseJson: JSON.stringify(invocationLease(expectedLease)) } : {}) },
     15_000, 'hermes_grpc_invocation_inspection_failed');
   if (!['not_found', 'running', 'outcome_unknown', 'completed'].includes(response.state || '')
@@ -267,7 +280,14 @@ export async function inspectHermesInvocation(job: BridgeJob, cancel = false, ex
       || (response.cancellationAcknowledged && (response.state !== 'completed' || !response.cancellationRequested))) {
     throw malformedGatewayResponse('Invalid invocation status');
   }
-  return { state: response.state as InvocationStatus['state'], cancellationRequested: response.cancellationRequested,
+  const runtime = response.executionRuntimeJson ? executionRuntimeBinding(parseJsonValue(response.executionRuntimeJson, 'execution_runtime_json')) : undefined;
+  if (job.execution_runtime && (!sameExecutionRuntime(runtime, job.execution_runtime.runtime)
+      || !response.executionLeaseJson)) throw malformedGatewayResponse('Invocation runtime differs from Factory binding');
+  if (job.execution_runtime) {
+    const lease = invocationLease(parseJsonValue(response.executionLeaseJson!, 'execution_lease_json'));
+    if (lease.lease_id !== job.execution_runtime.lease_id || lease.epoch !== job.execution_runtime.epoch) throw malformedGatewayResponse('Invocation generation differs from Factory binding');
+  }
+  return { state: response.state as InvocationStatus['state'], cancellationRequested: response.cancellationRequested, runtime,
     cancellationAcknowledged: response.cancellationAcknowledged,
     ...(response.executionLeaseJson ? { lease: invocationLease(parseJsonValue(response.executionLeaseJson, 'execution_lease_json')) } : {}),
     ...(response.nativeStopJson ? { nativeStop: boundedNativeOwnerStop(parseJsonValue(response.nativeStopJson, 'native_stop_json')) } : {}),
@@ -279,6 +299,9 @@ export async function inspectHermesInvocation(job: BridgeJob, cancel = false, ex
 
 export async function runHermesCreateDraftPrViaGrpc(job: BridgeJob, timeoutMs: number, lease?: InvocationLease, onModelSelected?: ModelSelectionObserver): Promise<GatewayDraftPrResult> {
   const claim = invocationLease(lease);
+  if (!job.execution_runtime || job.execution_runtime.lease_id !== claim.lease_id || job.execution_runtime.epoch !== claim.epoch) {
+    throw malformedGatewayResponse('Execution requires a control-plane runtime binding');
+  }
   try {
     const response = await callGateway<DraftPullRequestResult>('createDraftPullRequest', {
       ...invocationRequest(job), timeoutMs, executionLeaseJson: JSON.stringify(claim),

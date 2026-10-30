@@ -116,7 +116,7 @@ EXECUTION_FAILURE_OPTIONAL_FIELDS = frozenset({
 })
 EXECUTION_COMMIT_FIELDS = frozenset({
     "commit_sha", "pr_url", "branch", "reason_code", "hermes_session_id",
-    "verification_context",
+    "verification_context", "execution_runtime",
     *EXECUTION_ANALYTICS_COMMON_FIELDS, "backend_outcome", "backend_elapsed_ms",
 })
 
@@ -1374,6 +1374,7 @@ def _factory_attempt_lifecycle_summary(conn: sqlite3.Connection, attempt: dict[s
         "attempt": attempt,
         "job": _job_lifecycle_summary(job),
         "execution_lease": _row_to_factory_execution_lease(lease_row) if lease_row else None,
+        "execution_runtime": job.get("execution_runtime") if job else None,
     }
 
 
@@ -1716,7 +1717,64 @@ def get_job(conn: sqlite3.Connection, ref: str) -> dict[str, Any]:
     ).fetchone()
     if not row:
         raise BridgeNotFound(f"job not found: {ref}")
-    return _row_to_job(row)
+    job = _row_to_job(row)
+    job["execution_runtime"] = get_execution_runtime(conn, job["job_id"])
+    return job
+
+
+def get_execution_runtime(conn: sqlite3.Connection, job_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT e.details_json FROM factory_attempt_events e "
+        "JOIN factory_attempts a ON a.attempt_id=e.attempt_id "
+        "JOIN factory_execution_leases l ON l.attempt_id=a.attempt_id "
+        "WHERE a.job_id=? AND e.event_type='execution_runtime_bound' "
+        "AND json_extract(e.details_json,'$.lease_id')=l.lease_id "
+        "AND json_extract(e.details_json,'$.epoch')=l.epoch", (job_id,),
+    ).fetchone()
+    return json.loads(row["details_json"]) if row else None
+
+
+def _execution_runtime(value: Any) -> dict[str, Any]:
+    if (not isinstance(value, dict)
+            or set(value) != {"schema", "backend", "kind", "instance_id", "image_digest", "incarnation"}
+            or type(value["schema"]) is not int or value["schema"] != 1 or value["kind"] != "docker"
+            or not isinstance(value["backend"], str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value["backend"])
+            or any(not isinstance(value[key], str) or not re.fullmatch(pattern, value[key]) for key, pattern in (
+                ("instance_id", r"[a-f0-9]{64}"), ("image_digest", r"sha256:[a-f0-9]{64}"), ("incarnation", r"sha256:[a-f0-9]{64}")))):
+        raise BridgeValidationError("invalid execution runtime binding")
+    return dict(value)
+
+
+def _validate_runtime_receipt(conn: sqlite3.Connection, job_id: str, supplied: Any) -> None:
+    binding = get_execution_runtime(conn, job_id)
+    if binding:
+        if _execution_runtime(supplied) != binding["runtime"]:
+            raise BridgeValidationError("receipt runtime differs from the bound execution")
+    elif supplied is not None:
+        raise BridgeValidationError("receipt cannot establish a runtime binding")
+
+
+def bind_factory_execution_runtime(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any], runtime: Any) -> bool:
+    """Immutable lease-to-runtime link in the existing durable attempt journal."""
+    runtime = _execution_runtime(runtime)
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _current_execution_lease(conn, job_id, claim, require_authorized=True)
+        if not row or _issue_control_held(conn, _job_work_item(get_job(conn, job_id))):
+            raise BridgeConflict("runtime binding requires the live authorized execution fence")
+        details = {"lease_id": row["lease_id"], "epoch": row["epoch"], "runtime": runtime}
+        previous = get_execution_runtime(conn, job_id)
+        if previous:
+            if previous != details:
+                raise BridgeConflict("execution runtime is already bound")
+            return False
+        if conn.execute("SELECT 1 FROM factory_attempt_events WHERE attempt_id=? AND event_type='execution_backend_invoked'", (row["attempt_id"],)).fetchone():
+            raise BridgeConflict("cannot bind a runtime after invocation")
+        route = conn.execute("SELECT details_json FROM factory_attempt_events WHERE attempt_id=? AND event_type='execution_route_selected'", (row["attempt_id"],)).fetchone()
+        if route and json.loads(route[0])["intended_backend"] != runtime["backend"]:
+            raise BridgeConflict("runtime backend differs from the execution route")
+        _append_factory_attempt_event(conn, row["attempt_id"], "execution_runtime_bound", details)
+        return True
 
 
 def _require_verification_eligible(conn: sqlite3.Connection, job: dict[str, Any]) -> dict[str, Any] | None:
@@ -2463,6 +2521,7 @@ def _recover_effect_commit_from_inspection(
         details = _execution_analytics_details(
             "execution_effect_commit_failed", json.loads(event["details_json"])
         )
+        _validate_runtime_receipt(conn, attempt_row["job_id"], details.get("execution_runtime"))
     except (TypeError, ValueError, json.JSONDecodeError, BridgeValidationError):
         return False
     job = get_job(conn, attempt_row["job_id"])
@@ -3795,6 +3854,8 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
         raise BridgeValidationError("factory execution analytics event is invalid")
     required = common | additions[event_type]
     allowed = required | (EXECUTION_FAILURE_OPTIONAL_FIELDS if event_type in EXECUTION_FAILURE_EVENT_TYPES else set())
+    if event_type == "execution_effect_commit_failed":
+        allowed |= {"execution_runtime"}
     if not required <= set(details) or not set(details) <= allowed:
         raise BridgeValidationError("factory execution analytics event is invalid")
     if details.get("analytics_schema_version") != 1:
@@ -3849,6 +3910,8 @@ def _execution_analytics_details(event_type: str, details: Any) -> dict[str, Any
             raise BridgeValidationError("factory execution analytics effect_outcome is invalid")
         _validate_execution_failure_boundary_fields(details)
     if event_type == "execution_effect_commit_failed":
+        if "execution_runtime" in details:
+            _execution_runtime(details["execution_runtime"])
         if details.get("failure_domain") != "factory" or details.get("failure_stage") != "effect_commit" or details.get("effect_outcome") != "observed":
             raise BridgeValidationError("factory execution effect commit classification is invalid")
         if not isinstance(details.get("observed_pr_url"), str) or not PR_URL_RE.fullmatch(details["observed_pr_url"]):
@@ -4141,6 +4204,7 @@ def _commit_observed_execution_receipt(
     lease: sqlite3.Row,
     details: dict[str, Any],
 ) -> bool:
+    _validate_runtime_receipt(conn, job_id, details.get("execution_runtime"))
     commit_sha = details.get("observed_commit_sha")
     job = get_job(conn, job_id)
     attempt = get_factory_attempt(conn, lease["attempt_id"])
@@ -4350,6 +4414,8 @@ def commit_factory_execution(conn: sqlite3.Connection, job_id: str, claim: dict[
             raise BridgeConflict("factory execution attempt was superseded")
         job = get_job(conn, job_id)
         context = None
+        _validate_runtime_receipt(conn, job_id, details.get("execution_runtime"))
+        details = {key: value for key, value in details.items() if key != "execution_runtime"}
         if "verification_context" in details:
             context = _bounded_verification_context_for_job(job, details["verification_context"])
             if context is None:

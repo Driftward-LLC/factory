@@ -6,6 +6,7 @@ stdout contains only bounded protocol metadata and filtered result candidates.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -218,6 +219,11 @@ def bounded_candidate(text, policy):
             "commit_sha": commit, "validation": validation}
 
 
+def runtime_incarnation():
+    return "sha256:" + hashlib.sha256((Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        + ":" + Path("/proc/1/stat").read_text().rsplit(")", 1)[1].split()[19]).encode()).hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--experimental-local-terminal", action="store_true", required=True)
@@ -228,9 +234,11 @@ def main():
     launch_request = frame(sys.stdin)
     expected = {"binding", "backend", "enabled_tools"}
     if not args.fixture:
-        expected |= {"model", "provider", "prompt", "receipt_policy"}
+        expected |= {"model", "provider", "prompt", "receipt_policy", "runtime_incarnation"}
     if set(launch_request) != expected:
         raise Refused("invalid launch fields")
+    if not args.fixture and launch_request["runtime_incarnation"] != runtime_incarnation():
+        raise Refused("execution runtime incarnation changed")
     # Only an explicitly selected profile home is permitted, never root fallback
     # by an omitted environment variable. Tests supply a newly created temp home.
     if not os.environ.get("HERMES_HOME"):

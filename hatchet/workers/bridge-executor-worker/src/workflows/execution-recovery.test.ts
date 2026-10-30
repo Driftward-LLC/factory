@@ -32,3 +32,25 @@ test('receipt recovery commits the original fence and preserves manual takeover'
   assert.equal(await recoverExecutionReceipt(bridge, job, true, async () => { throw new Error('unavailable'); }), null);
   assert.equal(commits, 1);
 });
+
+test('bound recovery rejects another runtime even when the artifact and lease match', async () => {
+  const runtime = { schema: 1 as const, backend: 'hermes', kind: 'docker' as const, instance_id: 'a'.repeat(64),
+    image_digest: 'sha256:' + 'b'.repeat(64), incarnation: 'sha256:' + 'c'.repeat(64) };
+  const bound = { ...job, execution_runtime: { lease_id: lease.lease_id, epoch: lease.epoch, runtime } };
+  let commits = 0;
+  const bridge = {
+    recordExecutionReceiptObservation: async () => {}, getJob: async () => bound,
+    commitFactoryExecution: async (_id: string, _lease: typeof lease, details: any) => {
+      assert.deepEqual(details.execution_runtime, runtime); commits++;
+      return { job: { ...bound, state: 'effect_committed' } as BridgeJob };
+    },
+  };
+  for (const value of [undefined, { ...runtime, instance_id: 'd'.repeat(64) }, { ...runtime, incarnation: 'sha256:' + 'd'.repeat(64) }]) {
+    assert.equal(await recoverExecutionReceipt(bridge, bound, false, async () => ({ state: 'completed', receipt, lease,
+      runtime: value, cancellationRequested: false, cancellationAcknowledged: false })), null);
+  }
+  assert.equal(commits, 0);
+  await recoverExecutionReceipt(bridge, bound, false, async () => ({ state: 'completed', receipt, lease,
+    runtime, cancellationRequested: false, cancellationAcknowledged: false }));
+  assert.equal(commits, 1);
+});

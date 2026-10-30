@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import { executionRuntimeBinding, sameExecutionRuntime, type ExecutionRuntimeBinding, type BridgeJob } from '@driftward/hatchet-worker-shared';
 import { boundedHermesDraftPrReceipt, type BoundedHermesDraftPrReceipt } from './bounded-evidence';
 import { NonRetryableBridgeExecutionError } from './errors';
 
@@ -44,6 +44,7 @@ export function boundedNativeContainer(value: unknown, binding: NativeOwnerBindi
 }
 export type InvocationExecutionContext = {
   binding: NativeOwnerBinding;
+  bindRuntime?: (runtime: ExecutionRuntimeBinding) => Promise<void>;
   registerCancel: (cancel: () => Promise<NativeOwnerStop>) => void;
   persistStop: (stop: NativeOwnerStop) => void;
   persistContainer?: (record: NativeContainerRecord) => void;
@@ -70,6 +71,7 @@ export type InvocationStatus = {
   receipt?: BoundedHermesDraftPrReceipt;
   lease?: InvocationLease;
   nativeStop?: NativeOwnerStop;
+  runtime?: ExecutionRuntimeBinding;
 };
 
 export function invocationLease(value: unknown): InvocationLease {
@@ -95,6 +97,7 @@ function canonical(value: unknown): string {
 /** Executor-private receipts only. Prompts, output and session material are never stored. */
 export class InvocationJournal {
   private active = new Map<string, Promise<BoundedHermesDraftPrReceipt>>();
+  private prepared = new Map<string, { start: () => void; result: Promise<BoundedHermesDraftPrReceipt> }>();
   private nativeOwners = new Map<string, { binding: NativeOwnerBinding; cancel?: () => Promise<NativeOwnerStop> }>();
   constructor(private readonly directory: string) {
     if (!path.isAbsolute(directory)) throw invalid('Invocation journal requires an absolute directory');
@@ -146,6 +149,8 @@ export class InvocationJournal {
     if (version !== 1 && version !== 2) throw invalid('Unsupported invocation fingerprint version');
     if (intent.fingerprint !== this.fingerprint(job, version)) throw invalid('Invocation intent differs from the reserved job');
     const lease = invocationLease(intent.lease);
+    const runtimePath = path.join(directory, 'runtime.json');
+    const runtime = existsSync(runtimePath) ? executionRuntimeBinding(JSON.parse(readFileSync(runtimePath, 'utf8'))) : undefined;
     const cancellation = path.join(directory, 'cancel');
     if (cancel && !existsSync(cancellation)) this.persist(cancellation, { requested_at: new Date().toISOString() });
     const cancellationRequested = existsSync(cancellation);
@@ -156,9 +161,58 @@ export class InvocationJournal {
     if (existsSync(resultPath)) {
       const receipt = boundedHermesDraftPrReceipt(job, JSON.parse(readFileSync(resultPath, 'utf8')));
       if (!receipt) throw invalid('Invocation receipt does not match its job');
-      return { state: 'completed', cancellationRequested, cancellationAcknowledged: cancellationRequested, receipt, lease, nativeStop };
+      return { state: 'completed', cancellationRequested, cancellationAcknowledged: cancellationRequested, receipt, lease, nativeStop, runtime };
     }
-    return { state: this.active.has(job.job_id) ? 'running' : 'outcome_unknown', cancellationRequested, cancellationAcknowledged: false, lease, nativeStop };
+    return { state: this.active.has(job.job_id) ? 'running' : 'outcome_unknown', cancellationRequested, cancellationAcknowledged: false, lease, nativeStop, runtime };
+  }
+
+  /** Reserve and pause at the runtime boundary. A lost process can never resume preparation. */
+  async prepare(job: BridgeJob, claim: InvocationLease, run: (context: InvocationExecutionContext) => Promise<unknown>, waitMs = 60_000): Promise<ExecutionRuntimeBinding> {
+    const lease = invocationLease(claim);
+    const current = this.status(job);
+    if (current.state !== 'not_found') {
+      if (canonical(current.lease) !== canonical(lease) || !current.runtime) throw invalid('Invocation cannot be prepared again');
+      return current.runtime;
+    }
+    let ready!: (runtime: ExecutionRuntimeBinding) => void;
+    let failed!: (error: unknown) => void;
+    const reservation = new Promise<ExecutionRuntimeBinding>((resolve, reject) => { ready = resolve; failed = reject; });
+    let start!: () => void;
+    let abort!: (error: unknown) => void;
+    const permission = new Promise<void>((resolve, reject) => { start = resolve; abort = reject; });
+    // Preparation can fail before it reaches the permission wait.
+    void permission.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    let bound = false;
+    const result = this.execute(job, lease, async (context) => {
+      const value = await run({ ...context, bindRuntime: async (value) => {
+        if (bound) throw invalid('Invocation runtime already reserved');
+        const runtime = executionRuntimeBinding(value);
+        this.persist(path.join(this.location(job), 'runtime.json'), runtime);
+        bound = true;
+        timer = setTimeout(() => abort(invalid('Runtime binding was not acknowledged in time')), waitMs);
+        ready(runtime);
+        await permission;
+        if (this.status(job).cancellationRequested) throw invalid('Prepared invocation was canceled');
+      } });
+      if (!bound) throw invalid('Executor did not bind its runtime');
+      return value;
+    });
+    this.prepared.set(job.job_id, { start, result });
+    void result.catch(failed).finally(() => { if (timer) clearTimeout(timer); this.prepared.delete(job.job_id); });
+    return reservation;
+  }
+
+  async start(job: BridgeJob, claim: InvocationLease, runtime: ExecutionRuntimeBinding): Promise<BoundedHermesDraftPrReceipt> {
+    const current = this.status(job);
+    if (canonical(current.lease) !== canonical(invocationLease(claim)) || !sameExecutionRuntime(current.runtime, runtime)) {
+      throw invalid('Execution runtime or fence differs from the reservation');
+    }
+    if (current.state === 'completed') return current.receipt!;
+    const prepared = this.prepared.get(job.job_id);
+    if (!prepared || current.cancellationRequested) throw invalid('Prepared invocation unavailable; inspect its outcome');
+    prepared.start();
+    return prepared.result;
   }
 
   async cancel(job: BridgeJob, claim: InvocationLease): Promise<InvocationStatus> {

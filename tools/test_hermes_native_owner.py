@@ -3,6 +3,7 @@
 Native check: FACTORY_TEST_HERMES_SOURCE=<checkout> and
 FACTORY_TEST_HERMES_PYTHON=<isolated python> python3 -m unittest ...
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -31,6 +32,11 @@ def request():
     return {"invocation_id": f"{uuid.uuid4()}:{uuid.uuid4()}:1", "epoch": 1, "fingerprint": "a" * 64}
 
 
+def runtime_incarnation():
+    return "sha256:" + hashlib.sha256((Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        + ":" + Path("/proc/1/stat").read_text().rsplit(")", 1)[1].split()[19]).encode()).hexdigest()
+
+
 def native():
     return SimpleNamespace(kill_foreground=Mock(return_value=0),
                            registry=SimpleNamespace(running_owned_by=Mock(return_value=[]), kill_process=Mock()))
@@ -42,6 +48,20 @@ class ProfileAdmissionTests(unittest.TestCase):
         self.launcher = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {'owner': module}):
             spec.loader.exec_module(self.launcher)
+
+    def test_changed_container_incarnation_refuses_before_profile_or_agent_admission(self):
+        self.assertEqual(self.launcher.runtime_incarnation(), runtime_incarnation())
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            launch = {"binding": request(), "backend": "local", "enabled_tools": ["terminal", "process_manage"],
+                      "model": "unused", "provider": "unused", "prompt": "must not execute", "receipt_policy": {},
+                      "runtime_incarnation": "sha256:" + "0" * 64}
+            result = subprocess.run([sys.executable, "-u", str(ADAPTER / "main.py"), "--experimental-local-terminal",
+                                     "--controlled", "--journal", str(home / "journal")], input=json.dumps(launch) + "\n",
+                                    text=True, capture_output=True, timeout=5, env={"PATH": "/usr/bin:/bin", "HERMES_HOME": str(home)})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout), {"event": "refused", "reason": "invalid_launch_or_runtime"})
+            self.assertEqual(list(home.iterdir()), [])
 
     def test_claim_survives_exit_and_refuses_another_job_without_changing_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -387,7 +407,8 @@ class LauncherOutputTests(unittest.TestCase):
             bound = request()
             launch = {"binding": bound, "backend": "local", "enabled_tools": ["terminal", "process_manage"],
                       "model": "disposable", "provider": "disposable", "prompt": "SENSITIVE_PROMPT_ERROR",
-                      "receipt_policy": {"repo": "example/project", "branch": "codex/disposable"}}
+                      "receipt_policy": {"repo": "example/project", "branch": "codex/disposable"},
+                      "runtime_incarnation": runtime_incarnation()}
             result = subprocess.run([sys.executable, "-u", str(ADAPTER / "main.py"),
                                      "--experimental-local-terminal", "--journal", str(root / "journal")],
                                     input=json.dumps(launch) + "\n" + json.dumps({"cancel": bound}) + "\n",
@@ -470,7 +491,8 @@ class RealNativeCleanupTests(unittest.TestCase):
             try:
                 launch = {"binding": bound, "backend": "local", "enabled_tools": ["terminal", "process_manage"],
                           "model": "local-test", "provider": "custom", "prompt": "Run the disposable terminal check and return its receipt.",
-                          "receipt_policy": {"repo": "example/project", "branch": "codex/disposable"}}
+                          "receipt_policy": {"repo": "example/project", "branch": "codex/disposable"},
+                      "runtime_incarnation": runtime_incarnation()}
                 process.stdin.write(json.dumps(launch) + "\n")
                 process.stdin.flush()
                 events = []

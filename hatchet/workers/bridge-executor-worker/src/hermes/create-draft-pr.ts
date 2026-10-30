@@ -18,6 +18,7 @@ import { boundedModelSelection, HERMES_MODEL_SELECTION_QUERY, reportModelSelecti
 import type { InvocationExecutionContext } from './invocation-journal';
 import { runNativeOwner } from './native-owner';
 import { execNativeRead, nativeContainerScope, withNativeContainer } from './native-container';
+import { pinnedRuntime, pinnedRuntimeArgs, resolveComposeRuntime, withPinnedRuntime } from './execution-runtime';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
@@ -562,23 +563,20 @@ export function validateRealCreateDraftPrJob(job: BridgeJob): void {
 
 export async function preflightHermesCreateDraftPr(job: BridgeJob): Promise<void> {
   validateRealCreateDraftPrJob(job);
-  if (hermesGrpcGatewayEnabled()) {
-    await assertHermesIdentity(requiredPayloadString(job, 'repo'));
-  }
+  if (!hermesGrpcGatewayEnabled()) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Effect execution requires the runtime-binding gateway protocol');
+  await assertHermesIdentity(requiredPayloadString(job, 'repo'));
 }
 
 export async function runHermesCreateDraftPr(job: BridgeJob, lease?: FactoryExecutionLease, onModelSelected?: ModelSelectionObserver): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
-  const command = process.env.DRIFTWARD_HERMES_COMMAND || 'driftward-hermes';
   const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000);
-  const maxBuffer = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024);
 
   if (hermesGrpcGatewayEnabled()) {
     await assertHermesIdentity(requiredPayloadString(job, 'repo'));
     return runHermesCreateDraftPrViaGrpc(job, timeout, lease, onModelSelected);
   }
 
-  return runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer, onModelSelected);
+  throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Effect execution requires the runtime-binding gateway protocol');
 }
 
 /** Metadata only: never derive analytics identifiers from issue prose or prompts. */
@@ -614,6 +612,11 @@ export async function runHermesCreateDraftPrViaCommand(
     if (!invocation) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native execution requires its durable invocation');
     return withNativeContainer(invocation, () => runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer,
       onModelSelected, nativeContainerScope()!.context), hermesObservabilityEnvironment(job));
+  }
+  if (invocation?.bindRuntime && !pinnedRuntime()) {
+    const args = hermesRuntimeDockerArgs([]);
+    const id = await resolveComposeRuntime(args.slice(0, args.indexOf('exec')));
+    return withPinnedRuntime(invocation, id, () => runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer, onModelSelected, invocation));
   }
   // The gateway must repeat the typed check when the credential-bearing process
   // actually starts; a queued worker check can precede invocation by minutes.
@@ -655,12 +658,18 @@ export async function runHermesCreateDraftPrViaCommand(
       const container = nativeContainerScope();
       if (!container) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native container reservation missing');
       const stdout = await runNativeOwner(invocation, {
+        runtime_incarnation: pinnedRuntime()!.incarnation,
         backend: 'local', enabled_tools: ['terminal', 'process_manage'], model: selection.selected_model,
         provider: selection.selected_provider, prompt,
         receipt_policy: { repo: job.payload.repo, branch: job.branch, verification_policy: job.payload.verification_policy },
       }, { arguments: ['attach', '--sig-proxy=false', container.id],
         environment: process.env, timeout, maxBuffer });
       result = { stdout, stderr: '' };
+    } else if (pinnedRuntime()) {
+      result = await execFileAsync('docker', pinnedRuntimeArgs(['env',
+        ...Object.entries(hermesObservabilityEnvironment(job)).map(([key, value]) => `${key}=${value}`),
+        'hermes', ...hermesProfileArguments(), ...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], hermesRuntimeUser()),
+      { timeout, maxBuffer, env: process.env });
     } else result = await execFileAsync(command, [...hermesProfileArguments(), ...modelArgs, '--accept-hooks', '--pass-session-id', '-z', prompt], {
       timeout,
       maxBuffer,
@@ -1286,6 +1295,9 @@ export function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
   }
   const root = process.env.DRIFTWARD_HERMES_ROOT || '/docker/driftward/hermes';
   const profile = hermesProfileArguments()[1];
+  if (pinnedRuntime()) return pinnedRuntimeArgs([
+    ...(profile ? ['env', `HERMES_HOME=/opt/data/profiles/${profile}`] : []), ...commandArgs,
+  ], hermesRuntimeUser());
   return [
     'compose',
     '--project-directory',

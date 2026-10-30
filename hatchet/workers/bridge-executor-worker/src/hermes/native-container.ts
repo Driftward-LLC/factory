@@ -6,6 +6,7 @@ import path from 'node:path';
 import { InvocationJournal, type InvocationExecutionContext, type NativeContainerRecord, type NativeOwnerStop } from './invocation-journal';
 import { nativeOwnerBootstrap, nativeOwnerJournal } from './native-owner';
 import { NonRetryableBridgeExecutionError } from './errors';
+import { withPinnedRuntime, pinnedRuntimeArgs } from './execution-runtime';
 
 const scope = new AsyncLocalStorage<{ id: string; context: InvocationExecutionContext }>();
 const TMPFS = '/opt/data:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=10000,gid=10000';
@@ -98,7 +99,7 @@ function verify(row: any, record: Pick<NativeContainerRecord, 'containerId' | 'i
 /** Typed read operations get the same executor role, never the shared runtime. */
 export async function execNativeRead(args: string[], timeout: number, maxBuffer: number) {
   const current = scope.getStore();
-  if (current) return docker(['exec', current.id, ...command(args, true)], timeout, maxBuffer);
+  if (current) return docker(pinnedRuntimeArgs(command(args, true), '10000'), timeout, maxBuffer);
   const config = await nativeContainerConfiguration();
   const journal = new InvocationJournal(process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY || '/var/lib/driftward-hermes-factory/invocations');
   const { record, persist } = journal.reserveReadContainer(config.image);
@@ -186,7 +187,7 @@ export async function withNativeContainer<T>(context: InvocationExecutionContext
       catch { await new Promise((resolve) => setTimeout(resolve, 100)); }
     }
     if (!ready || cancelled) throw refused();
-    return await scope.run({ id: created, context: adapted }, run);
+    return await withPinnedRuntime(context, created, () => scope.run({ id: created, context: adapted }, run));
   } finally {
     // Retain the stopped container and its private volume. Exit is containment
     // evidence only; the invocation/result journal remains the work authority.

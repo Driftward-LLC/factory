@@ -5,6 +5,7 @@ const cp=require('node:child_process');
 const crypto=require('node:crypto');
 const root=require('node:path').resolve(__dirname,'..');
 const {withNativeContainer,execNativeRead,nativeContainerScope}=require(root+'/hatchet/workers/bridge-executor-worker/dist/hermes/native-container');
+const {pinnedRuntime}=require(root+'/hatchet/workers/bridge-executor-worker/dist/hermes/execution-runtime');
 const {runNativeOwner}=require(root+'/hatchet/workers/bridge-executor-worker/dist/hermes/native-owner');
 const image='sha256:6b0171bdfd5a0c03489ced7d0c527c6c305cb3660ac83ed6ac468805289ad9c3';
 const seed='factory-native-executor-seed-'+crypto.randomUUID().replaceAll('-','');
@@ -14,7 +15,7 @@ function docker(args){return cp.execFileSync('docker',args,{encoding:'utf8',time
 const records=[];
 const binding={invocation_id:crypto.randomUUID()+':'+crypto.randomUUID()+':1',epoch:1,fingerprint:'a'.repeat(64)};
 let cancel;
-const context={binding,persistContainer:r=>{records.push({...r}); if(r.containerId&&!created.includes(r.containerId))created.push(r.containerId);fs.writeFileSync(dir+'/container.json',JSON.stringify(r),{mode:0o600});},persistStop:r=>fs.writeFileSync(dir+'/stop.json',JSON.stringify(r),{mode:0o600}),registerCancel:c=>{cancel=c;}};
+const context={binding,bindRuntime:async runtime=>{fs.writeFileSync(dir+'/runtime-'+runtime.instance_id+'.json',JSON.stringify(runtime),{mode:0o600});},persistContainer:r=>{records.push({...r}); if(r.containerId&&!created.includes(r.containerId))created.push(r.containerId);fs.writeFileSync(dir+'/container.json',JSON.stringify(r),{mode:0o600});},persistStop:r=>fs.writeFileSync(dir+'/stop.json',JSON.stringify(r),{mode:0o600}),registerCancel:c=>{cancel=c;}};
 (async()=>{
  let target,control;
  try{
@@ -29,7 +30,7 @@ const context={binding,persistContainer:r=>{records.push({...r}); if(r.container
    assert.equal((await execNativeRead(['python3','-c','import os; print(os.environ["HERMES_HOME"])'],5000,4096)).stdout.trim(),'/tmp/factory-native-profile');
    // Cancel before registration, so the real owner cannot admit provider/tool work.
    const cancelledContext={...own.context,registerCancel:c=>{own.context.registerCancel(c);void c();}};
-   await assert.rejects(runNativeOwner(cancelledContext,{backend:'local',enabled_tools:['terminal','process_manage'],model:'unused',provider:'openai',prompt:'not executed',receipt_policy:{}},{arguments:['attach','--sig-proxy=false',own.id],environment:process.env,timeout:10000,maxBuffer:65536,spawnProcess:(cmd,args,options)=>{const child=cp.spawn(cmd,args,options); child.stdout.on('data',b=>fs.appendFileSync(dir+'/stdout',b)); child.stderr.on('data',b=>fs.appendFileSync(dir+'/stderr',b)); return child;}}));
+   await assert.rejects(runNativeOwner(cancelledContext,{runtime_incarnation:pinnedRuntime().incarnation,backend:'local',enabled_tools:['terminal','process_manage'],model:'unused',provider:'openai',prompt:'not executed',receipt_policy:{}},{arguments:['attach','--sig-proxy=false',own.id],environment:process.env,timeout:10000,maxBuffer:65536,spawnProcess:(cmd,args,options)=>{const child=cp.spawn(cmd,args,options); child.stdout.on('data',b=>fs.appendFileSync(dir+'/stdout',b)); child.stderr.on('data',b=>fs.appendFileSync(dir+'/stderr',b)); return child;}}));
   });
   assert.equal(records.at(-1).state,'stopped');
   assert.equal(records.at(-1).exitCode,0);

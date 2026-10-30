@@ -22,7 +22,7 @@ else if(args[0]==='create'){
  HostConfig:{PidMode:'',Init:false,Privileged:false,ReadonlyRootfs:true,RestartPolicy:{Name:'no'},CapDrop:['ALL'],SecurityOpt:['no-new-privileges:true']},
  Mounts:[{Type:'volume',Name:process.env.DRIFTWARD_HERMES_NATIVE_SEED,Destination:'/run/factory-native-seed',RW:false},...(persistent?[{Type:'volume',Name:'private',Destination:'/tmp',RW:true}]:[])],State:{Running:false,Status:'created',ExitCode:0}});
  process.stdout.write(mode==='lost-create'?'unavailable':id);
-}else if(args[0]==='inspect'){const row=read();if(mode==='mismatch')row.Image='sha256:'+'b'.repeat(64);emit([row]);}
+}else if(args[0]==='inspect'){const row=read();if(mode==='mismatch')row.Image='sha256:'+'b'.repeat(64);if(args.includes('{{json .Id}} {{json .Image}}'))process.stdout.write(JSON.stringify(row.Id)+' '+JSON.stringify(row.Image));else emit([row]);}
 else if(args[0]==='start'){
  const row=read();row.State={Running:true,Status:'running',ExitCode:0};save(row);
  if(args.includes('--attach')){row.State={Running:false,Status:'exited',ExitCode:0};save(row);process.stdout.write('42');}
@@ -31,7 +31,7 @@ else if(args[0]==='start'){
 }else if(args[0]==='kill'){
  const row=read();if(!row.State.Running)process.exit(1);
  row.State={Running:false,Status:'exited',ExitCode:137};save(row);
-}else if(args[0]==='exec'){if(args.at(-1)!=='true')process.stdout.write('42');}
+}else if(args[0]==='exec'){if(args.at(-1)==='observe')process.stdout.write('sha256:'+'d'.repeat(64));else if(args.at(-1)!=='true')process.stdout.write('42');}
 else if(args[0]==='rm'){fs.unlinkSync(file);}
 else process.exit(1);
 `;
@@ -53,7 +53,7 @@ test('container reservation survives startup ambiguity, journal faults and cance
       const records: NativeContainerRecord[] = [];
       let cancel!: () => Promise<NativeOwnerStop>;
       let entered = false;
-      const context: InvocationExecutionContext = { binding, persistStop: () => undefined,
+      const context: InvocationExecutionContext = { binding, bindRuntime: async (runtime) => { assert.equal(runtime.instance_id, 'c'.repeat(64)); }, persistStop: () => undefined,
         persistContainer: (record) => {
           if ((mode === 'reserved-write' && record.state === 'reserved') || (mode === 'created-write' && record.state === 'created')) throw Error('disk unavailable');
           records.push(JSON.parse(JSON.stringify(record)));

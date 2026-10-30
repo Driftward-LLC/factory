@@ -9,6 +9,7 @@ export type JsonObject = {
 };
 
 export type BridgeJob = JsonObject & {
+  execution_runtime?: { lease_id: string; epoch: number; runtime: import('./execution-runtime').ExecutionRuntimeBinding } | null;
   job_id: string;
   idempotency_key: string;
   state: BridgeState;

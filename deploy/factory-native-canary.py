@@ -14,10 +14,10 @@ ENV = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', '
 TMPFS = {'/tmp': 'rw,nosuid,nodev,size=128m,mode=1777',
          '/opt/data': 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=10000,gid=10000'}
 ASSET_SHA256 = {
-    'main.py': 'bf1747d1aa597f5404901b428eb8dfb7f2e4a5849e89f342a8d8478f98a28a58',
+    'main.py': '3cebd326655eeedf6d8649e6b9af228cdc56c64ffbf6cfe114f5ffccc0a418be',
     'owner.py': 'b5220ca78d658c0ca5c0ede84535cc87184149e5f6541dd5958ab99216ee84ab',
     'transport.py': 'b1c4879bd9da207067e77d19e41b403c92b31cb661230ccd9d3c14f2764f10e9',
-    'driver.py': '72fd74cbb125dd25c045af1627caa59e4fa2324941344efbe1ab9c665bdae454',
+    'driver.py': 'f6be1307e725ee64dd80c6c87045432a5caf04f3db249fa23c2b8955539ed526',
     'observer.py': '89c0654d39bdc8fe3bd1c7583908e33dc1faf884260722601469c0866f523788',
 }
 REFUSAL_CODES = {

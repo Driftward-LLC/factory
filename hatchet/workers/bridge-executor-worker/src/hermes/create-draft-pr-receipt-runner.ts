@@ -1,4 +1,4 @@
-import { BridgeClient, HATCHET_EVENTS, type BridgeJob, type JsonObject } from '@driftward/hatchet-worker-shared';
+import { BridgeClient, HATCHET_EVENTS, type BridgeJob, type JsonObject, type ExecutionRuntimeBinding } from '@driftward/hatchet-worker-shared';
 import {
   NonRetryableBridgeExecutionError,
   hermesReceiptEventScope,
@@ -8,6 +8,7 @@ import {
   type FactoryExecutionLease
 } from './create-draft-pr';
 import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
+import { prepareHermesInvocation } from './hermes-gateway-client';
 import { flushExecutionTelemetry, markExecutionTelemetryFailure, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 
 async function main(): Promise<void> {
@@ -49,6 +50,9 @@ async function executePrepared(bridge: BridgeClient, job: BridgeJob, analytics: 
   let invocationRecorded = false;
   let invocationRegistrationError: unknown = null;
   try {
+    const runtime = await prepareHermesInvocation(job, lease);
+    await bridge.bindFactoryExecutionRuntime(job.job_id, lease, runtime);
+    job = { ...job, execution_runtime: { lease_id: lease.lease_id, epoch: lease.epoch, runtime } };
     invocationRecorded = await bridge.recordFactoryExecutionAnalytics(
       job.job_id,
       lease,
@@ -119,6 +123,7 @@ async function executePrepared(bridge: BridgeClient, job: BridgeJob, analytics: 
   let committed;
   try {
     committed = await bridge.commitFactoryExecution(job.job_id, lease, {
+      execution_runtime: job.execution_runtime!.runtime,
       commit_sha: result.commitSha,
       pr_url: result.prUrl,
       reason_code: `hermes_${result.status}`,
@@ -140,7 +145,7 @@ async function executePrepared(bridge: BridgeClient, job: BridgeJob, analytics: 
       // Hermes returned a concrete receipt, but the bridge does not hold that
       // exact receipt. Preserve the single authorized generation for recovery
       // without recording another backend outcome for this invocation.
-      persisted = await settleCommitUnknown(bridge, job.job_id, lease, analytics, result, elapsed);
+      persisted = await settleCommitUnknown(bridge, job.job_id, lease, analytics, result, elapsed, job.execution_runtime!.runtime);
       if (!persisted) {
         await emitFailureEvent(job, 'factory_effect_commit_failed', error, invocationId, result);
         process.exitCode = 1;
@@ -273,10 +278,12 @@ async function settleCommitUnknown(
   analytics: JsonObject,
   receipt: Awaited<ReturnType<typeof runHermesCreateDraftPr>>,
   elapsed: number,
+  runtime: ExecutionRuntimeBinding,
 ): Promise<BridgeJob | null> {
   try {
     await bridge.settleFactoryExecution(jobId, lease, false, {
       ...analytics,
+      execution_runtime: runtime,
       failure_domain: 'factory',
       failure_stage: 'effect_commit',
       reason_code: 'factory_effect_commit_failed',
