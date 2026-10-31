@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("factory_portable", HERE / "factory-portable.py")
 portable = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(portable)
-SERVICES = (*portable.SERVICES, "linear-webhook-proxy", "factory-lifecycle-writer", "factory-linear-token-refresh")
+SERVICES = (*portable.CONTROL_PLANE_SERVICES, "linear-webhook-proxy", "factory-lifecycle-writer", "factory-linear-token-refresh")
 KEYS = ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key")  # gitleaks:allow -- filenames, not key material
 ENV_CONSUMERS = {
     "hatchet-workers.env": ("event-ingress", "intake-worker", "execution-dispatch-worker", "bridge-executor-worker", "pr-event-worker", "reconciliation-worker"),

@@ -5,6 +5,8 @@ services:
     labels:
       io.driftward.factory.installation: ${FACTORY_INSTALLATION_ID:?}
       io.driftward.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?}
+    entrypoint: [/otelcol-contrib]
+    user: "10001:10001"
     command: ["--config=/etc/otelcol/factory.yaml"]
     restart: unless-stopped
     read_only: true

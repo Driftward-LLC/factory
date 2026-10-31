@@ -7,11 +7,25 @@ x-portable: &portable
 
 services:
   postgres:
+    image: ${FACTORY_IMAGE:?Use the portable wrapper}
+    entrypoint: [/usr/bin/tini, --, /usr/local/bin/docker-entrypoint.sh]
+    command: [postgres, -c, max_connections=100, -c, listen_addresses=*]
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      LANG: en_US.UTF-8
     labels: *installation-labels
     ports: !reset []
   hatchet-lite:
+    image: ${FACTORY_IMAGE:?Use the portable wrapper}
+    entrypoint: [/usr/bin/tini, --, /entrypoint.sh]
+    working_dir: /
+    command: []
     labels: *installation-labels
     environment:
+      LITE_STATIC_ASSET_DIR: /static-assets
+      LITE_FRONTEND_BASE_PATH: /
+      LITE_FRONTEND_PORT: "8081"
+      LITE_RUNTIME_PORT: "8888"
       DEFAULT_TENANT_ID: ${HATCHET_DEFAULT_TENANT_ID:?Initialize this installation first}
     ports: !override
       - "127.0.0.1:${FACTORY_HATCHET_PORT:-8888}:8888"
@@ -71,9 +85,40 @@ services:
     <<: *portable
     volumes:
       - factory-maintenance:/run/driftward-hatchet-bridge
+  factory-hermes:
+    <<: *portable
+    image: ${FACTORY_IMAGE:?Use the portable wrapper}
+    # Started explicitly by the portable wrapper; legacy production stays unchanged.
+    profiles: [hermes]
+    entrypoint: [/opt/hermes/docker/entrypoint-dispatch.sh]
+    command: [sleep, infinity]
+    working_dir: /opt/data
+    environment:
+      HOME: /opt/data
+      HERMES_HOME: /opt/data
+      HERMES_WRITE_SAFE_ROOT: /opt/data
+      HERMES_PYTHON: /opt/hermes/.venv/bin/python
+      HERMES_RUNTIME_DIR: /opt/hermes/tools
+      PLAYWRIGHT_BROWSERS_PATH: /opt/hermes/tools
+      HERMES_WEB_DIST: /opt/hermes/hermes_cli/web_dist
+      HERMES_TUI_DIR: /opt/hermes/ui-tui
+      XDG_RUNTIME_DIR: /tmp/hermes-runtime
+      HERMES_DASHBOARD: "0"
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      PATH: /opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      PYTHONPATH: /opt/hermes
+    volumes:
+      - factory-hermes-data:/opt/data
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 4g
+    cpus: 2
+    networks: [factory]
   keygen:
     labels: *installation-labels
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:0fc77a4779a58778abafb20d2b9077830dc0ebb984a00c8d31cc288b0b398bf6
+    image: ${FACTORY_IMAGE:?Use the portable wrapper}
     profiles: [bootstrap]
     entrypoint: [/hatchet-admin]
     command: [keyset, create-local-keys, --key-dir, /keys]
@@ -83,6 +128,9 @@ services:
     security_opt: [no-new-privileges:true]
 
 volumes:
+  factory-hermes-data:
+    name: ${FACTORY_PROJECT_NAME:?}-hermes-data
+    labels: *installation-labels
   factory-maintenance:
     name: ${FACTORY_PROJECT_NAME:?}-maintenance
     labels: *installation-labels

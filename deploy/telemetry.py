@@ -84,8 +84,8 @@ def configure(installation, args) -> None:
             or manifest.get("installation_id") != metadata["installation_id"]
             or manifest.get("project") != installation.project
             or manifest.get("factory_image") != installation.values["FACTORY_IMAGE"]
-            or len(volumes) != len(set(volumes)) or not set(volumes).issubset(state.VOLUMES)
-            or not set(state.VOLUMES if profile == state.PRODUCTION else state.VOLUMES[:5]).issubset(volumes)
+            or len(volumes) != len(set(volumes)) or not set(volumes).issubset(state.DURABLE_VOLUMES)
+            or not set(state.VOLUMES if profile == state.PRODUCTION else state.PORTABLE_VOLUMES).issubset(volumes)
             or manifest.get("deployment_sha256") != {name: state._hash(HERE / name) for name in state.deployment_files(profile, metadata)}
             or set(manifest.get("sha256", {})) != expected
             or state._private_files(snapshot) != expected | {"manifest.json"}):
@@ -105,7 +105,8 @@ def configure(installation, args) -> None:
     if source is None:
         raise ValueError("first Collector installation requires --credentials")
     secret = credentials(source)
-    image = state._docker(["image", "inspect", "--format", "{{.Id}}", IMAGE], installation.env)
+    reference = IMAGE if profile == state.PRODUCTION else installation.values["FACTORY_IMAGE"]
+    image = state._docker(["image", "inspect", "--format", "{{.Id}}", reference], installation.env)
     feature = {"image": image, "port": args.port, "enabled": not args.paused,
                "deployment_sha256": {name: state._hash(HERE / name) for name in FILES}}
     updated = {**metadata, "telemetry": feature}

@@ -12,9 +12,17 @@ x-production-worker-env: &production-worker-env !override
 
 services:
   postgres:
+    command: postgres -c 'max_connections=100'
+    entrypoint: !reset null
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      LANG: en_US.utf8
     labels: *production-labels
     image: ${FACTORY_POSTGRES_IMAGE:?Source Postgres image ID is required}
   hatchet-lite:
+    entrypoint: !reset null
+    command: !reset null
+    working_dir: !reset null
     labels: *production-labels
     image: ${FACTORY_HATCHET_IMAGE:?Source Hatchet image ID is required}
   bridge:

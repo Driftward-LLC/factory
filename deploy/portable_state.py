@@ -17,7 +17,9 @@ VOLUMES = (
     "hatchet-postgres-data", "hatchet-config-data", "bridge-data", "ingress-data",
     "lifecycle-data", "linear-token-data", "linear-published-token",
 )
-PROJECT_VOLUMES = (*VOLUMES, "operator-socket", "maintenance")
+PORTABLE_VOLUMES = (*VOLUMES[:5], "hermes-data")
+DURABLE_VOLUMES = (*VOLUMES, "hermes-data")
+PROJECT_VOLUMES = (*DURABLE_VOLUMES, "operator-socket", "maintenance")
 CONFIG_FILES = {".env", bootstrap.MARKER, "env/hatchet-client.env",
                 *("env/" + name for name in bootstrap.ENV_FILES),
                 *("keys/hatchet/" + name for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"))}
@@ -144,8 +146,9 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     images = {item["image"] for item in config["services"].values()}
     image_ids = {image: _docker(["image", "inspect", "--format", "{{.Id}}", image], installation.env) for image in images}
     existing = _available_volumes(installation.env)
-    volumes = [suffix for suffix in VOLUMES if f"{installation.project}-{suffix}" in existing]
-    if not set(VOLUMES if profile == PRODUCTION else VOLUMES[:5]).issubset(volumes):
+    volumes = [suffix for suffix in DURABLE_VOLUMES if f"{installation.project}-{suffix}" in existing]
+    required = set(VOLUMES if profile == PRODUCTION else PORTABLE_VOLUMES)
+    if not required.issubset(volumes):
         raise ValueError("installation has not created all required durable volumes")
     for suffix in volumes:
         info = json.loads(_docker(["volume", "inspect", f"{installation.project}-{suffix}"], installation.env))[0]
@@ -199,7 +202,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     # Reuse bootstrap's project, image, path and port validation without writing.
     updated = bootstrap.init_directory(directory, manifest["factory_image"], project, port_offset=port_offset)
     volumes = manifest["volumes"]
-    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(VOLUMES if production else VOLUMES[:5]).issubset(volumes) or not set(volumes).issubset(VOLUMES):
+    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(VOLUMES if production else PORTABLE_VOLUMES).issubset(volumes) or not set(volumes).issubset(DURABLE_VOLUMES):
         raise ValueError("invalid snapshot volume list")
     expected = {"config/" + name for name in expected_config} | {f"volumes/{suffix}.tar" for suffix in volumes}
     if set(manifest["sha256"]) != expected or _private_files(snapshot) != expected | {"manifest.json"}:

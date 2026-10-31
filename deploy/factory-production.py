@@ -23,7 +23,7 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("factory_production_portable", HERE / "factory-portable.py")
 portable = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(portable)
-SERVICES = (*portable.SERVICES, "linear-webhook-proxy", "factory-lifecycle-writer", "factory-linear-token-refresh")
+SERVICES = (*portable.CONTROL_PLANE_SERVICES, "linear-webhook-proxy", "factory-lifecycle-writer", "factory-linear-token-refresh")
 CORE = ("postgres", "hatchet-lite", "bridge")
 SOCKET = "/run/driftward-hermes-factory"
 TENANT_LABEL = "io.driftward.factory.tenant"
