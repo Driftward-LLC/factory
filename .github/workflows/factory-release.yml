@@ -196,7 +196,9 @@ jobs:
           fi
           docker tag driftward/factory:ci "$image_tag"
           docker push --platform linux/amd64 "$image_tag"
-          image_ref="$(docker image inspect "$image_tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$IMAGE_REPOSITORY@" 'index($0, prefix) == 1 { print; exit }')"
+          # A platform-only push can leave the unpublished parent index in local RepoDigests.
+          image_digest="$(docker manifest inspect --verbose "$image_tag" | jq -er '.Descriptor.digest')"
+          image_ref="$IMAGE_REPOSITORY@$image_digest"
           [[ "$image_ref" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]]
           python3 deploy/auto_deploy_artifact.py --release "$RUNNER_TEMP/factory-release" \
             driftward/factory:ci "$RELEASE_TAG" "$image_ref"
