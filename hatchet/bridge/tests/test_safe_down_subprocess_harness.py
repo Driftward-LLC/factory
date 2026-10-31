@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import multiprocessing
 import os
 import pwd
 import shutil
@@ -19,6 +20,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -99,7 +101,7 @@ def _identity() -> tuple[int, int]:
 
 
 class SafeDownSubprocessFixture:
-    # The matrix makes eleven independent private roots.  A committed template
+    # Each matrix case makes an independent private root.  A committed template
     # built once per test class keeps those roots isolated without repeatedly
     # cloning and committing the worker tree.
     template_repo: Path | None = None
@@ -469,6 +471,16 @@ exec /usr/bin/python3 "$@"
     def close(self) -> None: self.temp.cleanup()
 
 
+def _run_matrix_case(method: str, point: str, template_repo: Path | None) -> None:
+    SafeDownSubprocessFixture.template_repo = template_repo
+    case = SafeDownSubprocessHarnessTests(method)
+    case.setUp()
+    try:
+        getattr(case, method)(point)
+    finally:
+        case.tearDown()
+
+
 class SafeDownSubprocessHarnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -499,6 +511,15 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
 
     def make(self, kill_at: str | None = None, signal_at: str | None = None, legacy_conflicts: int = 0) -> SafeDownSubprocessFixture:
         self.fixture = SafeDownSubprocessFixture(kill_at, signal_at, legacy_conflicts); self.fixture.setup(); return self.fixture
+
+    def run_matrix(self, method: str, points: tuple[str, ...]) -> None:
+        # Spawn isolates FD 8 and preexec hooks; threads would share that state.
+        workers = min(4, len(os.sched_getaffinity(0)), len(points))
+        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            cases = [(point, pool.submit(_run_matrix_case, method, point, SafeDownSubprocessFixture.template_repo)) for point in points]
+            for point, future in cases:
+                with self.subTest(point=point):
+                    future.result()
 
     def test_nonroot_actual_wrapper_exec_chain_retains_fd3_through_fd7(self):
         fixture = self.make()
@@ -637,19 +658,20 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         con.close()
 
     def test_actual_sigkill_at_every_safe_down_boundary_reruns_to_full_new_state(self):
-        for point in POINTS:
-            with self.subTest(point=point):
-                fixture = self.make(point)
-                killed = fixture.run_wrapper()
-                self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-                self.assertIn("sigkill", [row["event"] for row in fixture.audit_rows()])
-                self.assertNotIn("start driftward-hatchet-bridge.service", (fixture.root / "fake-system.log").read_text())
-                fixture.kill_at = None; fixture._write_capability()
-                rerun = fixture.run_wrapper()
-                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-                self.assertFalse(fixture.marker.exists())
-                self.assertTrue((fixture.root / f"docker/driftward/hatchet/releases/bridge/{fixture.release_version}").is_dir())
-                fixture.close(); self.fixture = None
+        self.run_matrix("check_actual_sigkill_at_every_safe_down_boundary_reruns_to_full_new_state", POINTS)
+
+    def check_actual_sigkill_at_every_safe_down_boundary_reruns_to_full_new_state(self, point: str):
+        fixture = self.make(point)
+        killed = fixture.run_wrapper()
+        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+        self.assertIn("sigkill", [row["event"] for row in fixture.audit_rows()])
+        self.assertNotIn("start driftward-hatchet-bridge.service", (fixture.root / "fake-system.log").read_text())
+        fixture.kill_at = None; fixture._write_capability()
+        rerun = fixture.run_wrapper()
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertFalse(fixture.marker.exists())
+        self.assertTrue((fixture.root / f"docker/driftward/hatchet/releases/bridge/{fixture.release_version}").is_dir())
+        fixture.close(); self.fixture = None
 
     def test_standalone_supersession_fails_closed_without_an_existing_barrier_and_never_mutates_system_state(self):
         fixture = self.make()
@@ -673,91 +695,94 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
 
     def test_actual_sigkill_at_every_supersession_boundary_replays_without_leaving_safe_down(self):
         """Every v1->v2 boundary replays without mutable-host effects."""
-        for point in SUPERSESSION_POINTS:
-            with self.subTest(point=point):
-                fixture = self.make(point)
-                prepared = fixture.run_prepare()
-                self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
-                active = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                successor = fixture.commit_successor()
-                fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
-                killed = fixture.run_supersede(active, successor)
-                self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-                self.assertTrue(fixture.marker.exists())
-                self.assertEqual(fixture.standalone_snapshot(), before)
-                fixture.kill_at = None; fixture._write_capability()
-                rerun = fixture.run_supersede(active, successor)
-                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-                successor_record = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                self.assertEqual(successor_record["version"], 2)
-                self.assertEqual(successor_record["code_commit"], successor)
-                self.assertTrue(fixture.marker.exists())
-                self.assertEqual(fixture.standalone_snapshot(), before)
-                v2 = successor_record; successor_v3 = fixture.commit_successor()
-                fixture._install_existing_barrier(); v3_before = fixture.standalone_snapshot()
-                rerun_v3 = fixture.run_supersede(v2, successor_v3)
-                self.assertEqual(rerun_v3.returncode, 0, rerun_v3.stdout + rerun_v3.stderr)
-                v3 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                self.assertEqual(v3["version"], 3); self.assertEqual(v3["parent"]["sha256"], hashlib.sha256((json.dumps(v2, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest())
-                incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v3["incident"]
-                self.assertTrue((incident / "transition.json").is_file()); self.assertTrue((incident / v3["parent"]["archive"]).is_file())
-                self.assertEqual(fixture.standalone_snapshot(), v3_before)
-                fixture.close(); self.fixture = None
+        self.run_matrix("check_actual_sigkill_at_every_supersession_boundary_replays_without_leaving_safe_down", SUPERSESSION_POINTS)
+
+    def check_actual_sigkill_at_every_supersession_boundary_replays_without_leaving_safe_down(self, point: str):
+        fixture = self.make(point)
+        prepared = fixture.run_prepare()
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        active = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        successor = fixture.commit_successor()
+        fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
+        killed = fixture.run_supersede(active, successor)
+        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+        self.assertTrue(fixture.marker.exists())
+        self.assertEqual(fixture.standalone_snapshot(), before)
+        fixture.kill_at = None; fixture._write_capability()
+        rerun = fixture.run_supersede(active, successor)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        successor_record = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        self.assertEqual(successor_record["version"], 2)
+        self.assertEqual(successor_record["code_commit"], successor)
+        self.assertTrue(fixture.marker.exists())
+        self.assertEqual(fixture.standalone_snapshot(), before)
+        v2 = successor_record; successor_v3 = fixture.commit_successor()
+        fixture._install_existing_barrier(); v3_before = fixture.standalone_snapshot()
+        rerun_v3 = fixture.run_supersede(v2, successor_v3)
+        self.assertEqual(rerun_v3.returncode, 0, rerun_v3.stdout + rerun_v3.stderr)
+        v3 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        self.assertEqual(v3["version"], 3); self.assertEqual(v3["parent"]["sha256"], hashlib.sha256((json.dumps(v2, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest())
+        incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v3["incident"]
+        self.assertTrue((incident / "transition.json").is_file()); self.assertTrue((incident / v3["parent"]["archive"]).is_file())
+        self.assertEqual(fixture.standalone_snapshot(), v3_before)
+        fixture.close(); self.fixture = None
 
     def test_descendant_attestation_sigkill_matrix_replays_without_host_mutation(self):
         """The exceptional v1 marker proof is durable before v2 linkage."""
-        for point in DESCENDANT_ATTESTATION_POINTS:
-            with self.subTest(point=point):
-                fixture = self.make(point)
-                self.assertEqual(fixture.run_prepare().returncode, 0)
-                v1 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                fixture.rewrite_marker_in_place()
-                successor = fixture.commit_successor()
-                fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
-                killed = fixture.run_supersede(v1, successor, descendant=True)
-                self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-                self.assertEqual(fixture.standalone_snapshot(), before)
-                fixture.kill_at = None; fixture._write_capability()
-                rerun = fixture.run_supersede(v1, successor, descendant=True)
-                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-                v2 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                self.assertEqual(v2["version"], 2); self.assertIn("marker_descendant", v2)
-                incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v2["incident"]
-                self.assertTrue((incident / v2["marker_descendant"]["path"]).is_file())
-                self.assertEqual(fixture.standalone_snapshot(), before)
-                fixture.close(); self.fixture = None
+        self.run_matrix("check_descendant_attestation_sigkill_matrix_replays_without_host_mutation", DESCENDANT_ATTESTATION_POINTS)
+
+    def check_descendant_attestation_sigkill_matrix_replays_without_host_mutation(self, point: str):
+        fixture = self.make(point)
+        self.assertEqual(fixture.run_prepare().returncode, 0)
+        v1 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        fixture.rewrite_marker_in_place()
+        successor = fixture.commit_successor()
+        fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
+        killed = fixture.run_supersede(v1, successor, descendant=True)
+        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+        self.assertEqual(fixture.standalone_snapshot(), before)
+        fixture.kill_at = None; fixture._write_capability()
+        rerun = fixture.run_supersede(v1, successor, descendant=True)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        v2 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        self.assertEqual(v2["version"], 2); self.assertIn("marker_descendant", v2)
+        incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v2["incident"]
+        self.assertTrue((incident / v2["marker_descendant"]["path"]).is_file())
+        self.assertEqual(fixture.standalone_snapshot(), before)
+        fixture.close(); self.fixture = None
 
     def test_future_marker_lineage_sigkill_matrix_replays_without_db_or_service_effect(self):
-        for point in MARKER_LINEAGE_POINTS:
-            with self.subTest(point=point):
-                fixture = self.make(point)
-                self.assertEqual(fixture.run_prepare().returncode, 0)
-                fixture._install_existing_barrier()
-                before = fixture.standalone_snapshot()
-                killed = fixture.run_marker_lineage()
-                self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-                # A kill may land after the atomic marker rename; every other
-                # safe-down invariant remains identical and replay finalizes
-                # the same marker/lineage rather than touching the runtime.
-                after = fixture.standalone_snapshot()
-                self.assertEqual(after["db"], before["db"])
-                self.assertEqual(after["masks"], before["masks"])
-                self.assertEqual(after["unit_states"], before["unit_states"])
-                self.assertEqual(after["mutated"], before["mutated"])
-                fixture.kill_at = None; fixture._write_capability()
-                rerun = fixture.run_marker_lineage()
-                if point in {"marker-lineage-temp-write", "marker-lineage-temp-fsynced", "marker-lineage-temp-fstat"}:
-                    self.assertNotEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-                    fixture.close(); self.fixture = None
-                    continue
-                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-                self.assertEqual(fixture.marker.read_bytes(), b"rollback recovery blocked: safe-down fresh-install-failed\n")
-                final = fixture.standalone_snapshot()
-                self.assertEqual(final["db"], before["db"])
-                self.assertEqual(final["masks"], before["masks"])
-                self.assertEqual(final["unit_states"], before["unit_states"])
-                self.assertEqual(final["mutated"], before["mutated"])
-                fixture.close(); self.fixture = None
+        self.run_matrix("check_future_marker_lineage_sigkill_matrix_replays_without_db_or_service_effect", MARKER_LINEAGE_POINTS)
+
+    def check_future_marker_lineage_sigkill_matrix_replays_without_db_or_service_effect(self, point: str):
+        fixture = self.make(point)
+        self.assertEqual(fixture.run_prepare().returncode, 0)
+        fixture._install_existing_barrier()
+        before = fixture.standalone_snapshot()
+        killed = fixture.run_marker_lineage()
+        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+        # A kill may land after the atomic marker rename; every other
+        # safe-down invariant remains identical and replay finalizes
+        # the same marker/lineage rather than touching the runtime.
+        after = fixture.standalone_snapshot()
+        self.assertEqual(after["db"], before["db"])
+        self.assertEqual(after["masks"], before["masks"])
+        self.assertEqual(after["unit_states"], before["unit_states"])
+        self.assertEqual(after["mutated"], before["mutated"])
+        fixture.kill_at = None; fixture._write_capability()
+        rerun = fixture.run_marker_lineage()
+        if point in {"marker-lineage-temp-write", "marker-lineage-temp-fsynced", "marker-lineage-temp-fstat"}:
+            self.assertNotEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+            fixture.close(); self.fixture = None
+            return
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(fixture.marker.read_bytes(), b"rollback recovery blocked: safe-down fresh-install-failed\n")
+        final = fixture.standalone_snapshot()
+        self.assertEqual(final["db"], before["db"])
+        self.assertEqual(final["masks"], before["masks"])
+        self.assertEqual(final["unit_states"], before["unit_states"])
+        self.assertEqual(final["mutated"], before["mutated"])
+        fixture.close(); self.fixture = None
 
     def test_marker_lineage_rejects_lock_only_direct_invocation(self):
         fixture = self.make()
@@ -837,60 +862,62 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
                 fixture.close(); self.fixture = None
 
     def test_no_active_marker_lineage_replays_after_durable_prepare_and_atomic_publication(self):
-        for point in ("marker-lineage-prepared", "marker-lineage-rename", "marker-lineage-dir-fsynced", "marker-lineage-committed", "marker-lineage-archive"):
-            with self.subTest(point=point):
-                fixture = self.make(point)
-                self.assertEqual(fixture.run_prepare().returncode, 0)
-                fixture.remove_active_transition()
-                fixture._install_existing_barrier()
-                before = fixture.standalone_snapshot()
-                killed = fixture.run_marker_lineage("replay reason")
-                self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-                fixture.kill_at = None; fixture._write_capability()
-                rerun = fixture.run_marker_lineage("replay reason")
-                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-                self.assertEqual(fixture.marker.read_bytes(), b"rollback recovery blocked: replay reason\n")
-                after = fixture.standalone_snapshot()
-                for key in ("db", "masks", "unit_states", "mutated"):
-                    self.assertEqual(after[key], before[key])
-                fixture.close(); self.fixture = None
+        self.run_matrix("check_no_active_marker_lineage_replays_after_durable_prepare_and_atomic_publication", ("marker-lineage-prepared", "marker-lineage-rename", "marker-lineage-dir-fsynced", "marker-lineage-committed", "marker-lineage-archive"))
+
+    def check_no_active_marker_lineage_replays_after_durable_prepare_and_atomic_publication(self, point: str):
+        fixture = self.make(point)
+        self.assertEqual(fixture.run_prepare().returncode, 0)
+        fixture.remove_active_transition()
+        fixture._install_existing_barrier()
+        before = fixture.standalone_snapshot()
+        killed = fixture.run_marker_lineage("replay reason")
+        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+        fixture.kill_at = None; fixture._write_capability()
+        rerun = fixture.run_marker_lineage("replay reason")
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertEqual(fixture.marker.read_bytes(), b"rollback recovery blocked: replay reason\n")
+        after = fixture.standalone_snapshot()
+        for key in ("db", "masks", "unit_states", "mutated"):
+            self.assertEqual(after[key], before[key])
+        fixture.close(); self.fixture = None
 
     def test_actual_sigkill_at_every_v2_to_v3_boundary_preserves_the_full_immutable_chain(self):
         """The same replay guarantee applies at every v2->v3 write boundary."""
-        for point in SUPERSESSION_POINTS:
-            with self.subTest(point=point):
-                fixture = self.make()
-                prepared = fixture.run_prepare()
-                self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
-                v1 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                successor_v2 = fixture.commit_successor()
-                made_v2 = fixture.run_supersede(v1, successor_v2)
-                self.assertEqual(made_v2.returncode, 0, made_v2.stdout + made_v2.stderr)
-                v2 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                v1_body = (json.dumps(v1, sort_keys=True, separators=(",", ":")) + "\n").encode()
-                v2_body = (json.dumps(v2, sort_keys=True, separators=(",", ":")) + "\n").encode()
-                v1_archive = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v2["incident"] / v2["parent"]["archive"]
-                self.assertEqual(v2["parent"]["sha256"], hashlib.sha256(v1_body).hexdigest())
-                v1_archive_before = v1_archive.read_bytes()
-                successor_v3 = fixture.commit_successor()
-                fixture.kill_at = point; fixture._write_capability()
-                fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
-                killed = fixture.run_supersede(v2, successor_v3)
-                self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-                self.assertEqual(fixture.standalone_snapshot(), before)
-                self.assertEqual(v1_archive.read_bytes(), v1_archive_before)
-                fixture.kill_at = None; fixture._write_capability()
-                rerun = fixture.run_supersede(v2, successor_v3)
-                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-                v3 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
-                self.assertEqual(v3["version"], 3)
-                self.assertEqual(v3["parent"]["sha256"], hashlib.sha256(v2_body).hexdigest())
-                incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v3["incident"]
-                self.assertEqual((incident / v3["parent"]["archive"]).read_bytes(), v2_body)
-                self.assertEqual(v1_archive.read_bytes(), v1_archive_before)
-                self.assertTrue(fixture.marker.exists())
-                self.assertEqual(fixture.standalone_snapshot(), before)
-                fixture.close(); self.fixture = None
+        self.run_matrix("check_actual_sigkill_at_every_v2_to_v3_boundary_preserves_the_full_immutable_chain", SUPERSESSION_POINTS)
+
+    def check_actual_sigkill_at_every_v2_to_v3_boundary_preserves_the_full_immutable_chain(self, point: str):
+        fixture = self.make()
+        prepared = fixture.run_prepare()
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        v1 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        successor_v2 = fixture.commit_successor()
+        made_v2 = fixture.run_supersede(v1, successor_v2)
+        self.assertEqual(made_v2.returncode, 0, made_v2.stdout + made_v2.stderr)
+        v2 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v1_body = (json.dumps(v1, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        v2_body = (json.dumps(v2, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        v1_archive = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v2["incident"] / v2["parent"]["archive"]
+        self.assertEqual(v2["parent"]["sha256"], hashlib.sha256(v1_body).hexdigest())
+        v1_archive_before = v1_archive.read_bytes()
+        successor_v3 = fixture.commit_successor()
+        fixture.kill_at = point; fixture._write_capability()
+        fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
+        killed = fixture.run_supersede(v2, successor_v3)
+        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+        self.assertEqual(fixture.standalone_snapshot(), before)
+        self.assertEqual(v1_archive.read_bytes(), v1_archive_before)
+        fixture.kill_at = None; fixture._write_capability()
+        rerun = fixture.run_supersede(v2, successor_v3)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        v3 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        self.assertEqual(v3["version"], 3)
+        self.assertEqual(v3["parent"]["sha256"], hashlib.sha256(v2_body).hexdigest())
+        incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v3["incident"]
+        self.assertEqual((incident / v3["parent"]["archive"]).read_bytes(), v2_body)
+        self.assertEqual(v1_archive.read_bytes(), v1_archive_before)
+        self.assertTrue(fixture.marker.exists())
+        self.assertEqual(fixture.standalone_snapshot(), before)
+        fixture.close(); self.fixture = None
 
     def test_actual_sigterm_runs_installer_exit_cleanup_and_keeps_safe_down(self):
         fixture = self.make(signal_at="writer-quiesce")
@@ -959,3 +986,33 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
                 result = _bounded_run(command, timeout=SETUP_TIMEOUT_SECONDS)
                 if result.returncode: raise AssertionError(result.stderr)
             self.assertFalse(_commit_if_staged(repo))
+
+
+class MatrixDispatchTests(unittest.TestCase):
+    def test_spawned_cases_report_each_failure_and_error(self):
+        for method, failures, errors in (("assertTrue", 0, 0), ("fail", 2, 0), ("assertEqual", 0, 2)):
+            with self.subTest(method=method):
+                case = SafeDownSubprocessHarnessTests()
+                case.runTest = lambda: case.run_matrix(method, ("first", "second"))
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertEqual(len(result.failures), failures)
+                self.assertEqual(len(result.errors), errors)
+                if failures or errors:
+                    self.assertEqual(
+                        [test.params["point"] for test, _ in result.failures + result.errors],
+                        ["first", "second"],
+                    )
+
+    def test_worker_cleans_fixture_after_assertion_failure(self):
+        fixture = mock.Mock()
+
+        def fail_with_fixture(case, point):
+            case.fixture = fixture
+            raise AssertionError(point)
+
+        with mock.patch.object(SafeDownSubprocessFixture, "template_repo", None), \
+             mock.patch.object(SafeDownSubprocessHarnessTests, "fail", fail_with_fixture):
+            with self.assertRaisesRegex(AssertionError, "injected failure"):
+                _run_matrix_case("fail", "injected failure", None)
+        fixture.close.assert_called_once_with()
