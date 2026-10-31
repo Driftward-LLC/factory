@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -72,6 +73,49 @@ class PublicReleaseTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.publish_metadata()
                 self.assertFalse(self.output.exists())
+
+    def test_local_parent_index_is_not_used_to_identify_the_tested_platform(self):
+        command = self.command
+
+        def indexed_image(args, **kwargs):
+            if args == ['docker', 'image', 'inspect', 'tested:ci']:
+                return json.dumps([self.info | {'Id': 'sha256:' + 'e' * 64}])
+            if args[:3] == ['docker', 'image', 'inspect']:
+                self.assertEqual(args[3:], ['--platform', 'linux/amd64', 'tested:ci'])
+            return command(args, **kwargs)
+
+        self.commands.side_effect = indexed_image
+        self.publish_metadata()
+        self.assertEqual(json.loads((self.output / 'deployment.json').read_text())['image_config'], CONFIG)
+
+    def test_workflow_resolves_the_published_manifest_instead_of_local_repo_digests(self):
+        workflow = (ROOT / '.github/workflows/factory-release.yml').read_text()
+        publication = workflow.split('      - name: Publish validated runtime image\n', 1)[1]
+        selection = publication.split('          docker push --platform linux/amd64 "$image_tag"\n', 1)[1]
+        selection = selection.split('          python3 deploy/auto_deploy_artifact.py', 1)[0]
+        fake_docker = Path(self.temp.name) / 'docker'
+        fake_docker.write_text('#!/bin/sh\n'
+            'if [ "$1 $2 $3" = "manifest inspect --verbose" ]; then\n'
+            '  printf \'%s\\n\' "$REGISTRY_MANIFEST"\n'
+            'else\n'
+            '  echo ghcr.io/driftward-llc/factory@sha256:' + 'e' * 64 + '\n'
+            'fi\n')
+        fake_docker.chmod(0o755)
+        env = {'PATH': self.temp.name + ':/usr/bin:/bin', 'IMAGE_REPOSITORY': publisher.RELEASE_IMAGE,
+               'image_tag': publisher.RELEASE_IMAGE + ':' + VERSION}
+        script = 'set -euo pipefail\n' + selection + '\nprintf "%s" "$image_ref"\n'
+        for descriptor, expected in (({'Descriptor': {'digest': IMAGE}}, REFERENCE),
+                                     ({'Descriptor': {'digest': 'invalid'}}, None),
+                                     ({}, None), ([{'Descriptor': {'digest': IMAGE}}], None)):
+            with self.subTest(descriptor=descriptor):
+                # Use the real subprocess entry point: the publisher mocks only check_output.
+                result = subprocess.run(['bash', '-c', script], env=env | {
+                    'REGISTRY_MANIFEST': json.dumps(descriptor)}, capture_output=True, text=True)
+                if expected:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, expected)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
 
     def test_wrong_event_branch_checkout_or_run_identity_cannot_publish(self):
         for key, value in [('GITHUB_REPOSITORY', 'another/repo'), ('GITHUB_EVENT_NAME', 'pull_request'),

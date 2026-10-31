@@ -74,7 +74,8 @@ def release_metadata(root, output, image, version, reference):
     if not all(re.fullmatch(r'[1-9][0-9]*', value) for value in (run_id, attempt)):
         raise RuntimeError('Invalid release producer identity')
     public_release_package()
-    info = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image], text=True))[0]
+    info = json.loads(subprocess.check_output(
+        ['docker', 'image', 'inspect', '--platform', 'linux/amd64', image], text=True))[0]
     manifest = json.loads(subprocess.check_output(['docker', 'manifest', 'inspect', reference], text=True))
     config = manifest.get('config', {}).get('digest', '')
     labels = info.get('Config', {}).get('Labels') or {}
