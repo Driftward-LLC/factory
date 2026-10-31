@@ -53,6 +53,24 @@ def plugin_archive(extra=None):
 
 
 class ProfileRuntimeTests(unittest.TestCase):
+    def test_explicit_gateway_binding_scopes_service_operations_and_restores_defaults(self):
+        previous = runtime.SERVICE, runtime.DROPIN
+        selected = 'factory-hermes-gateway.service'
+        def status(*_args):
+            runtime.systemctl('is-active', '--quiet', runtime.SERVICE)
+            self.assertEqual(runtime.DROPIN, Path('/etc/systemd/system') / (selected + '.d/factory-profile.conf'))
+            raise ValueError('synthetic operation failure')
+        with patch.object(runtime, 'dispatch_bound', side_effect=status), patch.object(runtime, 'systemctl') as service:
+            with self.assertRaisesRegex(ValueError, 'synthetic'):
+                runtime.dispatch(None, {'hermes_gateway_service': selected}, '/wrapper', ['status'])
+            service.assert_called_once_with('is-active', '--quiet', selected)
+        self.assertEqual((runtime.SERVICE, runtime.DROPIN), previous)
+        with patch.object(runtime, 'dispatch_bound') as operation:
+            for selected in ('docker.service', '../factory-hermes-gateway.service', '', False):
+                with self.assertRaisesRegex(ValueError, 'unsupported'):
+                    runtime.dispatch(None, {'hermes_gateway_service': selected}, '/wrapper', ['status'])
+            operation.assert_not_called()
+
     def test_source_audit_reads_only_fixed_public_files_without_imports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

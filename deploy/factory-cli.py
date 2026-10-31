@@ -193,10 +193,13 @@ def checked_config(path):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
         raise ValueError('CLI binding must be a root-owned regular file with mode 0600')
     value = json.loads(path.read_text())
-    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url', 'hermes_wrapper', 'profile_runtime', 'artifact_runtime'} or not all(
+    if set(value) - {'installation', 'installation_id', 'production_bundle', 'console_url', 'hermes_wrapper', 'hermes_gateway_service', 'profile_runtime', 'artifact_runtime'} or not all(
             isinstance(value.get(key), str) and Path(value[key]).is_absolute()
             for key in ('installation', 'production_bundle')):
         raise ValueError('invalid CLI binding')
+    if 'hermes_gateway_service' in value and value['hermes_gateway_service'] not in (
+            'driftward-hermes-factory-gateway.service', 'factory-hermes-gateway.service'):
+        raise ValueError('unsupported Hermes gateway service')
     if 'hermes_wrapper' in value:
         checked_hermes_wrapper(value['hermes_wrapper'])
     if 'profile_runtime' in value:

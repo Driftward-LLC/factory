@@ -7,6 +7,16 @@ fixes `gpt-6-astra`, and returns the bounded `factory-independent-review-v1`
 receipt with `backend: isolated_hermes`. The model supplies verdict/findings only.
 Historical `isolated_codex` receipts remain readable.
 
+The root-owned reviewer provisioning file may set `hermes_container` to a Docker
+container name or full ID, for example `factory-hermes`. Omission preserves the
+legacy `hermes-driftward-hermes-1` selection. The gateway inspects that selection,
+requires it to be running with the configured `hermes_image`, and passes its
+full container ID to both the reviewer relay and timeout cleanup. Replacing a
+container under the same name cannot redirect an already resolved review.
+This is container selection, not a new filesystem sandbox or a guarantee that
+the same container cannot restart. Provision fresh authentication separately;
+changing the binding does not copy credentials or enable reviews.
+
 Each invocation creates a fresh `factory-reviewer-<UUID>` profile under
 Hermes' dedicated `/opt/data/factory-reviewer-auth/profiles/` root.
 Its generated `config.yaml` selects

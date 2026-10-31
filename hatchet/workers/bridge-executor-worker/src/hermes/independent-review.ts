@@ -107,6 +107,7 @@ export async function runIndependentReviewRelay(args: string[], timeout: number,
 
 type Provisioning = { schema: string; image: string; canary_digest: string; policy_digest: string;
   hermes_image: string;
+  hermes_container?: string;
   auth_root?: '/opt/data/factory-reviewer-auth' | '/opt/data/profiles/factory-independent-reviewer';
   review_skill_digest: string; verify_skill_digest: string;
   repositories: Record<string, { base_ref: string }> };
@@ -217,6 +218,8 @@ export class IndependentReviewer {
       privatePath(this.configPath, false);
       config = JSON.parse(readFileSync(this.configPath, 'utf8'));
       if (config.schema !== 'factory-hermes-reviewer-provisioning-v2' || !/^.+@sha256:[a-f0-9]{64}$/.test(config.image)
+        || config.hermes_container !== undefined && (typeof config.hermes_container !== 'string'
+          || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(config.hermes_container))
         || config.auth_root !== undefined && !['/opt/data/factory-reviewer-auth', '/opt/data/profiles/factory-independent-reviewer'].includes(config.auth_root)
         || !/^sha256:[a-f0-9]{64}$/.test(config.hermes_image)
         || !/^[a-f0-9]{64}$/.test(config.canary_digest) || !/^[a-f0-9]{64}$/.test(config.policy_digest)
@@ -280,9 +283,12 @@ export class IndependentReviewer {
       chmodSync(requestPath, 0o444);
       writeFileSync(tokenPath, token, { mode: 0o444, flag: 'wx' });
       chmodSync(tokenPath, 0o444);
-      const hermes = JSON.parse(await runCommand('/usr/bin/docker', ['inspect', 'hermes-driftward-hermes-1'], 15000));
+      const hermes = JSON.parse(await runCommand('/usr/bin/docker', ['inspect', config.hermes_container ?? 'hermes-driftward-hermes-1'], 15000));
       if (!Array.isArray(hermes) || hermes.length !== 1 || hermes[0].Image !== config.hermes_image
+        || typeof hermes[0].Id !== 'string' || !/^[a-f0-9]{64}$/.test(hermes[0].Id)
         || hermes[0].State?.Running !== true) return fail('review_isolation_unavailable');
+      // Resolve the configured name once; launch and timeout cleanup use this exact container.
+      const hermesContainer = hermes[0].Id;
       const image = JSON.parse(await runCommand('/usr/bin/docker', ['image', 'inspect', config.image], 15000))[0];
       if (image?.Config?.Volumes || image?.Config?.Labels?.['io.driftward.factory.independent-reviewer'] !== '1') return fail('review_isolation_unavailable');
       await runCommand('/usr/bin/docker', ['network', 'create', '--internal', '--opt',
@@ -301,7 +307,7 @@ export class IndependentReviewer {
       const assets = '/usr/local/share/driftward-factory/independent-reviewer/deploy/independent-reviewer';
       const raw = await runIndependentReviewRelay([path.join(assets, 'runner.py'), requestPath,
         path.join(this.roots.provisioning, 'review-code.md'), path.join(this.roots.provisioning, 'verify-app.md'),
-        source, 'hermes-driftward-hermes-1', session, config.auth_root || '/opt/data/factory-reviewer-auth'], 660000, runCommand, this.command);
+        source, hermesContainer, session, config.auth_root || '/opt/data/factory-reviewer-auth'], 660000, runCommand, this.command);
       const result = JSON.parse(raw);
       if (!result || Object.keys(result).sort().join(',') !== 'findings,head_sha,reason,verdict' || result.head_sha !== r.head_sha) return fail('review_malformed');
       const receipt = { ...fail('review_inconclusive'), verdict: result.verdict, findings: result.findings, reason: result.reason };

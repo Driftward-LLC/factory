@@ -1809,6 +1809,24 @@ def diagnose_execution(install, args, wrapper=None):
 
 
 def dispatch(install, config, wrapper, args):
+    # Each canonical CLI process holds the installation lock. Scope the host
+    # service selection to this dispatch; native profile operations are unchanged.
+    global SERVICE, DROPIN
+    selected = config.get('hermes_gateway_service')
+    if selected is None:
+        return dispatch_bound(install, config, wrapper, args)
+    if selected not in ('driftward-hermes-factory-gateway.service', 'factory-hermes-gateway.service'):
+        raise ValueError('unsupported Hermes gateway service')
+    previous = SERVICE, DROPIN
+    try:
+        SERVICE = selected
+        DROPIN = Path('/etc/systemd/system') / (selected + '.d') / 'factory-profile.conf'
+        return dispatch_bound(install, config, wrapper, args)
+    finally:
+        SERVICE, DROPIN = previous
+
+
+def dispatch_bound(install, config, wrapper, args):
     if args == ['canary', 'native-owner']:
         import importlib.util
         from types import SimpleNamespace

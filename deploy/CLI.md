@@ -158,6 +158,17 @@ Credentials are read as data from the installation's private generated env,
 normalized into a private temporary file, and never printed. The existing CLI
 retains its preview, digest and confirmation gates for recovery and mutations.
 
+For a separately provisioned `factory-hermes` runtime, bind `hermes_wrapper` to
+its protected wrapper and set `hermes_gateway_service` to
+`factory-hermes-gateway.service`. This selects the service and its profile
+drop-in for status and guarded profile operations; it does not install or start
+that service. Omit the field to retain `driftward-hermes-factory-gateway.service`.
+Only these two service names are supported. The private gateway socket and
+historical invocation journal paths remain unchanged. Provision the matching
+gateway with `DRIFTWARD_HERMES_ROOT` and `DRIFTWARD_HERMES_COMMAND` pointing to
+the new runtime while execution is paused. Review the corresponding reviewer
+container binding in [the reviewer guide](INDEPENDENT-REVIEW.md).
+
 `factory status` reports the bound Compose service states; `logs` accepts the
 existing named targets, `-f` and `-n N`. `console` prints the explicitly bound
 console URL. `mode` reads the installation's configured intake mode; it does
