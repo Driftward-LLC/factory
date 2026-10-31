@@ -53,7 +53,8 @@ jobs:
   console-browser:
     name: Browser and UI checks
     needs: [preflight]
-    runs-on: ubuntu-latest
+    # Playwright 1.55's Chromium headless shell supports Ubuntu 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       catalog-outcome: ${{ steps.catalog.outcome }}

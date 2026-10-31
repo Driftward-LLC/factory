@@ -728,10 +728,12 @@ normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
                 ("--image-tag", secret),
                 ("--image", f"registry.example/driftward/factory:{secret}"),
             ):
-                with self.subTest(arguments=arguments):
+                with self.subTest(arguments=arguments), tempfile.NamedTemporaryFile(mode="w", suffix=".sh") as script:
+                    # The installer resolves its location through BASH_SOURCE.
+                    script.write(validation_prefix)
+                    script.flush()
                     result = subprocess.run(
-                        ["bash", "-s", "--", *arguments],
-                        input=validation_prefix,
+                        ["bash", script.name, *arguments],
                         env={**os.environ, "FACTORY_IMAGE_TAG": "local", "FACTORY_IMAGE": ""},
                         text=True,
                         capture_output=True,
