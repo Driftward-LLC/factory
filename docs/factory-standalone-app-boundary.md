@@ -35,10 +35,12 @@ headers from the public network.
 
 ## Execution runtime
 
-The supported portable profile is dry-run only. Real execution requires a
-separately provisioned Hermes runtime with its own provider and application
-credentials, tool connections, workspaces, browser state, and session retention.
-Its gateway exposes the allowlisted operations used by Factory.
+The supported portable profile is dry-run only. Its `factory-hermes` container
+uses the same image as the control plane and starts idle with a fresh private
+volume. Provider/application authentication and a reviewed gateway binding are
+still needed before real execution. Existing production installations retain
+their separate Hermes runtime. The gateway exposes the allowlisted operations
+used by Factory; packaging does not change its lease or incarnation checks.
 
 Workers receive only the configuration and private gateway access they need.
 Never mount provider credentials, executor data, host GitHub authentication,

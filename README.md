@@ -16,10 +16,14 @@ bundles contain the Compose configuration and installation helper, with the
 Factory image pinned by digest. The supported portable profile runs on
 Linux/amd64 and starts in **dry-run mode**.
 
-The bundle includes Hatchet Lite/PostgreSQL, workers, the bridge ledger, event
-ingress, lifecycle services, and the operator console. Real agent execution
-requires a separately provisioned Hermes runtime and explicit execution
-configuration. Installing or upgrading Factory does not enable it.
+One release image contains Factory, Hatchet Lite, PostgreSQL 15, Hermes, and
+OpenTelemetry Collector. Compose runs them in separate containers using that
+same image, with separate commands, credentials, and volumes. Fresh portable
+installations also start an idle `factory-hermes` container with its own data.
+Real agent execution still requires provider authentication, a reviewed gateway
+binding, and explicit execution configuration. Installing Factory does not
+enable it. Existing production installations retain their recorded database
+and Hatchet images until a separate migration is approved.
 
 The console currently requires a trusted Tailscale Serve proxy. GitHub and
 Linear integrations also require installation-specific credentials and routing

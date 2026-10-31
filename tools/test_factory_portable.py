@@ -31,6 +31,20 @@ class PortableTests(unittest.TestCase):
         self.assertEqual(install.env["FACTORY_ENV_DIR"], str(self.directory / "env"))
         self.assertIn(str(self.directory), install.args)
 
+    def test_shared_image_and_private_hermes_volume(self):
+        install = portable.Installation(self.directory)
+        config = json.loads(install.compose("--profile", "hermes", "--profile", "bootstrap",
+                                            "config", "--format", "json", private=True))
+        self.assertEqual({service["image"] for service in config["services"].values()}, {"factory:test"})
+        hermes = config["services"]["factory-hermes"]
+        self.assertEqual(hermes["command"], ["sleep", "infinity"])
+        self.assertNotIn("ports", hermes)
+        self.assertEqual(hermes["volumes"][0]["source"], "factory-hermes-data")
+        for name, service in config["services"].items():
+            for mount in service.get("volumes", []):
+                if mount["target"] == "/opt/data":
+                    self.assertEqual(name, "factory-hermes")
+
     def test_altered_identity_is_rejected_before_docker(self):
         path = self.directory / ".env"
         path.write_text(path.read_text().replace("factory-unit-test", "factory-another"))

@@ -115,7 +115,7 @@ class CollectorProductionTests(unittest.TestCase):
                 patch.object(portable, "run") as run, patch.object(state, "_docker", return_value=feature()["image"]):
             portable.dispatch(argparse.Namespace(command="pull", directory=self.directory))
             run.assert_called_once()
-            self.assertEqual(run.call_args.args[0], ["docker", "pull", telemetry.IMAGE])
+            self.assertEqual(run.call_args.args[0], ["docker", "pull", self.install.values["FACTORY_IMAGE"]])
             self.assertNotIn(telemetry.SERVICE, compose.call_args.args)
 
 

@@ -30,7 +30,7 @@ class FakeDocker:
             "data": f"retained-{suffix}".encode(),
             "Labels": {"com.docker.compose.project": project, "com.docker.compose.volume": "factory-" + suffix,
                        state.IDENTITY_LABEL: installation_id},
-        } for suffix in state.VOLUMES[:5]}
+        } for suffix in state.PORTABLE_VOLUMES}
 
     def __call__(self, args: list[str], env=None) -> str:
         self.calls.append(args)
@@ -94,6 +94,7 @@ class PortableStateTests(unittest.TestCase):
         state.backup(self.installation, self.snapshot, apply=True)
 
     def production(self) -> dict:
+        self.docker.volumes.pop("factory-source-hermes-data")
         marker_path = self.source / bootstrap.MARKER
         marker = json.loads(marker_path.read_text())
         marker["profile"] = state.PRODUCTION
@@ -122,6 +123,30 @@ class PortableStateTests(unittest.TestCase):
             }
         return provenance
 
+    def test_hermes_volume_is_preserved_on_cold_restore(self) -> None:
+        metadata, _ = bootstrap.validate_directory(self.source)
+        self.docker.volumes["factory-source-hermes-data"] = {
+            "data": b"private-executor-state",
+            "Labels": {"com.docker.compose.project": "factory-source",
+                       "com.docker.compose.volume": "factory-hermes-data",
+                       state.IDENTITY_LABEL: metadata["installation_id"]},
+        }
+        self.backup()
+        manifest = json.loads((self.snapshot / "manifest.json").read_text())
+        self.assertIn("hermes-data", manifest["volumes"])
+        state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
+        self.assertEqual(self.docker.volumes["factory-restored-hermes-data"]["data"], b"private-executor-state")
+
+    def test_restore_refuses_missing_hermes_archive(self) -> None:
+        self.backup()
+        manifest_path = self.snapshot / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["volumes"].remove("hermes-data")
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "invalid snapshot volume list"):
+            state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
+        self.assertFalse(self.restored.exists())
+
     def test_preview_does_not_stop_or_write(self) -> None:
         state.backup(self.installation, self.snapshot)
         self.assertFalse(self.snapshot.exists())
@@ -142,7 +167,7 @@ class PortableStateTests(unittest.TestCase):
         self.assertEqual(values["FACTORY_INSTALL_DIR"], str(self.restored))
         for name in state.CONFIG_FILES - {".env", bootstrap.MARKER}:
             self.assertEqual((self.source / name).read_bytes(), (self.restored / name).read_bytes())
-        for suffix in state.VOLUMES[:5]:
+        for suffix in state.PORTABLE_VOLUMES:
             volume = self.docker.volumes[f"factory-restored-{suffix}"]
             self.assertEqual(volume["data"], self.docker.volumes[f"factory-source-{suffix}"]["data"])
             self.assertEqual(volume["Labels"][state.IDENTITY_LABEL], metadata["installation_id"])
@@ -177,7 +202,7 @@ class PortableStateTests(unittest.TestCase):
         self.assertEqual(metadata["project"], "factory")
         for name, value in original_volumes.items():
             self.assertEqual(self.docker.volumes[name], value)
-        for suffix in state.VOLUMES[:5]:
+        for suffix in state.PORTABLE_VOLUMES:
             self.assertEqual(self.docker.volumes[f"factory-{suffix}"]["data"],
                              original_volumes[f"factory-source-{suffix}"]["data"])
 

@@ -18,11 +18,13 @@ import portable_state
 import telemetry
 
 HERE = Path(__file__).resolve().parent
-SERVICES = (
+CONTROL_PLANE_SERVICES = (
     "postgres", "hatchet-lite", "bridge", "event-ingress", "intake-worker",
     "execution-dispatch-worker", "bridge-executor-worker", "pr-event-worker",
     "reconciliation-worker", "factory-operator", "outbox-dispatcher",
 )
+
+SERVICES = (*CONTROL_PLANE_SERVICES, "factory-hermes")
 
 
 @contextmanager
@@ -101,7 +103,7 @@ class Installation:
         self.env = {key: value for key, value in os.environ.items() if not key.startswith(("COMPOSE_", "FACTORY_", "HATCHET_"))}
         self.env.update(self.values)
         self.env["FACTORY_INSTALLATION_ID"] = self.metadata["installation_id"]
-        self.args = ["docker", "compose", "--project-name", self.project,
+        self.args = ["docker", "compose", "--profile", "hermes", "--project-name", self.project,
                      "--project-directory", str(self.directory), "--env-file", str(self.directory / ".env"),
                      "-f", str(HERE / "docker-compose.yml"), "-f", str(HERE / "compose.portable.yml")]
         telemetry.attach(self, SERVICES)
@@ -232,8 +234,8 @@ def dispatch(args: argparse.Namespace) -> int:
         if telemetry.SERVICE in install.services:
             # Compose cannot pull a local image ID. Fetch its reviewed digest,
             # then verify it still resolves to the installation's saved ID.
-            run(["docker", "pull", telemetry.IMAGE], env=install.env, private=True)
-            if portable_state._docker(["image", "inspect", "--format", "{{.Id}}", telemetry.IMAGE], install.env) != install.metadata["telemetry"]["image"]:
+            run(["docker", "pull", install.values["FACTORY_IMAGE"]], env=install.env, private=True)
+            if portable_state._docker(["image", "inspect", "--format", "{{.Id}}", install.values["FACTORY_IMAGE"]], install.env) != install.metadata["telemetry"]["image"]:
                 raise ValueError("Collector image differs from its saved pin")
         install.compose("pull", *(name for name in install.services if name != telemetry.SERVICE), "keygen")
     elif args.command == "stop":

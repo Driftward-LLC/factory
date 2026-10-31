@@ -2,7 +2,7 @@
 """Exercise a NEW disposable Factory project; delete only that project's test data.
 
 Requires a locally built runtime image and Docker Compose >= 2.24.4. Does not
-read production configuration, start Hermes, or authorize real execution.
+read production configuration or authorize real execution. Hermes starts idle.
 """
 from __future__ import annotations
 
@@ -189,7 +189,7 @@ def main() -> int:
                     raise RuntimeError("unexpected test project identity")
                 env.update(config)
                 env["FACTORY_INSTALLATION_ID"] = metadata["installation_id"]
-                compose = ["docker", "compose", "--project-name", project,
+                compose = ["docker", "compose", "--profile", "hermes", "--project-name", project,
                            "--project-directory", str(directory), "--env-file", str(directory / ".env"),
                            "-f", str(ROOT / "deploy" / "docker-compose.yml"),
                            "-f", str(ROOT / "deploy" / "compose.portable.yml")]
@@ -209,6 +209,24 @@ def main() -> int:
                     compose, env = configured.args, configured.env
                     run([*wrapper, "up"], env=env, label="Collector startup")
                     run([*wrapper, "status"], env=env, label="Collector status")
+                def assert_shared_image(command, environment):
+                    ids = run([*command, "ps", "-q"], env=environment, label="image identity inventory").split()
+                    rows = json.loads(run(["docker", "inspect", *ids], label="service image inspection"))
+                    expected = run(["docker", "image", "inspect", "--format", "{{.Id}}", args.image], label="release image identity").strip()
+                    if not rows or {row["Image"] for row in rows} != {expected}:
+                        raise RuntimeError("service containers do not share one release image")
+                    for row in rows:
+                        role = row["Config"]["Labels"]["com.docker.compose.service"]
+                        for mount in row["Mounts"]:
+                            if mount["Destination"] == "/opt/data" and role != "factory-hermes":
+                                raise RuntimeError("Hermes state leaked into another role")
+                            if mount["Destination"] in ("/var/run/docker.sock", "/run/docker.sock", "/"):
+                                raise RuntimeError("unexpected host access")
+                    run([*command, "exec", "-T", "factory-hermes", "/opt/hermes/.venv/bin/python", "-c",
+                         "import hermes_cli; print('native Hermes import passed')"], env=environment, label="Hermes runtime import")
+                assert_shared_image(compose, env)
+                run([*compose, "exec", "-T", "factory-hermes", "sh", "-c",
+                     "printf preserved > /opt/data/factory-acceptance-marker"], env=env, label="Hermes volume marker")
                 def execute(service: str, source: str) -> str:
                     return run([*compose, "exec", "-T", service, "python3", "-", issue],
                                env=env, source=source, label=f"{service} acceptance assertion")
@@ -253,7 +271,7 @@ def main() -> int:
                 if restored_config["FACTORY_PROJECT_NAME"] != restored_project:
                     raise RuntimeError("unexpected restored test project identity")
                 restored_env = {**env, **restored_config, "FACTORY_INSTALLATION_ID": restored_metadata["installation_id"]}
-                restored_compose = ["docker", "compose", "--project-name", restored_project,
+                restored_compose = ["docker", "compose", "--profile", "hermes", "--project-name", restored_project,
                                     "--project-directory", str(restored_directory), "--env-file", str(restored_directory / ".env"),
                                     "-f", str(ROOT / "deploy" / "docker-compose.yml"),
                                     "-f", str(ROOT / "deploy" / "compose.portable.yml")]
@@ -272,6 +290,10 @@ def main() -> int:
                 def restored_execute(service: str, source: str) -> str:
                     return run([*restored_compose, "exec", "-T", service, "python3", "-", issue],
                                env=restored_env, source=source, label=f"restored {service} assertion")
+                assert_shared_image(restored_compose, restored_env)
+                if run([*restored_compose, "exec", "-T", "factory-hermes", "cat", "/opt/data/factory-acceptance-marker"],
+                       env=restored_env, label="Hermes state restored") != "preserved":
+                    raise RuntimeError("restore changed Hermes state")
                 restored_execute("bridge-executor-worker", SAFETY_CHECK)
                 console_boundary(int(restored_config["FACTORY_CONSOLE_PORT"]))
                 if json.loads(restored_execute("bridge", BRIDGE_SNAPSHOT)) != receipt:

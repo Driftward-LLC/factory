@@ -34,8 +34,11 @@ Factory deploys through Docker Compose from this repository. The Compose app
 owns Hatchet Lite/Postgres plus Factory bridge, ingress, worker, lifecycle,
 Linear token-renewal, and operator services. The installation operator supplies
 Docker, host prerequisites, service supervision, and protected secret files.
-The separately provisioned Hermes runtime owns agent execution, credentials, MCP,
-browser state, and Hermes session retention.
+Fresh portable installations use one Factory image across separate service
+containers, including an idle `factory-hermes` role with its own data volume.
+That role owns its execution credentials, browser state and session retention.
+Bundling it does not authorize execution or migration of another runtime's data.
+Existing production profiles retain their separately provisioned runtime.
 
 ## Safety
 
@@ -44,9 +47,10 @@ browser state, and Hermes session retention.
 - Keep Hatchet workers credential-minimal. Workers may use Hatchet client
   settings and bridge-local credentials; they must not receive provider,
   GitHub, Linear, Browserbase, MCP, or Hermes credentials.
-- Do not mount Hermes data, provider credentials, browser state, root
-  GitHub auth, the Docker socket, or the host root filesystem into Factory
-  containers.
+- Do not mount shared Hermes data, root GitHub auth, the Docker socket, or the
+  host root filesystem into Factory containers. Only the dedicated Hermes role
+  may hold its own newly provisioned execution credentials and state; workers
+  never mount that data or receive provider credentials.
 - `factory doctor hatchet` is read-only. Pause/remove/apply paths for live
   Hatchet workflows require explicit reviewed operator approval.
 - Lifecycle dead-letter archive must use the root-only operator preview and

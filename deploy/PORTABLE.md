@@ -8,7 +8,9 @@ that owns the installation; enabling telemetry does not authorize real execution
 The optional Collector is another service in the same Compose application, not
 another operator-managed deployment. It needs no durable volume.
 
-1. Pull the reviewed Collector image before maintenance:
+1. Portable installations use the Collector bundled in the selected Factory
+   image; `pull` already retrieves it. Existing production installations retain
+   their separate reviewed Collector image; pull that image before maintenance:
    `docker pull otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1`.
 2. Provision a private 0600 generated dotenv file outside the installation with
    only `POSTHOG_TRACES_ENDPOINT='https://us.i.posthog.com/i/v1/traces'` (or EU)
@@ -51,7 +53,10 @@ This release installs Factory's control plane on a fresh Linux Docker host.
 It uses the published image and bundled deployment tools; no source checkout,
 Node/npm build, systemd or pre-existing Hermes socket is required. The profile
 starts in **dry-run mode**: real agent execution and Linear lifecycle delivery
-are not enabled. Provision and review the external execution runtime separately.
+are not enabled. The bundled `factory-hermes` service starts idle, with no
+provider credentials and no connection from the workers. Authenticate and review
+the gateway binding separately before enabling execution. Its new `hermes-data`
+volume belongs only to this installation and is included in cold backups.
 Do not initialize a fresh profile over an existing installation's state.
 
 Moving the existing Compose deployment is a separate workflow: see
@@ -76,7 +81,8 @@ it directly, spoof identity headers, or disable authentication for deployment.
 The optional Linear proxy is not started by this profile.
 
 Factory containers never receive the Docker socket, host repository mounts,
-Hermes state, provider credentials, or root GitHub authentication. The operator
+or root GitHub authentication. Only `factory-hermes` mounts its own Hermes data;
+workers never receive that volume or provider credentials. The operator
 socket stays inside a named volume; privileged remote operator mutations are
 not part of this milestone.
 
@@ -112,7 +118,7 @@ build only, pass `init --image driftward/factory:my-test-tag`; deployments do no
 build source. Validation-only release artifacts are rejected.
 
 `up` stops only this named project before migrations. It uses the pinned
-Hatchet image's native key generator, database bootstrap and tenant token
+shared image's native Hatchet key generator, database bootstrap and tenant token
 command. Factory's own bridge and ingress initializers then run before workers.
 Partial keysets are never regenerated, and existing worker tokens are retained.
 The native Hatchet token command defaults to a 90-day token lifetime. `up`
