@@ -286,6 +286,15 @@ class CanonicalCliTests(unittest.TestCase):
                 return SimpleNamespace(st_mode=real_lstat(target).st_mode, st_uid=0)
             with patch.object(Path, 'lstat', autospec=True, side_effect=root_owned):
                 self.assertEqual(cli.checked_config(path), value)
+                for service in ('factory-hermes-gateway.service', 'driftward-hermes-factory-gateway.service'):
+                    configured = {**value, 'hermes_gateway_service': service}
+                    path.write_text(json.dumps(configured))
+                    self.assertEqual(cli.checked_config(path), configured)
+                for service in ('docker.service', '', None):
+                    path.write_text(json.dumps({**value, 'hermes_gateway_service': service}))
+                    with self.assertRaisesRegex(ValueError, 'unsupported'):
+                        cli.checked_config(path)
+                path.write_text(json.dumps(value))
                 path.chmod(0o644)
                 with self.assertRaises(ValueError):
                     cli.checked_config(path)

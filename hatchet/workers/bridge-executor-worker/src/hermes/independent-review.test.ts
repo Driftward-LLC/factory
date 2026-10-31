@@ -93,6 +93,18 @@ test('bounded review intent rejects path/command payloads, requirements tamperin
   }
 });
 
+test('review timeout cleanup keeps the resolved container ID and dedicated auth root', async () => {
+  const container = '8'.repeat(64);
+  const session = 'factory-reviewer:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const authRoot = '/opt/data/profiles/factory-independent-reviewer';
+  const calls: string[][] = [];
+  await assert.rejects(runIndependentReviewRelay(
+    ['/runner.py', '/request', '/review-skill', '/verify-skill', 'source', container, session, authRoot],
+    1000, async (_file, args) => { calls.push(args); throw new Error('synthetic timeout'); },
+    async (_file, args) => { calls.push(args); return ''; }), /synthetic timeout/);
+  assert.deepEqual(calls[1], ['/runner.py', '--stop', authRoot, container, session]);
+});
+
 test('receipts cannot relabel model, head, isolation or pass malformed findings', () => {
   const receipt = inconclusiveReview(intent, 'review_backend_unavailable');
   assert.ok(boundedIndependentReview(intent, receipt));
@@ -162,16 +174,18 @@ test('long review retains its receipt after launch inspection expires but still 
       writeFileSync(path.join(provision, name), name === 'source-token' ? 'synthetic-source-read-token' : 'synthetic', { mode: 0o600 });
     }
     const config = path.join(directory, 'config.json');
-    writeFileSync(config, JSON.stringify({ schema: 'factory-hermes-reviewer-provisioning-v2',
+    const provisioning = { schema: 'factory-hermes-reviewer-provisioning-v2',
       hermes_image: `sha256:${'9'.repeat(64)}`,
       image: `reviewer@sha256:${'c'.repeat(64)}`, canary_digest: 'd'.repeat(64), policy_digest: intent.policy_digest,
       review_skill_digest: digest('synthetic'), verify_skill_digest: digest('synthetic'),
-      repositories: { [intent.repository]: { base_ref: 'main' } } }), { mode: 0o600 });
+      repositories: { [intent.repository]: { base_ref: 'main' } } };
+    writeFileSync(config, JSON.stringify(provisioning), { mode: 0o600 });
     const commands: Array<{ file: string; args: string[] }> = [];
     const authorizationPhases: string[] = [];
     let inspectionAgeSeconds = 0;
     let completionAllowed = true;
     let headChanged = false;
+    let runtime = { Id: '8'.repeat(64), Image: provisioning.hermes_image, State: { Running: true } };
     const run = async (file: string, args: string[], _timeout: number, env?: NodeJS.ProcessEnv) => {
       commands.push({ file, args });
       if (file.endsWith('/python3')) {
@@ -190,7 +204,7 @@ test('long review retains its receipt after launch inspection expires but still 
       }
       if (args[0] === 'network' && args[1] === 'inspect') return '[{"Internal":true,"EnableIPv6":false,"Options":{"com.docker.network.bridge.gateway_mode_ipv4":"isolated"}}]';
       if (args[0] === 'image') return '[{"Config":{"Labels":{"io.driftward.factory.independent-reviewer":"1"}}}]';
-      if (args[0] === 'inspect') return JSON.stringify([{ Image: `sha256:${'9'.repeat(64)}`, State: { Running: true } }]);
+      if (args[0] === 'inspect') return JSON.stringify([runtime]);
       if (args[0] === 'run') {
         const mount = args.find((a) => a.includes('dst=/run/mcp-token'))!;
         assert.equal(statSync(mount.split('src=')[1].split(',')[0]).mode & 0o777, 0o444);
@@ -218,7 +232,8 @@ test('long review retains its receipt after launch inspection expires but still 
     assert.match(source, /source\.bundle/);
     assert.doesNotMatch(source, /auth\.json|source-token|factory-reviewer-egress|docker\.sock/);
     assert.match(agent, /runner\.py/);
-    assert.match(agent, /hermes-driftward-hermes-1/);
+    assert.deepEqual(commands.find((c) => c.args[0] === 'inspect')!.args, ['inspect', 'hermes-driftward-hermes-1']);
+    assert.equal(commands.find((c) => c.file.endsWith('/python3'))!.args[5], runtime.Id);
     assert.equal(receipt.backend, 'isolated_hermes');
     assert.doesNotMatch(agent, /auth\.json|source-token|CODEX_HOME|factory-reviewer-egress/);
     assert.doesNotMatch(agent, /source\.bundle|repositories|docker\.sock/);
@@ -245,6 +260,31 @@ test('long review retains its receipt after launch inspection expires but still 
     const changed = await adapter.run(job({ ...intent, review_id: 'head-changed' }));
     assert.equal(changed.verdict, 'inconclusive');
     assert.equal(changed.reason, 'review_head_changed');
+
+    headChanged = false;
+    inspectionAgeSeconds = 0;
+    writeFileSync(config, JSON.stringify({ ...provisioning, hermes_container: 'factory-hermes' }));
+    const renamed = await adapter.run(job({ ...intent, review_id: 'renamed-runtime' }));
+    assert.equal(renamed.verdict, 'passed');
+    assert.deepEqual(commands.filter((c) => c.args[0] === 'inspect').at(-1)!.args, ['inspect', 'factory-hermes']);
+    assert.equal(commands.filter((c) => c.file.endsWith('/python3')).at(-1)!.args[5], runtime.Id);
+
+    const launches = startCount();
+    for (const [index, hermes_container] of ['', '--all', 'factory/hermes', 'factory-hermes\n', null].entries()) {
+      inspectionAgeSeconds = 0;
+      writeFileSync(config, JSON.stringify({ ...provisioning, hermes_container }));
+      assert.equal((await adapter.run(job({ ...intent, review_id: `invalid-runtime-${index}` }))).reason, 'review_isolation_unavailable');
+    }
+    writeFileSync(config, JSON.stringify({ ...provisioning, hermes_container: 'factory-hermes' }));
+    for (const [index, invalid] of [
+      { ...runtime, Id: 'short-id' }, { ...runtime, Image: `sha256:${'0'.repeat(64)}` },
+      { ...runtime, State: { Running: false } },
+    ].entries()) {
+      inspectionAgeSeconds = 0;
+      runtime = invalid;
+      assert.equal((await adapter.run(job({ ...intent, review_id: `unavailable-runtime-${index}` }))).reason, 'review_isolation_unavailable');
+    }
+    assert.equal(startCount(), launches);
   } finally {
     if (before === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
     else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = before;
