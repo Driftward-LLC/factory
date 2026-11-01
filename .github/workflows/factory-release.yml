@@ -138,10 +138,22 @@ jobs:
             HATCHET_ADMIN_PASSWORD=ci-admin-password \
             FACTORY_SOURCE_ROOT="$PWD" \
             docker compose -f deploy/docker-compose.yml config >/dev/null
-          docker build --platform linux/amd64 \
-            --build-arg FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)" \
-            --build-arg FACTORY_RELEASE_VERSION="$RELEASE_TAG" \
-            -f deploy/Dockerfile -t driftward/factory:ci .
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build cached runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: driftward/factory:ci
+          build-args: |
+            FACTORY_RELEASE_COMMIT=${{ github.sha }}
+            FACTORY_RELEASE_VERSION=${{ inputs.release_tag }}
+          cache-from: type=gha,scope=factory-linux-amd64
+          cache-to: type=gha,scope=factory-linux-amd64,mode=max,ignore-error=true,timeout=2m
 
       - name: Prove disposable portable installation and restore
         run: |
