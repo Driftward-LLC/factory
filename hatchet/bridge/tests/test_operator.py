@@ -209,6 +209,7 @@ class FactoryOperatorTests(unittest.TestCase):
             snapshot_digest=preview["snapshot_digest"],
         )
         self.assertTrue(reserved["created"])
+        self.assertEqual(reserved["job"]["payload"]["organization_binding"], {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"})
         self.assertEqual(reserved["attempt"]["generation"], 2)
         self.assertEqual(reserved["job"]["payload"]["factory_retry"]["superseded_bridge_job_id"], orphan["job_id"])
         self.assertEqual(reserved["job"]["payload"]["superseded_bridge_job"]["idempotency_key"], orphan["idempotency_key"])
@@ -244,7 +245,7 @@ class FactoryOperatorTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeConflict, "belongs to a factory attempt"):
             preview_retry(**self.kwargs(), supersede_job_id=reserved["job"]["job_id"])
 
-    def test_force_absence_retry_keeps_observed_identity_if_configuration_changes_after_preview(self):
+    def test_force_absence_retry_refuses_configuration_change_between_previews(self):
         first, _ = self.unknown_effect_attempt()
         evidence = self.absence_evidence(first["attempt"]["branch"])
         preview = preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=evidence)
@@ -256,7 +257,7 @@ class FactoryOperatorTests(unittest.TestCase):
             os.environ["FACTORY_ORGANIZATION_CONFIG"] = str(changed)
             return result
         with patch.dict(os.environ, {}), patch("hatchet_hermes_bridge.operator.preview_force_absence_retry", side_effect=preview_then_switch):
-            with self.assertRaisesRegex(store.BridgeValidationError, "organization_binding_mismatch"):
+            with self.assertRaisesRegex(OperatorError, "trusted_retry_eligibility_failed"):
                 reserve_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], request_id="stale-absence", reason="fixture", actor="uid:0", snapshot_digest=preview["snapshot_digest"], absence_evidence=evidence)
         conn = connect(self.bridge_db)
         self.assertEqual(len(store.list_factory_attempts(conn, "ENG-8")), 1)
