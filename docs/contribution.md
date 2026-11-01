@@ -124,8 +124,9 @@ evidence publication. The workflow filters PR paths (currently including
 Quality and release builds share a GitHub Actions Docker layer-cache scope for
 Linux/amd64. Main pushes seed the default-branch cache; PR cache writes remain
 scoped to their merge ref. npm installation layers depend on the lockfiles and
-workspace manifests, not application source. Cache export is optional and bounded
-to two minutes; image builds and installation assertions remain blocking.
+workspace manifests, not application source. Cache export failures are nonblocking;
+the backend's timeout setting does not cap total transfer time. First exports can
+take several minutes. Image builds and installation assertions remain blocking.
 Running image checks alongside code checks shortens feedback but also spends
 build minutes on revisions that later fail code or browser checks.
 
