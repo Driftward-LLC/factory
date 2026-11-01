@@ -754,7 +754,7 @@ def _backfill_factory_attempts(conn: sqlite3.Connection) -> None:
         attempt_id = "legacy-" + source["job_id"]
         conn.execute("INSERT INTO factory_attempts (attempt_id,work_item_key,action,mode,generation,request_id,idempotency_key,branch,status,job_id,prior_pr_url,actor,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (attempt_id, decision.work_item_key, "create_draft_pr", decision.mode, 1, "legacy:" + source["job_id"], source["idempotency_key"], decision.branch, "legacy_" + source["state"], source["job_id"], decision.prior_pr_url, "legacy-import", now, now))
         _append_factory_attempt_event(conn, attempt_id, "legacy_imported", {"job_id": source["job_id"], "artifact_present": bool(decision.prior_pr_url)})
-        if decision.prior_pr_url:
+        if decision.prior_pr_url and organization.load()["github"]["enabled"]:
             _queue_pr_inspection(conn, decision.work_item_key, decision.prior_pr_url, attempt_id)
 
 
@@ -2448,6 +2448,8 @@ def _queue_pr_inspection(
 
 
 def _backfill_factory_inspections(conn: sqlite3.Connection) -> None:
+    if not organization.load()["github"]["enabled"]:
+        return
     rows = conn.execute(
         """
         SELECT a.attempt_id,a.work_item_key,a.job_id,a.prior_pr_url
@@ -4576,6 +4578,8 @@ def list_factory_inspection_outbox(conn: sqlite3.Connection, limit: int = 50) ->
 
 
 def claim_factory_inspection_outbox(conn: sqlite3.Connection, outbox_key: str) -> dict[str, Any] | None:
+    if not organization.load()["github"]["enabled"]:
+        return None
     with conn:
         row = conn.execute("SELECT * FROM factory_inspection_outbox WHERE outbox_key=? AND acknowledged_at IS NULL", (outbox_key,)).fetchone()
         if not row: return None

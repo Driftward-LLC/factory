@@ -154,9 +154,8 @@ class HumanTimeTests(unittest.TestCase):
                     client.request("POST", path, body=json.dumps(value) if raw is None else raw,
                                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
                 except BrokenPipeError:
-                    # A size rejection may arrive before the oversized body finishes sending.
-                    if raw is None:
-                        raise
+                    # Authentication/size rejection may precede the body send; still require its HTTP response.
+                    pass
                 response = client.getresponse()
                 return response.status, json.loads(response.read())
             finally:

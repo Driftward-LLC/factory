@@ -2,6 +2,8 @@
 from organization_fixtures import configure
 setUpModule, tearDownModule = configure()
 import json
+import os
+from unittest.mock import patch
 import sqlite3
 import subprocess
 import tempfile
@@ -35,7 +37,7 @@ def legacy_row(issue="ENG-8", mode="real", repository=CAPYKIT, job_id="legacy-jo
     return {
         "job_id": job_id,
         "idempotency_key": key,
-        "payload_json": json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": issue, "repo": repository, "dry_run": mode == "dry-run"}),
+        "payload_json": json.dumps({"linear_issue": issue, "repo": repository, "dry_run": mode == "dry-run"}),
         "branch": deterministic_branch(key),
         "pr_url": pr_url,
         "state": state,
@@ -92,6 +94,44 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.conn = connect(self.db)
         self.addCleanup(self.conn.close)
         self.routed, self.enabled = routing_repositories(ROUTES.read_text())
+
+    def disabled_github(self):
+        value = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
+        value["github"]["enabled"] = False
+        path = Path(self.work.name) / "disabled-organization.json"
+        path.write_text(json.dumps(value))
+        return patch.dict(os.environ, {"FACTORY_ORGANIZATION_CONFIG": str(path)})
+
+    def test_schema_seven_real_pr_import_retains_history_with_disabled_github(self):
+        row = legacy_row(pr_url=f"https://github.com/{CAPYKIT}/pull/20")
+        self.insert(row)
+        with self.disabled_github():
+            init_db(self.conn)
+        attempt = self.conn.execute("SELECT * FROM factory_attempts WHERE job_id=?", (row["job_id"],)).fetchone()
+        self.assertEqual((attempt["status"], attempt["prior_pr_url"]), ("legacy_completed", row["pr_url"]))
+        source = self.conn.execute("SELECT * FROM bridge_jobs WHERE job_id=?", (row["job_id"],)).fetchone()
+        self.assertEqual(source["payload_json"], row["payload_json"])
+        self.assertNotIn("organization_binding", json.loads(source["payload_json"]))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM bridge_jobs").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_inspection_requests").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_inspection_outbox").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 10)
+
+    def test_disabled_upgrade_preserves_existing_pending_inspection_without_claiming(self):
+        from hatchet_hermes_bridge import store
+        row = legacy_row(pr_url=f"https://github.com/{CAPYKIT}/pull/20")
+        self.insert(row)
+        init_db(self.conn)
+        tables = ("bridge_jobs", "factory_inspection_requests", "factory_inspection_outbox")
+        before = {table: [tuple(item) for item in self.conn.execute(f"SELECT * FROM {table} ORDER BY rowid")] for table in tables}
+        outbox_key = self.conn.execute("SELECT outbox_key FROM factory_inspection_outbox").fetchone()[0]
+        with self.conn:
+            self.conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
+        with self.disabled_github():
+            init_db(self.conn)
+            self.assertIsNone(store.claim_factory_inspection_outbox(self.conn, outbox_key))
+        after = {table: [tuple(item) for item in self.conn.execute(f"SELECT * FROM {table} ORDER BY rowid")] for table in tables}
+        self.assertEqual(after, before)
 
     def decision(self, row, *, sources=None, attempts=(), conflicts=(), leases=(), events=(), outbox=()):
         return reconcile_legacy_active_row(

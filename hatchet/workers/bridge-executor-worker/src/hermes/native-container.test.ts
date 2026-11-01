@@ -12,7 +12,7 @@ const script = `#!${process.execPath}
 const fs=require('node:fs'),path=require('node:path');
 const args=process.argv.slice(2),root=process.env.NATIVE_CONTAINER_TEST_ROOT,mode=process.env.NATIVE_CONTAINER_TEST_MODE;
 const emit=v=>process.stdout.write(JSON.stringify(v));
-const file=path.join(root,'state'),save=v=>fs.writeFileSync(file,JSON.stringify(v)),read=()=>JSON.parse(fs.readFileSync(file));
+const file=path.join(root,'state'),save=v=>{const temporary=file+'.'+process.pid;fs.writeFileSync(temporary,JSON.stringify(v));fs.renameSync(temporary,file);},read=()=>JSON.parse(fs.readFileSync(file));
 fs.appendFileSync(path.join(root,'calls'),JSON.stringify(args)+'\\n');
 if(args[0]==='volume')emit([{Name:process.env.DRIFTWARD_HERMES_NATIVE_SEED,Driver:'local',Labels:{'com.driftward.factory.role':'native-executor-seed','com.driftward.factory.fresh-credentials':'true'}}]);
 else if(args[0]==='image')emit([{Id:process.env.DRIFTWARD_HERMES_NATIVE_IMAGE,Config:{}}]);
