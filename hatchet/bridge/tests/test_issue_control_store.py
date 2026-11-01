@@ -57,7 +57,7 @@ class IssueControlStoreTests(unittest.TestCase):
         })
 
     def test_disabled_organization_cannot_authorize_queued_external_effect(self):
-        _, job, _ = self.intake()
+        attempt, job, _ = self.intake()
         claim = self.claim(job)
         identity = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
         identity["github"]["enabled"] = False
@@ -65,7 +65,7 @@ class IssueControlStoreTests(unittest.TestCase):
         path.write_text(json.dumps(identity))
         with patch.dict(os.environ, {"FACTORY_ORGANIZATION_CONFIG": str(path)}):
             self.assertFalse(store.authorize_factory_effect(self.conn, job["job_id"], claim))
-        self.assertIsNone(self.conn.execute("SELECT effect_authorized_at FROM factory_execution_leases WHERE attempt_id=?", (claim["attempt_id"],)).fetchone()[0])
+        self.assertIsNone(self.conn.execute("SELECT effect_authorized_at FROM factory_execution_leases WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()[0])
 
     def test_default_read_is_factory_and_does_not_create_ownership(self):
         result = store.get_factory_issue_control(self.conn, self.issue)

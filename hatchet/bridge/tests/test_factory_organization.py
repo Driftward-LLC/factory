@@ -65,3 +65,17 @@ class OrganizationTests(unittest.TestCase):
             with self.assertRaisesRegex(store.BridgeValidationError, 'disabled'): store._validate_submit(request)
         request['payload']['dry_run'] = True
         store._validate_submit(request)
+
+    def test_fresh_bridge_initializes_with_empty_default_routing(self):
+        import sqlite3
+        from hatchet_hermes_bridge import store
+        from hatchet_hermes_bridge.legacy_artifacts import routing_repositories
+        with patch.dict(os.environ, {}, clear=True):
+            conn = sqlite3.connect(':memory:'); conn.row_factory = sqlite3.Row
+            try:
+                store.init_db(conn)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM factory_attempts').fetchone()[0], 0)
+                self.assertFalse(store._canonical_enabled_repo('example/widgets'))
+            finally:
+                conn.close()
+        self.assertEqual(routing_repositories({'version': 2, 'routes': []}), (set(), set()))

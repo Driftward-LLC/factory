@@ -113,8 +113,6 @@ def routing_repositories(raw: Any) -> tuple[set[str], set[str]]:
         if repository in routed:
             raise ValueError("retired repository is duplicated or still routed")
         routed.add(repository)
-    if not routed or not enabled:
-        raise ValueError("routing registry is invalid")
     return routed, enabled
 
 

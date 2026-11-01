@@ -25,6 +25,11 @@ spec.loader.exec_module(cli)
 
 class InspectionRecoveryTests(unittest.TestCase):
     def setUp(self):
+        settings = patch.dict("os.environ", {
+            "FACTORY_ORGANIZATION_CONFIG": str(ROOT / "hatchet/workers/test-fixtures/organization.json"),
+            "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(ROOT / "hatchet/workers/test-fixtures/routing-registry.json"),
+        })
+        settings.start(); self.addCleanup(settings.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
