@@ -219,8 +219,9 @@ def _row(conn, job_id: str, capability: str):
 def authorization(conn, job_id: str, capability: str) -> dict[str, Any]:
     """Native gateway checks a real reservation; this endpoint never grants a pass."""
     row = _row(conn, job_id, capability)
-    request = store.get_job(conn, job_id)["payload"]["review"]
-    allowed = completion_allowed = row["state"] == "running"
+    review_job = store.get_job(conn, job_id)
+    request = review_job["payload"]["review"]
+    allowed = completion_allowed = row["state"] == "running" and organization.matches_binding(review_job["payload"].get("organization_binding"))
     if allowed:
         try:
             current = policy()
@@ -245,7 +246,11 @@ def claim(conn, job_id: str, capability: str) -> bool:
         row = _row(conn, job_id, capability)
         if row["state"] != "pending":
             return False
-        if not store.get_job(conn, job_id)["payload"]["review"]["requirements"]["description"]:
+        review_job = store.get_job(conn, job_id)
+        if not organization.matches_binding(review_job["payload"].get("organization_binding")):
+            _stop(conn, row, "review_policy_changed")
+            return False
+        if not review_job["payload"]["review"]["requirements"]["description"]:
             _stop(conn, row, "review_inconclusive")
             return False
         current = policy()

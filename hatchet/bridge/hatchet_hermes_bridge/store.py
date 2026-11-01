@@ -3619,6 +3619,7 @@ def _factory_intake_job_matches(job: dict[str, Any], *, work_item_key: str, mode
         and job_payload.get("repo") == payload.get("repo")
         and job_payload.get("linear_issue") == work_item_key
         and job_payload.get("dry_run") is (mode == "dry-run")
+        and (mode != "real" or (organization.matches_binding(job_payload.get("organization_binding")) and organization.matches_binding(payload.get("organization_binding"))))
     )
 
 
@@ -3655,7 +3656,7 @@ def claim_factory_execution(conn: sqlite3.Connection, job_id: str, *, owner: str
         conn.execute("BEGIN IMMEDIATE")
         attempt = get_factory_attempt_for_job(conn, job_id)
         job = get_job(conn, job_id)
-        if job["requested_action"] in DRAFT_PR_EFFECT_ACTIONS and job["payload"].get("dry_run") is not True and not organization.matches_binding(job["payload"].get("organization_binding")):
+        if job["requested_action"] in DRAFT_PR_EFFECT_ACTIONS and job["payload"].get("dry_run") is not True and (not organization.load()["github"]["enabled"] or not organization.matches_binding(job["payload"].get("organization_binding"))):
             return {"claimed": False, "reason": "organization_binding_mismatch", "attempt": attempt}
         if _issue_control_held(conn, attempt["work_item_key"] if attempt else _job_work_item(get_job(conn, job_id))):
             return {"claimed": False, "reason": "factory_issue_manual_control", "attempt": attempt}

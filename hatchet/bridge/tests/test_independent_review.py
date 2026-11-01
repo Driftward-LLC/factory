@@ -56,6 +56,16 @@ class IndependentReviewTests(unittest.TestCase):
         reviews._settle_receipt(self.conn, row["review_id"])
         return output
 
+    def test_unbound_review_job_cannot_claim_even_when_source_is_bound(self):
+        row = self.reserve()
+        job = store.get_job(self.conn, row["job_id"])
+        payload = dict(job["payload"]); payload.pop("organization_binding")
+        with self.conn:
+            self.conn.execute("UPDATE bridge_jobs SET payload_json=?,payload_hash=? WHERE job_id=?", (store.canonical_json(payload), store.payload_hash(payload), row["job_id"]))
+        self.assertFalse(reviews.claim(self.conn, row["job_id"], row["capability"]))
+        self.assertFalse(reviews.authorization(self.conn, row["job_id"], row["capability"])["invocation_allowed"])
+        self.assertEqual(store.get_job(self.conn, row["job_id"])["job_id"], row["job_id"])
+
     def test_org_change_revokes_pending_and_running_review_invocation(self):
         from pathlib import Path
         import tempfile
