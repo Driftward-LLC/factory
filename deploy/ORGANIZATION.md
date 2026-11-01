@@ -28,13 +28,18 @@ An absent organization environment variable also disables integrations in standa
 processes. A configured path must exist and pass validation.
 
 A route maps one canonical Linear project UUID to `owner/repo` and an explicit
-`execution_enabled` boolean. Empty routes authorize no project. Repository scope
-also requires a matching verifier policy, a gateway
+`execution_enabled` boolean. Empty routes authorize no project. Each project
+and repository may appear only once, including disabled routes; repository
+uniqueness ignores case. A registry containing only disabled routes is valid
+and admits no execution. Repository scope also requires an explicit
+`HATCHET_INTAKE_ALLOWED_REPOS` entry in `env/hatchet-workers.env` and a matching
+verifier policy, including for a synthetic dry-run admission. Real execution
+also requires a gateway
 `DRIFTWARD_HERMES_ALLOWED_GITHUB_REPOS` entry, and, when review is enabled, a
 matching independent review repository. Keep these lists aligned. Repo entries
 must have the form `owner/repository`; duplicates and empty entries are invalid.
 Schema files document field shapes; startup validation also enforces unique
-project mappings and repository policies.
+project mappings, unique repository routes, and repository policies.
 No source organization or repository is implicitly allowed.
 
 Verifier policies retain the existing fields: `id`, `repo`, `expected_base`,
@@ -78,3 +83,10 @@ bundle, backup, image history, and rollback state. Review the prepared deploymen
 before approving any integration or executor activation. Existing unified
 installations whose deployment hashes change require a separately reviewed
 transition; image-only upgrade continues to refuse changed Compose inputs.
+
+Existing pending real jobs without `payload.organization_binding` require explicit
+operator resolution and new admission from an observed issue before execution.
+The binding records the original observed `workspace_id`, `team_id`, and
+`team_key`; it must match the current configured identity at admission and before
+an effect. Configuration changes do not backfill historical jobs or grant them
+new identity. Historical records and receipts remain readable.

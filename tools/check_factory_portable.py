@@ -75,6 +75,8 @@ import os
 assert os.environ.get('HATCHET_INTAKE_DRY_RUN') == 'true'
 assert os.environ.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '0'
 assert not os.environ.get('DRIFTWARD_HERMES_GRPC_TARGET')
+import factory_organization
+assert factory_organization.load()['github']['enabled'] is False
 print('dry-run-only')
 """
 
@@ -265,6 +267,15 @@ def main() -> int:
                 (directory / "config/organization.json").write_text(json.dumps(organization))
                 (directory / "config/routing-registry.json").write_text(json.dumps({"version": 2, "routes": [
                     {"project_id": "44444444-4444-4444-8444-444444444444", "repo": "ExampleOrg/widget", "execution_enabled": True}]}))
+                (directory / "config/verifier-policy.json").write_text(json.dumps({"version": 1, "policies": [{
+                    "id": "portable-acceptance", "repo": "ExampleOrg/widget", "expected_base": "integration",
+                    "allowed_changed_paths": ["README.md"], "forbidden_changed_paths": [".env"],
+                    "required_local_commands": ["git diff --check"], "secret_check_command": "test ! -f .env"}]}))
+                workers_path = directory / "env/hatchet-workers.env"
+                workers = bootstrap.read_env(workers_path)
+                workers["HATCHET_INTAKE_ALLOWED_REPOS"] = "ExampleOrg/widget"
+                workers_path.write_text(bootstrap.env_text(workers))
+                supplied_workers = workers_path.read_bytes()
                 run([*wrapper, "up"], env=env, label="synthetic configured dry-run startup")
                 supplied_configuration = bootstrap.configuration(directory / "config")
                 print("Checking signed ingress, duplicate suppression, and Hatchet dry-run completion.", flush=True)
@@ -304,6 +315,8 @@ def main() -> int:
                 restored_metadata, restored_config = bootstrap.validate_directory(restored_directory)
                 if bootstrap.configuration(restored_directory / "config") != supplied_configuration:
                     raise RuntimeError("restore changed supplied organization or policy files")
+                if (restored_directory / "env/hatchet-workers.env").read_bytes() != supplied_workers:
+                    raise RuntimeError("restore changed supplied intake allowlist or worker credentials")
                 if restored_config["FACTORY_PROJECT_NAME"] != restored_project:
                     raise RuntimeError("unexpected restored test project identity")
                 restored_env = {**env, **restored_config, "FACTORY_INSTALLATION_ID": restored_metadata["installation_id"]}
