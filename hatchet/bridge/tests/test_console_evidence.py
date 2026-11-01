@@ -180,7 +180,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(prior["head_comparison"], "unavailable")
 
     def test_dry_run_and_legacy_without_checkpoints_never_look_verified(self):
-        store.reserve_factory_intake(self.conn, work_item_key="ENG-802", mode="dry-run", request_id="dry", reason="test", actor="test", payload={"repo": "example/widgets"})
+        store.reserve_factory_intake(self.conn, work_item_key="ENG-802", mode="dry-run", request_id="dry", reason="test", actor="test", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets"})
         dry = console.lifecycle(self.path, "ENG-802")["verification_evidence"]
         self.assertEqual(dry["verification"]["result"], "not_applicable")
         self.assertEqual(dry["inspection"]["status"], "unavailable")

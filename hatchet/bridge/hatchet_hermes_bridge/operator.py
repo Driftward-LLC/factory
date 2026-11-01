@@ -571,6 +571,7 @@ def reserve_force_absence_retry(*, bridge_db: str, ingress_db: str, registry_pat
     source = preview.pop("input")
     policy = _policy(preview["repository"], policy_path)
     payload = {
+        "organization_binding": {"workspace_id": source.get("workspaceId"), "team_id": source.get("teamId"), "team_key": source.get("teamKey")},
         "repo": preview["repository"],
         "linear_issue_id": source.get("issueId"),
         "linear_issue_url": source.get("issueUrl"),

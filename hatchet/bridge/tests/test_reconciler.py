@@ -127,7 +127,7 @@ class BridgeReconcilerTests(unittest.TestCase):
             {
                 "idempotency_key": key,
                 "requested_action": "create_draft_pr",
-                "payload": {"repo": "example/platform"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
             },
         )
         return transition_job(self.conn, job["job_id"], state="running")

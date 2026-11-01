@@ -184,7 +184,7 @@ class WorkEvidenceTests(unittest.TestCase):
         self.assertEqual(len(self.evidence(attempt)["checkpoints"]), 1)
 
     def test_dry_run_has_only_admission_evidence(self):
-        attempt, job, _ = self.reserve(mode="dry-run", payload={"repo": "example/widgets"})
+        attempt, job, _ = self.reserve(mode="dry-run", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets"})
         store.transition_job(self.conn, job["job_id"], state="running")
         store.transition_job(self.conn, job["job_id"], state="completed")
         evidence = self.evidence(attempt)

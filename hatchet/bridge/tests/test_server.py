@@ -24,7 +24,7 @@ class BridgeServerTests(unittest.TestCase):
             from hatchet_hermes_bridge.store import reserve_factory_retry
             attempt, job, _ = reserve_factory_retry(
                 conn, work_item_key="ENG-40", mode="real", request_id="route-http",
-                reason="test", actor="uid:0", payload={"repo": "example/widgets"},
+                reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets"},
             )
             details = {
                 "analytics_schema_version": 1,
@@ -60,7 +60,7 @@ class BridgeServerTests(unittest.TestCase):
             from hatchet_hermes_bridge.store import reserve_factory_retry, claim_factory_execution, authorize_factory_effect
             attempt, job, _ = reserve_factory_retry(
                 conn, work_item_key="ENG-40", mode="real", request_id="analytics-http",
-                reason="test", actor="uid:0", payload={"repo": "example/widgets"},
+                reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets"},
             )
             transition_job(conn, job["job_id"], state="running")
             lease = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
@@ -190,7 +190,7 @@ class BridgeServerTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
             from hatchet_hermes_bridge.store import reserve_factory_retry, claim_factory_execution, authorize_factory_effect, commit_factory_execution, get_factory_attempt
-            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-post-commit", reason="test", actor="uid:0", payload={"repo":"example/widgets"})
+            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-post-commit", reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo":"example/widgets"})
             transition_job(conn, job["job_id"], state="running", details={})
             claim = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
             self.assertTrue(authorize_factory_effect(conn, job["job_id"], claim))
@@ -210,7 +210,7 @@ class BridgeServerTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
             from hatchet_hermes_bridge.store import reserve_factory_retry, claim_factory_execution, authorize_factory_effect
-            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-race", reason="test", actor="uid:0", payload={"repo":"example/widgets"})
+            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-race", reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo":"example/widgets"})
             transition_job(conn, job["job_id"], state="running", details={})
             lease = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
             failed = _PostHandler(conn, {"state":"failed", "details":{"reason_code":"forged"}}, f"/jobs/{job['job_id']}/transitions")
@@ -357,7 +357,7 @@ class BridgeServerTests(unittest.TestCase):
             job, _ = submit_job(conn, {
                 "idempotency_key": "hatchet:server:severity-validation",
                 "requested_action": "create_draft_pr",
-                "payload": {"repo": "example/platform"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
             })
 
             for severity in ([], {}, None, 0, 1.5):

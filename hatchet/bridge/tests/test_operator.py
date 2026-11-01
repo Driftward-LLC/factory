@@ -244,6 +244,25 @@ class FactoryOperatorTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeConflict, "belongs to a factory attempt"):
             preview_retry(**self.kwargs(), supersede_job_id=reserved["job"]["job_id"])
 
+    def test_force_absence_retry_keeps_observed_identity_if_configuration_changes_after_preview(self):
+        first, _ = self.unknown_effect_attempt()
+        evidence = self.absence_evidence(first["attempt"]["branch"])
+        preview = preview_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], absence_evidence=evidence)
+        value = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
+        value["linear"]["workspace_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        changed = Path(self.work.name) / "changed-organization.json"; changed.write_text(json.dumps(value))
+        def preview_then_switch(**kwargs):
+            result = preview_force_absence_retry(**kwargs)
+            os.environ["FACTORY_ORGANIZATION_CONFIG"] = str(changed)
+            return result
+        with patch.dict(os.environ, {}), patch("hatchet_hermes_bridge.operator.preview_force_absence_retry", side_effect=preview_then_switch):
+            with self.assertRaisesRegex(store.BridgeValidationError, "organization_binding_mismatch"):
+                reserve_force_absence_retry(**self.kwargs(), attempt_id=first["attempt"]["attempt_id"], request_id="stale-absence", reason="fixture", actor="uid:0", snapshot_digest=preview["snapshot_digest"], absence_evidence=evidence)
+        conn = connect(self.bridge_db)
+        self.assertEqual(len(store.list_factory_attempts(conn, "ENG-8")), 1)
+        self.assertEqual(get_factory_attempt(conn, first["attempt"]["attempt_id"])["status"], "effect_outcome_unknown")
+        conn.close()
+
     def test_force_absence_retry_supersedes_unknown_attempt_and_reserves_generation(self):
         first, claim = self.unknown_effect_attempt()
         evidence = self.absence_evidence(first["attempt"]["branch"])

@@ -200,7 +200,7 @@ class BridgeStoreTests(unittest.TestCase):
         request = {
             "idempotency_key": "hatchet:run-1:create-pr",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         }
         submit_job(self.conn, request)
 
@@ -210,7 +210,7 @@ class BridgeStoreTests(unittest.TestCase):
                 {
                     "idempotency_key": "hatchet:run-1:create-pr",
                     "requested_action": "create_draft_pr",
-                    "payload": {"repo": "Driftward-LLC/other"},
+                    "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "Driftward-LLC/other"},
                 },
             )
 
@@ -333,7 +333,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:verified-ready:validation",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         transition_job(self.conn, job["job_id"], state="running")
         transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/96"})
@@ -365,7 +365,7 @@ class BridgeStoreTests(unittest.TestCase):
         with self.assertRaises(BridgeValidationError):
             transition_job(self.conn, job["job_id"], state="completed")
         dry, _ = submit_job(self.conn, {
-            "idempotency_key": "hatchet:dry:completed", "requested_action": "create_draft_pr", "payload": {"repo": "example/platform", "dry_run": True},
+            "idempotency_key": "hatchet:dry:completed", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "dry_run": True},
         })
         transition_job(self.conn, dry["job_id"], state="running")
         self.assertEqual(transition_job(self.conn, dry["job_id"], state="completed")["state"], "completed")
@@ -598,7 +598,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:test",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         finding = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:test",
@@ -626,7 +626,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:scope",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         finding = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:scope",
@@ -651,7 +651,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:validation",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         base = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:validation",
@@ -680,7 +680,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:strict-schema",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         base = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:strict",
@@ -710,7 +710,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:atomic",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         good = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:atomic-good",
@@ -758,13 +758,13 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:event-limit",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         for _ in range(3):
             submit_job(self.conn, {
                 "idempotency_key": "hatchet:event-limit",
                 "requested_action": "create_draft_pr",
-                "payload": {"repo": "example/platform"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
             })
         self.assertEqual(len(list_events(self.conn, job["job_id"], 2)), 2)
         self.assertEqual(count_events(self.conn, job["job_id"]), 4)

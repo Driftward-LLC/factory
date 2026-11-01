@@ -32,7 +32,7 @@ class RetryReviewFencingTests(unittest.TestCase):
     def _reserve(self):
         conn = connect(self.db)
         try:
-            return reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="review-1", reason="retry", actor="uid:0;pid:1;account:root", payload={"repo":"example/widgets"})
+            return reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="review-1", reason="retry", actor="uid:0;pid:1;account:root", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo":"example/widgets"})
         finally: conn.close()
 
     def test_cancel_claim_and_recovery_never_open_second_execution_path(self):
@@ -258,7 +258,7 @@ class RetryReviewFencingTests(unittest.TestCase):
     def test_legacy_bridge_init_refreshes_latest_attempt_expired_inspection(self):
         conn = connect(self.db)
         from hatchet_hermes_bridge.store import _queue_pr_inspection
-        attempt, _job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="refresh-on-init", reason="retry", actor="uid:0", payload={"repo":"example/widgets"})
+        attempt, _job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="refresh-on-init", reason="retry", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo":"example/widgets"})
         url = "https://github.com/example/widgets/pull/22"
         conn.execute("UPDATE factory_attempts SET status='failed', prior_pr_url=?, updated_at=? WHERE attempt_id=?", (url, "2000-01-01T00:00:00.000000Z", attempt["attempt_id"]))
         _queue_pr_inspection(conn, "ENG-62", url, attempt["attempt_id"])
