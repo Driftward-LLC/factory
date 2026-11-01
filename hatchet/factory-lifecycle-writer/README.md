@@ -21,7 +21,7 @@ write to Linear. It solves three problems:
 
 It polls only `GET /lifecycle/observations` (a sanitized ingress projection)
 and the authenticated bridge job ledger. It writes a durable SQLite outbox at
-`/var/lib/driftward-factory-lifecycle-writer/outbox.db`, verifies its source-defined
+`/var/lib/factory-lifecycle-writer/outbox.db`, verifies its source-defined
 client identity, workspace, and team access before every scan, and creates at
 most one marked Linear comment per issue/job/phase. Its actor, workspace, and
 team IDs are currently fixed in `factory_lifecycle_writer/linear.py`.
@@ -65,19 +65,19 @@ Install or refresh after bridge and ingress:
 
 ```bash
 bash hatchet/factory-lifecycle-writer/install.sh
-systemctl status driftward-factory-lifecycle-writer.service --no-pager
-systemctl status driftward-factory-linear-token.timer --no-pager
+systemctl status factory-lifecycle-writer.service --no-pager
+systemctl status factory-linear-token.timer --no-pager
 curl -fsS http://127.0.0.1:19880/status
 ```
 
 The root-only token service reads `/root/.config/linear/factory_client_{id,secret}`
 and atomically publishes only `LINEAR_FACTORY_ACCESS_TOKEN` into
-`/etc/driftward/factory-lifecycle-writer.env` (mode `0600`). Never print,
+`/etc/factory/factory-lifecycle-writer.env` (mode `0600`). Never print,
 copy, or commit either credential or token.
 
 In the Docker deployment, the token renewer runs as the
 `factory-linear-token-refresh` Compose service. It reads
 `FACTORY_LINEAR_CLIENT_ID` and `FACTORY_LINEAR_CLIENT_SECRET` from the protected
-`/etc/driftward/factory-linear-token.env` file and writes only the refreshed
+`/etc/factory/factory-linear-token.env` file and writes only the refreshed
 access token into the mounted lifecycle-writer env file. Do not mount root's
 Linear credential directory into the Factory containers.

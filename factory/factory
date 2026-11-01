@@ -1,37 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"
-INTAKE_SERVICE=driftward-hatchet-worker-intake.service
-OPERATOR_ENV_FILE="${FACTORY_OPERATOR_ENV:-/etc/driftward/factory-operator.env}"
-OPERATOR_SOCKET="${FACTORY_OPERATOR_SOCKET:-/run/driftward-factory-operator/operator.sock}"
-BRIDGE_ENV_FILE="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"
-RUNTIME_ROOT="${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}"
-HATCHET_ENV_FILE="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
-FACTORY_SERVICE="${DRIFTWARD_FACTORY_SYSTEMD_SERVICE:-driftward-factory.service}"
-HERMES_FACTORY_GATEWAY_SERVICE="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SERVICE:-driftward-hermes-factory-gateway.service}"
-HERMES_FACTORY_GATEWAY_SOCKET="${DRIFTWARD_HERMES_FACTORY_GATEWAY_SOCKET:-/run/driftward-hermes-factory/hermes.sock}"
+ENV_FILE="${FACTORY_HATCHET_WORKERS_ENV:-/etc/factory/hatchet-workers.env}"
+INTAKE_SERVICE=factory-hatchet-worker-intake.service
+OPERATOR_ENV_FILE="${FACTORY_OPERATOR_ENV:-/etc/factory/factory-operator.env}"
+OPERATOR_SOCKET="${FACTORY_OPERATOR_SOCKET:-/run/factory-operator/operator.sock}"
+BRIDGE_ENV_FILE="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/factory/hatchet-bridge.env}"
+RUNTIME_ROOT="${FACTORY_RUNTIME_ROOT:-/docker/factory/factory}"
+HATCHET_ENV_FILE="${FACTORY_HATCHET_ENV_FILE:-/etc/factory/hatchet.env}"
+FACTORY_SERVICE="${FACTORY_SYSTEMD_SERVICE:-factory.service}"
+HERMES_FACTORY_GATEWAY_SERVICE="${FACTORY_HERMES_FACTORY_GATEWAY_SERVICE:-factory-hermes-factory-gateway.service}"
+HERMES_FACTORY_GATEWAY_SOCKET="${FACTORY_HERMES_FACTORY_GATEWAY_SOCKET:-/run/factory-hermes-factory/hermes.sock}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-FACTORY_SHARE_DIR="${FACTORY_SHARE_DIR:-${DRIFTWARD_FACTORY_SHARE_DIR:-/usr/local/share/driftward-factory}}"
+FACTORY_SHARE_DIR="${FACTORY_SHARE_DIR:-/usr/local/share/factory}"
 RETIRED_FACTORY_UNITS=(
-  driftward-hatchet.service
-  driftward-hatchet-bridge.service
-  driftward-hatchet-event-ingress.service
-  driftward-hatchet-linear-webhook-proxy.service
-  driftward-hatchet-worker-intake.service
-  driftward-hatchet-worker-execution-dispatch.service
-  driftward-hatchet-worker-bridge-executor.service
-  driftward-hatchet-worker-pr-event.service
-  driftward-hatchet-worker-reconciliation.service
-  driftward-hatchet-hermes-gateway.service
-  driftward-factory-lifecycle-writer.service
-  driftward-factory-linear-token.service
-  driftward-factory-linear-token.timer
-  driftward-factory-operator.service
-  driftward-factory-outbox-dispatcher.service
-  driftward-factory-outbox-dispatcher.timer
-  driftward-hatchet-bridge-reconciler.service
-  driftward-hatchet-bridge-reconciler.timer
+  factory-hatchet.service
+  factory-hatchet-bridge.service
+  factory-hatchet-event-ingress.service
+  factory-hatchet-linear-webhook-proxy.service
+  factory-hatchet-worker-intake.service
+  factory-hatchet-worker-execution-dispatch.service
+  factory-hatchet-worker-bridge-executor.service
+  factory-hatchet-worker-pr-event.service
+  factory-hatchet-worker-reconciliation.service
+  factory-hatchet-hermes-gateway.service
+  factory-lifecycle-writer.service
+  factory-linear-token.service
+  factory-linear-token.timer
+  factory-operator.service
+  factory-outbox-dispatcher.service
+  factory-outbox-dispatcher.timer
+  factory-hatchet-bridge-reconciler.service
+  factory-hatchet-bridge-reconciler.timer
 )
 
 usage() {
@@ -1368,19 +1368,19 @@ show_status() {
     docker_service_status "Factory outbox dispatcher" outbox-dispatcher required
     retired_factory_units_status
   else
-    unit_status "Hatchet control plane" driftward-hatchet.service required
-    unit_status "Hatchet Hermes gRPC gateway" driftward-hatchet-hermes-gateway.service required
-    unit_status "Hatchet bridge API" driftward-hatchet-bridge.service required
-    unit_status "Hatchet event ingress" driftward-hatchet-event-ingress.service required
-    unit_status "Hatchet Linear webhook proxy" driftward-hatchet-linear-webhook-proxy.service required
-    unit_status "Hatchet intake worker" driftward-hatchet-worker-intake.service required
-    unit_status "Hatchet execution-dispatch worker" driftward-hatchet-worker-execution-dispatch.service required
-    unit_status "Hatchet bridge-executor worker" driftward-hatchet-worker-bridge-executor.service required
-    unit_status "Hatchet PR-event worker" driftward-hatchet-worker-pr-event.service required
-    unit_status "Factory lifecycle writer" driftward-factory-lifecycle-writer.service required
-    timer_status "Factory Linear token timer" driftward-factory-linear-token.timer required
+    unit_status "Hatchet control plane" factory-hatchet.service required
+    unit_status "Hatchet Hermes gRPC gateway" factory-hatchet-hermes-gateway.service required
+    unit_status "Hatchet bridge API" factory-hatchet-bridge.service required
+    unit_status "Hatchet event ingress" factory-hatchet-event-ingress.service required
+    unit_status "Hatchet Linear webhook proxy" factory-hatchet-linear-webhook-proxy.service required
+    unit_status "Hatchet intake worker" factory-hatchet-worker-intake.service required
+    unit_status "Hatchet execution-dispatch worker" factory-hatchet-worker-execution-dispatch.service required
+    unit_status "Hatchet bridge-executor worker" factory-hatchet-worker-bridge-executor.service required
+    unit_status "Hatchet PR-event worker" factory-hatchet-worker-pr-event.service required
+    unit_status "Factory lifecycle writer" factory-lifecycle-writer.service required
+    timer_status "Factory Linear token timer" factory-linear-token.timer required
   fi
-  unit_status "Driftward Hermes service" driftward-hermes.service required
+  unit_status "Factory Hermes service" factory-hermes.service required
 
   printf '\nRequired endpoints\n'
   printf '%s\n' '------------------'
@@ -1405,20 +1405,20 @@ show_status() {
   fi
   linear_webhook_public_readiness_status "Linear webhook public readiness" required
   lifecycle_writer_status
-  http_status "Driftward Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
-  command_status "Driftward Hermes Codex auth" required driftward-hermes hermes auth status openai-codex
+  http_status "Factory Hermes dashboard" http://127.0.0.1:19120/ "200 302 401" required
+  command_status "Factory Hermes Codex auth" required factory-hermes hermes auth status openai-codex
   socket_status "Hermes Factory gRPC socket" "$HERMES_FACTORY_GATEWAY_SOCKET" advisory
   hatchet_conformance_status
 
   printf '\nAdvisory / recovery\n'
   printf '%s\n' '-------------------'
-  retired_timer_status "Retired bridge reconciler" driftward-hatchet-bridge-reconciler.timer driftward-hatchet-bridge-reconciler.service
+  retired_timer_status "Retired bridge reconciler" factory-hatchet-bridge-reconciler.timer factory-hatchet-bridge-reconciler.service
   socket_status "Factory retry operator socket" "$OPERATOR_SOCKET" advisory
   if ! factory_docker_runtime_active; then
-    unit_status "Hatchet reconciliation worker" driftward-hatchet-worker-reconciliation.service advisory
-    unit_status "Factory retry operator" driftward-factory-operator.service advisory
-    oneshot_status "Factory outbox dispatcher service" driftward-factory-outbox-dispatcher.service advisory
-    timer_status "Factory outbox dispatcher timer" driftward-factory-outbox-dispatcher.timer advisory
+    unit_status "Hatchet reconciliation worker" factory-hatchet-worker-reconciliation.service advisory
+    unit_status "Factory retry operator" factory-operator.service advisory
+    oneshot_status "Factory outbox dispatcher service" factory-outbox-dispatcher.service advisory
+    timer_status "Factory outbox dispatcher timer" factory-outbox-dispatcher.timer advisory
   fi
 
   if [[ "$status_result" == "0" ]]; then
@@ -1525,43 +1525,43 @@ units_for_target() {
   case "$target" in
     all)
       printf '%s\n' \
-        driftward-hatchet-event-ingress.service \
-        driftward-hatchet-worker-intake.service \
-        driftward-hatchet-worker-bridge-executor.service \
-        driftward-hatchet-worker-pr-event.service \
-        driftward-hatchet-worker-reconciliation.service \
-        driftward-hatchet-bridge.service \
-        driftward-factory-lifecycle-writer.service
+        factory-hatchet-event-ingress.service \
+        factory-hatchet-worker-intake.service \
+        factory-hatchet-worker-bridge-executor.service \
+        factory-hatchet-worker-pr-event.service \
+        factory-hatchet-worker-reconciliation.service \
+        factory-hatchet-bridge.service \
+        factory-lifecycle-writer.service
       ;;
     ingress)
-      printf '%s\n' driftward-hatchet-event-ingress.service
+      printf '%s\n' factory-hatchet-event-ingress.service
       ;;
     intake)
-      printf '%s\n' driftward-hatchet-worker-intake.service
+      printf '%s\n' factory-hatchet-worker-intake.service
       ;;
     executor)
-      printf '%s\n' driftward-hatchet-worker-bridge-executor.service
+      printf '%s\n' factory-hatchet-worker-bridge-executor.service
       ;;
     bridge)
-      printf '%s\n' driftward-hatchet-bridge.service
+      printf '%s\n' factory-hatchet-bridge.service
       ;;
     pr)
-      printf '%s\n' driftward-hatchet-worker-pr-event.service
+      printf '%s\n' factory-hatchet-worker-pr-event.service
       ;;
     reconciliation)
-      printf '%s\n' driftward-hatchet-worker-reconciliation.service
+      printf '%s\n' factory-hatchet-worker-reconciliation.service
       ;;
     lifecycle)
       printf '%s\n' \
-        driftward-factory-lifecycle-writer.service \
-        driftward-factory-linear-token.service
+        factory-lifecycle-writer.service \
+        factory-linear-token.service
       ;;
     linear)
       printf '%s\n' \
-        driftward-hatchet-event-ingress.service \
-        driftward-hatchet-worker-intake.service \
-        driftward-hatchet-worker-bridge-executor.service \
-        driftward-factory-lifecycle-writer.service
+        factory-hatchet-event-ingress.service \
+        factory-hatchet-worker-intake.service \
+        factory-hatchet-worker-bridge-executor.service \
+        factory-lifecycle-writer.service
       ;;
     *)
       die "unknown log target: $target"

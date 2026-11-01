@@ -70,7 +70,7 @@ For documentation alone, verify links and commands against source and run
 `git diff --check`; runtime rehearsals are unnecessary locally.
 
 For console work, read [DESIGN.md](../DESIGN.md) and the
-[design system](design-system.md). Reuse `@driftward/ui`, inspect component
+[design system](design-system.md). Reuse `@factory/ui`, inspect component
 source and stories (or connected Storybook docs), add representative states,
 and run the console and catalog checks:
 

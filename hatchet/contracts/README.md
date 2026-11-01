@@ -11,14 +11,16 @@ github_pr_closed_merged
 linear_issue_ready_for_implementation
 ```
 
-Keep `driftward.*` prefixes on Hatchet wire names:
+Keep `factory.*` prefixes on Hatchet wire names:
 
 ```text
-driftward.github.pr.closed_merged
+factory.github.pr.closed_merged
 ```
 
 The wire name is the external Hatchet routing value. Treat it as effectively
-immutable once deployed.
+immutable once deployed. This naming generation deliberately changes the prior
+namespace; existing installations must follow the [reviewed migration
+boundary](../../deploy/NAMING-MIGRATION.md) before using it.
 
 ## Update Flow
 

@@ -2,7 +2,7 @@ import {
   BridgeClient,
   type BridgeJob,
   type FactoryAttempt
-} from '@driftward/hatchet-worker-shared';
+} from '@factory/hatchet-worker-shared';
 import { type ResolvedLinearProjectRoute } from './linear-project-routing';
 import {
   assertExistingJobRouting,

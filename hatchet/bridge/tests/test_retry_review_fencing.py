@@ -169,6 +169,10 @@ class RetryReviewFencingTests(unittest.TestCase):
     def test_migration_removes_legacy_global_inspection_pr_uniqueness(self):
         db = str(Path(self.temp.name) / "legacy-inspection.db")
         raw = sqlite3.connect(db)
+        # This is an older schema within the current namespace, not a prior
+        # naming generation eligible for automatic migration.
+        raw.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+        raw.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
         raw.execute(
             """
             CREATE TABLE factory_inspection_requests (

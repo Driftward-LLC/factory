@@ -1,4 +1,4 @@
-import { sameExecutionRuntime, type BridgeClient, type BridgeJob } from '@driftward/hatchet-worker-shared';
+import { sameExecutionRuntime, type BridgeClient, type BridgeJob } from '@factory/hatchet-worker-shared';
 import { inspectHermesInvocation } from '../hermes/hermes-gateway-client';
 import { jobMatchesHermesDraftPrReceipt } from '../hermes/create-draft-pr';
 

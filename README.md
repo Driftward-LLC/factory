@@ -11,6 +11,10 @@ their configuration, credentials, and persistent data outside the repository.
 
 ## Install a release
 
+This revision starts the `factory-neutral-v1` naming generation. Existing
+installations and persisted state require a separately reviewed offline
+transition; see the [naming migration boundary](deploy/NAMING-MIGRATION.md).
+
 Start with the [portable installation guide](deploy/PORTABLE.md). Release
 bundles contain the Compose configuration and installation helper, with the
 Factory image pinned by digest. The supported portable profile runs on

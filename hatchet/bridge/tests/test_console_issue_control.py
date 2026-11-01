@@ -96,7 +96,7 @@ class ConsoleControlServiceTests(IssueControlFixture):
         self.assertEqual(replay["attempt_id"], original["attempt_id"])
         self.assertEqual(len(replay["control"]["history"]), 2)
         with self.assertRaises(store.BridgeValidationError):
-            restarted.confirm("ENG-8", "other@driftward.test", command)
+            restarted.confirm("ENG-8", "other@factory.test", command)
         with self.assertRaises(store.BridgeValidationError):
             restarted.confirm("ENG-8", ACTOR, {**command, "reason": "Changed reason"})
 
@@ -236,7 +236,7 @@ class ConsoleControlHTTPTests(IssueControlFixture):
             with patch.dict(os.environ, env):
                 self.assertEqual(self.request()[0], 403)
                 self.assertFalse(self.request("", method="GET")[1]["actions_enabled"])
-        self.assertEqual(self.request(headers={"Tailscale-User-Login": "reader@driftward.test"})[0], 403)
+        self.assertEqual(self.request(headers={"Tailscale-User-Login": "reader@factory.test"})[0], 403)
         self.assertEqual(self.service.read("ENG-8")["revision"], 0)
 
     def test_foreign_missing_duplicate_headers_and_spoofed_actor_rejected(self):

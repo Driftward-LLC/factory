@@ -231,9 +231,9 @@ def prepare(payload, native_root, root):
         (root / name).write_text(data)
     (home / 'config.yaml').write_text("model:\n  default: local-test\n  provider: custom\n  base_url: http://127.0.0.1:1/v1\nplatform_toolsets:\n  cli: [terminal]\nterminal:\n  backend: local\ntools:\n  tool_search:\n    enabled: 'off'\n")
     for name in ('implement-change', 'verify-app', 'prepare-pr'):
-        directory = home / 'skills' / ('driftward-engineering:' + name)
+        directory = home / 'skills' / ('factory-engineering:' + name)
         directory.mkdir(parents=True)
-        (directory / 'SKILL.md').write_text('---\nname: "driftward-engineering:' + name + '"\ndescription: Disposable native preload proof\n---\nFIXED_FACTORY_SKILL_' + name + '\n')
+        (directory / 'SKILL.md').write_text('---\nname: "factory-engineering:' + name + '"\ndescription: Disposable native preload proof\n---\nFIXED_FACTORY_SKILL_' + name + '\n')
     env = {'PATH': '/opt/hermes/.venv/bin:/usr/bin:/bin', 'HOME': str(home), 'HERMES_HOME': str(home),
            'XDG_CONFIG_HOME': str(home), 'XDG_CACHE_HOME': str(home), 'PYTHONPATH': str(native_root),
            'FACTORY_NATIVE_CANARY_RELAY': '1', 'LANG': 'C.UTF-8'}

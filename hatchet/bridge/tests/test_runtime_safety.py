@@ -69,9 +69,9 @@ class RuntimeConnectionTests(unittest.TestCase):
         fcntl.flock(held, fcntl.LOCK_UN); os.close(held)
 
     def test_maintenance_path_and_bypass_environment_are_ignored(self):
-        self.assertEqual(runtime._FIXED_MAINTENANCE_LOCK, Path("/run/driftward-hatchet-bridge/maintenance.lock"))
+        self.assertEqual(runtime._FIXED_MAINTENANCE_LOCK, Path("/run/factory-hatchet-bridge/maintenance.lock"))
         with patch.dict(os.environ, {"HATCHET_BRIDGE_MAINTENANCE_LOCK": "/tmp/attacker", "HATCHET_BRIDGE_MAINTENANCE_BYPASS": "yes"}):
-            self.assertEqual(runtime._FIXED_MAINTENANCE_LOCK, Path("/run/driftward-hatchet-bridge/maintenance.lock"))
+            self.assertEqual(runtime._FIXED_MAINTENANCE_LOCK, Path("/run/factory-hatchet-bridge/maintenance.lock"))
 
     def test_migration_capability_rejects_missing_wrong_or_unlocked_fd(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,6 +183,10 @@ class RuntimeConnectionTests(unittest.TestCase):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
                 path = str(Path(directory) / "bridge.db")
                 seed = sqlite3.connect(path)
+                # Same naming generation with an older schema: exercise the
+                # transaction rollback boundary rather than prior-state refusal.
+                seed.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+                seed.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
                 seed.execute("CREATE TABLE preserved (value TEXT)")
                 seed.execute("INSERT INTO preserved VALUES ('before')")
                 seed.commit(); seed.close()
@@ -191,7 +195,8 @@ class RuntimeConnectionTests(unittest.TestCase):
                         connect_migrate(path)
                 reopened = sqlite3.connect(path)
                 self.assertEqual(reopened.execute("SELECT value FROM preserved").fetchall(), [("before",)])
-                self.assertEqual(reopened.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall(), [("preserved",)])
+                self.assertEqual(reopened.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall(), [("factory_naming_generation",), ("preserved",)])
+                self.assertEqual(reopened.execute("SELECT generation FROM factory_naming_generation").fetchall(), [("factory-neutral-v1",)])
                 reopened.close()
 
     def test_unknown_migration_failpoint_fails_before_schema_ddl(self):
@@ -333,10 +338,10 @@ class ConflictResolutionTests(unittest.TestCase):
             conn = connect_migrate(str(Path(directory) / "bridge.db"))
             self._v3_38(conn)
             sha_one, sha_two = "1" * 40, "2" * 40
-            with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_one}):
+            with patch.dict(os.environ, {"FACTORY_BRIDGE_RELEASE_VERSION": sha_one}):
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
-            with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two}):
+            with patch.dict(os.environ, {"FACTORY_BRIDGE_RELEASE_VERSION": sha_two}):
                 conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
@@ -344,13 +349,13 @@ class ConflictResolutionTests(unittest.TestCase):
             registry = json.loads((ROOT / "hatchet/workers/test-fixtures/routing-registry.json").read_text())
             registry["routes"] = list(reversed(registry["routes"]))
             formatted = Path(directory) / "format-only.json"; formatted.write_text(json.dumps(registry, indent=4) + "\n")
-            with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(formatted)}):
+            with patch.dict(os.environ, {"FACTORY_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(formatted)}):
                 conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
             registry["routes"][0]["execution_enabled"] = not registry["routes"][0]["execution_enabled"]
             changed = Path(directory) / "semantic-change.json"; changed.write_text(json.dumps(registry))
-            with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(changed)}):
+            with patch.dict(os.environ, {"FACTORY_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(changed)}):
                 conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 76)
@@ -361,7 +366,7 @@ class ConflictResolutionTests(unittest.TestCase):
             )
             changed_contract = store._resolver_contract_digest(source_overrides={"legacy_artifacts": changed_legacy})
             with patch.object(store, "_resolver_contract_digest", return_value=changed_contract):
-                with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(changed)}):
+                with patch.dict(os.environ, {"FACTORY_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(changed)}):
                     conn.execute("UPDATE bridge_schema_meta SET schema_version=3"); conn.commit()
                     init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 114)
@@ -440,13 +445,13 @@ class ConflictResolutionTests(unittest.TestCase):
             conn.execute("INSERT INTO factory_import_conflicts (conflict_key,work_item_key,job_id,reason,created_at) VALUES (?,?,?,?,?)", ("runtime-inspection:inspection_repository_not_canonical", "ENG-11", "runtime-inspection", "inspection_repository_not_canonical", NOW))
             conn.commit()
             command = ["python3", str(ROOT / "hatchet/bridge/predeploy-check.py"), "--db", str(path), "--routing-registry", str(ROOT / "hatchet/workers/test-fixtures/routing-registry.json"), "--require-zero-legacy-ready", "--require-zero-import-conflicts", "--validate-legacy-import"]
-            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(ROOT / "hatchet/bridge"), "DRIFTWARD_BRIDGE_RELEASE_VERSION": "3" * 40}
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(ROOT / "hatchet/bridge"), "FACTORY_BRIDGE_RELEASE_VERSION": "3" * 40}
             initial = subprocess.run(command, text=True, capture_output=True, check=False, env=env)
             self.assertEqual(initial.returncode, 0, initial.stdout + initial.stderr)
             self.assertIn("legacy conflict attestations: attested=0 required=38", initial.stdout)
             required = subprocess.run([*command, "--require-current-attestations"], text=True, capture_output=True, check=False, env=env)
             self.assertEqual(required.returncode, 1, required.stdout + required.stderr)
-            with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": "3" * 40}):
+            with patch.dict(os.environ, {"FACTORY_BRIDGE_RELEASE_VERSION": "3" * 40}):
                 init_db(conn)
             conn.close()
             post = subprocess.run([*command, "--require-current-attestations"], text=True, capture_output=True, check=False, env=env)
@@ -457,21 +462,18 @@ class ConflictResolutionTests(unittest.TestCase):
 class ImmutableUnitPolicyTests(unittest.TestCase):
     def test_bridge_units_execute_only_the_immutable_release(self):
         for name in (
-            "driftward-hatchet-bridge.service",
-            "driftward-hatchet-bridge-reconciler.service",
-            "driftward-factory-operator.service",
-            "driftward-factory-outbox-dispatcher.service",
+            "factory-hatchet-bridge.service",
+            "factory-hatchet-bridge-reconciler.service",
+            "factory-operator.service",
+            "factory-outbox-dispatcher.service",
         ):
             source = (ROOT / "hatchet" / "systemd" / name).read_text()
-            self.assertNotIn("/root/driftward-host", source)
+            self.assertNotIn("/root/factory-host", source)
             self.assertNotIn("__REPO_ROOT__", source)
-            self.assertIn("/docker/driftward/hatchet/releases/bridge/current", source)
-        installer = (ROOT / "hatchet" / "bridge" / "install.sh").read_text()
-        self.assertLess(installer.index("predeploy-check.py"), installer.index("publish-release.sh"))
-        self.assertIn("s.backup(d)", installer)
+            self.assertIn("/docker/factory/hatchet/releases/bridge/current", source)
 
     def test_factory_outbox_dispatcher_timer_has_future_calendar_triggers(self):
-        source = (ROOT / "hatchet" / "systemd" / "driftward-factory-outbox-dispatcher.timer").read_text()
+        source = (ROOT / "hatchet" / "systemd" / "factory-outbox-dispatcher.timer").read_text()
         self.assertIn("OnCalendar=*:*:00/30", source)
         self.assertIn("AccuracySec=1s", source)
         self.assertNotIn("OnUnitActiveSec", source)

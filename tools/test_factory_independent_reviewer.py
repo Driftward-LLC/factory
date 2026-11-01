@@ -37,7 +37,7 @@ class IndependentReviewerTests(unittest.TestCase):
             self.assertEqual(args[-3:], ["--stop" if stop else "--review", root, "factory-reviewer:" + "a" * 36])
 
     def test_model_role_has_no_shell_and_uses_exact_astra(self):
-        args = runner.native_arguments("hermes-driftward-hermes-1", "factory-reviewer:" + "a" * 36)
+        args = runner.native_arguments("hermes-factory-hermes-1", "factory-reviewer:" + "a" * 36)
         self.assertEqual(args[:5], ["/usr/bin/docker", "exec", "-i", "--workdir", "/opt/hermes"])
         self.assertNotIn("codex", args)
         self.assertEqual(native_agent.MODEL, "gpt-6-astra")

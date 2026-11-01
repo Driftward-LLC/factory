@@ -38,10 +38,10 @@ ENV_CONSUMERS = {
 VOLUME_CONSUMERS = {
     "hatchet-postgres-data": ("postgres", "/var/lib/postgresql/data"),
     "hatchet-config-data": ("hatchet-lite", "/config"),
-    "bridge-data": ("bridge", "/var/lib/driftward-hatchet-bridge"),
-    "ingress-data": ("event-ingress", "/var/lib/driftward-hatchet-event-ingress"),
-    "lifecycle-data": ("factory-lifecycle-writer", "/var/lib/driftward-factory-lifecycle-writer"),
-    "linear-token-data": ("factory-linear-token-refresh", "/var/lib/driftward-factory-linear-token"),
+    "bridge-data": ("bridge", "/var/lib/factory-hatchet-bridge"),
+    "ingress-data": ("event-ingress", "/var/lib/factory-hatchet-event-ingress"),
+    "lifecycle-data": ("factory-lifecycle-writer", "/var/lib/factory-lifecycle-writer"),
+    "linear-token-data": ("factory-linear-token-refresh", "/var/lib/factory-linear-token"),
     "linear-published-token": ("factory-linear-token-refresh", "/var/run/factory-linear-token"),
 }
 
@@ -186,8 +186,8 @@ def inspect_source(project: str, env_dir: Path, keys: Path, *, allow_unlabelled:
     envs["hatchet-client.env"] = {"HATCHET_CLIENT_TOKEN": token}
     executor = environment(services["bridge-executor-worker"])
     if (envs["hatchet-workers.env"].get("HATCHET_INTAKE_DRY_RUN") != "false"
-            or executor.get("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED") != "1"
-            or executor.get("DRIFTWARD_HERMES_GRPC_TARGET") != "unix:///run/driftward-hermes-factory/hermes.sock"):
+            or executor.get("FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED") != "1"
+            or executor.get("FACTORY_HERMES_GRPC_TARGET") != "unix:///run/factory-hermes-factory/hermes.sock"):
         raise CutoverRefusal("source must use the reviewed same-host real-execution boundary")
     for name in clients:
         if any(key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_", "GH_", "LINEAR_", "FACTORY_LINEAR_", "BROWSERBASE_", "MCP_")) for key in environment(services[name])):
@@ -263,6 +263,8 @@ def target_unused(directory: Path, project: str) -> None:
 def prepare(source_project: str, env_dir: Path, keys: Path, directory: Path,
             project: str, snapshot: Path, *, port_offset: int = 0, apply: bool = False,
             allow_unlabelled: bool = False, configuration: Path | None = None) -> dict:
+    if apply:
+        raise CutoverRefusal("source cutover is disabled for this naming generation; use a fresh portable installation or a separately reviewed migration (deploy/NAMING-MIGRATION.md)")
     env_dir, keys, directory, snapshot = map(state._path, (env_dir, keys, directory, snapshot))
     if project == source_project:
         raise CutoverRefusal("source and destination projects must differ")
@@ -357,11 +359,7 @@ def main() -> int:
         kwargs = dict(source_project=args.source_project, env_dir=args.source_env_dir, keys=args.source_keys,
                       directory=args.directory, project=args.project, snapshot=args.snapshot, port_offset=args.port_offset,
                       apply=args.apply, allow_unlabelled=args.allow_unlabelled_source_volumes, configuration=args.configuration)
-        if args.apply:
-            with portable.installation_lock(args.directory):
-                prepare(**kwargs)
-        else:
-            prepare(**kwargs)
+        prepare(**kwargs)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
         # No raw configuration, subprocess output, or token parsing error escapes.
         reason = str(exc) if isinstance(exc, CutoverRefusal) else type(exc).__name__

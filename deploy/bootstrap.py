@@ -21,6 +21,7 @@ import uuid
 
 
 MARKER = ".factory-install.json"
+NAMING_GENERATION = "factory-neutral-v1"
 PROJECT_PATTERN = r"factory(?:-[a-z0-9][a-z0-9-]{0,48})?"
 ENV_FILES = (
     "hatchet-bridge.env", "hatchet-workers.env", "hatchet-event-ingress.env",
@@ -134,6 +135,11 @@ def read_env(path: str | Path) -> dict[str, str]:
     return result
 
 
+def validate_naming_generation(metadata: dict) -> None:
+    if metadata.get("naming_generation") != NAMING_GENERATION:
+        raise ValueError("unsupported naming generation; existing state requires a separately reviewed migration (see deploy/NAMING-MIGRATION.md)")
+
+
 def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
     directory = checked_path(directory)
     if not directory.is_dir() or directory.stat().st_mode & 0o077:
@@ -142,6 +148,7 @@ def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
         metadata = json.loads(_read_private(directory / MARKER))
         if metadata.get("format_version") != 1:
             raise ValueError("unsupported installation format")
+        validate_naming_generation(metadata)
         uuid.UUID(metadata["installation_id"])
         config = read_env(directory / ".env")
         if (config["FACTORY_INSTALL_DIR"] != str(directory)
@@ -231,7 +238,7 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         },
         "hatchet-worker-bridge-executor.env": {
             "HATCHET_HERMES_INSPECTION_TOKEN": inspection_token,
-            "DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED": "0",
+            "FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED": "0",
         },
         "hatchet-worker-reconciliation.env": {"HATCHET_HERMES_RECOVERY_TOKEN": recovery_token},
         "hatchet-verifier.env": {"HATCHET_HERMES_VERIFIER_TOKEN": secrets.token_hex(32)},
@@ -253,7 +260,7 @@ def init_directory(directory: str | Path, image: str, project: str, *,
     # Last write is the completion marker. An interrupted creation is never
     # guessed to be safe to resume or silently populated with replacement keys.
     _create_private(directory / MARKER, json.dumps({
-        "format_version": 1, "organization_config": 1, "installation_id": str(uuid.uuid4()),
+        "format_version": 1, "naming_generation": NAMING_GENERATION, "organization_config": 1, "installation_id": str(uuid.uuid4()),
         "project": project, "image": image,
     }, sort_keys=True) + "\n")
     return config

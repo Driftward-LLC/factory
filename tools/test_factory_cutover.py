@@ -133,8 +133,8 @@ class CutoverTests(unittest.TestCase):
             "hatchet-bridge.env": {"HATCHET_HERMES_BRIDGE_TOKEN": "bridge-secret"},
             "hatchet-event-ingress.env": {"HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET": "signing-secret"},
             "hatchet-worker-bridge-executor.env": {
-                "DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED": "1",
-                "DRIFTWARD_HERMES_GRPC_TARGET": "unix:///run/driftward-hermes-factory/hermes.sock",
+                "FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED": "1",
+                "FACTORY_HERMES_GRPC_TARGET": "unix:///run/factory-hermes-factory/hermes.sock",
             },
             "factory-operator.env": {"HATCHET_INTAKE_DRY_RUN": "false"},
             "factory-linear-token.env": {"FACTORY_LINEAR_CLIENT_SECRET": "linear-secret"},
@@ -192,6 +192,15 @@ class CutoverTests(unittest.TestCase):
     def service(self, name):
         return next(row for row in self.docker.rows if row["Config"]["Labels"]["com.docker.compose.service"] == name)
 
+    def test_apply_refuses_before_inspection_snapshot_or_state_mutation(self):
+        with patch.object(cutover, "inspect_source") as inspect, patch.object(state, "_docker") as docker:
+            with self.assertRaisesRegex(cutover.CutoverRefusal, "naming generation"):
+                self.prepare(apply=True)
+        inspect.assert_not_called()
+        docker.assert_not_called()
+        self.assertFalse(self.snapshot.exists())
+        self.assertFalse(self.directory.exists())
+
     def test_preview_running_source_is_read_only(self):
         self.service("bridge")["State"]["Status"] = "running"
         before = {path.relative_to(self.root): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
@@ -216,34 +225,7 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(source["envs"]["factory-linear-token.env"], self.envs["factory-linear-token.env"])
         self.assertEqual(source["keys"], {name: (self.keys / name).read_text() for name in cutover.KEYS})
 
-    def test_apply_requires_explicit_configuration_before_copy(self):
-        with self.assertRaisesRegex(ValueError, "--configuration"):
-            cutover.prepare(self.project, self.env_dir, self.keys, self.directory,
-                            "factory-target", self.snapshot, apply=True)
-        self.assertFalse(self.snapshot.exists())
-        self.assertFalse(self.directory.exists())
 
-    def test_reordered_inspection_inventory_does_not_signal_configuration_drift(self):
-        inspections = 0
-
-        def reordered(args, env=None):
-            nonlocal inspections
-            result = self.docker(args, env)
-            if args[:2] == ["container", "inspect"]:
-                inspections += 1
-                rows = json.loads(result)
-                if inspections % 2:
-                    rows.reverse()
-                    for row in rows:
-                        row["Mounts"].reverse()
-                result = json.dumps(rows)
-            return result
-
-        with patch.object(state, "_docker", reordered):
-            result = self.prepare(apply=True)
-        self.assertFalse(result["activation_approved"])
-        self.assertEqual(len(self.docker.archives), 14)
-        self.assertGreater(inspections, 2)
 
     def test_source_refuses_missing_duplicate_services_wrong_images_and_mounts(self):
         originals = copy.deepcopy(self.docker.rows)
@@ -320,92 +302,10 @@ class CutoverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "configuration drift"):
             self.prepare()
 
-    def test_apply_refuses_running_source_and_foreign_volume_writer_before_snapshot(self):
-        for status in ("running", "paused", "restarting"):
-            with self.subTest(status=status):
-                self.service("bridge")["State"]["Status"] = status
-                with self.assertRaises(ValueError):
-                    self.prepare(apply=True)
-                self.assertFalse(self.snapshot.exists())
-        self.service("bridge")["State"]["Status"] = "exited"
-        self.docker.foreign_writer = True
-        with self.assertRaisesRegex(ValueError, "running container"):
-            self.prepare(apply=True)
-        self.assertFalse(self.snapshot.exists())
-        self.assertFalse(self.docker.archives)
 
-    def test_destination_collisions_never_copy_or_overwrite(self):
-        for suffix in state.PROJECT_VOLUMES:
-            name = "factory-target-" + suffix
-            self.docker.volumes[name] = {"Name": name, "Labels": {}, "files": {}}
-            with self.subTest(suffix=suffix), self.assertRaisesRegex(ValueError, "already has volumes"):
-                self.prepare(apply=True)
-            del self.docker.volumes[name]
-        self.docker.destination_container = True
-        with self.assertRaisesRegex(ValueError, "already has containers"):
-            self.prepare(apply=True)
-        self.docker.destination_container = False
-        self.docker.networks = ["factory-target"]
-        with self.assertRaisesRegex(ValueError, "network already exists"):
-            self.prepare(apply=True)
-        self.docker.networks = []
-        self.directory.mkdir()
-        with self.assertRaises(ValueError):
-            self.prepare(apply=True)
-        self.assertFalse(self.snapshot.exists())
-        self.assertFalse(self.docker.archives)
 
-    def test_source_restart_during_archive_retains_partial_snapshot_without_destination(self):
-        original_tar = self.docker.tar
 
-        def restarted(*args, **kwargs):
-            original_tar(*args, **kwargs)
-            self.service("bridge")["State"]["Status"] = "running"
 
-        with patch.object(state, "_tar", side_effect=restarted):
-            with self.assertRaisesRegex(ValueError, "stopped"):
-                self.prepare(apply=True)
-        self.assertTrue(self.snapshot.exists())
-        self.assertFalse(self.directory.exists())
-        self.assertEqual(len(self.docker.archives), 1)
-
-    def test_source_configuration_changed_during_archive_is_rejected(self):
-        original_tar = self.docker.tar
-
-        def changed(*args, **kwargs):
-            original_tar(*args, **kwargs)
-            (self.keys / "master.key").write_text("changed-key-during-backup\n")
-
-        with patch.object(state, "_tar", side_effect=changed):
-            with self.assertRaises(ValueError):
-                self.prepare(apply=True)
-        self.assertFalse(self.directory.exists())
-
-    def test_seven_volume_round_trip_preserves_source_and_leaves_destination_stopped(self):
-        original = copy.deepcopy(self.docker.volumes)
-        result = self.prepare(apply=True)
-        metadata, values = bootstrap.validate_directory(self.directory)
-        self.assertEqual(values["FACTORY_IMAGE"], FACTORY_IMAGE)
-        self.assertEqual(values["FACTORY_POSTGRES_IMAGE"], POSTGRES_IMAGE)
-        self.assertEqual(values["FACTORY_HATCHET_IMAGE"], HATCHET_IMAGE)
-        self.assertEqual(values["HATCHET_DEFAULT_TENANT_ID"], TENANT)
-        self.assertEqual(values["HATCHET_POSTGRES_PASSWORD"], "db-password")
-        self.assertFalse(result["activation_approved"])
-        self.assertEqual(metadata["project"], "factory-target")
-        self.assertEqual(metadata["profile"], "same-host-production")
-        for filename, contents in self.envs.items():
-            self.assertEqual(bootstrap.read_env(self.directory / "env" / filename), contents)
-        self.assertEqual(bootstrap.read_env(self.directory / "env/hatchet-client.env"), {"HATCHET_CLIENT_TOKEN": TOKEN})
-        for name in cutover.KEYS:
-            self.assertEqual((self.directory / "keys/hatchet" / name).read_bytes(), (self.keys / name).read_bytes())
-        for suffix in state.VOLUMES:
-            source_name, destination_name = f"{self.project}-{suffix}", f"factory-target-{suffix}"
-            self.assertEqual(self.docker.volumes[source_name], original[source_name])
-            self.assertEqual(self.docker.volumes[destination_name]["files"], original[source_name]["files"])
-            self.assertEqual(self.docker.volumes[destination_name]["Labels"][state.IDENTITY_LABEL], metadata["installation_id"])
-        self.assertEqual(len(self.docker.archives), 14)
-        self.assertTrue(all(image == FACTORY_IMAGE for image, _, _ in self.docker.archives))
-        self.assertFalse(any(args[0] in {"start", "stop", "restart", "compose", "pull"} for args in self.docker.calls))
 
 
 class LegacyEnvTests(unittest.TestCase):

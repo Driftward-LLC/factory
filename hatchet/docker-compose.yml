@@ -1,4 +1,4 @@
-name: driftward-hatchet
+name: factory-hatchet
 
 services:
   postgres:

@@ -193,7 +193,7 @@ class SafeDownFixture(unittest.TestCase):
                 self.assertEqual(safe.adopt(paths=self.paths, code_commit=self.code)["backup"]["path"], str(self.backup))
 
     def test_production_incident_absolute_sidecar_path_is_accepted_without_opening_it(self):
-        backup = Path("/root/driftward-backups/hatchet/bridge-20260817T061607Z-before-9342db181033ff783d645973e5d4c7a54ae4c6f9.sqlite")
+        backup = Path("/root/factory-backups/hatchet/bridge-20260817T061607Z-before-9342db181033ff783d645973e5d4c7a54ae4c6f9.sqlite")
         digest = "1d4dec662e055c074d88bbb133305e4485dfab84e3bd66c14cd1b69fe4990839"
         self.assertTrue(safe._matches_checksum_sidecar(f"{digest}  {backup}\n".encode(), digest, backup))
 

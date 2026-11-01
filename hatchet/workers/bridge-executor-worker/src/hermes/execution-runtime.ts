@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { executionRuntimeBinding, type ExecutionRuntimeBinding } from '@driftward/hatchet-worker-shared';
+import { executionRuntimeBinding, type ExecutionRuntimeBinding } from '@factory/hatchet-worker-shared';
 import type { InvocationExecutionContext } from './invocation-journal';
 import { NonRetryableBridgeExecutionError } from './errors';
 

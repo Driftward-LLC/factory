@@ -518,7 +518,7 @@ validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({
 }).catch(() => process.exit(1));
 """
         checked = subprocess.run(["node", "-e", code, str(compiled)], input=json.dumps(result["job"]), capture_output=True, text=True,
-            env={**os.environ, "DRIFTWARD_HERMES_ALLOWED_REPOS": REPO}, timeout=10)
+            env={**os.environ, "FACTORY_HERMES_ALLOWED_REPOS": REPO}, timeout=10)
         self.assertEqual(checked.returncode, 0, checked.stderr)
         self.assertEqual(checked.stdout, "accepted current; rejected mutation")
 

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { BridgeClient, BridgeJob, JsonObject } from '@driftward/hatchet-worker-shared';
+import type { BridgeClient, BridgeJob, JsonObject } from '@factory/hatchet-worker-shared';
 import {
   factoryExecutionAnalyticsIdentity,
   type FactoryExecutionAnalyticsIdentity,
@@ -84,8 +84,8 @@ function conservativeAnalyticsIdentity(invocationId: string): FactoryExecutionAn
   const boundedInvocationId = invocationId && invocationId.length <= 200
     ? invocationId
     : `receipt.${createHash('sha256').update(invocationId).digest('hex')}`;
-  const target = (process.env.DRIFTWARD_HERMES_GRPC_TARGET || '').trim();
-  const configuredAuthMode = (process.env.DRIFTWARD_HERMES_AUTH_MODE || '').trim();
+  const target = (process.env.FACTORY_HERMES_GRPC_TARGET || '').trim();
+  const configuredAuthMode = (process.env.FACTORY_HERMES_AUTH_MODE || '').trim();
   return {
     analytics_schema_version: 1,
     invocation_id: boundedInvocationId,

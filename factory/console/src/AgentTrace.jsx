@@ -1,5 +1,5 @@
-import { ExternalLink } from '@driftward/ui';
-import { ArrowTopRightIcon } from '@driftward/ui/icons';
+import { ExternalLink } from '@factory/ui';
+import { ArrowTopRightIcon } from '@factory/ui/icons';
 
 function safeTraceUrl(url) {
   if (typeof url !== 'string' || url !== url.trim()) return false;

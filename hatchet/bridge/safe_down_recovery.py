@@ -24,16 +24,16 @@ from typing import Any, Callable
 from barrier_unit_state import UnitStateError, systemctl_value, unit_is_absent
 import test_capability
 
-STATE = Path("/var/lib/driftward-hatchet-bridge")
-BACKUPS = Path("/root/driftward-backups/hatchet")
+STATE = Path("/var/lib/factory-hatchet-bridge")
+BACKUPS = Path("/root/factory-backups/hatchet")
 DB = STATE / "bridge.db"
 MARKER = STATE / "recovery-blocked"
 ARCHIVE = STATE / "recovery-incidents"
 TRANSITION = STATE / "safe-down-transition.json"
-RELEASE_ROOT = Path("/docker/driftward/hatchet/releases/bridge")
-ROUTING = Path("/etc/driftward/hatchet-routing-registry.json")
-LOCK = Path("/run/driftward-hatchet-bridge/maintenance.lock")
-_BARRIER_EVIDENCE_ENV = "DRIFTWARD_SAFE_DOWN_BARRIER_EVIDENCE"
+RELEASE_ROOT = Path("/docker/factory/hatchet/releases/bridge")
+ROUTING = Path("/etc/factory/hatchet-routing-registry.json")
+LOCK = Path("/run/factory-hatchet-bridge/maintenance.lock")
+_BARRIER_EVIDENCE_ENV = "FACTORY_SAFE_DOWN_BARRIER_EVIDENCE"
 BACKUP_NAME = re.compile(r"bridge-\d{8}T\d{6}Z-before-([0-9a-f]{40})\.sqlite\Z")
 SHA_LINE = re.compile(r"([0-9a-f]{64})\s+\*?([^\s]+)\Z")
 MARKER_TEXT = b"rollback recovery blocked: stop-writers restore-services\n"
@@ -50,7 +50,7 @@ MARKER_LINEAGE_VERSION = 1
 INVENTORY = json.loads((Path(__file__).with_name("publication-targets.json")).read_text())
 TARGETS = tuple(INVENTORY["targets"] + [f"/etc/systemd/system/{unit}" for unit in INVENTORY["units"]])
 SOURCE_REPOSITORY = "Driftward-LLC/factory"
-SOURCE_REPOSITORY_PATH = Path("/root/driftward/repos/factory")
+SOURCE_REPOSITORY_PATH = Path("/root/factory/repos/factory")
 
 
 class ProofError(RuntimeError):
@@ -337,7 +337,7 @@ def _revalidate_barrier_evidence(paths: Paths) -> None:
             units.append(unit)
     if len(units) != len(set(units)):
         raise ProofError("maintenance barrier evidence is malformed")
-    for unit in ("driftward-hatchet-bridge-reconciler.service", "driftward-hatchet-bridge-reconciler.timer"):
+    for unit in ("factory-hatchet-bridge-reconciler.service", "factory-hatchet-bridge-reconciler.timer"):
         try:
             active = systemctl_value(unit, "ActiveState")
         except UnitStateError as exc:

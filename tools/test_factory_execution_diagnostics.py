@@ -39,14 +39,14 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
     def fixture(self, root):
         database = root / 'bridge.db'
         lease = {'lease_id': LEASE, 'owner': SECRET, 'epoch': 1, 'fence_token': SECRET}
-        payload = {'repo': 'Driftward-LLC/factory', 'factory_attempt_id': ATTEMPT,
+        payload = {'repo': 'ExampleOrg/widget', 'factory_attempt_id': ATTEMPT,
                    'instruction': SECRET, 'source_delivery_id': 'delivery-after-invocation',
                    'source_event_keys': ['later-correlation']}
         job = {'job_id': JOB, 'idempotency_key': SECRET, 'requested_action': 'create_draft_pr',
                'branch': 'factory/eng-162', 'payload': payload}
         # Golden hashes produced by the journal writer's Node canonical()/SHA256.
         intent = {'fingerprint_version': 2,
-                  'fingerprint': '369e3e26b731ac8f4a8fe3b471066923d822614cd33f60bbb6ea541e16b63c35',
+                  'fingerprint': '9e8c19c4e60f5bcf58c6158b38802742fa0a1f5ad4154880f562a7e6cfbf17ee',
                   'lease': lease}
         directory = root / 'invocations' / JOB
         directory.mkdir(parents=True, mode=0o700)
@@ -163,16 +163,16 @@ class ExecutionDiagnosticsTests(unittest.TestCase):
                 payload = {key: value for key, value in payload.items() if not key.startswith('source_')}
                 connection.execute('UPDATE bridge_jobs SET payload_json=?', (json.dumps(payload),))
             intent.pop('fingerprint_version')
-            intent['fingerprint'] = 'f8f5f28ddee3fb8c9342679ce2cdd4ba7996a2191159d5380dbad6cf0c28e395'
+            intent['fingerprint'] = '22f6362344eabaab881c2a2b24a3fae139b13a2285f2dc859797cb5ad1a6150a'
             self.write(directory / 'intent.json', intent)
             self.assertEqual(self.diagnose(database, directory)['journal']['state'], 'exact_binding_verified')
 
     def test_writer_golden_numbers_and_mixed_case_keys(self):
         vectors = [
-            ({'retry_delay': 1.0}, 'efdb1504f3bf5de14ece85e552b1c8670e4abea7e0019ff00801c01c0fdcb296'),
-            ({'metadata': {'a': 1, 'A': 2}}, 'a3aefb1b2c1b6c5396da0bc4d114e8ad3811b4c7b5b9fd70244a2daed70cbd1b'),
+            ({'retry_delay': 1.0}, '50c48d0806559a3855416c3c73cd84a7b56ecc33e5ebfbd1a22b452a51f97ddc'),
+            ({'metadata': {'a': 1, 'A': 2}}, '4391bbf0f9f1cb9573c19a330b1fd5b786df1c9c4ae027cb030491d2f5f15518'),
             ({'metadata': {'a': 1, 'A': 2}, 'retry_delay': 1.0, 'values': [1e-7, 1e21, 9007199254740993]},
-             '4361214033951690da580bef7a1f6f9058a25f7e3ce4556da6083abbf10374fa'),
+             'e9d79cc9017ae7332d99bb03598663a69c67637e576b22a9341378783a46efb1'),
         ]
         for extra, golden in vectors:
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as temporary:

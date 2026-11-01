@@ -9,7 +9,7 @@ const PROFILE = '/tmp/factory-native-profile';
 
 /** Public checked-in assets only; no request/job value becomes Python source. */
 export function nativeOwnerBootstrap(): string {
-  const directory = ['/usr/local/share/driftward-factory/native-owner',
+  const directory = ['/usr/local/share/factory/native-owner',
     path.resolve(__dirname, '../../../../../deploy/experimental-native-executor')]
     .find((candidate) => existsSync(path.join(candidate, 'owner.py')) && existsSync(path.join(candidate, 'main.py')));
   if (!directory) throw failure('hermes_process_spawn_failed');

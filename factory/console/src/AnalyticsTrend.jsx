@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Notice, Heading } from '@driftward/ui';
+import { Notice, Heading } from '@factory/ui';
 import { count } from './model.js';
 
 const metrics = [

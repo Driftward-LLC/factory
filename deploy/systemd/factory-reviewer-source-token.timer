@@ -7,7 +7,7 @@ OnUnitActiveSec=20min
 AccuracySec=30s
 RandomizedDelaySec=15s
 Persistent=true
-Unit=driftward-factory-reviewer-source-token.service
+Unit=factory-reviewer-source-token.service
 
 [Install]
 WantedBy=timers.target

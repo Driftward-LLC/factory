@@ -120,7 +120,7 @@ class IngressServerTransportTest(unittest.TestCase):
                         "pull_requests": [{"number": 28}],
                     },
                 },
-                "driftward.github.checks.completed",
+                "factory.github.checks.completed",
             ),
             (
                 "/events/github/pull_request_review",
@@ -145,7 +145,7 @@ class IngressServerTransportTest(unittest.TestCase):
                     },
                     "sender": {"type": "User", "login": "not-persisted-in-normalized-event"},
                 },
-                "driftward.github.review.submitted",
+                "factory.github.review.submitted",
             ),
         )
 
@@ -249,7 +249,7 @@ class IngressServerTransportTest(unittest.TestCase):
 
         self.assertEqual(result.get("status"), 201)
         event = result["body"]["event"]
-        self.assertEqual(event["hatchet_event_name"], "driftward.github.pr.reopened")
+        self.assertEqual(event["hatchet_event_name"], "factory.github.pr.reopened")
         self.assertEqual(event["normalized"]["action"], "reopened")
         self.assertEqual(event["normalized"]["state"], "open")
         self.assertFalse(event["normalized"]["merged"])

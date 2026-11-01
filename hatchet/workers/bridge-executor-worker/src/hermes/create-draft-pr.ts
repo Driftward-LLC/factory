@@ -2,8 +2,8 @@ import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { matchesOrganizationBinding, requireGithubOrganization, configuredRepositories, configuredLinearIssue, loadFactoryOrganization, executionTraceparent, telemetryEndpoint, withExecutionSpan } from '@driftward/hatchet-worker-shared';
-import type { BridgeJob, FactoryAttempt, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
+import { matchesOrganizationBinding, requireGithubOrganization, configuredRepositories, configuredLinearIssue, loadFactoryOrganization, executionTraceparent, telemetryEndpoint, withExecutionSpan } from '@factory/hatchet-worker-shared';
+import type { BridgeJob, FactoryAttempt, JsonObject, JsonValue } from '@factory/hatchet-worker-shared';
 import type { Duration } from '@hatchet-dev/typescript-sdk/v1/client/duration';
 import {
   boundedHermesDraftPrReceipt,
@@ -87,12 +87,12 @@ export type FactoryExecutionRouteSelection = {
 };
 
 function configuredAuthMode(): FactoryExecutionAnalyticsIdentity['configured_auth_mode'] {
-  const configured = (process.env.DRIFTWARD_HERMES_AUTH_MODE || '').trim();
+  const configured = (process.env.FACTORY_HERMES_AUTH_MODE || '').trim();
   return configured === 'chatgpt_codex_oauth' || configured === 'api_key' ? configured : 'unknown';
 }
 
 function executionTransport(): FactoryExecutionAnalyticsIdentity['execution_transport'] {
-  const target = (process.env.DRIFTWARD_HERMES_GRPC_TARGET || '').trim();
+  const target = (process.env.FACTORY_HERMES_GRPC_TARGET || '').trim();
   if (!target) return 'local_command';
   // Route telemetry observes configured intent. Transport policy is enforced
   // by the gateway client after the immutable assignment has been recorded.
@@ -110,7 +110,7 @@ export function factoryExecutionAnalyticsIdentity(invocationId: string): Factory
     invocation_id: invocationId,
     execution_backend: 'hermes',
     execution_transport: executionTransport(),
-    backend_version: configuredVersion('DRIFTWARD_HERMES_VERSION'),
+    backend_version: configuredVersion('FACTORY_HERMES_VERSION'),
     configured_auth_mode: configuredAuthMode(),
   };
 }
@@ -146,7 +146,7 @@ export function factoryExecutionRouteSelection(
     configured_provider: 'unknown',
     configured_model: 'unknown',
     configured_auth_mode: configuredAuthMode(),
-    backend_version: configuredVersion('DRIFTWARD_HERMES_VERSION'),
+    backend_version: configuredVersion('FACTORY_HERMES_VERSION'),
     factory_release_sha: /^[0-9a-f]{40}$/.test(releaseSha) ? releaseSha : null,
     factory_release_version: configuredVersion('FACTORY_RELEASE_VERSION'),
     routing_registry_version: routingVersion,
@@ -326,11 +326,11 @@ function celString(value: string): string {
 }
 
 export function realCreateDraftPrEnabled(): boolean {
-  return process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED === '1';
+  return process.env.FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED === '1';
 }
 
 export function hermesReceiptRunnerEnabled(): boolean {
-  return process.env.DRIFTWARD_HERMES_ASYNC_RECEIPTS_ENABLED !== '0';
+  return process.env.FACTORY_HERMES_ASYNC_RECEIPTS_ENABLED !== '0';
 }
 
 export function hermesReceiptEventScope(job: Pick<BridgeJob, 'job_id'>): string {
@@ -342,7 +342,7 @@ export function hermesReceiptEventExpression(job: Pick<BridgeJob, 'job_id' | 'id
 }
 
 export function hermesReceiptWaitDuration(): Duration {
-  return (process.env.DRIFTWARD_HERMES_RECEIPT_WAIT_DURATION || '4h') as Duration;
+  return (process.env.FACTORY_HERMES_RECEIPT_WAIT_DURATION || '4h') as Duration;
 }
 
 export function dispatchHermesCreateDraftPrReceipt(job: BridgeJob, lease: FactoryExecutionLease): HermesReceiptDispatch {
@@ -358,7 +358,7 @@ function dispatchReceipt(job: BridgeJob, lease: FactoryExecutionLease): HermesRe
     );
   }
   validateRealCreateDraftPrJob(job);
-  const runner = process.env.DRIFTWARD_HERMES_RECEIPT_RUNNER || path.resolve(__dirname, 'create-draft-pr-receipt-runner.js');
+  const runner = process.env.FACTORY_HERMES_RECEIPT_RUNNER || path.resolve(__dirname, 'create-draft-pr-receipt-runner.js');
   if (!existsSync(runner)) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_receipt_runner_missing',
@@ -367,9 +367,9 @@ function dispatchReceipt(job: BridgeJob, lease: FactoryExecutionLease): HermesRe
     );
   }
   const dispatchId = `${job.job_id}:${lease.lease_id}:${lease.epoch}`;
-  if (process.env.DRIFTWARD_HERMES_RECEIPT_USE_SYSTEMD !== '0') {
-    const unit = `driftward-hatchet-hermes-receipt-${safeSystemdUnitPart(job.job_id)}-${safeSystemdUnitPart(lease.lease_id)}`;
-    const environmentDirectory = mkdtempSync('/run/driftward-factory-receipt-');
+  if (process.env.FACTORY_HERMES_RECEIPT_USE_SYSTEMD !== '0') {
+    const unit = `factory-hatchet-hermes-receipt-${safeSystemdUnitPart(job.job_id)}-${safeSystemdUnitPart(lease.lease_id)}`;
+    const environmentDirectory = mkdtempSync('/run/factory-receipt-');
     const environmentFile = path.join(environmentDirectory, 'environment');
     let started: ReturnType<typeof spawnSync>;
     try {
@@ -398,7 +398,7 @@ function dispatchReceipt(job: BridgeJob, lease: FactoryExecutionLease): HermesRe
     if (started.status === 0) {
       return { dispatchId, runner: `${unit}.service` };
     }
-    if (process.env.DRIFTWARD_HERMES_RECEIPT_REQUIRE_SYSTEMD === '1') {
+    if (process.env.FACTORY_HERMES_RECEIPT_REQUIRE_SYSTEMD === '1') {
       throw new NonRetryableBridgeExecutionError(
         'hermes_receipt_runner_dispatch_failed',
         'Factory could not dispatch the detached Hermes receipt runner',
@@ -473,32 +473,32 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
     'HATCHET_FACTORY_RUNTIME',
     'HATCHET_VERIFIER_POLICY_PATH',
     'FACTORY_ORGANIZATION_CONFIG',
-    'DRIFTWARD_HERMES_GRPC_TARGET',
-    'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
-    'DRIFTWARD_HERMES_GRPC_TLS',
-    'DRIFTWARD_HERMES_GRPC_CA_PATH',
-    'DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH',
-    'DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH',
-    'DRIFTWARD_HERMES_GRPC_ALLOW_TCP',
-    'DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP',
-    'DRIFTWARD_HERMES_IDENTITY_CHECK_TIMEOUT_MS',
-    'DRIFTWARD_HERMES_AUTH_MODE',
-    'DRIFTWARD_HERMES_VERSION',
-    'DRIFTWARD_HERMES_COMMAND',
-    'DRIFTWARD_HERMES_ROOT',
-    'DRIFTWARD_HERMES_RUNTIME_USER',
-    'DRIFTWARD_HERMES_RUNTIME_UID',
-    'DRIFTWARD_HERMES_REPO_GROUP',
-    'DRIFTWARD_HERMES_ALLOWED_REPOS',
-    'DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN',
-    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME',
-    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
-    'DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS',
-    'DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS',
-    'DRIFTWARD_HERMES_MAX_BUFFER_BYTES',
-    'DRIFTWARD_HERMES_PR_VALIDATION_TIMEOUT_MS',
-    'DRIFTWARD_HERMES_PR_VALIDATION_MAX_BUFFER_BYTES',
-    'DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS'
+    'FACTORY_HERMES_GRPC_TARGET',
+    'FACTORY_HERMES_GRPC_AUTH_TOKEN',
+    'FACTORY_HERMES_GRPC_TLS',
+    'FACTORY_HERMES_GRPC_CA_PATH',
+    'FACTORY_HERMES_GRPC_CLIENT_KEY_PATH',
+    'FACTORY_HERMES_GRPC_CLIENT_CERT_PATH',
+    'FACTORY_HERMES_GRPC_ALLOW_TCP',
+    'FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP',
+    'FACTORY_HERMES_IDENTITY_CHECK_TIMEOUT_MS',
+    'FACTORY_HERMES_AUTH_MODE',
+    'FACTORY_HERMES_VERSION',
+    'FACTORY_HERMES_COMMAND',
+    'FACTORY_HERMES_ROOT',
+    'FACTORY_HERMES_RUNTIME_USER',
+    'FACTORY_HERMES_RUNTIME_UID',
+    'FACTORY_HERMES_REPO_GROUP',
+    'FACTORY_HERMES_ALLOWED_REPOS',
+    'FACTORY_HERMES_EXPECTED_GITHUB_LOGIN',
+    'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME',
+    'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
+    'FACTORY_HERMES_FORBIDDEN_GITHUB_LOGINS',
+    'FACTORY_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS',
+    'FACTORY_HERMES_MAX_BUFFER_BYTES',
+    'FACTORY_HERMES_PR_VALIDATION_TIMEOUT_MS',
+    'FACTORY_HERMES_PR_VALIDATION_MAX_BUFFER_BYTES',
+    'FACTORY_HERMES_PR_INSPECT_TIMEOUT_MS'
   ];
   const entries = keys.flatMap((key): Array<[string, string]> => {
     const value = process.env[key];
@@ -507,7 +507,7 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
   entries.push(
     ['HATCHET_BRIDGE_IDEMPOTENCY_KEY', job.idempotency_key],
     ['HATCHET_FACTORY_EXECUTION_LEASE', JSON.stringify(lease)],
-    ['DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS', String(parsePositiveInt(process.env.DRIFTWARD_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS, 4 * 60 * 60 * 1000))]
+    ['FACTORY_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS', String(parsePositiveInt(process.env.FACTORY_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS, 4 * 60 * 60 * 1000))]
   );
   const parent = executionTraceparent();
   const endpoint = telemetryEndpoint();
@@ -540,7 +540,7 @@ export function validateRealCreateDraftPrJob(job: BridgeJob): void {
   const repo = requiredPayloadString(job, 'repo');
   let allowedRepos: string[];
   try {
-    allowedRepos = configuredRepositories('DRIFTWARD_HERMES_ALLOWED_REPOS');
+    allowedRepos = configuredRepositories('FACTORY_HERMES_ALLOWED_REPOS');
   } catch (error) {
     throw new NonRetryableBridgeExecutionError('repo_not_allowlisted', error instanceof Error ? error.message : String(error));
   }
@@ -548,7 +548,7 @@ export function validateRealCreateDraftPrJob(job: BridgeJob): void {
   if (!allowedRepos.includes(repo)) {
     throw new NonRetryableBridgeExecutionError(
       'repo_not_allowlisted',
-      `repo ${repo} is not in DRIFTWARD_HERMES_ALLOWED_REPOS`
+      `repo ${repo} is not in FACTORY_HERMES_ALLOWED_REPOS`
     );
   }
 
@@ -589,7 +589,7 @@ export async function preflightHermesCreateDraftPr(job: BridgeJob): Promise<void
 
 export async function runHermesCreateDraftPr(job: BridgeJob, lease?: FactoryExecutionLease, onModelSelected?: ModelSelectionObserver): Promise<HermesDraftPrResult> {
   validateRealCreateDraftPrJob(job);
-  const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000);
+  const timeout = parsePositiveInt(process.env.FACTORY_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000);
 
   if (hermesGrpcGatewayEnabled()) {
     await assertHermesIdentity(requiredPayloadString(job, 'repo'));
@@ -619,13 +619,13 @@ export function hermesObservabilityEnvironment(job: BridgeJob): Record<string, s
 
 export async function runHermesCreateDraftPrViaCommand(
   job: BridgeJob,
-  command: string = process.env.DRIFTWARD_HERMES_COMMAND || 'driftward-hermes',
-  timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000),
-  maxBuffer: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024),
+  command: string = process.env.FACTORY_HERMES_COMMAND || 'factory-hermes',
+  timeout: number = parsePositiveInt(process.env.FACTORY_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS, 20 * 60 * 1000),
+  maxBuffer: number = parsePositiveInt(process.env.FACTORY_HERMES_MAX_BUFFER_BYTES, 2 * 1024 * 1024),
   onModelSelected?: ModelSelectionObserver,
   invocation?: InvocationExecutionContext,
 ): Promise<HermesDraftPrResult> {
-  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1' && !nativeContainerScope()) {
+  if (process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1' && !nativeContainerScope()) {
     validateRealCreateDraftPrJob(job);
     if (job.payload.independent_review_enrollment) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native isolation does not support OAuth review enrollment');
     hermesProfileArguments();
@@ -670,8 +670,8 @@ export async function runHermesCreateDraftPrViaCommand(
 
   let result: ExecResult;
   try {
-    if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
-      if (!invocation || process.env.DRIFTWARD_HERMES_PROFILE !== 'factory-native-executor' || !selection
+    if (process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
+      if (!invocation || process.env.FACTORY_HERMES_PROFILE !== 'factory-native-executor' || !selection
           || !['openai', 'anthropic'].includes(selection.selected_provider)) {
         throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native owner requires a verified invocation, explicit executor profile and selected model');
       }
@@ -799,8 +799,8 @@ export async function validateHermesDraftPrSideEffect(job: BridgeJob, result: He
     );
   }
 
-  const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VALIDATION_TIMEOUT_MS, 30_000);
-  const maxBuffer = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VALIDATION_MAX_BUFFER_BYTES, DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES);
+  const timeout = parsePositiveInt(process.env.FACTORY_HERMES_PR_VALIDATION_TIMEOUT_MS, 30_000);
+  const maxBuffer = parsePositiveInt(process.env.FACTORY_HERMES_PR_VALIDATION_MAX_BUFFER_BYTES, DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES);
   const observation = await inspectDraftPullRequest(repo, result.prNumber, timeout, maxBuffer);
   const { diffText, ...view } = observation;
 
@@ -937,7 +937,7 @@ export async function inspectDraftPrState(repository: string, reference: string 
   }
   try {
     if (hermesGrpcGatewayEnabled()) {
-      return await inspectDraftPrStateViaGrpc(repository, parsed.url, parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000));
+      return await inspectDraftPrStateViaGrpc(repository, parsed.url, parsePositiveInt(process.env.FACTORY_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000));
     }
     return await inspectDraftPrStateViaCommand(repository, parsed);
   } catch {
@@ -952,7 +952,7 @@ export async function inspectDraftPrStateViaCommand(
   assertGitHubIntegration();
   const view = await execHermesRuntimeJson<{ number?: number; url?: string; state?: string; mergedAt?: string | null; isDraft?: boolean; headRefName?: string; headRefOid?: string; baseRefName?: string }>(
     ['gh', 'pr', 'view', String(parsed.number), '--repo', repository, '--json', 'number,url,state,mergedAt,isDraft,headRefName,headRefOid,baseRefName'],
-    parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000), 128 * 1024
+    parsePositiveInt(process.env.FACTORY_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000), 128 * 1024
   );
   if (view.number !== parsed.number || view.url !== parsed.url || (view.state !== 'OPEN' && view.state !== 'CLOSED')) throw new Error('unexpected PR inspection response');
   return { repository, number: parsed.number, url: parsed.url, state: view.state.toLowerCase() as 'open' | 'closed', merged: Boolean(view.mergedAt), draft: Boolean(view.isDraft), head_branch: typeof view.headRefName === 'string' ? view.headRefName : null, head_sha: typeof view.headRefOid === 'string' ? view.headRefOid : null, base_ref: typeof view.baseRefName === 'string' ? view.baseRefName : null, reason: 'ok' };
@@ -967,7 +967,7 @@ export async function inspectGitHubHead(repository: string, headBranch: string):
   }
   try {
     if (hermesGrpcGatewayEnabled()) {
-      return await inspectGitHubHeadViaGrpc(repository, headBranch, parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000));
+      return await inspectGitHubHeadViaGrpc(repository, headBranch, parsePositiveInt(process.env.FACTORY_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000));
     }
     return await inspectGitHubHeadViaCommand(repository, headBranch);
   } catch {
@@ -978,7 +978,7 @@ export async function inspectGitHubHead(repository: string, headBranch: string):
 export async function inspectGitHubHeadViaCommand(
   repository: string,
   headBranch: string,
-  timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000)
+  timeout: number = parsePositiveInt(process.env.FACTORY_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000)
 ): Promise<GitHubHeadInspection> {
   assertGitHubIntegration();
   assertSafeGitHubRepo(repository);
@@ -1019,8 +1019,8 @@ export async function waitForHermesDraftPrVerification(
     verify?: () => Promise<DraftPrVerification>;
   } = {}
 ): Promise<DraftPrVerification> {
-  const timeout = options.timeoutMs || parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VERIFICATION_TIMEOUT_MS, 3 * 60 * 1000);
-  const poll = options.pollMs || parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_VERIFICATION_POLL_MS, 15_000);
+  const timeout = options.timeoutMs || parsePositiveInt(process.env.FACTORY_HERMES_PR_VERIFICATION_TIMEOUT_MS, 3 * 60 * 1000);
+  const poll = options.pollMs || parsePositiveInt(process.env.FACTORY_HERMES_PR_VERIFICATION_POLL_MS, 15_000);
   const now = options.now || Date.now;
   const sleep = options.sleep || ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const verify = options.verify || (() => validateHermesDraftPrSideEffect(job, result));
@@ -1053,7 +1053,7 @@ export function verifyDraftPrEvidence(
     );
   }
 
-  const expectedLogin = requiredEnv('DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN', 'hermes_github_identity_not_configured');
+  const expectedLogin = requiredEnv('FACTORY_HERMES_EXPECTED_GITHUB_LOGIN', 'hermes_github_identity_not_configured');
   if (!githubAppAuthorAliases(expectedLogin).includes(view.author?.login || '')) {
     throw new NonRetryableBridgeExecutionError(
       'verification_pr_author_mismatch',
@@ -1135,20 +1135,20 @@ export async function checkHermesIdentity(repo: string): Promise<HermesIdentityC
 
 function hermesIdentityExpectation(repo: string): HermesIdentityExpectation {
   const expectedGithubLogin = requiredEnv(
-    'DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN',
+    'FACTORY_HERMES_EXPECTED_GITHUB_LOGIN',
     'hermes_github_identity_not_configured'
   );
   const expectedGitAuthorEmail = requiredEnv(
-    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
+    'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
     'hermes_git_author_not_configured'
   );
   const expectedGitAuthorName = requiredEnv(
-    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME',
+    'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME',
     'hermes_git_author_not_configured'
   );
-  const forbiddenGithubLogins = parseCsv(process.env.DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS || '');
-  const forbiddenGitAuthorEmails = parseCsv(process.env.DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS || '');
-  const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_IDENTITY_CHECK_TIMEOUT_MS, 10_000);
+  const forbiddenGithubLogins = parseCsv(process.env.FACTORY_HERMES_FORBIDDEN_GITHUB_LOGINS || '');
+  const forbiddenGitAuthorEmails = parseCsv(process.env.FACTORY_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS || '');
+  const timeout = parsePositiveInt(process.env.FACTORY_HERMES_IDENTITY_CHECK_TIMEOUT_MS, 10_000);
 
   assertExpectedGithubAppBotIdentity(expectedGithubLogin, expectedGitAuthorName, expectedGitAuthorEmail);
   assertSafeGitHubRepo(repo);
@@ -1156,7 +1156,7 @@ function hermesIdentityExpectation(repo: string): HermesIdentityExpectation {
   if (forbiddenGithubLogins.includes(expectedGithubLogin)) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_expected_github_identity_forbidden',
-      `expected GitHub login ${expectedGithubLogin} is forbidden for Driftward Hermes execution`
+      `expected GitHub login ${expectedGithubLogin} is forbidden for Factory Hermes execution`
     );
   }
   return {
@@ -1174,7 +1174,7 @@ export async function assertHermesIdentityViaCommand(
   expectation: HermesIdentityExpectation = hermesIdentityExpectation(repo)
 ): Promise<HermesIdentityCheck> {
   assertGitHubIntegration();
-  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
+  if (process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
     const actor = (await execHermesRuntimeCommand(['gh', 'api', 'graphql', '-f',
       'query=query { viewer { login } }', '--jq', '.data.viewer.login'], expectation.timeout, 4096,
       'hermes_runtime_identity_check_failed')).stdout.trim();
@@ -1199,7 +1199,7 @@ export async function assertHermesIdentityViaCommand(
   if (expectation.forbiddenGitAuthorEmails.includes(gitAuthorEmail)) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_forbidden',
-      `Git author email ${gitAuthorEmail} is forbidden for Driftward Hermes execution`
+      `Git author email ${gitAuthorEmail} is forbidden for Factory Hermes execution`
     );
   }
   if (!GITHUB_APP_BOT_EMAIL_RE.test(gitAuthorEmail)) {
@@ -1214,7 +1214,7 @@ export async function assertHermesIdentityViaCommand(
   if (accessibleRepo !== repo) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_github_app_repo_access_mismatch',
-      `expected Driftward Hermes GitHub App access to ${repo}, got ${accessibleRepo || '<empty>'}`
+      `expected Factory Hermes GitHub App access to ${repo}, got ${accessibleRepo || '<empty>'}`
     );
   }
   return {
@@ -1241,19 +1241,19 @@ function validateObservedHermesIdentity(repo: string, observed: HermesIdentityCh
   if (expectation.forbiddenGithubLogins.includes(observed.githubLogin)) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_forbidden',
-      `GitHub login ${observed.githubLogin} is forbidden for Driftward Hermes execution`
+      `GitHub login ${observed.githubLogin} is forbidden for Factory Hermes execution`
     );
   }
   if (expectation.forbiddenGitAuthorEmails.includes(observed.gitAuthorEmail)) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_forbidden',
-      `Git author email ${observed.gitAuthorEmail} is forbidden for Driftward Hermes execution`
+      `Git author email ${observed.gitAuthorEmail} is forbidden for Factory Hermes execution`
     );
   }
   if (observed.accessibleRepo !== repo) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_github_app_repo_access_mismatch',
-      `expected Driftward Hermes GitHub App access to ${repo}, got ${observed.accessibleRepo || '<empty>'}`
+      `expected Factory Hermes GitHub App access to ${repo}, got ${observed.accessibleRepo || '<empty>'}`
     );
   }
 }
@@ -1265,13 +1265,13 @@ async function execHermesRuntimeJson<T>(args: string[], timeout: number, maxBuff
   } catch (error) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_runtime_json_parse_failed',
-      `Driftward Hermes runtime command did not return valid JSON: ${commandErrorMessage(error)}`
+      `Factory Hermes runtime command did not return valid JSON: ${commandErrorMessage(error)}`
     );
   }
 }
 
 function execHermesRuntimeCommandRaw(args: string[], timeout: number, maxBuffer: number): Promise<ExecResult> {
-  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') return execNativeRead(args, timeout, maxBuffer);
+  if (process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') return execNativeRead(args, timeout, maxBuffer);
   return execFileAsync('docker', hermesRuntimeDockerArgs(args), { timeout, maxBuffer, env: process.env });
 }
 
@@ -1295,8 +1295,8 @@ function runtimeCommandFailure(error: unknown,
   return new NonRetryableBridgeExecutionError(
     bufferExceeded ? 'hermes_process_output_limit_exceeded' : reasonCode,
     bufferExceeded
-      ? 'The Driftward Hermes runtime command exceeded its bounded output limit'
-      : 'The Driftward Hermes runtime command failed before returning bounded evidence',
+      ? 'The Factory Hermes runtime command exceeded its bounded output limit'
+      : 'The Factory Hermes runtime command failed before returning bounded evidence',
     {
       failureDomain: reasonCode === 'verification_evidence_unavailable' ? 'verification' : classified.failureDomain,
       failureStage: reasonCode === 'verification_evidence_unavailable' ? 'verification_checks' : classified.failureStage,
@@ -1310,21 +1310,25 @@ function runtimeCommandFailure(error: unknown,
 }
 
 export function hermesProfileArguments(): string[] {
-  const profile = process.env.DRIFTWARD_HERMES_PROFILE;
-  const native = process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1';
+  const profile = process.env.FACTORY_HERMES_PROFILE;
+  const native = process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1';
   const expected = native ? 'factory-native-executor' : 'factory-executor';
   if (native && !profile) throw new NonRetryableBridgeExecutionError('hermes_profile_invalid', 'Native owner requires its reserved profile');
   if (!profile) return [];
   if (profile !== expected) throw new NonRetryableBridgeExecutionError('hermes_profile_invalid', `Factory executor profile must be ${expected}`);
+  const namespace = process.env.FACTORY_HERMES_SKILL_NAMESPACE;
+  if (!namespace || !/^[a-z][a-z0-9-]{0,99}$/.test(namespace)) {
+    throw new NonRetryableBridgeExecutionError('hermes_skill_namespace_invalid', 'Factory executor requires a valid explicit skill namespace');
+  }
   return ['--profile', profile, '--skills',
-    'driftward-engineering:implement-change,driftward-engineering:verify-app,driftward-engineering:prepare-pr'];
+    ['implement-change', 'verify-app', 'prepare-pr'].map((skill) => `${namespace}:${skill}`).join(',')];
 }
 
 export function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
-  if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
+  if (process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
     throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Native route cannot enter the shared Hermes runtime');
   }
-  const root = process.env.DRIFTWARD_HERMES_ROOT || '/docker/driftward/hermes';
+  const root = process.env.FACTORY_HERMES_ROOT || '/docker/factory/hermes';
   const profile = hermesProfileArguments()[1];
   if (pinnedRuntime()) return pinnedRuntimeArgs([
     ...(profile ? ['env', `HERMES_HOME=/opt/data/profiles/${profile}`] : []), ...commandArgs,
@@ -1348,11 +1352,11 @@ export function hermesRuntimeDockerArgs(commandArgs: string[]): string[] {
 }
 
 function hermesRuntimeUser(): string {
-  if (process.env.DRIFTWARD_HERMES_RUNTIME_USER) {
-    return process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+  if (process.env.FACTORY_HERMES_RUNTIME_USER) {
+    return process.env.FACTORY_HERMES_RUNTIME_USER;
   }
-  const userId = process.env.DRIFTWARD_HERMES_RUNTIME_UID || '10000';
-  const groupName = process.env.DRIFTWARD_HERMES_REPO_GROUP || 'driftward';
+  const userId = process.env.FACTORY_HERMES_RUNTIME_UID || '10000';
+  const groupName = process.env.FACTORY_HERMES_REPO_GROUP || 'factory';
   try {
     const groupLine = execFileSync('getent', ['group', groupName], {
       timeout: 5_000,
@@ -1369,7 +1373,7 @@ function hermesRuntimeUser(): string {
 
   throw new NonRetryableBridgeExecutionError(
     'hermes_runtime_group_missing',
-    `group ${groupName} is required to execute Driftward Hermes identity checks`
+    `group ${groupName} is required to execute Factory Hermes identity checks`
   );
 }
 
@@ -1599,7 +1603,7 @@ export function buildPrompt(job: BridgeJob): string {
     idempotency_marker: marker
   };
 
-  return `You are Driftward Hermes executing one bounded Hatchet bridge job.
+  return `You are Factory Hermes executing one bounded Hatchet bridge job.
 
 External effect: ${externalEffect}.
 
@@ -1710,7 +1714,7 @@ function extractJsonObject(stdout: string): JsonObject {
 
 function bridgeMarker(job: BridgeJob): string {
   return [
-    '<!-- driftward-hatchet-bridge',
+    '<!-- factory-hatchet-bridge',
     `bridge_job_id: ${job.job_id}`,
     `idempotency_key: ${job.idempotency_key}`,
     `branch: ${job.branch}`,

@@ -1,5 +1,5 @@
-import { matchesOrganizationBinding, configuredRepositories, configuredLinearIssue, loadFactoryOrganization } from '@driftward/hatchet-worker-shared';
-import type { BridgeJob, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
+import { matchesOrganizationBinding, configuredRepositories, configuredLinearIssue, loadFactoryOrganization } from '@factory/hatchet-worker-shared';
+import type { BridgeJob, JsonObject, JsonValue } from '@factory/hatchet-worker-shared';
 import {
   resolveLinearProjectRoute,
   type ResolvedLinearProjectRoute
@@ -119,7 +119,7 @@ export function buildBridgePayload(
     implementation_prompt: buildImplementationPrompt(input),
     instructions: dryRun
       ? 'Dry-run intake dispatch from a ready Linear issue. Do not create external GitHub, Linear, or repo effects.'
-      : 'Real intake dispatch from a ready Linear issue. Create or reuse one draft GitHub PR through Driftward Hermes and the bridge ledger.',
+      : 'Real intake dispatch from a ready Linear issue. Create or reuse one draft GitHub PR through Factory Hermes and the bridge ledger.',
     repo_path: null,
     title: input.title || null,
     body: input.identifier ? `Refs Linear ${input.identifier}` : null,

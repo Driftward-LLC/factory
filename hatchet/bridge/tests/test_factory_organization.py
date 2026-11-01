@@ -61,7 +61,7 @@ class OrganizationTests(unittest.TestCase):
         self.value['github']['enabled'] = False
         self.path.write_text(json.dumps(self.value))
         request = {'idempotency_key': 'fixture', 'requested_action': 'create_draft_pr', 'payload': {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, 'repo': 'example/widgets', 'linear_issue': 'ACME-42', 'dry_run': False}}
-        with patch.dict(os.environ, {'DRIFTWARD_HERMES_ALLOWED_REPOS': 'example/widgets', 'GITHUB_TOKEN': 'fixture-unusable-token'}):
+        with patch.dict(os.environ, {'FACTORY_HERMES_ALLOWED_REPOS': 'example/widgets', 'GITHUB_TOKEN': 'fixture-unusable-token'}):
             with self.assertRaisesRegex(store.BridgeValidationError, 'disabled'): store._validate_submit(request)
         request['payload']['dry_run'] = True
         store._validate_submit(request)

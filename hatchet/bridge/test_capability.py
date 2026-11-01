@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-MODE = "driftward-hatchet-bridge-hermetic-test-v1"
+MODE = "factory-hatchet-bridge-hermetic-test-v1"
 OVERRIDE_PREFIXES = ("HATCHET_BRIDGE_TEST_", "BRIDGE_TEST_")
 CAPABILITY_FD_ENV = "BRIDGE_TEST_CAPABILITY_FD"
 CAPABILITY_INODE_ENV = "BRIDGE_TEST_CAPABILITY_INODE"
@@ -49,17 +49,17 @@ class TestCapability:
     prebuilt_trigger: Path
 
     @property
-    def state(self) -> Path: return self.root / "var/lib/driftward-hatchet-bridge"
+    def state(self) -> Path: return self.root / "var/lib/factory-hatchet-bridge"
     @property
-    def backups(self) -> Path: return self.root / "root/driftward-backups/hatchet"
+    def backups(self) -> Path: return self.root / "root/factory-backups/hatchet"
     @property
-    def release(self) -> Path: return self.root / "docker/driftward/hatchet/releases/bridge"
+    def release(self) -> Path: return self.root / "docker/factory/hatchet/releases/bridge"
     @property
-    def etc(self) -> Path: return self.root / "etc/driftward"
+    def etc(self) -> Path: return self.root / "etc/factory"
     @property
     def systemd(self) -> Path: return self.root / "etc/systemd/system"
     @property
-    def runtime(self) -> Path: return self.root / "run/driftward-hatchet-bridge"
+    def runtime(self) -> Path: return self.root / "run/factory-hatchet-bridge"
     @property
     def runtime_systemd(self) -> Path: return self.root / "run/systemd/system"
 
@@ -185,7 +185,7 @@ def shell() -> str:
         "BRIDGE_TEST_MODE": "1", "BRIDGE_TEST_ROOT": str(cap.root), "BRIDGE_TEST_REPOSITORY": str(cap.repository),
         "BRIDGE_TEST_FAKE_BIN": str(cap.fake_bin), "BRIDGE_TEST_AUDIT": str(cap.audit), "BRIDGE_TEST_UID": str(cap.uid),
         "BRIDGE_TEST_GID": str(cap.gid), "BRIDGE_TEST_RELEASE_VERSION": cap.release_version,
-        "DRIFTWARD_BRIDGE_RELEASE_VERSION": cap.release_version,
+        "FACTORY_BRIDGE_RELEASE_VERSION": cap.release_version,
         "BRIDGE_TEST_PREBUILT_TRIGGER": str(cap.prebuilt_trigger),
         CAPABILITY_FD_ENV: str(fd), CAPABILITY_INODE_ENV: str(inode), CAPABILITY_NONCE_ENV: nonce,
     }

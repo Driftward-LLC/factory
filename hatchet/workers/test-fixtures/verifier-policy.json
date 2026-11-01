@@ -69,7 +69,7 @@
       "secret_check_command": "gitleaks git --redact --verbose ."
     },
     {
-      "id": "driftward-host-hatchet-v1",
+      "id": "factory-host-hatchet-v1",
       "repo": "example/platform",
       "expected_base": "main",
       "allowed_changed_paths": [

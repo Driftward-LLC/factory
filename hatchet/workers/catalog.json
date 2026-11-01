@@ -23,13 +23,13 @@
         "bridge.jobs.submit"
       ],
       "forbidden_effects": [
-        "driftward_hermes.direct_cli",
+        "factory_hermes.direct_cli",
         "github.write",
         "linear.write",
         "provider_credentials.read"
       ],
       "produces_events": [
-        "driftward.hermes.job.accepted"
+        "factory.hermes.job.accepted"
       ],
       "consumes_events": []
     },
@@ -38,10 +38,10 @@
       "stage": "execution",
       "priority": 2,
       "status": "source_added",
-      "purpose": "Consume accepted bridge jobs, invoke Driftward Hermes through an allowlisted executor, record effect state, and emit Hatchet completion events.",
+      "purpose": "Consume accepted bridge jobs, invoke Factory Hermes through an allowlisted executor, record effect state, and emit Hatchet completion events.",
       "allowed_effects": [
         "bridge.jobs.transition",
-        "driftward_hermes.bounded_execution",
+        "factory_hermes.bounded_execution",
         "hatchet.events.push"
       ],
       "forbidden_effects": [
@@ -49,17 +49,17 @@
         "hatchet_worker_credentials_expansion"
       ],
       "produces_events": [
-        "driftward.hermes.job.effect_committed",
-        "driftward.hermes.job.verification_pending",
-        "driftward.hermes.job.verification_failed",
-        "driftward.hermes.job.ready_for_human_review",
-        "driftward.hermes.job.completed",
-        "driftward.hermes.job.failed",
-        "driftward.github.pr.creation_simulated",
-        "driftward.github.pr.created"
+        "factory.hermes.job.effect_committed",
+        "factory.hermes.job.verification_pending",
+        "factory.hermes.job.verification_failed",
+        "factory.hermes.job.ready_for_human_review",
+        "factory.hermes.job.completed",
+        "factory.hermes.job.failed",
+        "factory.github.pr.creation_simulated",
+        "factory.github.pr.created"
       ],
       "consumes_events": [
-        "driftward.hermes.job.accepted"
+        "factory.hermes.job.accepted"
       ]
     },
     {
@@ -80,13 +80,13 @@
       ],
       "produces_events": [],
       "consumes_events": [
-        "driftward.github.pr.created",
-        "driftward.github.pr.synchronized",
-        "driftward.github.pr.reopened",
-        "driftward.github.pr.closed_unmerged",
-        "driftward.github.pr.closed_merged",
-        "driftward.github.checks.completed",
-        "driftward.github.review.submitted"
+        "factory.github.pr.created",
+        "factory.github.pr.synchronized",
+        "factory.github.pr.reopened",
+        "factory.github.pr.closed_unmerged",
+        "factory.github.pr.closed_merged",
+        "factory.github.checks.completed",
+        "factory.github.review.submitted"
       ]
     },
     {
@@ -107,11 +107,11 @@
         "github.write",
         "linear.write",
         "deployment.write",
-        "driftward_hermes.direct_cli",
+        "factory_hermes.direct_cli",
         "provider_credentials.read"
       ],
       "produces_events": [
-        "driftward.reconciliation.detected"
+        "factory.reconciliation.detected"
       ],
       "consumes_events": []
     },
@@ -129,14 +129,14 @@
         "code.write",
         "github.write",
         "linear.write",
-        "driftward_hermes.direct_cli",
+        "factory_hermes.direct_cli",
         "provider_credentials.read"
       ],
       "produces_events": [
-        "driftward.work_item.intake.received"
+        "factory.work_item.intake.received"
       ],
       "consumes_events": [
-        "driftward.linear.issue.ready_for_implementation"
+        "factory.linear.issue.ready_for_implementation"
       ]
     },
     {
@@ -156,10 +156,10 @@
         "deployment.write"
       ],
       "produces_events": [
-        "driftward.work_item.triaged"
+        "factory.work_item.triaged"
       ],
       "consumes_events": [
-        "driftward.work_item.intake.received"
+        "factory.work_item.intake.received"
       ]
     },
     {
@@ -169,7 +169,7 @@
       "status": "planned_after_core_loop",
       "purpose": "Produce bounded acceptance criteria, verification commands, risks, and stop rules.",
       "allowed_effects": [
-        "driftward_hermes.bounded_execution",
+        "factory_hermes.bounded_execution",
         "artifact.write"
       ],
       "forbidden_effects": [
@@ -177,10 +177,10 @@
         "github.write"
       ],
       "produces_events": [
-        "driftward.work_item.specified"
+        "factory.work_item.specified"
       ],
       "consumes_events": [
-        "driftward.work_item.triaged"
+        "factory.work_item.triaged"
       ]
     },
     {
@@ -199,12 +199,12 @@
         "deployment.write"
       ],
       "produces_events": [
-        "driftward.verification.completed"
+        "factory.verification.completed"
       ],
       "consumes_events": [
-        "driftward.github.pr.created",
-        "driftward.github.pr.synchronized",
-        "driftward.github.pr.reopened"
+        "factory.github.pr.created",
+        "factory.github.pr.synchronized",
+        "factory.github.pr.reopened"
       ]
     },
     {
@@ -223,10 +223,10 @@
         "implementation_session_reuse"
       ],
       "produces_events": [
-        "driftward.review.completed"
+        "factory.review.completed"
       ],
       "consumes_events": [
-        "driftward.verification.completed"
+        "factory.verification.completed"
       ]
     },
     {
@@ -245,11 +245,11 @@
         "deployment.write"
       ],
       "produces_events": [
-        "driftward.repair.dispatched"
+        "factory.repair.dispatched"
       ],
       "consumes_events": [
-        "driftward.verification.completed",
-        "driftward.review.completed"
+        "factory.verification.completed",
+        "factory.review.completed"
       ]
     }
   ],
@@ -261,7 +261,7 @@
       "status": "source_added",
       "purpose": "Consume gated Linear ready-for-implementation events and reserve or reuse one active factory-attempt-backed create_draft_pr bridge job for the issue.",
       "does_not": [
-        "call Driftward Hermes",
+        "call Factory Hermes",
         "create GitHub pull requests",
         "write Linear comments or status",
         "perform provider side effects"
@@ -270,10 +270,10 @@
         "reserve-ready-linear-issue-attempt"
       ],
       "consumes_events": [
-        "driftward.linear.issue.ready_for_implementation"
+        "factory.linear.issue.ready_for_implementation"
       ],
       "produces_events": [
-        "driftward.work_item.intake.received"
+        "factory.work_item.intake.received"
       ],
       "next_workflows": [
         "bridge-executor-create-draft-pr"
@@ -287,7 +287,7 @@
       "status": "source_added",
       "purpose": "Submit a manual create_draft_pr job to the bridge and emit the accepted-job event.",
       "does_not": [
-        "call Driftward Hermes",
+        "call Factory Hermes",
         "create GitHub pull requests",
         "transition bridge jobs past accepted",
         "perform provider side effects"
@@ -297,7 +297,7 @@
       ],
       "consumes_events": [],
       "produces_events": [
-        "driftward.hermes.job.accepted"
+        "factory.hermes.job.accepted"
       ],
       "next_workflows": [
         "bridge-executor-create-draft-pr"
@@ -323,17 +323,17 @@
       "await-hermes-receipt"
     ],
       "consumes_events": [
-        "driftward.hermes.job.accepted"
+        "factory.hermes.job.accepted"
       ],
       "produces_events": [
-        "driftward.hermes.job.effect_committed",
-        "driftward.hermes.job.verification_pending",
-        "driftward.hermes.job.verification_failed",
-        "driftward.hermes.job.ready_for_human_review",
-        "driftward.hermes.job.completed",
-        "driftward.hermes.job.failed",
-        "driftward.github.pr.creation_simulated",
-        "driftward.github.pr.created"
+        "factory.hermes.job.effect_committed",
+        "factory.hermes.job.verification_pending",
+        "factory.hermes.job.verification_failed",
+        "factory.hermes.job.ready_for_human_review",
+        "factory.hermes.job.completed",
+        "factory.hermes.job.failed",
+        "factory.github.pr.creation_simulated",
+        "factory.github.pr.created"
       ],
       "next_workflows": [
         "pr-event-observer",
@@ -356,13 +356,13 @@
         "normalize-pr-event"
       ],
       "consumes_events": [
-        "driftward.github.pr.created",
-        "driftward.github.pr.synchronized",
-        "driftward.github.pr.reopened",
-        "driftward.github.pr.closed_unmerged",
-        "driftward.github.pr.closed_merged",
-        "driftward.github.checks.completed",
-        "driftward.github.review.submitted"
+        "factory.github.pr.created",
+        "factory.github.pr.synchronized",
+        "factory.github.pr.reopened",
+        "factory.github.pr.closed_unmerged",
+        "factory.github.pr.closed_merged",
+        "factory.github.checks.completed",
+        "factory.github.review.submitted"
       ],
       "produces_events": [],
       "next_workflows": [
@@ -387,40 +387,40 @@
       ],
       "consumes_events": [],
       "produces_events": [
-        "driftward.reconciliation.detected"
+        "factory.reconciliation.detected"
       ],
       "next_workflows": []
     }
   ],
   "events": [
-    "driftward.hermes.job.accepted",
-    "driftward.hermes.job.effect_committed",
-    "driftward.hermes.job.verification_pending",
-    "driftward.hermes.job.verification_failed",
-    "driftward.hermes.job.ready_for_human_review",
-    "driftward.hermes.job.completed",
-    "driftward.hermes.job.failed",
-    "driftward.github.pr.creation_simulated",
-    "driftward.github.pr.created",
-    "driftward.github.pr.synchronized",
-    "driftward.github.pr.reopened",
-    "driftward.github.pr.closed_unmerged",
-    "driftward.github.pr.closed_merged",
-    "driftward.github.checks.completed",
-    "driftward.github.review.submitted",
-    "driftward.linear.issue.observed",
-    "driftward.linear.issue.ready_for_implementation",
-    "driftward.reconciliation.detected",
-    "driftward.work_item.intake.received",
-    "driftward.factory.retry.requested",
-    "driftward.factory.attempt.started",
-    "driftward.factory.attempt.failed",
-    "driftward.factory.attempt.verified_ready",
-    "driftward.factory.attempt.superseded",
-    "driftward.work_item.triaged",
-    "driftward.work_item.specified",
-    "driftward.verification.completed",
-    "driftward.review.completed",
-    "driftward.repair.dispatched"
+    "factory.hermes.job.accepted",
+    "factory.hermes.job.effect_committed",
+    "factory.hermes.job.verification_pending",
+    "factory.hermes.job.verification_failed",
+    "factory.hermes.job.ready_for_human_review",
+    "factory.hermes.job.completed",
+    "factory.hermes.job.failed",
+    "factory.github.pr.creation_simulated",
+    "factory.github.pr.created",
+    "factory.github.pr.synchronized",
+    "factory.github.pr.reopened",
+    "factory.github.pr.closed_unmerged",
+    "factory.github.pr.closed_merged",
+    "factory.github.checks.completed",
+    "factory.github.review.submitted",
+    "factory.linear.issue.observed",
+    "factory.linear.issue.ready_for_implementation",
+    "factory.reconciliation.detected",
+    "factory.work_item.intake.received",
+    "factory.retry.requested",
+    "factory.attempt.started",
+    "factory.attempt.failed",
+    "factory.attempt.verified_ready",
+    "factory.attempt.superseded",
+    "factory.work_item.triaged",
+    "factory.work_item.specified",
+    "factory.verification.completed",
+    "factory.review.completed",
+    "factory.repair.dispatched"
   ]
 }

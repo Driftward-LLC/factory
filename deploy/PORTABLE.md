@@ -18,7 +18,7 @@ another operator-managed deployment. It needs no durable volume.
 3. Take a new cold snapshot with the matching wrapper's `backup PATH --apply`.
    This stops services. Check active execution before approving this outage.
 4. Preview, then apply:
-   `python3 deploy/factory-production.py --directory /srv/factory-candidate telemetry --snapshot /srv/NEW-SNAPSHOT --credentials /etc/driftward/factory-otel-collector.env --port 4318 [--apply]`.
+   `python3 deploy/factory-production.py --directory /srv/factory-candidate telemetry --snapshot /srv/NEW-SNAPSHOT --credentials /etc/factory/factory-otel-collector.env --port 4318 [--apply]`.
    The port is loopback-only. Configure `--paused` initially if dashboard or
    matching gateway deployment acceptance is still pending.
 5. Run `preview` (production), then resume via `activate --approve-effects --apply`
@@ -44,7 +44,7 @@ snapshot and review the pending marker/extra credential before retrying.
 Local acceptance (synthetic key; exporters paused, no PostHog calls):
 
 ```bash
-python3 tools/check_factory_portable.py --image driftward/factory:local --telemetry
+python3 tools/check_factory_portable.py --image factory/factory:local --telemetry
 ```
 
 ## Base installation
@@ -113,11 +113,11 @@ secrets. Repeating the same initialization preserves identities and secrets;
 foreign, incomplete, changed-image, or symlinked installations are rejected.
 Use `--port-offset 20000` on both init calls to run beside another installation.
 The `factory` project has its own volumes and network; it does not rename or
-reuse the existing `driftward-factory` deployment. Resource ownership checks
+reuse the existing `factory` deployment. Resource ownership checks
 still reject foreign resources with an exact target name.
 
 Release metadata selects a digest-pinned image. For an explicitly local source
-build only, pass `init --image driftward/factory:my-test-tag`; deployments do not
+build only, pass `init --image factory/factory:my-test-tag`; deployments do not
 build source. Validation-only release artifacts are rejected.
 
 `up` stops only this named project before migrations. It uses the pinned
@@ -172,7 +172,7 @@ restored real-execution deployment alongside its original executor authority.
 ## Supported scope and validation
 
 The disposable acceptance check is `python3 tools/check_factory_portable.py
---image driftward/factory:ci` from a source checkout after building that image.
+--image factory/factory:ci` from a source checkout after building that image.
 It owns an isolated project and cleans up only its own test resources. It must
 not receive production credentials or target existing installations.
 

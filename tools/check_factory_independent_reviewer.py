@@ -107,7 +107,7 @@ def main():
                       "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--entrypoint", "python3"]
             probe = """import json,os,socket,importlib.util
 from pathlib import Path
-paths=['/run/reviewer-auth.json','/run/docker.sock','/var/run/docker.sock','/root/.codex/auth.json','/docker/driftward/hermes/data']
+paths=['/run/reviewer-auth.json','/run/docker.sock','/var/run/docker.sock','/root/.codex/auth.json','/docker/factory/hermes/data']
 def visible(p):
  try:return Path(p).exists()
  except PermissionError:return False

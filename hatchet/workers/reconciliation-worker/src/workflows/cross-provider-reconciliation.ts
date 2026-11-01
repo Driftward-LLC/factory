@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { BridgeJob, JsonObject } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, JsonObject } from '@factory/hatchet-worker-shared';
 import type { ObservationLookup } from '../ingress-observation-client';
 import type { HatchetRunLookup } from '../hatchet-run-observer';
 

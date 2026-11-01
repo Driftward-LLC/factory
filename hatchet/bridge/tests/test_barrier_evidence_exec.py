@@ -28,11 +28,11 @@ class BarrierEvidenceExecTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
-        self.runtime = root / "run/driftward-hatchet-bridge"; self.runtime.mkdir(parents=True)
+        self.runtime = root / "run/factory-hatchet-bridge"; self.runtime.mkdir(parents=True)
         self.systemd = root / "run/systemd/system"; self.systemd.mkdir(parents=True)
-        self.state = root / "var/lib/driftward-hatchet-bridge"; self.state.mkdir(parents=True)
+        self.state = root / "var/lib/factory-hatchet-bridge"; self.state.mkdir(parents=True)
         self.active = self.runtime / "maintenance.active"; self.active.touch(); self.active.chmod(0o600)
-        self.dropin = self.systemd / f"{self.unit}.d/90-driftward-bridge-maintenance.conf"; self.dropin.parent.mkdir()
+        self.dropin = self.systemd / f"{self.unit}.d/90-factory-bridge-maintenance.conf"; self.dropin.parent.mkdir()
         self.dropin.write_text(f"[Unit]\nConditionPathExists=!{self.active}\n"); self.dropin.chmod(0o644)
         self.fds: list[int] = []
 

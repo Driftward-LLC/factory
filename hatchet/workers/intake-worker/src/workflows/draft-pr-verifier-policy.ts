@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
+import type { JsonObject, JsonValue } from '@factory/hatchet-worker-shared';
 
 const DOCKER_VERIFIER_POLICY_PATH = '/etc/factory/config/verifier-policy.json';
 

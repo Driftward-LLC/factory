@@ -12,7 +12,7 @@ the disabled-by-default cross-process tracing slice and activation gates.
 PostHog export belongs to Hermes, not Hatchet workers. The command
 adapter supplies a metadata-only envelope per invocation: bridge job UUID,
 sealed Factory attempt UUID/generation, and bounded Linear issue identifier.
-The host's `driftward-hermes` wrapper explicitly validates and forwards those
+The host's `factory-hermes` wrapper explicitly validates and forwards those
 four `FACTORY_OBSERVABILITY_*` fields into `docker compose exec`; host environment
 variables are not otherwise inherited by Hermes.
 
@@ -112,7 +112,7 @@ execution authority.
 
 Hatchet worker docs show `HATCHET_CLIENT_TOKEN` as the worker connection token.
 That token is not an LLM provider key. Store it separately, for example at
-`/etc/driftward/hatchet-worker.env` with mode `0600`. Do not mount it into Hermes
+`/etc/factory/hatchet-worker.env` with mode `0600`. Do not mount it into Hermes
 unless a future Hermes-native Hatchet client is explicitly approved.
 
 Hatchet's durable-task docs fit the desired control-plane role: durable tasks
@@ -176,12 +176,12 @@ The Hermes bridge is a typed gRPC service. Production should use a Unix domain
 socket owned by a dedicated group:
 
 ```text
-unix:///run/driftward-hermes-factory/hermes.sock
+unix:///run/factory-hermes-factory/hermes.sock
 ```
 
 The protobuf contract is transport-neutral, so a future private TCP endpoint is
-allowed only as a deployment change with `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1`
-and either TLS or `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`. Localhost HTTP is
+allowed only as a deployment change with `FACTORY_HERMES_GRPC_ALLOW_TCP=1`
+and either TLS or `FACTORY_HERMES_GRPC_AUTH_TOKEN`. Localhost HTTP is
 acceptable only for one-off prototypes when bound to `127.0.0.1`, protected by
 a shared secret or mTLS-equivalent local credential, and blocked from public
 ingress. A CLI wrapper is acceptable for a manual pilot, but should not become
@@ -309,11 +309,11 @@ from the Factory application release.
 Legacy managed-host defaults (portable releases use installation-local paths):
 
 ```text
-/docker/driftward/factory/              # Factory Compose runtime
-/var/lib/docker/volumes/driftward-factory-*  # Docker-managed durable state
-/etc/driftward/hatchet.env              # Hatchet control-plane env, mode 0600
-/etc/driftward/hatchet-workers.env      # Worker token only, mode 0600
-/var/lib/driftward-hatchet-bridge/      # Binding/control store for pilot
+/docker/factory/factory/              # Factory Compose runtime
+/var/lib/docker/volumes/factory-*  # Docker-managed durable state
+/etc/factory/hatchet.env              # Hatchet control-plane env, mode 0600
+/etc/factory/hatchet-workers.env      # Worker token only, mode 0600
+/var/lib/factory-hatchet-bridge/      # Binding/control store for pilot
 /usr/local/bin/factory-docker-smoke     # Factory runtime smoke test
 ```
 

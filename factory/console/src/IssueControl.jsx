@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, ExternalLink, Notice, StatusBadge, SummaryItem, Card, Heading, TextInput, MetadataList, MetadataListItem } from '@driftward/ui';
-import { LockClosedIcon, ReloadIcon } from '@driftward/ui/icons';
+import { Button, ExternalLink, Notice, StatusBadge, SummaryItem, Card, Heading, TextInput, MetadataList, MetadataListItem } from '@factory/ui';
+import { LockClosedIcon, ReloadIcon } from '@factory/ui/icons';
 import { prUrl, time } from './model.js';
 
 const states = {

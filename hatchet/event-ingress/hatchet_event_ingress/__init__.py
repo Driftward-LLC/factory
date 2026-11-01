@@ -1,1 +1,1 @@
-"""Local Hatchet event ingress for Driftward host automation."""
+"""Local Hatchet event ingress for Factory host automation."""

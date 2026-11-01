@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-env_file="${HATCHET_VERIFIER_ENV_PATH:-/etc/driftward/hatchet-verifier.env}"
+env_file="${HATCHET_VERIFIER_ENV_PATH:-/etc/factory/hatchet-verifier.env}"
 policy_path="${HATCHET_VERIFIER_POLICY_PATH:-}"
 policy_source="${HATCHET_VERIFIER_POLICY_SOURCE:-}"
 

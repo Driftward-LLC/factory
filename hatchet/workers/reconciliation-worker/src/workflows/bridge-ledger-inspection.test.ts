@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { HATCHET_EVENTS, type BridgeJob, type ReconciliationCorrelations, type ReconciliationScanPage } from '@driftward/hatchet-worker-shared';
+import { HATCHET_EVENTS, type BridgeJob, type ReconciliationCorrelations, type ReconciliationScanPage } from '@factory/hatchet-worker-shared';
 import { inspectBridgeLedger } from './bridge-ledger-inspection';
 
 type Dependencies = Parameters<typeof inspectBridgeLedger>[1];

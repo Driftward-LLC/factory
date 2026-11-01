@@ -53,9 +53,9 @@ unchanged PR. It records unknown outcome rather than fabricating a receipt.
 
 ## Storage and rollout
 
-The host gateway owns `/var/lib/driftward-hermes-factory/invocations`, provisioned
+The host gateway owns `/var/lib/factory-hermes-factory/invocations`, provisioned
 through its systemd `StateDirectory`. Directories are private to the executor
-owner and files are mode `0600`. `DRIFTWARD_HERMES_INVOCATION_DIRECTORY` may
+owner and files are mode `0600`. `FACTORY_HERMES_INVOCATION_DIRECTORY` may
 select another absolute, persistent private directory. For the bundled executor
 role, the default is `HERMES_HOME/factory-invocations` in its existing private data
 volume. Workers access the typed gateway, never this directory.

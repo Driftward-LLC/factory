@@ -1,4 +1,4 @@
-import { StatusBadge, Heading, MetadataList, MetadataListItem } from '@driftward/ui';
+import { StatusBadge, Heading, MetadataList, MetadataListItem } from '@factory/ui';
 import { label, time } from './model.js';
 
 const states = {

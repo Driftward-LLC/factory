@@ -26,7 +26,7 @@ def _tracer():
         _provider = TracerProvider(resource=Resource({"service.name": "factory-bridge"}), sampler=ALWAYS_ON, shutdown_on_exit=False)
         _provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, timeout=1),
             max_queue_size=256, max_export_batch_size=32, schedule_delay_millis=1000, export_timeout_millis=1500))
-    return _provider.get_tracer("driftward.factory.execution", "1") if _provider else None
+    return _provider.get_tracer("factory.execution", "1") if _provider else None
 
 
 @contextmanager

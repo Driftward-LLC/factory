@@ -1,4 +1,4 @@
-import { Metric } from '@driftward/ui';
+import { Metric } from '@factory/ui';
 
 export default {
   title: 'Components/Metric', component: Metric, tags: ['autodocs'],

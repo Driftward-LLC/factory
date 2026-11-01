@@ -1,0 +1,22 @@
+[Unit]
+Description=Reconcile stale Factory Hatchet Hermes bridge jobs
+After=network-online.target factory-hatchet-bridge.service
+Wants=network-online.target
+Documentation=file:/docker/factory/hatchet/releases/bridge/current/README.md
+
+[Service]
+Type=exec
+WorkingDirectory=/docker/factory/hatchet/releases/bridge/current
+Environment=HOME=/root
+Environment=GH_CONFIG_DIR=/root/.config/gh
+Environment=PYTHONPATH=/docker/factory/hatchet/releases/bridge/current
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-/etc/factory/hatchet-bridge.env
+ExecStart=/usr/bin/python3 -m hatchet_hermes_bridge.cli --db /var/lib/factory-hatchet-bridge/bridge.db reconcile --stale-minutes 30 --limit 50
+CPUQuota=10%
+MemoryMax=128M
+RuntimeMaxSec=120
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/factory-hatchet-bridge
+PrivateTmp=true

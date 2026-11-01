@@ -13,46 +13,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class InstallerPolicyTests(unittest.TestCase):
-    def test_migration_ledger_preserves_existing_issue_ownership_and_audit(self):
-        source = (ROOT / "bridge" / "install.sh").read_text()
-        helpers = source[source.index("ledger_snapshot() {"):source.index("attestation_delta_required() {")]
-        tables = ("factory_issue_controls", "factory_issue_control_commands")
-        with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / "bridge.db"
-            before, after = Path(directory) / "before", Path(directory) / "after"
-            with sqlite3.connect(database) as conn:
-                for table in tables:
-                    conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY, evidence TEXT)")
-
-            def snapshot():
-                result = subprocess.run(["bash", "-c", helpers + "\nledger_snapshot"],
-                                        env={**os.environ, "db": str(database)}, text=True, capture_output=True, check=True)
-                return result.stdout
-
-            def verify():
-                return subprocess.run(["bash", "-c", helpers + '\nassert_migration_ledger "$1" "$2" 0',
-                                       "ledger-test", str(before), str(after)], text=True, capture_output=True)
-
-            original = snapshot()
-            before.write_text(original)
-            after.write_text(original)
-            self.assertEqual(verify().returncode, 0)
-            for table in tables:
-                with self.subTest(table=table):
-                    self.assertIn(f"{table}=0:", original)
-                    with sqlite3.connect(database) as conn:
-                        conn.execute(f"INSERT INTO {table} VALUES ('existing', 'retained evidence')")
-                    before.write_text(snapshot())
-                    with sqlite3.connect(database) as conn:
-                        conn.execute(f"UPDATE {table} SET evidence='unexpected migration rewrite'")
-                    after.write_text(snapshot())
-                    rejected = verify()
-                    self.assertNotEqual(rejected.returncode, 0)
-                    self.assertIn(f"immutable/effect ledger changed during migration: {table}", rejected.stderr)
-            # The first upgrade may add previously absent tables; later upgrades
-            # must preserve their contents once they have entered the ledger.
-            before.write_text("".join(f"{table}=missing\n" for table in tables))
-            self.assertEqual(verify().returncode, 0)
 
     def test_blocked_recovery_checks_ownership_and_accepts_only_absent_legacy_tables(self):
         source = (ROOT / "bridge" / "recover-blocked.sh").read_text()
@@ -96,84 +56,8 @@ class InstallerPolicyTests(unittest.TestCase):
             self.assertNotEqual(unreadable.returncode, 0)
             self.assertIn("recovery could not read immutable ledger", unreadable.stderr)
 
-    def test_predeploy_runs_before_any_install_or_secret_mutation(self):
-        source = (ROOT / "bridge" / "install.sh").read_text()
-        predeploy = source.index('predeploy-check.py')
-        self.assertLess(predeploy, source.index('publish-release.sh" --stage-only'))
-        self.assertLess(predeploy, source.index('BACKUP_PATH="$backup"'))
-        self.assertLess(predeploy, source.rindex('systemctl daemon-reload'))
-    def test_bridge_installer_stages_then_has_explicit_failure_boundaries_and_rollback(self):
-        source = (ROOT / "bridge" / "install.sh").read_text()
-        for stage in ("predeploy", "staging", "writer-quiesce", "backup", "disposable-migration", "live-migration", "config-publication", "policy-publication", "routing-publication", "unit-publication", "release-publication", "symlink-switch", "daemon-reload", "restart", "health"):
-            self.assertIn(f"fail_at {stage}", source)
-        self.assertIn('rollback()', source)
-        self.assertIn('snapshot_targets()', source)
-        self.assertIn('restore_targets()', source)
-        self.assertIn('restore_database()', source)
-        self.assertIn('bridge migration requires zero active jobs/attempts/leases/outboxes', source)
-        self.assertIn('curl --silent --fail --max-time 2 http://127.0.0.1:19877/health', source)
-        self.assertIn('install_maintenance_dropins', source)
-        self.assertIn('stop_loaded_writers', source)
-        self.assertIn('verify_maintenance_barrier', source)
-        self.assertNotIn('mask --runtime', source)
-        self.assertIn('writer-inventory.py', source)
-        self.assertIn('publication-targets.sh', source)
-        self.assertIn('safe_down_recovery.py" adopt', source)
-        self.assertLess(source.index('safe_down_recovery.py" adopt'), source.index('fail_at predeploy'))
-        self.assertIn('if (( recover_safe_down )); then\n    if (( live_migrated )); then restore_database', source)
-        self.assertLess(source.index('hard_block_writers "safe-down'), source.index('if (( lock_released )); then'))
-        barrier = (ROOT / "bridge" / "installer-barrier.sh").read_text()
-        self.assertIn('flock -n 3', barrier)
-        self.assertIn('ConditionPathExists=!', barrier)
-        self.assertNotIn('HATCHET_BRIDGE_MAINTENANCE_BYPASS', source)
-        self.assertNotIn('HATCHET_BRIDGE_RELEASE_ROOT:-', source)
-        self.assertIn('driftward-hatchet-bridge-reconciler.service', source)
-        self.assertIn('systemctl disable --now driftward-hatchet-bridge-reconciler.timer', source)
-        self.assertIn('persist_recovery_state', source)
-        self.assertIn('sha256sum "$backup"', source)
-        self.assertIn('ledger-before.txt', source)
-        self.assertIn('ledger-after.txt', source)
-        self.assertLess(source.index('copy -- "$backup"') if 'copy -- "$backup"' in source else source.index('cp -- "$backup"'), source.index('PYTHONPATH="$stage/release" python3 -B -m hatchet_hermes_bridge.cli --db "$db" init'))
-        self.assertLess(source.index('PYTHONPATH="$stage/release" python3 -B -m hatchet_hermes_bridge.cli --db "$db" init'), source.index('publication_commit.py" commit'))
 
-    def test_staged_release_imports_are_bytecode_free_and_reproved_before_publication(self):
-        source = (ROOT / "bridge" / "install.sh").read_text()
-        publisher = (ROOT / "bridge" / "publish-release.sh").read_text()
-        initial_validate = publisher.index('release_hygiene.py" validate --tree "$stage"')
-        initial_scan = publisher.index('release_hygiene.py" scan --tree "$stage"')
-        initial_manifest = publisher.index('release_hygiene.py" write-manifest --tree "$stage"')
-        initial_verify = publisher.index('verify_release "$stage"')
-        self.assertLess(initial_validate, initial_scan)
-        self.assertLess(initial_scan, initial_manifest)
-        self.assertLess(initial_manifest, initial_verify)
-        self.assertIn('verify_staged_release()', source)
-        self.assertEqual(source.count('verify_staged_release'), 4)
-        disposable_init = source.index('PYTHONPATH="$stage/release" python3 -B -m hatchet_hermes_bridge.cli --db "$stage/disposable.db" init')
-        disposable_predeploy = source.index('PYTHONPATH="$stage/release" python3 -B "$stage/release/predeploy-check.py"')
-        live_init = source.index('PYTHONPATH="$stage/release" python3 -B -m hatchet_hermes_bridge.cli --db "$db" init')
-        final_gate = source.index('live_migrated=1; snapshot_targets; verify_staged_release; publication_started=1')
-        publication = source.index('publication_commit.py" commit')
-        self.assertEqual(source.count('PYTHONDONTWRITEBYTECODE=1 DRIFTWARD_BRIDGE_RELEASE_VERSION="$release_version" HATCHET_INTAKE_ROUTING_REGISTRY_PATH="$stage/etc/driftward/hatchet-routing-registry.json" PYTHONPATH="$stage/release" python3 -B'), 4)
-        self.assertIn('assert_migration_ledger "$stage/ledger-before.txt" "$stage/ledger-migrated.txt" "$expected_attestation_delta"', source)
-        self.assertIn('--require-current-attestations', source)
-        self.assertLess(disposable_init, disposable_predeploy)
-        self.assertLess(disposable_predeploy, source.index('verify_staged_release', disposable_predeploy))
-        self.assertLess(live_init, final_gate)
-        self.assertLess(final_gate, publication)
-        self.assertIn('PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$release_root/current" DB="$db" python3 -B', source)
-        self.assertIn('PYTHONDONTWRITEBYTECODE=1 DRIFTWARD_BRIDGE_RELEASE_VERSION="$release_version" HATCHET_INTAKE_ROUTING_REGISTRY_PATH="$routing_registry" PYTHONPATH="$release_root/current" python3 -B', source)
 
-    def test_rollback_tracks_absent_targets_symlinks_and_keeps_failed_writers_stopped(self):
-        source = (ROOT / "bridge" / "install.sh").read_text()
-        publication = (ROOT / "bridge" / "publication_commit.py").read_text()
-        self.assertIn('rollback --journal', source)
-        self.assertIn('publication-*.journal', publication)
-        self.assertIn('rollback pre-state digest mismatch', publication)
-        self.assertIn('restore_verified_backup', source)
-        self.assertIn('stat -c \'%a\' "$backup"', source)
-        self.assertIn('ROLLBACK BLOCKED: writers remain stopped', source)
-        self.assertIn('failed_stages+=(restore-database)', source)
-        self.assertIn('hard_block_writers "${failed_stages[*]}"', source)
 
     def test_blocked_recovery_is_proof_gated_and_never_migrates(self):
         source = (ROOT / "bridge" / "recover-blocked.sh").read_text()
@@ -220,9 +104,6 @@ class InstallerPolicyTests(unittest.TestCase):
         self.assertIn('RELEASE_METADATA.json', source)
         self.assertIn('refusing production release from dirty relevant source', source)
         self.assertIn('existing release fails immutable manifest verification', source)
-        self.assertIn('release_hygiene.py" scan --tree "$source_root"', source)
-        self.assertIn('release_hygiene.py" scan --tree "$stage"', source)
-        self.assertIn('release_hygiene.py" scan --tree "$target"', source)
         self.assertIn('release_hygiene.py" write-manifest', source)
         self.assertIn('rm -rf "$source_root/hatchet/bridge/tests"', source)
         self.assertIn("-name '*.test.ts' -delete", source)
@@ -235,7 +116,6 @@ class InstallerPolicyTests(unittest.TestCase):
         self.assertNotIn("_scan_with_gitleaks", hygiene)
         self.assertNotIn("--skip-gitleaks", hygiene)
         self.assertNotIn("--secret-env-file", hygiene)
-        self.assertIn('release_hygiene.py" scan --tree "$stage"', (ROOT / "bridge" / "install.sh").read_text())
         self.assertIn("GITLEAKS_VERSION", workflow)
         self.assertIn("/tmp/gitleaks git --redact --verbose .", workflow)
 
@@ -244,17 +124,13 @@ class InstallerPolicyTests(unittest.TestCase):
         smoke = (ROOT.parent / "deploy" / "factory-docker-smoke").read_text()
         operator = (ROOT / "bridge" / "hatchet_hermes_bridge" / "operator.py").read_text()
         verifier_env = (ROOT / "bridge" / "verifier-env.sh").read_text()
-        executor_unit = (ROOT / "workers" / "systemd" / "driftward-hatchet-worker-bridge-executor.service").read_text()
-        workers_install = (ROOT / "workers" / "install.sh").read_text()
+        executor_unit = (ROOT / "workers" / "systemd" / "factory-hatchet-worker-bridge-executor.service").read_text()
         self.assertIn('HATCHET_VERIFIER_POLICY_PATH: /etc/factory/config/verifier-policy.json', compose)
         self.assertIn('HATCHET_FACTORY_OPERATOR_RUNTIME: docker', compose)
         self.assertIn('expected_policy_path="/etc/factory/config/verifier-policy.json"', smoke)
-        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH", "/etc/driftward/hatchet-verifier-policy.json"', operator)
-        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-/etc/driftward/hatchet-verifier-policy.json', verifier_env)
-        self.assertIn('EnvironmentFile=-/etc/driftward/hatchet-verifier.env', executor_unit)
-        self.assertIn('upsert_env "$common_env" HATCHET_VERIFIER_POLICY_PATH "$policy_dst"', workers_install)
-        self.assertIn('policy_dst="${HATCHET_VERIFIER_POLICY_PATH:-}"', workers_install)
-        self.assertIn('env_file_value "$common_env" HATCHET_VERIFIER_POLICY_PATH', workers_install)
+        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH", "/etc/factory/hatchet-verifier-policy.json"', operator)
+        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-/etc/factory/hatchet-verifier-policy.json', verifier_env)
+        self.assertIn('EnvironmentFile=-/etc/factory/hatchet-verifier.env', executor_unit)
 
     def test_verifier_env_requires_explicit_policy_path(self):
         helper = ROOT / "bridge" / "verifier-env.sh"

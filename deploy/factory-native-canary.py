@@ -14,11 +14,11 @@ ENV = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', '
 TMPFS = {'/tmp': 'rw,nosuid,nodev,size=128m,mode=1777',
          '/opt/data': 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=10000,gid=10000'}
 ASSET_SHA256 = {
-    'main.py': '3cebd326655eeedf6d8649e6b9af228cdc56c64ffbf6cfe114f5ffccc0a418be',
-    'owner.py': 'b5220ca78d658c0ca5c0ede84535cc87184149e5f6541dd5958ab99216ee84ab',
+    'main.py': '5ae2664b3b61b4471123a8a2ed7f47fdc41ae67c6029564bddae486bba238b5d',
+    'owner.py': '40352e32c7a61fc967c898b4ca629ef104125891e8383b7883e658d63373b2bb',
     'transport.py': 'b1c4879bd9da207067e77d19e41b403c92b31cb661230ccd9d3c14f2764f10e9',
-    'driver.py': 'f6be1307e725ee64dd80c6c87045432a5caf04f3db249fa23c2b8955539ed526',
-    'observer.py': '89c0654d39bdc8fe3bd1c7583908e33dc1faf884260722601469c0866f523788',
+    'driver.py': 'bfc8fb2a49ac3a2c75faea2bb6130d88b9ab0eecdcfaa33fb79b28239c2b343f',
+    'observer.py': '15ddba313831b424c4c54422451bff4c225a2ecb73e507caf21770a804953d73',
 }
 REFUSAL_CODES = {
     'public_assets': {'unsafe_asset_permissions', 'asset_oversize', 'asset_digest_mismatch'},
@@ -121,7 +121,7 @@ def image_identity(identity):
 def create_arguments(name, image, driver):
     if not re.fullmatch(r'factory-native-canary-[0-9a-f]{32}', name) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
         raise ValueError('invalid disposable identity')
-    return ['create', '--name', name, '--label', 'com.driftward.factory.validation=native-owner', '-i', '--restart=no',
+    return ['create', '--name', name, '--label', 'com.factory.validation=native-owner', '-i', '--restart=no',
             '--network=none', '--read-only', '--no-healthcheck', '--user=10000:10000', '--cap-drop=ALL',
             '--security-opt=no-new-privileges:true', '--pids-limit=64', '--memory=768m', '--cpus=1',
             '--ulimit', 'fsize=1048576:1048576', '--ulimit', 'nofile=256:256',

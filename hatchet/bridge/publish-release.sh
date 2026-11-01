@@ -6,13 +6,13 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python3 "$script_dir/test_capability.py" guard
 repo_root="$(cd "$script_dir/../.." && pwd)"
-release_root="/docker/driftward/hatchet/releases/bridge"
+release_root="/docker/factory/hatchet/releases/bridge"
 if test_shell="$(python3 "$script_dir/test_capability.py" maybe-shell)"; then
   eval "$test_shell"
   repo_root="$BRIDGE_TEST_REPOSITORY"
-  release_root="$BRIDGE_TEST_ROOT/docker/driftward/hatchet/releases/bridge"
+  release_root="$BRIDGE_TEST_ROOT/docker/factory/hatchet/releases/bridge"
 fi
-release_version="${DRIFTWARD_BRIDGE_RELEASE_VERSION:-$(git -C "$repo_root" rev-parse HEAD)}"
+release_version="${FACTORY_BRIDGE_RELEASE_VERSION:-$(git -C "$repo_root" rev-parse HEAD)}"
 stage_root="${HATCHET_BRIDGE_STAGE_ROOT:-}"
 stage_only=0
 [[ "${1:-}" == "--stage-only" ]] && stage_only=1
@@ -39,7 +39,7 @@ if [[ -n "$stage_root" ]]; then
   stage="$stage_root/release"
   mkdir -p "$stage"
 else
-  stage="$(mktemp -d "${TMPDIR:-/var/tmp}/driftward-bridge-release.${release_version}.XXXXXX")"
+  stage="$(mktemp -d "${TMPDIR:-/var/tmp}/factory-bridge-release.${release_version}.XXXXXX")"
 fi
 cleanup=1
 trap '[[ "$cleanup" == 1 ]] && rm -rf "$stage"' EXIT

@@ -1,5 +1,5 @@
 {
-  "name": "@driftward/factory-console",
+  "name": "@factory/factory-console",
   "private": true,
   "type": "module",
   "scripts": {
@@ -7,11 +7,11 @@
     "dev": "node build.mjs --watch",
     "storybook": "storybook dev --host 127.0.0.1 --port 6006 --ci --disable-telemetry",
     "build-storybook": "storybook build --disable-telemetry",
-    "pack:ui": "npm pack --workspace @driftward/ui --pack-destination /tmp",
+    "pack:ui": "npm pack --workspace @factory/ui --pack-destination /tmp",
     "check:ui": "tsc --noEmit --strict --jsx react-jsx --module esnext --moduleResolution bundler --target es2022 ui/index.tsx"
   },
   "dependencies": {
-    "@driftward/ui": "0.2.0",
+    "@factory/ui": "0.2.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

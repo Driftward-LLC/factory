@@ -1,5 +1,5 @@
 {
-  "name": "@driftward/hatchet-intake-worker",
+  "name": "@factory/hatchet-intake-worker",
   "version": "0.1.0",
   "private": true,
   "main": "dist/worker.js",
@@ -11,7 +11,7 @@
     "test": "npm run build && node --test dist/workflows/*.test.js ../shared/dist/organization.test.js"
   },
   "dependencies": {
-    "@driftward/hatchet-worker-shared": "0.1.0",
+    "@factory/hatchet-worker-shared": "0.1.0",
     "@hatchet-dev/typescript-sdk": "1.26.1"
   },
   "devDependencies": {

@@ -306,7 +306,7 @@ class LifecycleWriter:
         }[phase]
         item = self._item(phase=phase, reason_code=None, body=text, **base)
         item["outbox_key"] = "lifecycle:v2:" + hashlib.sha256(f"attempt:{attempt}:{event_type}".encode()).hexdigest()
-        item["marker"] = f"<!-- driftward-factory:lifecycle:{item['outbox_key']} -->"
+        item["marker"] = f"<!-- factory:lifecycle:{item['outbox_key']} -->"
         item["body"] = (text[:3200] + "\n\n" + item["marker"])[:3500]
         return item
 
@@ -336,7 +336,7 @@ class LifecycleWriter:
     def _item(self, *, phase: str, issue_id: Any, identifier: Any, issue_url: Any, job_id: Any, idempotency_key: Any, source_event_key: Any, source_delivery_id: Any, repo: Any, pr_url: Any, reason_code: Any, execution_mode: str, source_kind: str, source_recorded_at: Any, body: str) -> dict[str, Any]:
         subject = f"{issue_id}|{job_id or source_event_key or 'issue'}|{phase}"
         key = "lifecycle:v2:" + hashlib.sha256(subject.encode()).hexdigest()
-        marker = f"<!-- driftward-factory:lifecycle:{key} -->"
+        marker = f"<!-- factory:lifecycle:{key} -->"
         return {"outbox_key": key, "phase": phase, "delivery_state": "pending", "issue_id": issue_id if isinstance(issue_id, str) else None, "identifier": identifier if isinstance(identifier, str) else None, "issue_url": issue_url if isinstance(issue_url, str) else None, "job_id": job_id if isinstance(job_id, str) else None, "idempotency_key": idempotency_key if isinstance(idempotency_key, str) else None, "source_event_key": source_event_key if isinstance(source_event_key, str) else None, "source_delivery_id": source_delivery_id if isinstance(source_delivery_id, str) else None, "repo": repo if isinstance(repo, str) else None, "pr_url": pr_url if isinstance(pr_url, str) else None, "reason_code": reason_code if isinstance(reason_code, str) else None, "execution_mode": execution_mode, "source_kind": source_kind, "source_recorded_at": source_recorded_at if isinstance(source_recorded_at, str) else "", "marker": marker, "body": (body[:3200] + "\n\n" + marker)[:3500], "next_attempt_at": None, "delivered_at": None, "suppressed_at": None, "last_error_code": None}
 
     def _valid_issue(self, value: dict[str, Any]) -> bool:

@@ -43,7 +43,7 @@ class FactoryBootstrapTests(unittest.TestCase):
 
     def test_project_name_boundaries_remain_restricted(self):
         bootstrap.init_directory(self.directory, "factory:test", "factory-" + "a" * 49)
-        for project in ("", "driftward-factory", "factory-", "factory_", "factoryx", "Factory",
+        for project in ("", "other", "factory-", "factory_", "factoryx", "Factory",
                         "factory--test", "factory/test", "factory-" + "a" * 50):
             with self.subTest(project=project), self.assertRaises(ValueError):
                 bootstrap.init_directory(self.directory, "factory:test", project, apply=True)
@@ -62,7 +62,7 @@ class FactoryBootstrapTests(unittest.TestCase):
         self.assertEqual(marker["project"], "factory-test")
         self.assertNotIn("password", json.dumps(marker))
         self.assertEqual(config["HATCHET_SERVER_URL"], "http://localhost:8888")
-        self.assertNotIn("/etc/driftward", (self.directory / ".env").read_text())
+        self.assertNotIn("/etc/factory", (self.directory / ".env").read_text())
 
     def test_secrets_are_scoped_and_external_credentials_never_inherited(self):
         with patch.dict(os.environ, {"GITHUB_TOKEN": "must-not-be-copied", "OPENAI_API_KEY": "must-not-be-copied"}):
@@ -76,7 +76,7 @@ class FactoryBootstrapTests(unittest.TestCase):
         self.assertNotIn("HATCHET_HERMES_INSPECTION_TOKEN", workers)
         self.assertNotIn("HATCHET_HERMES_RECOVERY_TOKEN", workers)
         self.assertNotIn("HATCHET_HERMES_BRIDGE_TOKEN", operator)
-        self.assertEqual(env("hatchet-worker-bridge-executor.env")["DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
+        self.assertEqual(env("hatchet-worker-bridge-executor.env")["FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
         self.assertNotIn("must-not-be-copied", "".join(path.read_text() for path in self.directory.rglob("*") if path.is_file()))
 
     def test_disabled_configuration_is_explicit_and_malformed_files_refuse_restart(self):
@@ -148,7 +148,7 @@ class FactoryBootstrapTests(unittest.TestCase):
     def test_invalid_new_configuration_is_rejected_before_creation(self):
         for image, project, offset in (("image:latest", "factory-test", 0),
                                        ("image", "factory-test", 0),
-                                       ("image:v1", "driftward-factory", 0),
+                                       ("image:v1", "other", 0),
                                        ("image:v1", "factory-test", 60000)):
             with self.subTest(image=image, project=project, offset=offset), self.assertRaises(ValueError):
                 bootstrap.init_directory(self.directory, image, project, apply=True, port_offset=offset)

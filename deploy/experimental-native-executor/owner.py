@@ -92,7 +92,7 @@ class Owner:
     def observe(self, stage):
         if self.observer is None:
             return
-        event = {"event": "factory.experimental_owner", "distinct_id": "driftward-hermes",
+        event = {"event": "factory.experimental_owner", "distinct_id": "factory-hermes",
                  "properties": {"factory.invocation_id": self.binding["invocation_id"],
                                 "factory.lease_epoch": self.binding["epoch"],
                                 "factory.experimental": True, "factory.stop.stage": stage,

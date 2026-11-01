@@ -12,7 +12,7 @@ const scope = new AsyncLocalStorage<{ id: string; context: InvocationExecutionCo
 const TMPFS = '/opt/data:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=10000,gid=10000';
 const ENV = ['PATH=/opt/hermes/.venv/bin:/usr/bin:/bin', 'HOME=/tmp/factory-native-profile',
   'LANG=C.UTF-8', 'PYTHONUNBUFFERED=1'];
-const LABEL = 'com.driftward.factory.native-owner';
+const LABEL = 'com.factory.native-owner';
 function refused(): NonRetryableBridgeExecutionError {
   return new NonRetryableBridgeExecutionError('hermes_invocation_conflict',
     'Isolated native executor unavailable; inspect its retained invocation record',
@@ -21,7 +21,7 @@ function refused(): NonRetryableBridgeExecutionError {
 export function nativeContainerScope() { return scope.getStore(); }
 
 function bootstrap(): string {
-  const directory = ['/usr/local/share/driftward-factory/native-owner',
+  const directory = ['/usr/local/share/factory/native-owner',
     path.resolve(__dirname, '../../../../../deploy/experimental-native-executor')]
     .find((candidate) => existsSync(path.join(candidate, 'container.py')));
   if (!directory) throw refused();
@@ -49,10 +49,10 @@ async function inspect(id: string): Promise<any> {
   return rows[0];
 }
 export async function nativeContainerConfiguration(): Promise<{ image: string; seed: string }> {
-  const image = process.env.DRIFTWARD_HERMES_NATIVE_IMAGE || '';
-  const seed = process.env.DRIFTWARD_HERMES_NATIVE_SEED || '';
-  if (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor'
-      || process.env.DRIFTWARD_HERMES_PROFILE !== 'factory-native-executor'
+  const image = process.env.FACTORY_HERMES_NATIVE_IMAGE || '';
+  const seed = process.env.FACTORY_HERMES_NATIVE_SEED || '';
+  if (process.env.FACTORY_HERMES_RUNTIME_MODE === 'local-executor'
+      || process.env.FACTORY_HERMES_PROFILE !== 'factory-native-executor'
       || !/^sha256:[0-9a-f]{64}$/.test(image)
       || !/^factory-native-executor-seed-[0-9a-f]{32}$/.test(seed)) throw refused();
   // A newly provisioned, dedicated role volume is required. No bind paths,
@@ -60,8 +60,8 @@ export async function nativeContainerConfiguration(): Promise<{ image: string; s
   const volumes = JSON.parse((await docker(['volume', 'inspect', seed])).stdout);
   if (volumes.length !== 1 || volumes[0].Name !== seed || volumes[0].Driver !== 'local'
       || Object.keys(volumes[0].Options || {}).length
-      || volumes[0].Labels?.['com.driftward.factory.role'] !== 'native-executor-seed'
-      || volumes[0].Labels?.['com.driftward.factory.fresh-credentials'] !== 'true') throw refused();
+      || volumes[0].Labels?.['com.factory.role'] !== 'native-executor-seed'
+      || volumes[0].Labels?.['com.factory.fresh-credentials'] !== 'true') throw refused();
   const images = JSON.parse((await docker(['image', 'inspect', image])).stdout);
   const config = images[0]?.Config;
   if (images.length !== 1 || images[0].Id !== image || !config
@@ -101,7 +101,7 @@ export async function execNativeRead(args: string[], timeout: number, maxBuffer:
   const current = scope.getStore();
   if (current) return docker(pinnedRuntimeArgs(command(args, true), '10000'), timeout, maxBuffer);
   const config = await nativeContainerConfiguration();
-  const journal = new InvocationJournal(process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY || '/var/lib/driftward-hermes-factory/invocations');
+  const journal = new InvocationJournal(process.env.FACTORY_HERMES_INVOCATION_DIRECTORY || '/var/lib/factory-hermes-factory/invocations');
   const { record, persist } = journal.reserveReadContainer(config.image);
   const id = (await docker(['create', '--label', `${LABEL}=${record.nonce}`,
     ...nativeContainerArguments(config, false), ...command(args)])).stdout.trim();

@@ -1,4 +1,4 @@
-import { loadFactoryOrganization } from '@driftward/hatchet-worker-shared';
+import { loadFactoryOrganization } from '@factory/hatchet-worker-shared';
 import { hatchet } from './hatchet-client';
 import { linearReadyIntake } from './workflows/linear-ready-intake';
 

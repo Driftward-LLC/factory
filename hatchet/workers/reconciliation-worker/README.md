@@ -8,7 +8,7 @@ or mutating external systems.
 
 - Workflow: `reconciliation-bridge-state-check`
 - Task: `inspect-bridge-ledger`
-- Event emitted: `driftward.reconciliation.detected`
+- Event emitted: `factory.reconciliation.detected`
 - Schedule: every 15 minutes (`*/15 * * * *`)
 - Manual trigger: `hatchet trigger bridge-check --profile prod`
 

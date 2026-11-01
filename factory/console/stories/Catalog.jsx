@@ -1,9 +1,9 @@
-import * as icons from '@driftward/ui/icons';
+import * as icons from '@factory/ui/icons';
 
 export function TokenCatalog() {
   return <section>
     <h1>Theme tokens</h1>
-    <p>Live values from @driftward/ui/styles.css. Use these variables in application styles.</p>
+    <p>Live values from @factory/ui/styles.css. Use these variables in application styles.</p>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
       {['canvas', 'surface', 'sidebar', 'hover', 'selected', 'ink', 'muted', 'line', 'control-line', 'blue', 'green', 'amber', 'red', 'red-soft'].map(name =>
         <div key={name}><div style={{ height: 64, border: '1px solid var(--control-line)', borderRadius: 6, background: `var(--${name})` }} /><code>--{name}</code></div>
@@ -18,7 +18,7 @@ export function TokenCatalog() {
 export function IconCatalog() {
   return <section>
     <h1>Approved icons</h1>
-    <p>Import named SVG components from @driftward/ui/icons. Pair with visible labels and hide decorative SVGs from assistive technology. Radix Icons, MIT licensed.</p>
+    <p>Import named SVG components from @factory/ui/icons. Pair with visible labels and hide decorative SVGs from assistive technology. Radix Icons, MIT licensed.</p>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 24 }}>
       {Object.entries(icons).map(([name, Icon]) => <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 12 }}><Icon aria-hidden="true" /><code>{name}</code></div>)}
     </div>

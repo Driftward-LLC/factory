@@ -6,7 +6,7 @@ set -euo pipefail
 # release publication and refuses incomplete evidence.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-state_dir=/var/lib/driftward-hatchet-bridge
+state_dir=/var/lib/factory-hatchet-bridge
 db="$state_dir/bridge.db"
 marker="$state_dir/recovery-blocked"
 state="$state_dir/recovery-state.tsv"
@@ -102,8 +102,8 @@ while IFS=$'\t' read -r unit presence load unit_file active incident; do
   systemctl start "$unit"
 done <"$state"
 
-systemctl is-active --quiet driftward-hatchet-bridge.service || { echo "old bridge did not recover healthy" >&2; exit 1; }
-token="$(awk -F= '$1 == "HATCHET_HERMES_BRIDGE_TOKEN" {print $2; exit}' /etc/driftward/hatchet-bridge.env)"
+systemctl is-active --quiet factory-hatchet-bridge.service || { echo "old bridge did not recover healthy" >&2; exit 1; }
+token="$(awk -F= '$1 == "HATCHET_HERMES_BRIDGE_TOKEN" {print $2; exit}' /etc/factory/hatchet-bridge.env)"
 [[ -n "$token" ]] || { echo "old bridge recovery token missing" >&2; exit 1; }
 curl --silent --fail --max-time 2 -H "Authorization: Bearer $token" http://127.0.0.1:19877/health >/dev/null || { echo "old bridge health failed" >&2; exit 1; }
 rm -f -- "$marker" "$state"

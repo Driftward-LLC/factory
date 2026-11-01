@@ -11,7 +11,7 @@ or any model provider directly.
 - Trigger: `hatchet trigger dry-run --profile prod`
 
 The task builds or accepts an idempotency key, submits `create_draft_pr` to the
-bridge, and emits `driftward.hermes.job.accepted` after the bridge returns a
+bridge, and emits `factory.hermes.job.accepted` after the bridge returns a
 job.
 
 For real PR creation, include bounded execution context in the workflow input:

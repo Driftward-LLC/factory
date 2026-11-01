@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import type { FactoryIntakeReserveRequest, FactoryIntakeReserveResponse } from '@driftward/hatchet-worker-shared';
+import type { FactoryIntakeReserveRequest, FactoryIntakeReserveResponse } from '@factory/hatchet-worker-shared';
 import {
   LinearProjectRoutingError,
   ROUTING_REGISTRY_PATH_ENV,
@@ -304,7 +304,7 @@ test('Docker verifier policy resolution rejects host policy paths', () => {
   try {
     process.env.HATCHET_FACTORY_RUNTIME = 'docker';
     assert.throws(
-      () => resolveDraftPrVerifierPolicy('example/widgets', { policyPath: '/etc/driftward/hatchet-verifier-policy.json' }),
+      () => resolveDraftPrVerifierPolicy('example/widgets', { policyPath: '/etc/factory/hatchet-verifier-policy.json' }),
       (error: unknown) => error instanceof DraftPrVerifierPolicyError && error.code === 'verification_policy_unavailable'
         && error.message.includes('/etc/factory/config/verifier-policy.json')
     );

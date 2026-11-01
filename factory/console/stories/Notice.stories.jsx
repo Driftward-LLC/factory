@@ -1,4 +1,4 @@
-import { Notice } from '@driftward/ui';
+import { Notice } from '@factory/ui';
 
 export default {
   title: 'Components/Notice', component: Notice, tags: ['autodocs'],

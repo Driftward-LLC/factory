@@ -38,9 +38,9 @@ PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull
 ACTIVE_ATTEMPT_STATUSES = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
 OPERATOR_ACTIONS = {"preview_retry", "reserve_retry", "preview_force_absence_retry", "reserve_force_absence_retry", "list_attempts", "list_active_attempts", "show_attempt", "show_attempt_events", "show_lifecycle", "cancel_attempt", "list_lifecycle_dead_letters", "preview_lifecycle_dead_letter_archive", "archive_lifecycle_dead_letter"}
 RETRY_IGNORED_LINEAR_REASON_CODES = frozenset({"linear_issue_factory_lifecycle_actor"})
-DOCKER_BRIDGE_DB = "/var/lib/driftward-hatchet-bridge/bridge.db"
-DOCKER_INGRESS_DB = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
-DOCKER_LIFECYCLE_DB = "/var/lib/driftward-factory-lifecycle-writer/outbox.db"
+DOCKER_BRIDGE_DB = "/var/lib/factory-hatchet-bridge/bridge.db"
+DOCKER_INGRESS_DB = "/var/lib/factory-hatchet-event-ingress/ingress.db"
+DOCKER_LIFECYCLE_DB = "/var/lib/factory-lifecycle-writer/outbox.db"
 DOCKER_ROUTING_REGISTRY = "/etc/factory/config/routing-registry.json"
 DOCKER_VERIFIER_POLICY = "/etc/factory/config/verifier-policy.json"
 LOGGER = logging.getLogger(__name__)
@@ -128,7 +128,7 @@ def _operator_lifecycle_path() -> str:
     return path
 
 
-def _mode(env_file: str = "/etc/driftward/hatchet-workers.env") -> str:
+def _mode(env_file: str = "/etc/factory/hatchet-workers.env") -> str:
     value = os.environ.get("HATCHET_INTAKE_DRY_RUN")
     if value is not None:
         return "real" if value.strip().lower() == "false" else "dry-run"
@@ -190,8 +190,8 @@ def _http_healthy(base_url: str | None) -> bool:
 
 
 def _docker_services_healthy() -> bool:
-    bridge_db = Path(os.environ.get("HATCHET_FACTORY_OPERATOR_BRIDGE_DB", "/var/lib/driftward-hatchet-bridge/bridge.db"))
-    ingress_db = Path(os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/driftward-hatchet-event-ingress/ingress.db"))
+    bridge_db = Path(os.environ.get("HATCHET_FACTORY_OPERATOR_BRIDGE_DB", "/var/lib/factory-hatchet-bridge/bridge.db"))
+    ingress_db = Path(os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/factory-hatchet-event-ingress/ingress.db"))
     return bridge_db.is_file() and ingress_db.is_file() and _http_healthy(os.environ.get("HATCHET_EVENT_INGRESS_URL"))
 
 
@@ -202,7 +202,7 @@ def _services_healthy() -> bool:
     runtime = os.environ.get("HATCHET_FACTORY_OPERATOR_RUNTIME", "systemd").strip().lower()
     if runtime in {"docker", "compose", "docker-compose"}:
         return _docker_services_healthy()
-    units = ("driftward-hatchet-event-ingress.service", "driftward-hatchet-bridge.service", "driftward-hatchet-worker-bridge-executor.service")
+    units = ("factory-hatchet-event-ingress.service", "factory-hatchet-bridge.service", "factory-hatchet-worker-bridge-executor.service")
     return all(subprocess.run(["systemctl", "is-active", "--quiet", unit], check=False, timeout=3).returncode == 0 for unit in units)
 
 
@@ -606,7 +606,7 @@ class _UnixHTTPServer(socketserver.UnixStreamServer):
 
 
 class OperatorHandler(BaseHTTPRequestHandler):
-    server_version = "DriftwardFactoryOperator/1"
+    server_version = "FactoryFactoryOperator/1"
     def log_message(self, *_: Any) -> None: pass
     def _reply(self, status: int, value: dict[str, Any]) -> None:
         raw = json.dumps(value, sort_keys=True).encode(); self.send_response(status); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)

@@ -233,7 +233,7 @@ class NormalizeLinearIssueTest(unittest.TestCase):
         payload = _ready_linear_issue_payload()
         payload["data"]["project"] = {
             "id": "22222222-2222-4222-8222-222222222222",
-            "name": "Driftward Software Factory",
+            "name": "Factory Software Factory",
         }
 
         registry = json.loads((Path(__file__).resolve().parents[2] / "workers/test-fixtures/routing-registry.json").read_text())

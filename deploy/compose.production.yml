@@ -2,7 +2,7 @@
 # compose.portable.yml. This does not enable execution or authorize cutover.
 # Protected env files and copied state must pass the cutover preflight first.
 x-production-labels: &production-labels
-  io.driftward.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?The preserved Hatchet tenant is required}
+  io.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?The preserved Hatchet tenant is required}
 
 x-production-worker-env: &production-worker-env !override
   - path: ${FACTORY_ENV_DIR:?Production environment directory is required}/hatchet-workers.env
@@ -65,17 +65,17 @@ services:
       - path: ${FACTORY_ENV_DIR:?}/hatchet-verifier.env
         required: true
     environment:
-      DRIFTWARD_HERMES_GRPC_TARGET: unix:///run/driftward-hermes-factory/hermes.sock
+      FACTORY_HERMES_GRPC_TARGET: unix:///run/factory-hermes-factory/hermes.sock
     volumes: !override
       - type: bind
-        source: ${FACTORY_CONFIG_DIR:-/etc/driftward/factory}
+        source: ${FACTORY_CONFIG_DIR:-/etc/factory/factory}
         target: /etc/factory/config
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: /run/driftward-hermes-factory
-        target: /run/driftward-hermes-factory
+        source: /run/factory-hermes-factory
+        target: /run/factory-hermes-factory
         read_only: true
         bind:
           create_host_path: false
@@ -113,7 +113,7 @@ services:
       - path: ${FACTORY_ENV_DIR:?}/hatchet-client.env
         required: true
     environment:
-      HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB: /var/lib/driftward-factory-lifecycle-writer/outbox.db
+      HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB: /var/lib/factory-lifecycle-writer/outbox.db
     depends_on:
       factory-lifecycle-writer:
         condition: service_healthy

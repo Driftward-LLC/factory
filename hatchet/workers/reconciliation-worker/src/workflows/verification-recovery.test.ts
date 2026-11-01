@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { enqueueStaleVerification, recoverableStaleVerificationJobs } from './verification-recovery';
 
 test('recovery redispatches only the original real PR verification work item', () => {

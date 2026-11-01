@@ -25,7 +25,7 @@ from .legacy_artifacts import (
 from .runtime import acquire_shared, migration_capability, release
 from . import work_evidence
 
-DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
+DEFAULT_DB_PATH = "/var/lib/factory-hatchet-bridge/bridge.db"
 DOCKER_VERIFIER_POLICY_PATH = "/etc/factory/config/verifier-policy.json"
 SCHEMA_VERSION = 10
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
@@ -251,6 +251,11 @@ def _connection(path: str, *, check_same_thread: bool, migration: bool = False) 
     fd = migration_capability() if migration else acquire_shared()
     try:
         conn = sqlite3.connect(path, check_same_thread=check_same_thread, factory=BridgeConnection)
+        try:
+            _guard_naming_generation(conn, initialize=migration)
+        except Exception:
+            conn.close()
+            raise
         conn._maintenance_fd=fd
         return conn
     except Exception: release(fd); raise
@@ -277,6 +282,7 @@ def connect_migrate(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def _require_runtime_schema(conn: sqlite3.Connection) -> None:
+    _guard_naming_generation(conn)
     required = {
         "bridge_schema_meta", "bridge_jobs", "bridge_events", "factory_attempts",
         "factory_attempt_events", "factory_attempt_outbox", "factory_execution_leases",
@@ -310,6 +316,8 @@ def connect_runtime(db_path: str = DEFAULT_DB_PATH, *, check_same_thread: bool =
         _require_runtime_schema(conn)
         return conn
     except RuntimeError as exc:
+        if conn is not None:
+            conn.close()
         raise BridgeValidationError(str(exc)) from exc
     except (sqlite3.Error, BridgeValidationError) as exc:
         if conn is not None:
@@ -332,11 +340,29 @@ def connect_readonly(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         _require_runtime_schema(conn)
         return conn
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, RuntimeError) as exc:
+        if "conn" in locals():
+            conn.close()
         raise BridgeValidationError("bridge predeploy is required before read-only operator access") from exc
 
 
+def _guard_naming_generation(conn: sqlite3.Connection, *, initialize: bool = False) -> None:
+    """Never reinterpret persisted identities from a prior naming generation."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    if not tables and initialize:
+        conn.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+        conn.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
+        conn.commit()
+        return
+    if "factory_naming_generation" in tables:
+        rows = conn.execute("SELECT generation FROM factory_naming_generation").fetchall()
+        if len(rows) == 1 and rows[0][0] == "factory-neutral-v1":
+            return
+    raise RuntimeError("Prior or unknown naming generation; preserve state and use the original release pending reviewed offline migration")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
+    _guard_naming_generation(conn, initialize=True)
     _validate_migration_failpoint()
     schema_sql = """
         CREATE TABLE IF NOT EXISTS bridge_jobs (
@@ -889,7 +915,7 @@ def _resolver_contract_digest(*, source_overrides: Mapping[str, str] | None = No
 
 
 def _release_version_for_audit() -> str:
-    value = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_VERSION", "migration-unversioned")
+    value = os.environ.get("FACTORY_BRIDGE_RELEASE_VERSION", "migration-unversioned")
     # Unit tests and one-off forensic copies have no immutable release.  The
     # production installer always supplies an exact SHA; it remains audit data
     # and is intentionally excluded from the attestation identity.
@@ -1402,7 +1428,7 @@ def _insert_work_evidence(
     serialized = work_evidence.canonical(document)
     if len(serialized) > 16384 or sanitize_detail(document) != document:
         raise BridgeValidationError("work evidence contains disallowed material")
-    evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward.work-evidence:v1:{attempt_id}:{kind}"))
+    evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory.work-evidence:v1:{attempt_id}:{kind}"))
     existing = conn.execute(f"SELECT * FROM {table} WHERE {identity}=?", (evidence_id,)).fetchone()
     if existing:
         if existing["document_json"] != serialized or existing[reference_column] != manifest_id:
@@ -1481,7 +1507,7 @@ def _append_factory_attempt_event_once(
     """Append a payload-free event once for one trusted decision key."""
     event_id = str(uuid.uuid5(
         uuid.NAMESPACE_URL,
-        f"driftward.factory.attempt-event:{attempt_id}:{event_type}:{occurrence_key}",
+        f"factory.attempt-event:{attempt_id}:{event_type}:{occurrence_key}",
     ))
     existing = conn.execute(
         "SELECT attempt_id,event_type,details_json FROM factory_attempt_events WHERE event_id=?",
@@ -4996,7 +5022,7 @@ def _validate_verification_receipt(value: Any, job: dict[str, Any]) -> tuple[dic
     if not isinstance(checks, dict) or set(checks) != {"status", "total_count"} or checks.get("status") != "SUCCESS" or not isinstance(checks.get("total_count"), int) or checks["total_count"] < 1 or checks["total_count"] > 512:
         raise BridgeValidationError("verification receipt GitHub check status is not successful")
     pr_identity, files, local, secret = (value[field] for field in ("pr_identity", "file_policy", "local_policy", "secret_policy"))
-    expected_author = os.environ.get("DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN", "factory-hermes[bot]")
+    expected_author = os.environ.get("FACTORY_HERMES_EXPECTED_GITHUB_LOGIN", "factory-hermes[bot]")
     allowed_authors = _github_app_author_aliases(expected_author)
     expected_identity = {"base": policy["expected_base"], "draft": True, "author": pr_identity.get("author") if isinstance(pr_identity, dict) else None, "linear_reference": f"Refs Linear {job['payload'].get('linear_issue')}"}
     if not isinstance(pr_identity, dict) or pr_identity != expected_identity or pr_identity.get("author") not in allowed_authors:

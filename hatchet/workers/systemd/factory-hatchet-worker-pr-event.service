@@ -1,6 +1,6 @@
 [Unit]
-Description=Driftward Hatchet PR event worker
-After=network-online.target driftward-hatchet.service
+Description=Factory Hatchet PR event worker
+After=network-online.target factory-hatchet.service
 Wants=network-online.target
 Documentation=file:__REPO_ROOT__/hatchet/workers/pr-event-worker/README.md
 
@@ -8,7 +8,7 @@ Documentation=file:__REPO_ROOT__/hatchet/workers/pr-event-worker/README.md
 Type=simple
 WorkingDirectory=__REPO_ROOT__/hatchet/workers/pr-event-worker
 Environment=NODE_ENV=production
-EnvironmentFile=/etc/driftward/hatchet-workers.env
+EnvironmentFile=/etc/factory/hatchet-workers.env
 ExecStart=/usr/bin/node dist/worker.js
 Restart=always
 RestartSec=5

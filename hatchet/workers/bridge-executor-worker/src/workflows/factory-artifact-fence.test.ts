@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BridgeJob, JsonObject } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, JsonObject } from '@factory/hatchet-worker-shared';
 import {
   type DraftPrStateInspection,
   type GitHubHeadInspection

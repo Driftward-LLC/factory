@@ -170,7 +170,7 @@ class MigrationTests(unittest.TestCase):
     def test_personal_or_shared_hermes_is_refused_before_copying(self):
         row = {"Id": "container", "Image": "image", "Config": {"Labels": {"com.docker.compose.project": "personal-hermes", "com.docker.compose.service": "hermes"}},
                "Mounts": [{"Destination": "/opt/data", "Type": "volume", "Name": "personal-hermes-data"}]}
-        for project in ("personal-hermes", "driftward-hermes"):
+        for project in ("personal-hermes", "factory-hermes"):
             row["Config"]["Labels"]["com.docker.compose.project"] = project
             with patch.object(migration.state, "_docker", return_value=json.dumps([row])), self.assertRaisesRegex(ValueError, "dedicated Factory"):
                 migration.hermes_source(project)

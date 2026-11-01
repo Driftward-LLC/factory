@@ -9,7 +9,7 @@ deeper investigation and PostHog for agent diagnostics.
 ### Agent trace links
 
 Set `FACTORY_CONSOLE_POSTHOG_PROJECT_URL` in the active installation's
-`env/factory-operator.env` (legacy host: `/etc/driftward/factory-operator.env`)
+`env/factory-operator.env` (legacy host: `/etc/factory/factory-operator.env`)
 to your browser project URL, for example `https://us.posthog.com/project/12345`.
 This is public navigation configuration, not an API key. US, EU and legacy app
 PostHog Cloud hosts are supported; ingestion hosts and self-hosted URLs are not.
@@ -398,8 +398,8 @@ historical artifact migration or shared Hermes state migration is introduced.
 ## Fresh retries
 
 `factory retry` is a root-only, explicit fresh-attempt control. It talks only
-to `/run/driftward-factory-operator/operator.sock` with the separate token in
-`/etc/driftward/factory-operator.env`; it never uses the bridge or verifier
+to `/run/factory-operator/operator.sock` with the separate token in
+`/etc/factory/factory-operator.env`; it never uses the bridge or verifier
 token. Preview, list, and show use SQLite read-only mode and never migrate or
 backfill the ledger. Reserve requires a bounded reason, a caller-stable request
 ID, the fresh preview snapshot digest, and `--yes`, then transactionally records one generationed attempt, one
@@ -465,5 +465,5 @@ recovery, preventing a second PR path.
 Rollout: keep Factory dry-run, run `bash hatchet/bridge/install.sh`, confirm
 the operator socket and bridge/ingress/executor health, then use a preview
 against a non-production fixture. Roll back by returning Factory to dry-run,
-stopping `driftward-factory-operator.service`, and preserving the attempt
+stopping `factory-operator.service`, and preserving the attempt
 ledger for reconciliation; do not delete attempts or artifacts.

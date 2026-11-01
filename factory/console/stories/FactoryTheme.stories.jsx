@@ -1,9 +1,9 @@
-import { FactoryTheme, Card, Heading, Button, StatusBadge, SummaryItem } from '@driftward/ui';
-import { ReloadIcon } from '@driftward/ui/icons';
+import { FactoryTheme, Card, Heading, Button, StatusBadge, SummaryItem } from '@factory/ui';
+import { ReloadIcon } from '@factory/ui/icons';
 
 export default {
   title: 'Foundations/FactoryTheme', component: FactoryTheme, tags: ['autodocs'],
-  parameters: { docs: { description: { component: 'Factory uses the precompiled Astryx neutral theme in dark mode with local platform fonts and static operator tokens. Import @driftward/ui/styles.css once and wrap the application in FactoryTheme. Built theme CSS is bundled locally; it does not inject styles or require a relaxed CSP. These records are fictional.' } } },
+  parameters: { docs: { description: { component: 'Factory uses the precompiled Astryx neutral theme in dark mode with local platform fonts and static operator tokens. Import @factory/ui/styles.css once and wrap the application in FactoryTheme. Built theme CSS is bundled locally; it does not inject styles or require a relaxed CSP. These records are fictional.' } } },
 };
 export const OperatorWorkbench = {
   render: () => <FactoryTheme><Card padding={5}>

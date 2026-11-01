@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { NonRetryableBridgeExecutionError } from './errors';
 import { MODEL_SELECTION_HEADER } from './model-selection';
 import {
@@ -33,7 +33,7 @@ test('runtime model metadata is job-bound and arrives even if the executor later
     callback(Object.assign(new Error('executor exited'), { code: grpc.status.FAILED_PRECONDITION }), null);
   };
   await withGateway(async (target) => {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+    process.env.FACTORY_HERMES_GRPC_TARGET = target;
     const observed: unknown[] = [];
     await assert.rejects(runHermesCreateDraftPrViaGrpc(job, 5000, testLease, async (value) => {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -59,7 +59,7 @@ test('missing, mismatched, malformed, and secret-shaped model metadata never cha
       finish(call, callback);
     };
     await withGateway(async (target) => {
-      process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+      process.env.FACTORY_HERMES_GRPC_TARGET = target;
       const observed: unknown[] = [];
       const result = await runHermesCreateDraftPrViaGrpc(job, 5000, testLease, (value) => { observed.push(value); });
       assert.equal(result.status, 'created');
@@ -70,7 +70,7 @@ test('missing, mismatched, malformed, and secret-shaped model metadata never cha
 
 test('Hermes gRPC client speaks over a Unix domain socket', async () => {
   await withGateway(async (target) => {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+    process.env.FACTORY_HERMES_GRPC_TARGET = target;
 
     const identity = await checkHermesIdentityViaGrpc({
       repo: 'example/widgets',
@@ -116,7 +116,7 @@ test('identity preflight rejects a gateway without durable invocation support', 
     gitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com', accessibleRepo: 'example/widgets',
   });
   await withGateway(async (target) => {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+    process.env.FACTORY_HERMES_GRPC_TARGET = target;
     await assert.rejects(checkHermesIdentityViaGrpc({ repo: 'example/widgets', expectedGithubLogin: 'factory-hermes[bot]',
       expectedGitAuthorName: 'factory-hermes[bot]', expectedGitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
       forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeoutMs: 5000 }),
@@ -126,43 +126,43 @@ test('identity preflight rejects a gateway without durable invocation support', 
 
 test('Hermes gRPC TCP targets fail closed until explicitly authorized', () => {
   const previous = snapshotEnv([
-    'DRIFTWARD_HERMES_GRPC_TARGET',
-    'DRIFTWARD_HERMES_GRPC_ALLOW_TCP',
-    'DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP',
-    'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
-    'DRIFTWARD_HERMES_GRPC_TLS',
-    'DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH',
-    'DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH',
+    'FACTORY_HERMES_GRPC_TARGET',
+    'FACTORY_HERMES_GRPC_ALLOW_TCP',
+    'FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP',
+    'FACTORY_HERMES_GRPC_AUTH_TOKEN',
+    'FACTORY_HERMES_GRPC_TLS',
+    'FACTORY_HERMES_GRPC_CLIENT_KEY_PATH',
+    'FACTORY_HERMES_GRPC_CLIENT_CERT_PATH',
   ]);
   try {
     for (const key of previous.keys()) delete process.env[key];
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = 'dns:///hermes.internal:50051';
-    delete process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP;
-    delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
+    process.env.FACTORY_HERMES_GRPC_TARGET = 'dns:///hermes.internal:50051';
+    delete process.env.FACTORY_HERMES_GRPC_ALLOW_TCP;
+    delete process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN;
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_disabled');
 
-    process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP = '1';
+    process.env.FACTORY_HERMES_GRPC_ALLOW_TCP = '1';
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_tls_required');
 
-    process.env.DRIFTWARD_HERMES_GRPC_TLS = '1';
+    process.env.FACTORY_HERMES_GRPC_TLS = '1';
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_auth_required');
 
-    process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = 'test-token';
+    process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN = 'test-token';
     assert.equal(hermesGrpcTarget(), 'dns:///hermes.internal:50051');
 
-    delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
-    process.env.DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH = '/test/client.key';
+    delete process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN;
+    process.env.FACTORY_HERMES_GRPC_CLIENT_KEY_PATH = '/test/client.key';
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_auth_required');
-    process.env.DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH = '/test/client.crt';
+    process.env.FACTORY_HERMES_GRPC_CLIENT_CERT_PATH = '/test/client.crt';
     assert.equal(hermesGrpcTarget(), 'dns:///hermes.internal:50051');
 
-    delete process.env.DRIFTWARD_HERMES_GRPC_TLS;
-    process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = 'test-token';
-    process.env.DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP = '1';
+    delete process.env.FACTORY_HERMES_GRPC_TLS;
+    process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN = 'test-token';
+    process.env.FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP = '1';
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_tls_required');
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = '127.0.0.1:50051';
+    process.env.FACTORY_HERMES_GRPC_TARGET = '127.0.0.1:50051';
     assert.equal(hermesGrpcTarget(), '127.0.0.1:50051');
-    delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
+    delete process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN;
     assertFailure(() => hermesGrpcTarget(), 'hermes_grpc_tcp_auth_required');
   } finally {
     restoreEnv(previous);
@@ -171,9 +171,9 @@ test('Hermes gRPC TCP targets fail closed until explicitly authorized', () => {
 
 test('Hermes gRPC connection failures are attributed to the transport boundary', async () => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'hermes-gateway-missing-'));
-  const previous = snapshotEnv(['DRIFTWARD_HERMES_GRPC_TARGET']);
+  const previous = snapshotEnv(['FACTORY_HERMES_GRPC_TARGET']);
   try {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = `unix://${path.join(tmp, 'missing.sock')}`;
+    process.env.FACTORY_HERMES_GRPC_TARGET = `unix://${path.join(tmp, 'missing.sock')}`;
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
         repo: 'example/widgets',
@@ -212,7 +212,7 @@ test('malformed Hermes gRPC results are attributed to protocol result parsing', 
   };
 
   await withGateway(async (target) => {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+    process.env.FACTORY_HERMES_GRPC_TARGET = target;
     await assert.rejects(
       () => runHermesCreateDraftPrViaGrpc(greenJob(), 5000, testLease),
       (error: unknown) => {
@@ -245,7 +245,7 @@ test('untrusted gateway failure metadata is discarded before Factory settlement'
   };
 
   await withGateway(async (target) => {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
+    process.env.FACTORY_HERMES_GRPC_TARGET = target;
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
         repo: 'example/widgets',
@@ -273,18 +273,18 @@ test('synchronous Hermes gRPC client setup failures are classified and sanitized
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'hermes-gateway-setup-'));
   const missingCaPath = path.join(tmp, 'private-ca.pem');
   const previous = snapshotEnv([
-    'DRIFTWARD_HERMES_GRPC_TARGET',
-    'DRIFTWARD_HERMES_GRPC_TLS',
-    'DRIFTWARD_HERMES_GRPC_CA_PATH',
-    'DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH',
-    'DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH'
+    'FACTORY_HERMES_GRPC_TARGET',
+    'FACTORY_HERMES_GRPC_TLS',
+    'FACTORY_HERMES_GRPC_CA_PATH',
+    'FACTORY_HERMES_GRPC_CLIENT_KEY_PATH',
+    'FACTORY_HERMES_GRPC_CLIENT_CERT_PATH'
   ]);
   try {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = `unix://${path.join(tmp, 'hermes.sock')}`;
-    process.env.DRIFTWARD_HERMES_GRPC_TLS = '1';
-    process.env.DRIFTWARD_HERMES_GRPC_CA_PATH = missingCaPath;
-    delete process.env.DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH;
-    delete process.env.DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH;
+    process.env.FACTORY_HERMES_GRPC_TARGET = `unix://${path.join(tmp, 'hermes.sock')}`;
+    process.env.FACTORY_HERMES_GRPC_TLS = '1';
+    process.env.FACTORY_HERMES_GRPC_CA_PATH = missingCaPath;
+    delete process.env.FACTORY_HERMES_GRPC_CLIENT_KEY_PATH;
+    delete process.env.FACTORY_HERMES_GRPC_CLIENT_CERT_PATH;
 
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
@@ -317,14 +317,14 @@ test('synchronous Hermes gRPC request metadata failures do not expose auth mater
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'hermes-gateway-metadata-'));
   const secret = 'auth-material-that-must-not-leak';
   const previous = snapshotEnv([
-    'DRIFTWARD_HERMES_GRPC_TARGET',
-    'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
-    'DRIFTWARD_HERMES_GRPC_TLS'
+    'FACTORY_HERMES_GRPC_TARGET',
+    'FACTORY_HERMES_GRPC_AUTH_TOKEN',
+    'FACTORY_HERMES_GRPC_TLS'
   ]);
   try {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = `unix://${path.join(tmp, 'hermes.sock')}`;
-    process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = `${secret}\ninvalid`;
-    delete process.env.DRIFTWARD_HERMES_GRPC_TLS;
+    process.env.FACTORY_HERMES_GRPC_TARGET = `unix://${path.join(tmp, 'hermes.sock')}`;
+    process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN = `${secret}\ninvalid`;
+    delete process.env.FACTORY_HERMES_GRPC_TLS;
 
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
@@ -359,7 +359,7 @@ async function withGateway(
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'hermes-gateway-test-'));
   const socketPath = path.join(tmp, 'hermes.sock');
   const target = `unix://${socketPath}`;
-  const previous = snapshotEnv(['DRIFTWARD_HERMES_GRPC_TARGET']);
+  const previous = snapshotEnv(['FACTORY_HERMES_GRPC_TARGET']);
   const server = new grpc.Server();
   server.addService(loadGatewayService().service, gateway);
   await bind(server, target);
@@ -381,7 +381,7 @@ function loadGatewayService(): grpc.ServiceClientConstructor & { service: grpc.S
     oneofs: true
   });
   const loaded = grpc.loadPackageDefinition(packageDefinition) as Record<string, unknown>;
-  const service = (((loaded.driftward as Record<string, unknown>).factory as Record<string, unknown>).hermes as Record<string, unknown>).v1 as Record<string, unknown>;
+  const service = ((loaded.factory as Record<string, unknown>).hermes as Record<string, unknown>).v1 as Record<string, unknown>;
   return service.HermesFactoryGateway as grpc.ServiceClientConstructor & { service: grpc.ServiceDefinition };
 }
 

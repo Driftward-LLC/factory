@@ -10,18 +10,18 @@ const root = resolve(__dirname, '../factory/console');
 const project = JSON.parse(readFileSync(join(root, 'package.json')));
 const temp = mkdtempSync(join(tmpdir(), 'factory-ui-consumer-'));
 try {
-  const packed = JSON.parse(execFileSync('npm', ['pack', '--workspace', '@driftward/ui', '--pack-destination', temp, '--json'], { cwd: root, encoding: 'utf8' }));
-  assert.equal(packed[0].name, '@driftward/ui');
+  const packed = JSON.parse(execFileSync('npm', ['pack', '--workspace', '@factory/ui', '--pack-destination', temp, '--json'], { cwd: root, encoding: 'utf8' }));
+  assert.equal(packed[0].name, '@factory/ui');
   assert.equal(packed[0].version, '0.2.0');
   assert(!packed[0].files.some(file => /(?:storybook|stories|node_modules)\//.test(file.path)), 'Catalog and installed dependencies must not ship inside the package');
-  const dependencies = { '@driftward/ui': `file:${join(temp, packed[0].filename)}` };
+  const dependencies = { '@factory/ui': `file:${join(temp, packed[0].filename)}` };
   for (const name of ['react', 'react-dom']) dependencies[name] = project.dependencies[name];
   for (const name of ['@types/react', '@types/react-dom']) dependencies[name] = project.devDependencies[name];
   writeFileSync(join(temp, 'package.json'), JSON.stringify({ private: true, type: 'module', dependencies }));
   writeFileSync(join(temp, 'consumer.tsx'), `
-import { FactoryTheme, Button, Notice, StatusBadge, Metric, SummaryItem, ExternalLink, Link, BrandMark, Card, Heading, MetadataList, MetadataListItem, TextInput, EmptyState, Spinner } from '@driftward/ui';
-import { ReloadIcon } from '@driftward/ui/icons';
-import '@driftward/ui/styles.css';
+import { FactoryTheme, Button, Notice, StatusBadge, Metric, SummaryItem, ExternalLink, Link, BrandMark, Card, Heading, MetadataList, MetadataListItem, TextInput, EmptyState, Spinner } from '@factory/ui';
+import { ReloadIcon } from '@factory/ui/icons';
+import '@factory/ui/styles.css';
 import { renderToStaticMarkup } from 'react-dom/server';
 const html = renderToStaticMarkup(<FactoryTheme>
   <BrandMark /><Card><Heading level={2}>Disposable package consumer</Heading>
@@ -61,7 +61,7 @@ catch (error) { rejectedUnnamedLoading = error instanceof Error && error.message
 if (!rejectedUnnamedLoading) throw new Error('JavaScript consumers must reject unsupported unnamed composed loading actions');
 `);
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: temp, stdio: 'pipe' });
-  const installed = JSON.parse(readFileSync(join(temp, 'node_modules/@driftward/ui/package.json')));
+  const installed = JSON.parse(readFileSync(join(temp, 'node_modules/@factory/ui/package.json')));
   assert.equal(installed.dependencies['@astryxdesign/core'], '0.7.0');
   assert.equal(installed.dependencies['@astryxdesign/theme-neutral'], '0.7.0');
   assert(!installed.dependencies.storybook && !installed.dependencies['@astryxdesign/cli'], 'Build and catalog tools must not be runtime dependencies');

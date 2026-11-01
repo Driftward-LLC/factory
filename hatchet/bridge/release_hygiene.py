@@ -2,7 +2,7 @@
 """Fail-closed hygiene checks for immutable bridge releases.
 
 The scanner intentionally reports only a relative path and a rule name.  It
-never prints staged bytes or a protected value read from /etc/driftward.
+never prints staged bytes or a protected value read from /etc/factory.
 """
 from __future__ import annotations
 
@@ -44,26 +44,26 @@ class ProtectedEnvFile:
 # `EnvironmentFile=-` or are not installed until their scoped feature is
 # enabled. A future secret-looking key in one of these files fails closed.
 PRODUCTION_ENV_SCHEMA = (
-    ProtectedEnvFile(Path("/etc/driftward/hatchet.env"), True, frozenset({
+    ProtectedEnvFile(Path("/etc/factory/hatchet.env"), True, frozenset({
         "HATCHET_POSTGRES_PASSWORD", "HATCHET_SERVER_AUTH_COOKIE_SECRETS", "HATCHET_ADMIN_PASSWORD",
     })),
-    ProtectedEnvFile(Path("/etc/driftward/hatchet-bridge.env"), True, frozenset({
+    ProtectedEnvFile(Path("/etc/factory/hatchet-bridge.env"), True, frozenset({
         "HATCHET_HERMES_BRIDGE_TOKEN", "HATCHET_HERMES_INSPECTION_TOKEN", "HATCHET_HERMES_RECOVERY_TOKEN",
     }), frozenset({"HATCHET_HERMES_INSPECTION_TOKEN", "HATCHET_HERMES_RECOVERY_TOKEN"})),
-    ProtectedEnvFile(Path("/etc/driftward/hatchet-workers.env"), True, frozenset({
+    ProtectedEnvFile(Path("/etc/factory/hatchet-workers.env"), True, frozenset({
         "HATCHET_CLIENT_TOKEN", "HATCHET_HERMES_BRIDGE_TOKEN",
     })),
-    ProtectedEnvFile(Path("/etc/driftward/hatchet-worker-bridge-executor.env"), True, frozenset({
+    ProtectedEnvFile(Path("/etc/factory/hatchet-worker-bridge-executor.env"), True, frozenset({
         "HATCHET_HERMES_INSPECTION_TOKEN",
     }), frozenset({"HATCHET_HERMES_INSPECTION_TOKEN"})),
-    ProtectedEnvFile(Path("/etc/driftward/hatchet-verifier.env"), True, frozenset({"HATCHET_HERMES_VERIFIER_TOKEN"})),
-    ProtectedEnvFile(Path("/etc/driftward/hatchet-worker-reconciliation.env"), False, frozenset({
+    ProtectedEnvFile(Path("/etc/factory/hatchet-verifier.env"), True, frozenset({"HATCHET_HERMES_VERIFIER_TOKEN"})),
+    ProtectedEnvFile(Path("/etc/factory/hatchet-worker-reconciliation.env"), False, frozenset({
         "HATCHET_HERMES_RECOVERY_TOKEN",
     }), frozenset({"HATCHET_HERMES_RECOVERY_TOKEN"})),
-    ProtectedEnvFile(Path("/etc/driftward/hatchet-event-ingress.env"), False, frozenset({
+    ProtectedEnvFile(Path("/etc/factory/hatchet-event-ingress.env"), False, frozenset({
         "HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET",
     })),
-    ProtectedEnvFile(Path("/etc/driftward/factory-operator.env"), False, frozenset({
+    ProtectedEnvFile(Path("/etc/factory/factory-operator.env"), False, frozenset({
         "HATCHET_FACTORY_OPERATOR_TOKEN", "HATCHET_CLIENT_TOKEN",
     })),
 )

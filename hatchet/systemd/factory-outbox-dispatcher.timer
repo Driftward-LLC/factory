@@ -1,5 +1,5 @@
 [Unit]
-Description=Dispatch durable Driftward Factory retry events
+Description=Dispatch durable Factory retry events
 
 [Timer]
 OnCalendar=*:*:00/30

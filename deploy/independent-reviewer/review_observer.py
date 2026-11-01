@@ -31,7 +31,7 @@ def review_metadata(value: object) -> dict:
 
 def trace_id(metadata: dict) -> str:
     scope = json.dumps([metadata[k] for k in ("repository", "review_id", "head_sha", "pass_number")], separators=(",", ":"))
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, "driftward-factory:reviewer:trace:" + scope))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:reviewer:trace:" + scope))
 
 
 def endpoint(host: str) -> str:
@@ -134,7 +134,7 @@ class ReviewObserver:
             event = "$ai_generation"
         else:
             return
-        item = {"event": event, "distinct_id": "driftward-factory-reviewer",
+        item = {"event": event, "distinct_id": "factory-reviewer",
             "timestamp": datetime.fromtimestamp(started, timezone.utc).isoformat(), "properties": properties}
         with self.lock:
             if self.worker is None:

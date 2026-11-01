@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { transitionToVerificationPending } from './verification-pending';
 
 function job(state: BridgeJob['state'], context: BridgeJob['verification_context'] = null): BridgeJob {

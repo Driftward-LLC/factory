@@ -22,7 +22,7 @@ test('pinned PR diff inspection uses complete bounded evidence and cleans up run
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
     return git('rev-parse', 'HEAD');
   };
-  const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'TEST_DIFF_DIRECTORY', 'TEST_DIFF_MODE', 'TEST_DIFF_SCAN_PROBE', 'TMPDIR'] as const;
+  const names = ['PATH', 'FACTORY_HERMES_RUNTIME_USER', 'TEST_DIFF_DIRECTORY', 'TEST_DIFF_MODE', 'TEST_DIFF_SCAN_PROBE', 'TMPDIR'] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
     delete process.env.TEST_DIFF_SCAN_PROBE;
@@ -143,7 +143,7 @@ if 'fetch' in args:
 os.execv('/usr/bin/git', ['git'] + args)
 `, { mode: 0o700 });
     Object.assign(process.env, { PATH: `${directory}${path.delimiter}${previous.PATH || ''}`,
-      DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', TEST_DIFF_DIRECTORY: directory, TMPDIR: temporary });
+      FACTORY_HERMES_RUNTIME_USER: '10000:10000', TEST_DIFF_DIRECTORY: directory, TMPDIR: temporary });
     const reset = (mode: string) => {
       process.env.TEST_DIFF_MODE = mode;
       for (const name of ['views', 'fallback-called', 'fetch-pid']) rmSync(path.join(directory, name), { force: true });

@@ -15,8 +15,8 @@ from factory_lifecycle_writer.linear import LinearClient, LinearError
 from factory_lifecycle_writer.oauth import AppTokenProvider, IdentityError
 
 
-STATE_DIR = Path(os.environ.get("FACTORY_TOKEN_STATE_DIR", "/var/lib/driftward-factory-linear-token"))
-ENV_FILE = Path(os.environ.get("FACTORY_LIFECYCLE_ENV_FILE", "/etc/driftward/factory-lifecycle-writer.env"))
+STATE_DIR = Path(os.environ.get("FACTORY_TOKEN_STATE_DIR", "/var/lib/factory-linear-token"))
+ENV_FILE = Path(os.environ.get("FACTORY_LIFECYCLE_ENV_FILE", "/etc/factory/factory-lifecycle-writer.env"))
 
 
 def credential(name: str) -> str:
@@ -71,8 +71,8 @@ def main() -> int:
         json.dump(state, handle, separators=(",", ":"), sort_keys=True); handle.write("\n"); temporary = Path(handle.name)
     temporary.chmod(0o600); os.replace(temporary, target)
     restart_enabled = os.environ.get("FACTORY_LIFECYCLE_RESTART_SERVICE", "1").lower() not in {"0", "false", "no"}
-    if changed and restart_enabled and shutil.which("systemctl") and subprocess.run(["systemctl", "is-active", "--quiet", "driftward-factory-lifecycle-writer.service"], check=False).returncode == 0:
-        subprocess.run(["systemctl", "restart", "driftward-factory-lifecycle-writer.service"], check=True)
+    if changed and restart_enabled and shutil.which("systemctl") and subprocess.run(["systemctl", "is-active", "--quiet", "factory-lifecycle-writer.service"], check=False).returncode == 0:
+        subprocess.run(["systemctl", "restart", "factory-lifecycle-writer.service"], check=True)
     print(json.dumps({"actor_name": actor.name, "status": "ok", "token_changed": changed}, sort_keys=True))
     return 0
 

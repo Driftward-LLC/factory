@@ -12,15 +12,15 @@ The paths and service names below describe the managed host integration.
 Portable releases use their installation directory and project name; follow
 [the portable guide](../deploy/PORTABLE.md) for a new installation.
 
-- Runtime root: `/docker/driftward/factory`
-- Systemd unit: `driftward-factory.service`
-- Compose project: `driftward-factory`
+- Runtime root: `/docker/factory/factory`
+- Systemd unit: `factory.service`
+- Compose project: `factory`
 - Local dashboard/API: `http://127.0.0.1:8888`
 - Private dashboard/API URL: `https://your-host.your-tailnet.ts.net:8888/`
 - Local Factory Console: `http://127.0.0.1:19881`
 - Worker gRPC: `127.0.0.1:7077`
 - Health port: `127.0.0.1:8733`
-- Secret env: `/etc/driftward/hatchet.env`
+- Secret env: `/etc/factory/hatchet.env`
 - Smoke test: `factory-docker-smoke`
 
 Hatchet remains a control plane only. Do not mount Hermes provider
@@ -40,7 +40,7 @@ execution happens behind allowlisted actions.
 Runtime:
 
 - Compose service: `bridge`
-- Database: `/var/lib/driftward-hatchet-bridge/bridge.db`
+- Database: `/var/lib/factory-hatchet-bridge/bridge.db`
 - Local API: `http://127.0.0.1:19877`
 
 The bridge binds to `127.0.0.1` only and should never expose a generic shell or
@@ -82,25 +82,25 @@ Runtime:
 
 - Compose service: `event-ingress`
 - Public Linear webhook proxy: `linear-webhook-proxy`
-- Database: `/var/lib/driftward-hatchet-event-ingress/ingress.db`
+- Database: `/var/lib/factory-hatchet-event-ingress/ingress.db`
 - Local API: `http://127.0.0.1:19878`
 - Public Linear webhook URL: `https://your-webhook.example.com/events/linear/issue`
 
 Supported events:
 
-- `driftward.linear.issue.observed`, produced from Linear Issue webhooks that
+- `factory.linear.issue.observed`, produced from Linear Issue webhooks that
   do not pass implementation gates.
-- `driftward.linear.issue.ready_for_implementation`, produced from Linear
+- `factory.linear.issue.ready_for_implementation`, produced from Linear
   Engineering Issue webhooks that pass implementation gates.
-- `driftward.github.pr.created`, produced from GitHub `pull_request.opened`
+- `factory.github.pr.created`, produced from GitHub `pull_request.opened`
   payloads.
-- `driftward.github.pr.synchronized`, produced from GitHub
+- `factory.github.pr.synchronized`, produced from GitHub
   `pull_request.synchronize` payloads.
-- `driftward.github.pr.reopened`, produced from GitHub
+- `factory.github.pr.reopened`, produced from GitHub
   `pull_request.reopened` payloads as an open, unmerged observation.
-- `driftward.github.pr.closed_unmerged`, produced from GitHub
+- `factory.github.pr.closed_unmerged`, produced from GitHub
   `pull_request.closed` payloads where `merged=false`.
-- `driftward.github.pr.closed_merged`, produced from GitHub
+- `factory.github.pr.closed_merged`, produced from GitHub
   `pull_request.closed` payloads where `merged=true`.
 
 Canonical event IDs and wire names live in `hatchet/contracts/events.json`.
@@ -183,17 +183,17 @@ Use these in separate terminals while changing a Linear Engineering issue to
 ```text
 event-ingress
   receives and verifies the Linear webhook
-  emits driftward.linear.issue.ready_for_implementation only when immutable project execution policy is enabled
+  emits factory.linear.issue.ready_for_implementation only when immutable project execution policy is enabled
 
 intake-worker
   consumes the ready event
   reserves or reuses one active factory-attempt-backed create_draft_pr job for the issue
 
 factory outbox dispatcher
-  emits driftward.hermes.job.accepted for the reserved bridge job
+  emits factory.hermes.job.accepted for the reserved bridge job
 
 bridge-executor-worker
-  consumes driftward.hermes.job.accepted
+  consumes factory.hermes.job.accepted
   records the draft artifact, then verifies it before human-review readiness
 ```
 
@@ -231,7 +231,7 @@ Inspect stored state for focused debugging:
 
 ```bash
 curl -fsS 'http://127.0.0.1:19878/events?limit=10' | jq
-curl -fsS -H "Authorization: Bearer $(awk -F= '$1 == \"HATCHET_HERMES_BRIDGE_TOKEN\" { print $2; exit }' /etc/driftward/hatchet-bridge.env)" 'http://127.0.0.1:19877/jobs?limit=10' | jq
+curl -fsS -H "Authorization: Bearer $(awk -F= '$1 == \"HATCHET_HERMES_BRIDGE_TOKEN\" { print $2; exit }' /etc/factory/hatchet-bridge.env)" 'http://127.0.0.1:19877/jobs?limit=10' | jq
 ```
 
 The bridge event history endpoint is bounded and returns `{events,total}`. Use
@@ -247,8 +247,8 @@ Check Docker and Tailscale only when debugging the Hatchet control plane or
 exposure layer directly:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory ps
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory logs --tail=100
 tailscale serve status
 tailscale funnel status
 factory-docker-smoke
@@ -258,13 +258,13 @@ Restart individual services only for focused remediation after the CLI or smoke
 test identifies a component:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory up -d --no-deps <service>
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory up -d --no-deps <service>
 factory-docker-smoke
 ```
 
 ### Post-Restart Validation And Rollback
 
-Reloading `driftward-factory.service` converges the Compose application without
+Reloading `factory.service` converges the Compose application without
 stopping unchanged services or PostgreSQL. Workers recreated by an image
 change can record transient `UNAVAILABLE` listener and heartbeat errors while
 they reconnect. Treat those records as expected only inside that deploy
@@ -272,12 +272,12 @@ window; wait for health, run the smoke test, then observe two clean minutes.
 
 ```bash
 for unit in intake execution-dispatch bridge-executor pr-event reconciliation; do
-  docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --since 2m "${unit}-worker" \
+  docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory logs --since 2m "${unit}-worker" \
     | rg -i 'failed to send heartbeat|heartbeat interval delay|listener encountered an error|unavailable|unauthenticated' \
     || true
 done
 
-postgres_pid="$(docker inspect -f '{{.State.Pid}}' driftward-factory-postgres-1)"
+postgres_pid="$(docker inspect -f '{{.State.Pid}}' factory-postgres-1)"
 postgres_cgroup="/sys/fs/cgroup$(awk -F: '$1 == \"0\" { print $3 }' "/proc/${postgres_pid}/cgroup")"
 cat "${postgres_cgroup}/memory.current"
 cat "${postgres_cgroup}/memory.peak"
@@ -305,13 +305,13 @@ bash deploy/install-docker.sh --image-tag <known-good-release-tag> --start
 Manual start without systemd:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory up -d
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory up -d
 ```
 
 Manual stop:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory stop
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory stop
 ```
 
 Restore the Tailscale dashboard route:
@@ -322,24 +322,24 @@ tailscale serve --bg --https=8888 http://127.0.0.1:8888
 
 ## Secrets
 
-`/etc/driftward/hatchet.env` contains the Postgres password, Hatchet admin
+`/etc/factory/hatchet.env` contains the Postgres password, Hatchet admin
 password, cookie secrets, Hatchet server URL, and cookie domain. Keep it mode
 `0600`; do not commit or paste its contents into Linear, GitHub, Codex, or
 logs.
 
-The key files under `/docker/driftward/factory/keys/hatchet` are generated by
+The key files under `/docker/factory/factory/keys/hatchet` are generated by
 the Hatchet admin image and mounted read-only into `hatchet-lite`.
 
-`/etc/driftward/hatchet-bridge.env` contains the bridge-local bearer token.
+`/etc/factory/hatchet-bridge.env` contains the bridge-local bearer token.
 `hatchet/bridge/install.sh` generates it when absent and keeps the file mode
 `0600`; it is delivered only to the protected worker environment.
 
-`/etc/driftward/hatchet-workers.env` contains the Hatchet worker client token
-and connection settings. `/etc/driftward/hatchet-worker-bridge-executor.env`
+`/etc/factory/hatchet-workers.env` contains the Hatchet worker client token
+and connection settings. `/etc/factory/hatchet-worker-bridge-executor.env`
 contains the explicit Hermes execution gate and expected GitHub App
 identity. Keep both files mode `0600`.
 
-`/etc/driftward/hatchet-event-ingress.env` is optional and holds ingress-local
+`/etc/factory/hatchet-event-ingress.env` is optional and holds ingress-local
 settings such as the GitHub webhook signature secret. Keep it mode `0600` if it
 exists.
 

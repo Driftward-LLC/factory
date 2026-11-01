@@ -445,7 +445,7 @@ def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str, key
 
 def _release_commit() -> str:
     """Return non-secret immutable release provenance for health validation."""
-    configured = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_VERSION")
+    configured = os.environ.get("FACTORY_BRIDGE_RELEASE_VERSION")
     metadata = Path(__file__).resolve().parents[1] / "RELEASE_METADATA.json"
     try:
         value = json.loads(metadata.read_text()).get("commit")

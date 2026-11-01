@@ -1,5 +1,5 @@
 {
-  "name": "@driftward/hatchet-pr-event-worker",
+  "name": "@factory/hatchet-pr-event-worker",
   "version": "0.1.0",
   "private": true,
   "main": "dist/worker.js",
@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@driftward/hatchet-worker-shared": "0.1.0",
+    "@factory/hatchet-worker-shared": "0.1.0",
     "@hatchet-dev/typescript-sdk": "1.26.1"
   },
   "devDependencies": {

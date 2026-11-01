@@ -112,7 +112,7 @@ class Installation:
         return run([*self.args, *args], env=self.env, private=private)
 
     def assert_owned_resources(self) -> None:
-        label = "io.driftward.factory.installation"
+        label = "io.factory.installation"
         volume_names = run(["docker", "volume", "ls", "--format", "{{.Name}}"], env=self.env, private=True).splitlines()
         expected_volumes = {f"{self.project}-{suffix}" for suffix in portable_state.PROJECT_VOLUMES}
         volumes = [name for name in volume_names if name in expected_volumes]
@@ -144,11 +144,11 @@ class Installation:
         self.assert_owned_resources()
         workers = bootstrap.read_env(self.directory / "env" / "hatchet-workers.env")
         executor = bootstrap.read_env(self.directory / "env" / "hatchet-worker-bridge-executor.env")
-        if workers.get("HATCHET_INTAKE_DRY_RUN") != "true" or executor.get("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED") != "0":
+        if workers.get("HATCHET_INTAKE_DRY_RUN") != "true" or executor.get("FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED") != "0":
             raise ValueError("this portable profile supports dry-run only; real execution requires a separately reviewed executor rollout")
         self.assert_config()
         # Explicit migrations run with all Factory writers stopped. This never
-        # addresses the existing driftward-factory project or its volumes.
+        # addresses the existing factory project or its volumes.
         self.compose("stop")
         keys = self.directory / "keys" / "hatchet"
         expected = [keys / name for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key")]

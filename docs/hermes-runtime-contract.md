@@ -101,7 +101,7 @@ updates and application deployments are separate operations.
 Factory attempt / execution lease
   -> Factory worker -> private gRPC socket
   -> Factory's custom Hermes gateway -> invocation journal
-  -> driftward-hermes wrapper -> docker compose exec ... hermes
+  -> factory-hermes wrapper -> docker compose exec ... hermes
   -> Hermes one-shot CLI --profile factory-executor ... -z
   -> selected terminal / browser / MCP tools
 ```

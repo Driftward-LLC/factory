@@ -204,7 +204,7 @@ class ReviewerSourceTokenTests(unittest.TestCase):
             self.assertEqual(renewal.broker(), response)
         args = run.call_args.args[0]
         self.assertEqual(args[:6], ['/usr/bin/docker', '--host', 'unix:///var/run/docker.sock', 'exec', '--workdir', '/opt/hermes'])
-        self.assertEqual(args[6], 'hermes-driftward-hermes-1')
+        self.assertEqual(args[6], 'hermes-factory-hermes-1')
         self.assertNotIn(response['token'], ' '.join(args))
         self.assertNotIn('token-cache', args[-1])
         self.assertEqual(run.call_args.kwargs['stdout'], subprocess.PIPE)
@@ -217,14 +217,14 @@ class ReviewerSourceTokenTests(unittest.TestCase):
         self.assertFalse(policy['automatic_repairs_allowed'])
         self.assertEqual(policy['max_passes'], 2)
         self.assertEqual(policy['repositories'], [])
-        gateway = (ROOT / 'deploy/systemd/driftward-hermes-factory-gateway.service').read_text()
-        self.assertIn('/var/lib/driftward-factory-reviewer', gateway.split('ReadWritePaths=')[1].splitlines()[0])
-        service = (ROOT / 'deploy/systemd/driftward-factory-reviewer-source-token.service').read_text()
+        gateway = (ROOT / 'deploy/systemd/factory-hermes-factory-gateway.service').read_text()
+        self.assertIn('/var/lib/factory-reviewer', gateway.split('ReadWritePaths=')[1].splitlines()[0])
+        service = (ROOT / 'deploy/systemd/factory-reviewer-source-token.service').read_text()
         self.assertIn('Type=oneshot', service)
         self.assertIn('RestrictAddressFamilies=AF_UNIX', service)
         self.assertNotIn('Restart=', service)
         self.assertNotIn('private-key.pem', service)
-        self.assertIn('OnUnitActiveSec=20min', (ROOT / 'deploy/systemd/driftward-factory-reviewer-source-token.timer').read_text())
+        self.assertIn('OnUnitActiveSec=20min', (ROOT / 'deploy/systemd/factory-reviewer-source-token.timer').read_text())
 
 
 if __name__ == '__main__':

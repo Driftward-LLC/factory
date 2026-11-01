@@ -58,14 +58,14 @@ const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
     assert(docs.includes('foundations-factorytheme'));
     assert(docs.includes('foundations-start-here--docs'));
     const badge = JSON.stringify(await rpc('tools/call', { name: 'docs-show', arguments: { id: 'components-statusbadge' } }));
-    for (const expected of ['@driftward/ui', 'tone', 'warning', 'children', 'Props']) assert(badge.includes(expected), `Missing MCP component contract: ${expected}`);
+    for (const expected of ['@factory/ui', 'tone', 'warning', 'children', 'Props']) assert(badge.includes(expected), `Missing MCP component contract: ${expected}`);
     const field = JSON.stringify(await rpc('tools/call', { name: 'docs-show', arguments: { id: 'components-textinput' } }));
-    for (const expected of ['@driftward/ui', 'required', 'maxLength', 'pattern', 'isDisabled', 'onChange']) assert(field.includes(expected), `Missing MCP field contract: ${expected}`);
+    for (const expected of ['@factory/ui', 'required', 'maxLength', 'pattern', 'isDisabled', 'onChange']) assert(field.includes(expected), `Missing MCP field contract: ${expected}`);
     const buttonDocs = JSON.stringify(await rpc('tools/call', { name: 'docs-show', arguments: { id: 'components-button' } }));
     for (const expected of ['Composed loading labels require', 'aria-label', 'aria-labelledby']) assert(buttonDocs.includes(expected), `Missing MCP loading-label contract: ${expected}`);
     const builtManifest = await readFile(join(consoleRoot, 'storybook-static/manifests/components.json'), 'utf8');
     assert(builtManifest.includes('components-statusbadge'));
-    assert(builtManifest.includes('@driftward/ui'));
+    assert(builtManifest.includes('@factory/ui'));
     assert(builtManifest.includes('Native browser pattern validation'), 'Static catalog documents native field validation');
     for (const component of Object.values(JSON.parse(builtManifest).components)) {
       assert(!component.error, `Invalid static component manifest: ${component.id}`);

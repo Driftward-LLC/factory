@@ -1,5 +1,5 @@
-import { Button, ExternalLink, Notice, StatusBadge, Heading, Card, EmptyState } from '@driftward/ui';
-import { ArrowTopRightIcon } from '@driftward/ui/icons';
+import { Button, ExternalLink, Notice, StatusBadge, Heading, Card, EmptyState } from '@factory/ui';
+import { ArrowTopRightIcon } from '@factory/ui/icons';
 import { time } from './model.js';
 
 export default function BeforeExecution({ intake, onOpen, issue = false, stale = false }) {

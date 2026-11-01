@@ -80,7 +80,7 @@ Hermes archive digest and PostgreSQL verification. Private SQL dumps and evidenc
 remain under `DESTINATION/migration-evidence/`; these contain credentials and
 production data and must never be committed or published.
 
-The obsolete systemd helper `hatchet/driftward-hatchet-smoke` now exits without
+The obsolete systemd helper `hatchet/factory-hatchet-smoke` now exits without
 checking or changing services. Use the Factory-owned `factory-docker-smoke` for
 its supported production Compose layout and the portable acceptance harness for
 a fresh portable profile. Smoke checks read the configured team identity.

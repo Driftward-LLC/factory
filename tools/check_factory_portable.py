@@ -73,8 +73,8 @@ def console_boundary(port: int) -> None:
 SAFETY_CHECK = """
 import os
 assert os.environ.get('HATCHET_INTAKE_DRY_RUN') == 'true'
-assert os.environ.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '0'
-assert not os.environ.get('DRIFTWARD_HERMES_GRPC_TARGET')
+assert os.environ.get('FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED') == '0'
+assert not os.environ.get('FACTORY_HERMES_GRPC_TARGET')
 import factory_organization
 assert factory_organization.load()['github']['enabled'] is False
 print('dry-run-only')
@@ -146,7 +146,7 @@ print('disabled integrations reject signed delivery')
 
 BRIDGE_SNAPSHOT = """
 import json, sqlite3, sys
-connection = sqlite3.connect('file:/var/lib/driftward-hatchet-bridge/bridge.db?mode=ro', uri=True)
+connection = sqlite3.connect('file:/var/lib/factory-hatchet-bridge/bridge.db?mode=ro', uri=True)
 connection.row_factory = sqlite3.Row
 rows = connection.execute('SELECT * FROM bridge_jobs').fetchall()
 assert len(rows) <= 1, 'duplicate bridge jobs'
@@ -169,7 +169,7 @@ else:
 
 INGRESS_SNAPSHOT = """
 import json, sqlite3, sys
-connection = sqlite3.connect('file:/var/lib/driftward-hatchet-event-ingress/ingress.db?mode=ro', uri=True)
+connection = sqlite3.connect('file:/var/lib/factory-hatchet-event-ingress/ingress.db?mode=ro', uri=True)
 row = connection.execute('SELECT event_key,hatchet_event_id,hatchet_published FROM ingress_events WHERE subject=?', (sys.argv[1],)).fetchall()
 assert len(row) == 1 and row[0][1] and row[0][2] == 1
 receipts = connection.execute('SELECT signature_verified,disposition FROM ingress_receipts WHERE event_key=? ORDER BY disposition', (row[0][0],)).fetchall()

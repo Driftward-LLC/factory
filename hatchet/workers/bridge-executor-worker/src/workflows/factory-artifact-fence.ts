@@ -1,4 +1,4 @@
-import type { BridgeJob, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, JsonObject, JsonValue } from '@factory/hatchet-worker-shared';
 import {
   inspectDraftPrState,
   inspectGitHubHead,

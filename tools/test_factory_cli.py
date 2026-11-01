@@ -70,7 +70,7 @@ class CanonicalCliTests(unittest.TestCase):
                 cli.checked_hermes_wrapper('/usr/local/bin/hermes-fixture')
 
     def test_profile_subprocess_has_fixed_environment_timeout_and_private_output(self):
-        with patch.dict(cli.os.environ, {'DRIFTWARD_HERMES_ROOT': '/wrong', 'HERMES_HOME': '/wrong', 'COMPOSE_FILE': '/wrong'}), \
+        with patch.dict(cli.os.environ, {'FACTORY_HERMES_ROOT': '/wrong', 'HERMES_HOME': '/wrong', 'COMPOSE_FILE': '/wrong'}), \
              patch.object(cli.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(self.profile_result(False)))) as run:
             cli.hermes_profiles(Path('/usr/local/bin/hermes-fixture'), False)
         self.assertEqual(run.call_args.args[0], ['/usr/local/bin/hermes-fixture', 'shell', '-c', 'exec python3 -'])
@@ -78,7 +78,7 @@ class CanonicalCliTests(unittest.TestCase):
         self.assertEqual(kwargs['timeout'], 60)
         self.assertTrue(kwargs['capture_output'])
         self.assertTrue(kwargs['check'])
-        for name in ('DRIFTWARD_HERMES_ROOT', 'HERMES_HOME', 'COMPOSE_FILE'):
+        for name in ('FACTORY_HERMES_ROOT', 'HERMES_HOME', 'COMPOSE_FILE'):
             self.assertNotIn(name, kwargs['env'])
 
     @staticmethod
@@ -326,9 +326,9 @@ class CanonicalCliTests(unittest.TestCase):
                                   values={'FACTORY_IMAGE': 'sha256:active'},
                                   compose=lambda *args, **kwargs: 'container\n')
         row = {'Config': {'Labels': {'com.docker.compose.project': install.project,
-               'com.docker.compose.service': 'factory-operator', 'io.driftward.factory.installation': 'identity'}},
+               'com.docker.compose.service': 'factory-operator', 'io.factory.installation': 'identity'}},
                'Image': 'sha256:active', 'State': {'Running': True}, 'Mounts': [
-                   {'Destination': '/run/driftward-factory-operator', 'Name': 'factory-current-operator-socket',
+                   {'Destination': '/run/factory-operator', 'Name': 'factory-current-operator-socket',
                     'Type': 'volume', 'Source': '/private/socket'}]}
         with patch.object(cli.subprocess, 'run', side_effect=lambda *a, **k: SimpleNamespace(stdout=json.dumps([row]))):
             self.assertEqual(cli.operator(install)[1], Path('/private/socket/operator.sock'))

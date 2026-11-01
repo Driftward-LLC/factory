@@ -4,20 +4,20 @@ import fcntl, os
 from pathlib import Path
 import test_capability
 
-_FIXED_MAINTENANCE_LOCK = Path("/run/driftward-hatchet-bridge/maintenance.lock")
+_FIXED_MAINTENANCE_LOCK = Path("/run/factory-hatchet-bridge/maintenance.lock")
 MAINTENANCE_FD = 3  # fixed inherited capability; never environment/CLI selected
-DIRECT_DB_WRITERS = ("driftward-hatchet-bridge.service","driftward-hatchet-bridge-reconciler.service","driftward-hatchet-bridge-reconciler.timer","driftward-factory-outbox-dispatcher.service","driftward-factory-outbox-dispatcher.timer","driftward-factory-operator.service")
-HTTP_MUTATION_CLIENTS = ("driftward-hatchet-worker-bridge-executor.service","driftward-hatchet-worker-reconciliation.service")
+DIRECT_DB_WRITERS = ("factory-hatchet-bridge.service","factory-hatchet-bridge-reconciler.service","factory-hatchet-bridge-reconciler.timer","factory-outbox-dispatcher.service","factory-outbox-dispatcher.timer","factory-operator.service")
+HTTP_MUTATION_CLIENTS = ("factory-hatchet-worker-bridge-executor.service","factory-hatchet-worker-reconciliation.service")
 WRITER_UNITS = DIRECT_DB_WRITERS + HTTP_MUTATION_CLIENTS
 # Keep this deliberately explicit: a new application caller of connect_runtime
 # must be classified before it can ship.  Tests compare this inventory to the
 # source tree instead of relying on a best-effort operational audit.
 WRITABLE_CALLER_INVENTORY = {
-    "hatchet_hermes_bridge.server": "driftward-hatchet-bridge.service",
-    "hatchet_hermes_bridge.operator": "driftward-factory-operator.service",
-    "hatchet_hermes_bridge.review_repair": "driftward-factory-operator.service",
-    "hatchet_hermes_bridge.review_recovery": "driftward-factory-operator.service",
-    "hatchet_hermes_bridge.console_control": "driftward-factory-operator.service",
+    "hatchet_hermes_bridge.server": "factory-hatchet-bridge.service",
+    "hatchet_hermes_bridge.operator": "factory-operator.service",
+    "hatchet_hermes_bridge.review_repair": "factory-operator.service",
+    "hatchet_hermes_bridge.review_recovery": "factory-operator.service",
+    "hatchet_hermes_bridge.console_control": "factory-operator.service",
     "hatchet_hermes_bridge.cli": "operator-cli",
 }
 

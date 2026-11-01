@@ -47,7 +47,7 @@ class AgentTraceProjectionTests(unittest.TestCase):
         trace = self.trace()
         self.assertEqual(trace["status"], "unverified")
         parsed = urlparse(trace["url"])
-        self.assertEqual(parsed.path, "/project/12345/ai-observability/traces/6f2539d8-3884-5813-b3d7-839a59bc54a0")
+        self.assertEqual(parsed.path, "/project/12345/ai-observability/traces/5a7fb717-09d1-55ba-9ce1-480f0a3e18a2")
         self.assertEqual(parse_qs(parsed.query), {"timestamp": ["2026-09-30T05:53:34.202Z"]})
         self.assertEqual(json.dumps(self.record, sort_keys=True), before)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM factory_attempt_events").fetchone()[0], 0)
@@ -130,7 +130,7 @@ class FactoryConsoleTests(unittest.TestCase):
         self.thread.join(timeout=2)
 
     def get(self, path, *, identity=True):
-        headers = {"Tailscale-User-Login": "operator@driftward.test"} if identity else {}
+        headers = {"Tailscale-User-Login": "operator@factory.test"} if identity else {}
         with urlopen(Request(self.base + path, headers=headers), timeout=2) as response:
             return response.status, response.headers, response.read()
 
@@ -147,7 +147,7 @@ class FactoryConsoleTests(unittest.TestCase):
         value = json.loads(raw)
 
         self.assertEqual(status, 200)
-        self.assertEqual(value["viewer"], "operator@driftward.test")
+        self.assertEqual(value["viewer"], "operator@factory.test")
         self.assertEqual(value["mode"], "real")
         self.assertEqual(value["active_attempts"][0]["attempt"]["work_item_key"], "ENG-119")
         self.assertEqual(value["status_counts"], {"reserved": 1})
@@ -265,7 +265,7 @@ class FactoryConsoleTests(unittest.TestCase):
             with self.subTest(days=days):
                 self.assertEqual(json.loads(self.get(f"/api/analytics?days={days}")[2])["window"]["days"], days)
         with self.assertRaises(HTTPError) as raised:
-            urlopen(Request(self.base + "/api/analytics", data=b"{}", headers={"Tailscale-User-Login": "operator@driftward.test"}), timeout=2)
+            urlopen(Request(self.base + "/api/analytics", data=b"{}", headers={"Tailscale-User-Login": "operator@factory.test"}), timeout=2)
         self.assertEqual(raised.exception.code, 405)
 
     def test_analytics_uses_optional_ingress_and_preserves_unverified_coverage(self):

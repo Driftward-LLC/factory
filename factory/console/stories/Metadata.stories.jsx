@@ -1,4 +1,4 @@
-import { MetadataList, MetadataListItem, StatusBadge } from '@driftward/ui';
+import { MetadataList, MetadataListItem, StatusBadge } from '@factory/ui';
 
 export default {
   title: 'Components/Metadata', component: MetadataList, tags: ['autodocs'],

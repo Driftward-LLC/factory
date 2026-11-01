@@ -10,8 +10,8 @@ set -a
 . "$credential_file"
 set +a
 
-export PYTHONPATH=/usr/local/lib/driftward-factory-lifecycle-writer
-export FACTORY_LIFECYCLE_DB=/var/lib/driftward-factory-lifecycle-writer/outbox.db
+export PYTHONPATH=/usr/local/lib/factory-lifecycle-writer
+export FACTORY_LIFECYCLE_DB=/var/lib/factory-lifecycle-writer/outbox.db
 export FACTORY_LIFECYCLE_PORT=19880
 if [[ "$#" == 0 ]]; then
   set -- serve --interval 30

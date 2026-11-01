@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { executionRuntimeBinding, sameExecutionRuntime, executionTraceparent, withExecutionSpan, type ExecutionRuntimeBinding } from '@driftward/hatchet-worker-shared';
+import { executionRuntimeBinding, sameExecutionRuntime, executionTraceparent, withExecutionSpan, type ExecutionRuntimeBinding } from '@factory/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
 import { boundedNativeOwnerStop, invocationLease, type InvocationLease, type InvocationStatus } from './invocation-journal';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { boundedModelSelection, MODEL_SELECTION_HEADER, reportModelSelection, type ModelSelectionObserver } from './model-selection';
-import type { BridgeJob, JsonValue, JsonObject } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, JsonValue, JsonObject } from '@factory/hatchet-worker-shared';
 import { boundedIndependentReview, inconclusiveReview, reviewIntent } from './independent-review';
 import {
   boundedHermesDraftPrReceipt,
@@ -22,7 +22,7 @@ import {
   type ExecutionFailureStage,
 } from './errors';
 
-export const DEFAULT_HERMES_GRPC_TARGET = 'unix:///run/driftward-hermes-factory/hermes.sock';
+export const DEFAULT_HERMES_GRPC_TARGET = 'unix:///run/factory-hermes-factory/hermes.sock';
 
 export type HermesIdentityCheck = {
   githubLogin: string;
@@ -187,15 +187,15 @@ export async function runIndependentReviewViaGrpc(job: BridgeJob): Promise<JsonO
 }
 
 export function hermesGrpcGatewayEnabled(): boolean {
-  return Boolean((process.env.DRIFTWARD_HERMES_GRPC_TARGET || '').trim());
+  return Boolean((process.env.FACTORY_HERMES_GRPC_TARGET || '').trim());
 }
 
 export function hermesGrpcTarget(): string {
-  const target = (process.env.DRIFTWARD_HERMES_GRPC_TARGET || '').trim();
+  const target = (process.env.FACTORY_HERMES_GRPC_TARGET || '').trim();
   if (!target) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_gateway_unconfigured',
-      'DRIFTWARD_HERMES_GRPC_TARGET must be set for Hermes gRPC execution'
+      'FACTORY_HERMES_GRPC_TARGET must be set for Hermes gRPC execution'
     );
   }
   validateTargetPolicy(target);
@@ -253,7 +253,7 @@ function invocationRequest(job: BridgeJob) {
 }
 
 export async function prepareHermesInvocation(job: BridgeJob, lease: InvocationLease): Promise<ExecutionRuntimeBinding> {
-  const configuredTimeout = Number.parseInt(process.env.DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS || '', 10);
+  const configuredTimeout = Number.parseInt(process.env.FACTORY_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS || '', 10);
   const timeoutMs = Number.isSafeInteger(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 20 * 60 * 1000;
   const response = await callGateway<{ executionRuntimeJson?: string; executionLeaseJson?: string }>('prepareInvocation', {
     ...invocationRequest(job), timeoutMs, executionLeaseJson: JSON.stringify(invocationLease(lease)),
@@ -449,7 +449,7 @@ function sendGateway<T>(method: keyof GatewayClient, request: Record<string, unk
     metadata = new grpc.Metadata();
     const parent = executionTraceparent();
     if (parent) metadata.set('traceparent', parent);
-    const token = (process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim();
+    const token = (process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN || '').trim();
     if (token) metadata.set('authorization', `Bearer ${token}`);
     options = {};
     if (timeoutMs > 0) options.deadline = new Date(Date.now() + timeoutMs);
@@ -487,10 +487,10 @@ function getClient(): GatewayClient {
     oneofs: true
   });
   const loaded = grpc.loadPackageDefinition(packageDefinition) as Record<string, unknown>;
-  const service = (((loaded.driftward as Record<string, unknown>).factory as Record<string, unknown>).hermes as Record<string, unknown>).v1 as Record<string, unknown>;
+  const service = ((loaded.factory as Record<string, unknown>).hermes as Record<string, unknown>).v1 as Record<string, unknown>;
   const ClientCtor = service.HermesFactoryGateway as new (target: string, credentials: grpc.ChannelCredentials, options?: grpc.ClientOptions) => GatewayClient;
   const client = new ClientCtor(target, channelCredentials(target), {
-    'grpc.primary_user_agent': 'driftward-factory-bridge-executor'
+    'grpc.primary_user_agent': 'factory-bridge-executor'
   });
   cachedClient = { target, client };
   return client;
@@ -513,22 +513,22 @@ export function resolveHermesGatewayProtoPath(): string {
 }
 
 function channelCredentials(target: string): grpc.ChannelCredentials {
-  if (process.env.DRIFTWARD_HERMES_GRPC_TLS === '1') {
-    const rootCert = optionalFile(process.env.DRIFTWARD_HERMES_GRPC_CA_PATH);
-    const privateKey = optionalFile(process.env.DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH);
-    const certChain = optionalFile(process.env.DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH);
+  if (process.env.FACTORY_HERMES_GRPC_TLS === '1') {
+    const rootCert = optionalFile(process.env.FACTORY_HERMES_GRPC_CA_PATH);
+    const privateKey = optionalFile(process.env.FACTORY_HERMES_GRPC_CLIENT_KEY_PATH);
+    const certChain = optionalFile(process.env.FACTORY_HERMES_GRPC_CLIENT_CERT_PATH);
     if ((privateKey && !certChain) || (!privateKey && certChain)) {
       throw new NonRetryableBridgeExecutionError(
         'hermes_grpc_tls_config_invalid',
-        'DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH and DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH must be set together'
+        'FACTORY_HERMES_GRPC_CLIENT_KEY_PATH and FACTORY_HERMES_GRPC_CLIENT_CERT_PATH must be set together'
       );
     }
     return grpc.credentials.createSsl(rootCert || undefined, privateKey || undefined, certChain || undefined);
   }
-  if (!isHermesGrpcUnixTarget(target) && process.env.DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP !== '1') {
+  if (!isHermesGrpcUnixTarget(target) && process.env.FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP !== '1') {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_tls_required',
-      'TCP Hermes gRPC targets require TLS or DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP=1'
+      'TCP Hermes gRPC targets require TLS or FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP=1'
     );
   }
   return grpc.credentials.createInsecure();
@@ -537,10 +537,10 @@ function channelCredentials(target: string): grpc.ChannelCredentials {
 function validateTargetPolicy(target: string): void {
   validateHermesGrpcTransport(target);
   if (isHermesGrpcUnixTarget(target)) return;
-  const clientCertificate = process.env.DRIFTWARD_HERMES_GRPC_TLS === '1'
-    && process.env.DRIFTWARD_HERMES_GRPC_CLIENT_KEY_PATH?.trim()
-    && process.env.DRIFTWARD_HERMES_GRPC_CLIENT_CERT_PATH?.trim();
-  if (!(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim() && !clientCertificate) {
+  const clientCertificate = process.env.FACTORY_HERMES_GRPC_TLS === '1'
+    && process.env.FACTORY_HERMES_GRPC_CLIENT_KEY_PATH?.trim()
+    && process.env.FACTORY_HERMES_GRPC_CLIENT_CERT_PATH?.trim();
+  if (!(process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN || '').trim() && !clientCertificate) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_auth_required',
       'TCP Hermes gRPC targets require an auth token or a TLS client certificate and key'
@@ -550,15 +550,15 @@ function validateTargetPolicy(target: string): void {
 
 export function validateHermesGrpcTransport(target: string): void {
   if (isHermesGrpcUnixTarget(target)) return;
-  if (process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP !== '1') {
+  if (process.env.FACTORY_HERMES_GRPC_ALLOW_TCP !== '1') {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_disabled',
-      'TCP Hermes gRPC targets require DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1'
+      'TCP Hermes gRPC targets require FACTORY_HERMES_GRPC_ALLOW_TCP=1'
     );
   }
-  const insecureLoopback = process.env.DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP === '1'
+  const insecureLoopback = process.env.FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP === '1'
     && /^(127\.0\.0\.1|\[::1\]):\d+$/.test(target);
-  if (process.env.DRIFTWARD_HERMES_GRPC_TLS !== '1' && !insecureLoopback) {
+  if (process.env.FACTORY_HERMES_GRPC_TLS !== '1' && !insecureLoopback) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_tls_required',
       'TCP Hermes gRPC requires TLS; insecure development transport is limited to explicit loopback IP targets'

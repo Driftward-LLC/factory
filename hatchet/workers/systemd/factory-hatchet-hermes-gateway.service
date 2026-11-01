@@ -1,0 +1,31 @@
+[Unit]
+Description=Factory Hatchet Hermes gRPC gateway
+Requires=docker.service
+After=docker.service network-online.target factory-hermes.service
+Wants=network-online.target factory-hermes.service
+Before=factory-hatchet-worker-bridge-executor.service
+Documentation=file:__REPO_ROOT__/hatchet/workers/bridge-executor-worker/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__/hatchet/workers/bridge-executor-worker
+Environment=NODE_ENV=production
+Environment=HATCHET_VERIFIER_POLICY_PATH=__REPO_ROOT__/hatchet/workers/verifier-policy.json
+Environment=FACTORY_HERMES_GRPC_TARGET=unix:///run/factory-hermes-factory/hermes.sock
+EnvironmentFile=/etc/factory/hatchet-worker-bridge-executor.env
+ExecStartPre=/bin/sh -c 'group=factory; getent group "$group" >/dev/null || group=root; install -d -m 2770 -o root -g "$group" /run/factory-hermes-factory'
+ExecStart=/usr/bin/node dist/hermes/hermes-gateway-server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+CPUQuota=50%
+MemoryMax=384M
+UMask=0007
+StateDirectory=factory-hermes-factory
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/run/factory-hermes-factory /var/lib/factory-hermes-factory /run/docker.sock /var/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

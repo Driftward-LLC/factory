@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--port", type=int, default=19877)
 
     operator = sub.add_parser("serve-operator", help="Serve root-only factory retry operator socket")
-    operator.add_argument("--socket", default="/run/driftward-factory-operator/operator.sock")
+    operator.add_argument("--socket", default="/run/factory-operator/operator.sock")
     operator.add_argument("--console-host")
     operator.add_argument("--console-port", type=int, default=0)
     operator.add_argument("--console-assets")
@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                 print_json({"dry_run": args.dry_run, "results": results})
             elif args.command == "dispatch-factory-outbox":
                 delivered = failed = 0
-                release_root = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_ROOT")
+                release_root = os.environ.get("FACTORY_BRIDGE_RELEASE_ROOT")
                 if not release_root:
                     raise BridgeError("immutable bridge release root is required for outbox dispatch")
                 batch_limit = max(1, min(args.limit, 250))

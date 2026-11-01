@@ -1,4 +1,4 @@
-import { type BridgeClient, HATCHET_EVENTS, type BridgeJob, type ReconciliationCorrelations } from '@driftward/hatchet-worker-shared';
+import { type BridgeClient, HATCHET_EVENTS, type BridgeJob, type ReconciliationCorrelations } from '@factory/hatchet-worker-shared';
 import { IngressObservationClient, type ObservationLookup } from '../ingress-observation-client';
 import { observeHatchetRun, observeHatchetRuns, type HatchetRunLookup } from '../hatchet-run-observer';
 import { compareCrossProvider, expectedJob, finding, type ReconciliationFinding } from './cross-provider-reconciliation';

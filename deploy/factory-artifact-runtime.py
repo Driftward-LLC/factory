@@ -28,7 +28,7 @@ MAX_IMAGE = 4 * 1024 ** 3
 HEADROOM = 12 * 1024 ** 3
 MAX_PAGES = 10
 MAX_ROUTINE_DELETES = 100
-ROUTINE_NAMES = ('driftward-ui-storybook', 'factory-console-fixtures')
+ROUTINE_NAMES = ('factory-ui-storybook', 'factory-console-fixtures')
 
 
 class Refusal(ValueError):

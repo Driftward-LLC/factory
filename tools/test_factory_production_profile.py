@@ -15,14 +15,14 @@ ENV_FILES = {
     "hatchet-bridge.env": "HATCHET_HERMES_BRIDGE_TOKEN=fixture-bridge\n",
     "hatchet-verifier.env": "HATCHET_HERMES_VERIFIER_TOKEN=fixture-verifier\n",
     "hatchet-event-ingress.env": "HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET=fixture-webhook\n",
-    "hatchet-worker-bridge-executor.env": "HATCHET_HERMES_INSPECTION_TOKEN=fixture-inspection\nDRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=0\n",
+    "hatchet-worker-bridge-executor.env": "HATCHET_HERMES_INSPECTION_TOKEN=fixture-inspection\nFACTORY_HERMES_CREATE_DRAFT_PR_ENABLED=0\n",
     "hatchet-worker-reconciliation.env": "HATCHET_HERMES_RECOVERY_TOKEN=fixture-recovery\n",
     "factory-lifecycle-writer.env": "FACTORY_LIFECYCLE_ACTIVATION_WATERMARK=2026-01-01T00:00:00Z\n",
     "factory-linear-token.env": "FACTORY_LINEAR_CLIENT_ID=fixture-linear\nFACTORY_LINEAR_CLIENT_SECRET=fixture-linear-secret\n",
     "factory-operator.env": "HATCHET_FACTORY_OPERATOR_TOKEN=fixture-operator\nHATCHET_INTAKE_DRY_RUN=true\n",
 }
 LINEAR_SERVICES = {"linear-webhook-proxy", "factory-lifecycle-writer", "factory-linear-token-refresh"}
-SOCKET_DIRECTORY = "/run/driftward-hermes-factory"
+SOCKET_DIRECTORY = "/run/factory-hermes-factory"
 
 
 @unittest.skipUnless(shutil.which("docker"), "Docker Compose is required to render the profile")
@@ -75,7 +75,7 @@ class ProductionProfileTests(unittest.TestCase):
         for name in LINEAR_SERVICES:
             self.assertFalse(services[name].get("profiles"))
         executor = services["bridge-executor-worker"]
-        self.assertEqual(executor["environment"]["DRIFTWARD_HERMES_GRPC_TARGET"],
+        self.assertEqual(executor["environment"]["FACTORY_HERMES_GRPC_TARGET"],
                          f"unix://{SOCKET_DIRECTORY}/hermes.sock")
         # Compose versions may omit the false create_host_path default.
         gateway_mounts = [
@@ -88,11 +88,11 @@ class ProductionProfileTests(unittest.TestCase):
         }])
         operator = services["factory-operator"]
         self.assertEqual(operator["environment"]["HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB"],
-                         "/var/lib/driftward-factory-lifecycle-writer/outbox.db")
+                         "/var/lib/factory-lifecycle-writer/outbox.db")
         self.assertEqual(operator["depends_on"]["factory-lifecycle-writer"]["condition"], "service_healthy")
         self.assertTrue({"bridge", "event-ingress"} <= operator["depends_on"].keys())
         for name, service in services.items():
-            self.assertEqual(service["labels"]["io.driftward.factory.installation"], "fixture-installation")
+            self.assertEqual(service["labels"]["io.factory.installation"], "fixture-installation")
             if name not in {"postgres", "hatchet-lite"}:
                 self.assertEqual(service["image"], self.env["FACTORY_IMAGE"])
             self.assertEqual(set(service["networks"]), {"factory"})
@@ -115,25 +115,25 @@ class ProductionProfileTests(unittest.TestCase):
                                                     "GITHUB_", "GH_", "BROWSERBASE_", "MCP_")) for key in env))
 
     def test_gateway_cannot_be_redirected_by_environment(self):
-        self.env["DRIFTWARD_HERMES_GRPC_TARGET"] = "dns:///foreign-host:50051"
+        self.env["FACTORY_HERMES_GRPC_TARGET"] = "dns:///foreign-host:50051"
         path = self.env_directory / "hatchet-worker-bridge-executor.env"
-        path.write_text(ENV_FILES[path.name] + "DRIFTWARD_HERMES_GRPC_TARGET=unix:///foreign/socket\n")
+        path.write_text(ENV_FILES[path.name] + "FACTORY_HERMES_GRPC_TARGET=unix:///foreign/socket\n")
         executor = self.render()["services"]["bridge-executor-worker"]
-        self.assertEqual(executor["environment"]["DRIFTWARD_HERMES_GRPC_TARGET"],
+        self.assertEqual(executor["environment"]["FACTORY_HERMES_GRPC_TARGET"],
                          f"unix://{SOCKET_DIRECTORY}/hermes.sock")
 
     def test_production_preserves_explicit_execution_mode(self):
         config = self.render()["services"]
         self.assertEqual(config["intake-worker"]["environment"]["HATCHET_INTAKE_DRY_RUN"], "true")
         self.assertEqual(config["factory-operator"]["environment"]["HATCHET_INTAKE_DRY_RUN"], "true")
-        self.assertEqual(config["bridge-executor-worker"]["environment"]["DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
+        self.assertEqual(config["bridge-executor-worker"]["environment"]["FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
         path = self.env_directory / "hatchet-workers.env"
         path.write_text(ENV_FILES[path.name].replace("DRY_RUN=true", "DRY_RUN=false"))
         path = self.env_directory / "hatchet-worker-bridge-executor.env"
         path.write_text(ENV_FILES[path.name].replace("ENABLED=0", "ENABLED=1"))
         config = self.render()["services"]
         self.assertEqual(config["intake-worker"]["environment"]["HATCHET_INTAKE_DRY_RUN"], "false")
-        self.assertEqual(config["bridge-executor-worker"]["environment"]["DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED"], "1")
+        self.assertEqual(config["bridge-executor-worker"]["environment"]["FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED"], "1")
 
     def test_every_production_env_file_is_required(self):
         for name, content in ENV_FILES.items():
@@ -165,8 +165,8 @@ class ProductionProfileTests(unittest.TestCase):
         self.assertFalse(LINEAR_SERVICES & services.keys())
         executor = services["bridge-executor-worker"]
         self.assertEqual([mount["target"] for mount in executor["volumes"]], ["/etc/factory/config"])
-        self.assertNotIn("DRIFTWARD_HERMES_GRPC_TARGET", executor["environment"])
-        self.assertEqual(executor["environment"]["DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
+        self.assertNotIn("FACTORY_HERMES_GRPC_TARGET", executor["environment"])
+        self.assertEqual(executor["environment"]["FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
         operator = services["factory-operator"]
         self.assertEqual(operator["environment"]["HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB"], "")
         self.assertNotIn("factory-lifecycle-writer", operator["depends_on"])

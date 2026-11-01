@@ -1,4 +1,4 @@
-import type { ReconciliationFindingRequest, ReconciliationFindingResponse } from '@driftward/hatchet-worker-shared';
+import type { ReconciliationFindingRequest, ReconciliationFindingResponse } from '@factory/hatchet-worker-shared';
 
 export type FindingWriter = { recordReconciliationFindings(findings: ReconciliationFindingRequest[]): Promise<ReconciliationFindingResponse> };
 export type FindingBatchResult = ReconciliationFindingResponse & { failedBatches: number };

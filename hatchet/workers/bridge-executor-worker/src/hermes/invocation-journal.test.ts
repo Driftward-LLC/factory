@@ -8,7 +8,7 @@ process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test
 import test from 'node:test';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { InvocationJournal } from './invocation-journal';
 import { createServer } from './hermes-gateway-server';
 import { inspectHermesInvocation, prepareHermesInvocation, resolveHermesGatewayProtoPath, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
@@ -74,13 +74,13 @@ test('native context derives from reserved intent and stale cancel claims cannot
 test('native gateway authenticates before reservation and connected recovery uses an exact lease snapshot', async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-native-gateway-'));
   const target = `unix://${path.join(directory, 'gateway.sock')}`;
-  const keys = ['DRIFTWARD_HERMES_GRPC_TARGET', 'DRIFTWARD_HERMES_INVOCATION_DIRECTORY', 'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN', 'DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER'];
+  const keys = ['FACTORY_HERMES_GRPC_TARGET', 'FACTORY_HERMES_INVOCATION_DIRECTORY', 'FACTORY_HERMES_GRPC_AUTH_TOKEN', 'FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER'];
   const previous = keys.map((key) => process.env[key]);
   const token = 'disposable-gateway-native-token';
-  process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-  process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
-  process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = token;
-  process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER = '1';
+  process.env.FACTORY_HERMES_GRPC_TARGET = target;
+  process.env.FACTORY_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
+  process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN = token;
+  process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER = '1';
   let start!: () => void;
   const started = new Promise<void>((resolve) => { start = resolve; });
   let finish!: () => void;
@@ -103,7 +103,7 @@ test('native gateway authenticates before reservation and connected recovery use
   await new Promise<void>((resolve, reject) => server.bindAsync(target, grpc.ServerCredentials.createInsecure(), (error) => error ? reject(error) : resolve()));
   const definition = protoLoader.loadSync(resolveHermesGatewayProtoPath(), { keepCase: false, longs: Number, enums: String, defaults: true, oneofs: true });
   const loaded = grpc.loadPackageDefinition(definition) as any;
-  const client = new loaded.driftward.factory.hermes.v1.HermesFactoryGateway(target, grpc.credentials.createInsecure());
+  const client = new loaded.factory.hermes.v1.HermesFactoryGateway(target, grpc.credentials.createInsecure());
   t.after(() => {
     finish(); client.close(); server.forceShutdown();
     keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
@@ -223,6 +223,7 @@ test('legacy reservations remain strict and read-only; unknown versions fail clo
   for (const completed of [false, true]) {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-invocation-legacy-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
+    new InvocationJournal(directory); // Synthetic old reservation format within this naming generation.
     const reserved = path.join(directory, legacyJob.job_id);
     mkdirSync(reserved, { mode: 0o700 });
     const intentPath = path.join(reserved, 'intent.json');
@@ -302,11 +303,11 @@ test('process death preserves completed receipts and fences interrupted executio
 test('lost gRPC response is recovered after gateway restart without executing again', async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-gateway-receipt-'));
   const target = `unix://${path.join(directory, 'gateway.sock')}`;
-  const previous = { target: process.env.DRIFTWARD_HERMES_GRPC_TARGET, journal: process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY,
-    token: process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN };
-  process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-  process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
-  delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
+  const previous = { target: process.env.FACTORY_HERMES_GRPC_TARGET, journal: process.env.FACTORY_HERMES_INVOCATION_DIRECTORY,
+    token: process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN };
+  process.env.FACTORY_HERMES_GRPC_TARGET = target;
+  process.env.FACTORY_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
+  delete process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN;
   let server: grpc.Server;
   const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' } as const;
   const observed: unknown[] = [];
@@ -325,7 +326,7 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   let calls = 0;
   t.after(() => {
     server?.forceShutdown();
-    for (const [key, value] of [['DRIFTWARD_HERMES_GRPC_TARGET', previous.target], ['DRIFTWARD_HERMES_INVOCATION_DIRECTORY', previous.journal], ['DRIFTWARD_HERMES_GRPC_AUTH_TOKEN', previous.token]]) {
+    for (const [key, value] of [['FACTORY_HERMES_GRPC_TARGET', previous.target], ['FACTORY_HERMES_INVOCATION_DIRECTORY', previous.journal], ['FACTORY_HERMES_GRPC_AUTH_TOKEN', previous.token]]) {
       if (value === undefined) delete process.env[key!]; else process.env[key!] = value;
     }
     rmSync(directory, { recursive: true, force: true });
@@ -442,4 +443,15 @@ test('legacy reservations cannot acquire a runtime identity during recovery', as
   await assert.rejects(journal.prepare(job, lease, async () => assert.fail('legacy replay')), /cannot be prepared/);
   await assert.rejects(journal.start(job, lease, runtime), /runtime or fence differs/);
   assert.equal(journal.status(job).runtime, undefined);
+});
+
+test('prior naming generation journal is refused without rewriting its receipts', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-prior-journal-'));
+  try {
+    const file = path.join(directory, 'historical.json');
+    writeFileSync(file, '{"historical":true}');
+    assert.throws(() => new InvocationJournal(directory), /Prior naming generation/);
+    assert.equal(readFileSync(file, 'utf8'), '{"historical":true}');
+    assert.equal(existsSync(path.join(directory, 'naming-generation')), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

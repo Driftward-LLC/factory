@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
+DEFAULT_DB_PATH = "/var/lib/factory-hatchet-event-ingress/ingress.db"
 INGRESS_SCHEMA_VERSION = 3
 _UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -50,6 +50,7 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        _guard_naming_generation(conn, initialize=True)
         _guard_supported_schema(conn)
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 5000")
@@ -60,7 +61,23 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
         raise
 
 
+def _guard_naming_generation(conn: sqlite3.Connection, *, initialize: bool = False) -> None:
+    """Never reinterpret persisted identities from a prior naming generation."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    if not tables and initialize:
+        conn.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+        conn.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
+        conn.commit()
+        return
+    if "factory_naming_generation" in tables:
+        rows = conn.execute("SELECT generation FROM factory_naming_generation").fetchall()
+        if len(rows) == 1 and rows[0][0] == "factory-neutral-v1":
+            return
+    raise RuntimeError("Prior or unknown naming generation; preserve state and use the original release pending reviewed offline migration")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
+    _guard_naming_generation(conn, initialize=True)
     # Reject a database written by a newer runtime before DDL, migrations, or
     # lifecycle timestamp rewrites can change it.
     _guard_supported_schema(conn)

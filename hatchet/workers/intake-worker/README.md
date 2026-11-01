@@ -6,13 +6,13 @@ Consumes gated Linear issue events and turns them into bounded bridge jobs.
 
 - Workflow: `intake-linear-ready-dispatch`
 - Task: `reserve-ready-linear-issue-attempt`
-- Event consumed: `driftward.linear.issue.ready_for_implementation`
+- Event consumed: `factory.linear.issue.ready_for_implementation`
 - Events emitted:
-  - `driftward.work_item.intake.received`
+  - `factory.work_item.intake.received`
 
 The default mode reserves dry-run `create_draft_pr` attempts through the
 factory attempt ledger. Real mode uses the same reservation path, then the
-factory outbox emits `driftward.hermes.job.accepted` for the bridge executor.
+factory outbox emits `factory.hermes.job.accepted` for the bridge executor.
 Use `factory mode` to inspect or change intake mode.
 
 Ingress remains per event: every Linear delivery is recorded with its own

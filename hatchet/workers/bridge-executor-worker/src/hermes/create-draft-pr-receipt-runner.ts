@@ -1,4 +1,4 @@
-import { BridgeClient, HATCHET_EVENTS, type BridgeJob, type JsonObject, type ExecutionRuntimeBinding } from '@driftward/hatchet-worker-shared';
+import { BridgeClient, HATCHET_EVENTS, type BridgeJob, type JsonObject, type ExecutionRuntimeBinding } from '@factory/hatchet-worker-shared';
 import {
   NonRetryableBridgeExecutionError,
   hermesReceiptEventScope,
@@ -9,7 +9,7 @@ import {
 } from './create-draft-pr';
 import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 import { prepareHermesInvocation } from './hermes-gateway-client';
-import { flushExecutionTelemetry, markExecutionTelemetryFailure, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { flushExecutionTelemetry, markExecutionTelemetryFailure, withExecutionSpan } from '@factory/hatchet-worker-shared';
 
 async function main(): Promise<void> {
   const jobId = process.argv[2];

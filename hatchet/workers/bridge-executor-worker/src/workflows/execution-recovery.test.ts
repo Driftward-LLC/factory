@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BridgeJob, FactoryAttempt } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, FactoryAttempt } from '@factory/hatchet-worker-shared';
 import { recoverExecutionReceipt } from './execution-recovery';
 
 const job = { job_id: 'test-job', state: 'running', branch: 'codex/test', payload: { repo: 'example/project' } } as unknown as BridgeJob;

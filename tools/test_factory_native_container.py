@@ -46,7 +46,7 @@ class NativeContainerSeedTests(unittest.TestCase):
     def test_only_declared_inputs_are_copied_into_single_use_private_home(self):
         self.write('config.yaml')
         self.write('.env', '')
-        self.write('skills/driftward-engineering/implement-change/SKILL.md')
+        self.write('skills/external-engineering/implement-change/SKILL.md')
         self.runtime['prepare']()
         self.assertEqual((self.home / 'config.yaml').read_text(), 'public fixture')
         self.assertEqual((self.home / '.env').stat().st_mode & 0o777, 0o600)

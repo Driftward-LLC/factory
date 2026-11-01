@@ -99,7 +99,7 @@ def _with_agent_trace(record: dict[str, Any], conn: sqlite3.Connection) -> dict[
           and lineage.get("attempt_id") == attempt["attempt_id"]
           and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt["attempt_id"])):
         # Matches the Hermes observer's attempt-scoped UUIDv5 contract.
-        trace_id = uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:trace:attempt:{attempt['attempt_id']}")
+        trace_id = uuid.uuid5(uuid.NAMESPACE_URL, f"factory-hermes:trace:attempt:{attempt['attempt_id']}")
         started = conn.execute(
             "SELECT created_at FROM factory_attempt_events WHERE attempt_id=? "
             "AND event_type IN ('execution_backend_invoked','attempt_started') "
@@ -314,7 +314,7 @@ def create_console_app(db_path: str, asset_root: str | Path | None = None, lifec
     organization.validate_startup()
     assets = Path(asset_root or DEFAULT_ASSET_ROOT)
     app = FastAPI(
-        title="Driftward Factory Console API",
+        title="Factory Console API",
         version="1.0.0",
         docs_url=None,
         redoc_url=None,

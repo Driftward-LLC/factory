@@ -377,7 +377,7 @@ class LifecycleWriterTest(unittest.TestCase):
             candidate["payload"].update({key: value for key, value in change.items() if key in candidate["payload"]})
             if "pr_url" in change: candidate["prUrl"] = change["pr_url"]
             self.assertEqual(writer._bridge_candidate(candidate)["delivery_state"], "dead_letter")
-        for decorated in ("https://linear.app:443/driftward/issue/ENG-52/test", "https://user@linear.app/example/issue/ENG-52/test", "https://linear.app.evil/driftward/issue/ENG-52/test", "https://linear.app/example/issue/ENG-52/test?x=1"):
+        for decorated in ("https://linear.app:443/factory/issue/ENG-52/test", "https://user@linear.app/example/issue/ENG-52/test", "https://linear.app.evil/factory/issue/ENG-52/test", "https://linear.app/example/issue/ENG-52/test?x=1"):
             candidate = event(); candidate["payload"]["linear_issue_url"] = decorated
             self.assertEqual(writer._bridge_candidate(candidate)["delivery_state"], "dead_letter")
         for decorated in ("https://github.com:443/example/widgets/pull/1", "https://user@github.com/example/widgets/pull/1", "https://github.com.evil/example/widgets/pull/1", "https://github.com/example/widgets/pull/1#x"):

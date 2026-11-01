@@ -19,10 +19,10 @@ const context={binding,bindRuntime:async runtime=>{fs.writeFileSync(dir+'/runtim
 (async()=>{
  let target,control;
  try{
-  docker(['volume','create','--label','com.driftward.factory.role=native-executor-seed','--label','com.driftward.factory.fresh-credentials=true',seed]);
+  docker(['volume','create','--label','com.factory.role=native-executor-seed','--label','com.factory.fresh-credentials=true',seed]);
   // Public inert input only. No provider or GitHub credentials are introduced.
   docker(['run','--rm','--network=none','--cap-drop=ALL','--security-opt=no-new-privileges:true','--entrypoint=/usr/bin/env','--mount','type=volume,source='+seed+',destination=/seed',image,'-i','PATH=/usr/bin:/bin','/opt/hermes/.venv/bin/python','-c',"from pathlib import Path; p=Path('/seed'); p.chmod(0o755); (p/'config.yaml').write_text('platform_toolsets:\\n  cli: [terminal]\\ntools:\\n  tool_search:\\n    enabled: off\\n'); (p/'.env').write_text(''); [(f.chmod(0o644)) for f in p.iterdir()]"]);
-  Object.assign(process.env,{DRIFTWARD_HERMES_PROFILE:'factory-native-executor',DRIFTWARD_HERMES_NATIVE_IMAGE:image,DRIFTWARD_HERMES_NATIVE_SEED:seed,DRIFTWARD_HERMES_INVOCATION_DIRECTORY:dir+'/reads'});
+  Object.assign(process.env,{FACTORY_HERMES_PROFILE:'factory-native-executor',FACTORY_HERMES_NATIVE_IMAGE:image,FACTORY_HERMES_NATIVE_SEED:seed,FACTORY_HERMES_INVOCATION_DIRECTORY:dir+'/reads'});
   const read=await execNativeRead(['python3','-c','print(42)'],5000,4096);
   assert.equal(read.stdout.trim(),'42');
   await withNativeContainer(context,async()=>{

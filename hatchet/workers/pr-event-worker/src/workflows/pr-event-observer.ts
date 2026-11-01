@@ -6,7 +6,7 @@ import {
   HATCHET_EVENTS,
   type BridgeJob,
   type BridgeLookupStatus
-} from '@driftward/hatchet-worker-shared';
+} from '@factory/hatchet-worker-shared';
 import { hatchet } from '../hatchet-client';
 
 export type PrEventInput = {

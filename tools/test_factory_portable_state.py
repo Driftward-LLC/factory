@@ -108,7 +108,7 @@ class PortableStateTests(unittest.TestCase):
             key: {"image": self.installation.values[key]}
             for key in ("FACTORY_IMAGE", "FACTORY_POSTGRES_IMAGE", "FACTORY_HATCHET_IMAGE")
         }})
-        provenance = {"source_project": "driftward-factory", "destination_project": "factory-source",
+        provenance = {"source_project": "factory", "destination_project": "factory-source",
                       "factory_image": marker["image"],
                       "snapshot_sha256": "previous-snapshot", "activation_approved": True,
                       "profile_sha256": state._hash(ROOT / "deploy/compose.production.yml"),
@@ -146,6 +146,18 @@ class PortableStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid snapshot volume list"):
             state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
         self.assertFalse(self.restored.exists())
+
+    def test_restore_rejects_unmarked_state_before_docker_or_writes(self) -> None:
+        self.backup()
+        path = self.snapshot / "config" / bootstrap.MARKER
+        metadata = json.loads(path.read_text())
+        metadata.pop("naming_generation")
+        path.write_text(json.dumps(metadata))
+        destination = self.snapshot.parent / "unmarked-restore"
+        with patch.object(state, "_docker") as docker, self.assertRaisesRegex(ValueError, "naming generation"):
+            state.restore(self.snapshot, destination, "factory-restored", apply=True)
+        docker.assert_not_called()
+        self.assertFalse(destination.exists())
 
     def test_preview_does_not_stop_or_write(self) -> None:
         state.backup(self.installation, self.snapshot)

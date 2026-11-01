@@ -15,7 +15,7 @@ from .writer import Config, LifecycleWriter, SourceError
 
 
 def build_writer() -> tuple[LifecycleWriter, Outbox]:
-    outbox = Outbox(os.environ.get("FACTORY_LIFECYCLE_DB", "/var/lib/driftward-factory-lifecycle-writer/outbox.db"))
+    outbox = Outbox(os.environ.get("FACTORY_LIFECYCLE_DB", "/var/lib/factory-lifecycle-writer/outbox.db"))
     return LifecycleWriter(Config.from_env(), outbox), outbox
 
 
@@ -43,7 +43,7 @@ def lifecycle_bind_host() -> str:
 
 def serve(interval: int) -> int:
     configured = organization.validate_startup()["linear"] is not None
-    outbox = Outbox(os.environ.get("FACTORY_LIFECYCLE_DB", "/var/lib/driftward-factory-lifecycle-writer/outbox.db"))
+    outbox = Outbox(os.environ.get("FACTORY_LIFECYCLE_DB", "/var/lib/factory-lifecycle-writer/outbox.db"))
     state = {"ok": False, "last_error": "starting", "last_attempt": None, "last_success": None, "source_errors": {}}
     def loop() -> None:
         while True:

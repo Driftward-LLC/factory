@@ -15,7 +15,7 @@ import test_capability
 
 HERE=Path(__file__).resolve().parent
 INVENTORY=json.loads((HERE/"publication-targets.json").read_text())
-ETC=Path("/etc/driftward"); SYSTEMD=Path("/etc/systemd/system"); RELEASE=Path("/docker/driftward/hatchet/releases/bridge"); STATE=Path("/var/lib/driftward-hatchet-bridge")
+ETC=Path("/etc/factory"); SYSTEMD=Path("/etc/systemd/system"); RELEASE=Path("/docker/factory/hatchet/releases/bridge"); STATE=Path("/var/lib/factory-hatchet-bridge")
 
 class PublicationError(RuntimeError): pass
 
@@ -216,7 +216,7 @@ def commit(pub:Publication, stage:Path, version:str, expected:dict[str,Any], tra
         if fail_after==step: raise PublicationError(f"injected interruption after {name}")
     try:
         _mkdir(pub.etc,0o750,pub.uid,pub.gid,created); _mkdir(pub.release.parent,0o755,pub.uid,pub.gid,created); _mkdir(pub.release,0o755,pub.uid,pub.gid,created); done("directories")
-        _write(pub.etc,"hatchet-routing-registry.json",(stage/"etc/driftward/hatchet-routing-registry.json").read_bytes(),0o640,pub.uid,pub.gid,created,tx); done("routing")
+        _write(pub.etc,"hatchet-routing-registry.json",(stage/"etc/factory/hatchet-routing-registry.json").read_bytes(),0o640,pub.uid,pub.gid,created,tx); done("routing")
         for unit in INVENTORY["units"]: _write(pub.systemd,unit,(stage/"units"/unit).read_bytes(),0o644,pub.uid,pub.gid,created,tx)
         done("units")
         release=pub.release/version

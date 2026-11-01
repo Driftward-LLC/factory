@@ -1,0 +1,19 @@
+[Unit]
+Description=Factory retry and inspection outbox dispatcher
+After=factory-hatchet-bridge.service
+Requires=factory-hatchet-bridge.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/docker/factory/hatchet/releases/bridge/current
+Environment=PYTHONPATH=/docker/factory/hatchet/releases/bridge/current
+Environment=FACTORY_BRIDGE_RELEASE_ROOT=/docker/factory/hatchet/releases/bridge/current
+EnvironmentFile=/etc/factory/factory-operator.env
+ExecStart=/usr/bin/python3 -m hatchet_hermes_bridge.cli --db /var/lib/factory-hatchet-bridge/bridge.db dispatch-factory-outbox --limit 50
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/factory-hatchet-bridge /run
+PrivateTmp=true
+CPUQuota=10%
+MemoryMax=96M

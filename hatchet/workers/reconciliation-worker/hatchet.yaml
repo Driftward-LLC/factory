@@ -1,7 +1,7 @@
 dev:
   preCmds:
     - "npm install --prefix .."
-    - "npm run build -w @driftward/hatchet-worker-shared"
+    - "npm run build -w @factory/hatchet-worker-shared"
   runCmd: "npm start"
   files:
     - "src/**/*.ts"

@@ -24,7 +24,7 @@ import portable_state as state
 import bootstrap
 import telemetry
 
-LABEL = "io.driftward.factory.profile-migration-test"
+LABEL = "io.factory.profile-migration-test"
 
 
 def main():

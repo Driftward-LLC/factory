@@ -23,16 +23,16 @@ These names and paths describe the managed host integration. Portable releases
 use their installation directory, project name, and generated configuration;
 see [the installation guide](../deploy/PORTABLE.md).
 
-- Runtime root: `/docker/driftward/factory`
-- Compose project: `driftward-factory`
-- Main systemd unit: `driftward-factory.service`
+- Runtime root: `/docker/factory/factory`
+- Compose project: `factory`
+- Main systemd unit: `factory.service`
 - Local dashboard/API: `http://127.0.0.1:8888`
 - Private dashboard/API URL:
   `https://your-host.your-tailnet.ts.net:8888/`
 - Local Factory Console: `http://127.0.0.1:19881`
 - Worker gRPC: `127.0.0.1:7077`
 - Health port: `127.0.0.1:8733`
-- Secret env: `/etc/driftward/hatchet.env`
+- Secret env: `/etc/factory/hatchet.env`
 - Full smoke test: `factory-docker-smoke`
 
 Hatchet is a control plane only. Keep it local-only and low-volume. The
@@ -60,14 +60,14 @@ Workers may use Hatchet client settings plus the bridge URL/token. The
 `bridge-executor-worker` is the only worker that may contact the typed Hermes
 gateway, and only for allowlisted bridge actions after a bridge job row exists
 and a deterministic branch has been reserved. Containerized workers must not
-invoke `driftward-hermes` directly; the host-local gateway owns that wrapper.
+invoke `factory-hermes` directly; the host-local gateway owns that wrapper.
 
 Host development tools use credentials separate from Factory's lifecycle
 identity. Do not copy or mount those credentials into Hatchet.
 
 Real PR creation requires the explicit Hermes execution gate and the
 expected GitHub App identity in
-`/etc/driftward/hatchet-worker-bridge-executor.env`. By default, do not allow
+`/etc/factory/hatchet-worker-bridge-executor.env`. By default, do not allow
 human operator credentials or author identity for real PR creation.
 
 ## Architecture Boundary
@@ -102,21 +102,21 @@ own session store.
 
 Do not manually delete Hermes session files, `state.db`, or profile
 state from Hatchet, bridge, worker, or host cleanup tasks. Use the
-`driftward-hermes` wrapper and Hermes' built-in session commands only.
+`factory-hermes` wrapper and Hermes' built-in session commands only.
 
 Before pruning Hermes sessions:
 
 ```bash
-driftward-hermes hermes sessions stats
-driftward-hermes hermes sessions list --limit 20
-driftward-hermes hermes backup --quick --label before-session-prune
+factory-hermes hermes sessions stats
+factory-hermes hermes sessions list --limit 20
+factory-hermes hermes backup --quick --label before-session-prune
 ```
 
 Safe default pruning policy:
 
 ```bash
-driftward-hermes hermes sessions prune --older-than 90
-driftward-hermes hermes sessions optimize
+factory-hermes hermes sessions prune --older-than 90
+factory-hermes hermes sessions optimize
 ```
 
 Do not prune at shorter windows such as 7, 14, 30, or 60 days unless
@@ -199,7 +199,7 @@ team = Engineering
 status = Ready
 no active blockedBy relation
 status is not Done, Canceled, In Review, Needs Operator, or Blocked
-delegate is not Driftward Factory
+delegate is not Factory
 ```
 
 Legacy factory metadata is not a trigger. Linear workflow status is the source
@@ -230,7 +230,7 @@ and should stop. Dry-run and real PR creation use separate active keys.
 wire names, default decisions, reason codes, bridge lookup statuses, and simple
 provider action mappings.
 
-Use readable IDs in code and analytics, and keep `driftward.*` prefixes on
+Use readable IDs in code and analytics, and keep `factory.*` prefixes on
 Hatchet wire names. Treat deployed wire names as effectively immutable.
 
 After editing contracts, regenerate and check:
@@ -282,7 +282,7 @@ Use direct loopback APIs only for focused debugging after `factory status`,
 
 ```bash
 curl -fsS 'http://127.0.0.1:19878/events?limit=10' | jq
-curl -fsS -H "Authorization: Bearer $(awk -F= '$1 == \"HATCHET_HERMES_BRIDGE_TOKEN\" { print $2; exit }' /etc/driftward/hatchet-bridge.env)" 'http://127.0.0.1:19877/jobs?limit=10' | jq
+curl -fsS -H "Authorization: Bearer $(awk -F= '$1 == \"HATCHET_HERMES_BRIDGE_TOKEN\" { print $2; exit }' /etc/factory/hatchet-bridge.env)" 'http://127.0.0.1:19877/jobs?limit=10' | jq
 ```
 
 Check runtime health and smoke through the factory front door first:
@@ -309,13 +309,13 @@ details, deployment evidence, and credentials out of public descriptions.
 Keep these files mode `0600` and never commit or paste their contents into
 Linear, GitHub, Codex, logs, or docs:
 
-- `/etc/driftward/hatchet.env`
-- `/etc/driftward/hatchet-bridge.env`
-- `/etc/driftward/hatchet-workers.env`
-- `/etc/driftward/hatchet-worker-bridge-executor.env`
-- `/etc/driftward/hatchet-event-ingress.env`
+- `/etc/factory/hatchet.env`
+- `/etc/factory/hatchet-bridge.env`
+- `/etc/factory/hatchet-workers.env`
+- `/etc/factory/hatchet-worker-bridge-executor.env`
+- `/etc/factory/hatchet-event-ingress.env`
 
-The key files under `/docker/driftward/factory/keys/hatchet` are generated by
+The key files under `/docker/factory/factory/keys/hatchet` are generated by
 the Hatchet admin image and mounted read-only into `hatchet-lite`.
 
 ## Development

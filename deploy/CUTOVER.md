@@ -1,15 +1,17 @@
 # Same-host Factory cutover preparation
 
-This is a staged migration from the existing `driftward-factory` Compose app
+This is a staged migration from the existing `factory` Compose app
 into a new, independently named installation. It is not a fresh bootstrap,
 runtime upgrade, remote-executor rollout, or permission to enable live traffic.
 The current `factory` project at `/srv/factory` is an occupied dry-run pilot:
 do not initialize over it, reuse its volumes, or rename the live source in place.
 
-`factory-cutover.py` previews the migration by default. Its explicit `--apply`
-path copies a **previously stopped, quiescent** source into a new candidate and
-leaves the candidate stopped. It never stops the source, starts services,
-changes webhooks, or grants execution authority.
+`factory-cutover.py` supports read-only preview in this naming generation.
+Its `--apply` path refuses before inspecting the source, acquiring an operation
+lock, or creating snapshots. Existing state requires a separately reviewed
+naming migration; see [the migration boundary](NAMING-MIGRATION.md). Use a fresh
+portable installation for new deployments. The application steps below describe
+the historical procedure for the original bundle and cannot run with this one.
 
 ## Preparation and rehearsal
 
@@ -32,7 +34,7 @@ execution or lifecycle delivery works.
 From a source checkout with an existing local Factory image:
 
 ```bash
-python3 tools/check_factory_cutover.py --image driftward/factory:v2026.9.29-pilot
+python3 tools/check_factory_cutover.py --image factory/factory:v2026.9.29-pilot
 ```
 
 This creates only synthetic, stopped source containers and uniquely named test
@@ -46,9 +48,9 @@ Preview the intended production migration without stopping or copying anything:
 
 ```bash
 python3 deploy/factory-cutover.py \
-  --source-project driftward-factory \
-  --source-env-dir /etc/driftward \
-  --source-keys /docker/driftward/factory/keys/hatchet \
+  --source-project factory \
+  --source-env-dir /etc/factory \
+  --source-keys /docker/factory/factory/keys/hatchet \
   --configuration /srv/factory-reviewed-config \
   --directory /srv/factory-candidate \
   --project factory-candidate \
@@ -129,7 +131,7 @@ It is configuration, not a startup or live-routing command.
 The overlay requires the migrated per-service env files rather than accepting
 missing files. It does not set execution-enable flags: preserved configuration
 and the separate activation review determine those permissions. Its gateway
-target is `unix:///run/driftward-hermes-factory/hermes.sock`; the host socket
+target is `unix:///run/factory-hermes-factory/hermes.sock`; the host socket
 directory must already exist and is mounted read-only.
 
 Only the approved gateway socket directory may be mounted for executor access.

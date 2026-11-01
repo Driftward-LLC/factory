@@ -35,7 +35,7 @@ and admits no execution. Repository scope also requires an explicit
 `HATCHET_INTAKE_ALLOWED_REPOS` entry in `env/hatchet-workers.env` and a matching
 verifier policy, including for a synthetic dry-run admission. Real execution
 also requires a gateway
-`DRIFTWARD_HERMES_ALLOWED_REPOS` entry, and, when review is enabled, a
+`FACTORY_HERMES_ALLOWED_REPOS` entry, and, when review is enabled, a
 matching independent review repository. Keep these lists aligned. Repo entries
 must have the form `owner/repository`; duplicates and empty entries are invalid.
 Schema files document field shapes; startup validation also enforces unique

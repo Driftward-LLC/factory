@@ -1,6 +1,6 @@
 [Unit]
-Description=Driftward Hatchet reconciliation worker
-After=network-online.target driftward-hatchet.service driftward-hatchet-bridge.service driftward-hatchet-event-ingress.service
+Description=Factory Hatchet reconciliation worker
+After=network-online.target factory-hatchet.service factory-hatchet-bridge.service factory-hatchet-event-ingress.service
 Wants=network-online.target
 Documentation=file:__REPO_ROOT__/hatchet/workers/reconciliation-worker/README.md
 
@@ -8,8 +8,8 @@ Documentation=file:__REPO_ROOT__/hatchet/workers/reconciliation-worker/README.md
 Type=simple
 WorkingDirectory=__REPO_ROOT__/hatchet/workers/reconciliation-worker
 Environment=NODE_ENV=production
-EnvironmentFile=/etc/driftward/hatchet-workers.env
-EnvironmentFile=-/etc/driftward/hatchet-worker-reconciliation.env
+EnvironmentFile=/etc/factory/hatchet-workers.env
+EnvironmentFile=-/etc/factory/hatchet-worker-reconciliation.env
 ExecStart=/usr/bin/node dist/worker.js
 Restart=always
 RestartSec=5

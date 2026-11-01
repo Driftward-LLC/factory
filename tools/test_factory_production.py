@@ -43,7 +43,7 @@ class ProductionTests(unittest.TestCase):
         for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"):  # gitleaks:allow -- filenames only
             production.bootstrap._create_private(self.directory / "keys/hatchet" / name, "synthetic key fixture")
         self.provenance = {
-            "destination_project": self.values["FACTORY_PROJECT_NAME"], "source_project": "driftward-factory",
+            "destination_project": self.values["FACTORY_PROJECT_NAME"], "source_project": "factory",
             "factory_image": self.image, "activation_approved": False, "tenant_id": self.tenant,
             "profile_sha256": production.state._hash(DEPLOY / "compose.production.yml"),
             "deployment_sha256": {name: production.state._hash(DEPLOY / name) for name in production.state.deployment_files(production.state.PRODUCTION)},
@@ -66,14 +66,14 @@ class ProductionTests(unittest.TestCase):
             if name == "bridge-executor-worker":
                 mounts.append({"type": "bind", "source": production.SOCKET, "target": production.SOCKET, "read_only": True})
             services[name] = {"environment": dict(production.bootstrap.CONFIG_ENV) if name in production.bootstrap.CONFIG_SERVICES else {}, "image": self.provenance["source_images"][name], "labels": labels, "networks": {"factory": {}}, "volumes": mounts}
-        services["bridge-executor-worker"]["environment"]["DRIFTWARD_HERMES_GRPC_TARGET"] = "unix://" + production.SOCKET + "/hermes.sock"
+        services["bridge-executor-worker"]["environment"]["FACTORY_HERMES_GRPC_TARGET"] = "unix://" + production.SOCKET + "/hermes.sock"
         for name, key, target in (("hatchet-lite", "FACTORY_HATCHET_PORT", 8888), ("linear-webhook-proxy", "FACTORY_WEBHOOK_PORT", 19879), ("factory-operator", "FACTORY_CONSOLE_PORT", 19881)):
             services[name]["ports"] = [{"host_ip": "127.0.0.1", "published": self.values[key], "target": target}]
         return {"services": services, "volumes": volumes, "networks": {"factory": {"name": self.install.project, "labels": labels}}}
 
     def source_rows(self):
         return [{"Id": container, "Image": self.provenance["source_images"][name],
-                 "Config": {"Labels": {"com.docker.compose.project": "driftward-factory", "com.docker.compose.service": name}},
+                 "Config": {"Labels": {"com.docker.compose.project": "factory", "com.docker.compose.service": name}},
                  "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
                 for container, name in zip(self.provenance["source_container_ids"], production.SERVICES)]
 
@@ -228,7 +228,7 @@ class ProductionTests(unittest.TestCase):
         ids = "\n".join(self.provenance["source_container_ids"])
         with patch.object(production.state, "_docker", side_effect=[ids, json.dumps(self.source_rows()), ""]), patch.object(production.state, "_no_writers") as writers:
             self.install.assert_source_fenced()
-            self.assertEqual(writers.call_args.args[0], ["driftward-factory-" + suffix for suffix in production.state.VOLUMES])
+            self.assertEqual(writers.call_args.args[0], ["factory-" + suffix for suffix in production.state.VOLUMES])
         for field, value in (("State", {"Status": "running"}), ("HostConfig", {"RestartPolicy": {"Name": "unless-stopped"}}), ("Image", "sha256:" + "f" * 64), ("Config", {"Labels": {}})):
             rows = self.source_rows()
             rows[0][field] = value
@@ -311,7 +311,7 @@ class ProductionTests(unittest.TestCase):
             lambda c: c["services"]["bridge"].update(volumes=[{"type": "bind", "source": "/", "target": "/host"}]),
             lambda c: c["services"]["bridge-executor-worker"]["volumes"][0].update(read_only=False),
             lambda c: c["services"]["bridge-executor-worker"]["volumes"][0].update(bind={"create_host_path": True}),
-            lambda c: c["services"]["bridge-executor-worker"]["environment"].update(DRIFTWARD_HERMES_GRPC_TARGET="foreign:1234"),
+            lambda c: c["services"]["bridge-executor-worker"]["environment"].update(FACTORY_HERMES_GRPC_TARGET="foreign:1234"),
             lambda c: c["services"]["intake-worker"].update(environment={"GITHUB_TOKEN": "synthetic"}),
             lambda c: c["services"]["factory-operator"]["ports"][0].update(host_ip="0.0.0.0"),
             lambda c: c["volumes"]["factory-bridge-data"].update(name="foreign-bridge-data"),

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { BridgeClient, BridgeJob, JsonObject } from '@driftward/hatchet-worker-shared';
+import type { BridgeClient, BridgeJob, JsonObject } from '@factory/hatchet-worker-shared';
 
 type VerificationPendingBridge = Pick<BridgeClient, 'getJob' | 'transitionJob'>;
 

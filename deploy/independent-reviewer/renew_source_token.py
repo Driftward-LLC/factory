@@ -14,7 +14,7 @@ import time
 
 from source_token_broker import load_organization, load_repositories, validate_response
 
-ROOT = Path('/etc/driftward/factory-reviewer')
+ROOT = Path('/etc/factory/factory-reviewer')
 
 
 def private(location: Path, directory: bool = False) -> None:
@@ -50,7 +50,7 @@ def broker() -> dict:
     code += "\nos.environ.clear(); os.environ.update(PATH='/usr/bin:/bin', LANG='C.UTF-8')\n"
     code += 'print(json.dumps(mint(repositories=' + repr(repositories) + ', organization=' + repr(organization) + '), separators=(",", ":")))\n'
     result = subprocess.run(['/usr/bin/docker', '--host', 'unix:///var/run/docker.sock', 'exec',
-        '--workdir', '/opt/hermes', 'hermes-driftward-hermes-1', '/opt/hermes/.venv/bin/python', '-c', code],
+        '--workdir', '/opt/hermes', 'hermes-factory-hermes-1', '/opt/hermes/.venv/bin/python', '-c', code],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=40, check=True,
         env={'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'})
     if len(result.stdout) > 128 * 1024:

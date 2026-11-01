@@ -51,7 +51,7 @@ class ArtifactHelpTests(unittest.TestCase):
 
 
 class ArtifactInventoryTests(unittest.TestCase):
-    def item(self, artifact_id=1, name='driftward-ui-storybook'):
+    def item(self, artifact_id=1, name='factory-ui-storybook'):
         return {'id': artifact_id, 'name': name, 'size_in_bytes': artifact_id * 100, 'expired': False,
                 'created_at': '2026-10-01T00:00:00Z', 'expires_at': '2099-01-01T00:00:00Z',
                 'workflow_run': {'id': artifact_id + 1000, 'head_branch': 'main', 'head_sha': 'a' * 40}}
@@ -134,7 +134,7 @@ class ArtifactRoutineTests(unittest.TestCase):
             item.start()
             self.addCleanup(item.stop)
 
-    def add(self, artifact_id, branch, created, name='driftward-ui-storybook'):
+    def add(self, artifact_id, branch, created, name='factory-ui-storybook'):
         row = self.item(artifact_id, name)
         row.update(created_at=created, updated_at=created, digest='sha256:' + 'b' * 64)
         row['workflow_run'].update(head_branch=branch, repository_id=1, head_repository_id=1)
@@ -187,7 +187,7 @@ class ArtifactRoutineTests(unittest.TestCase):
     def test_both_exact_names_qualify_unknown_names_never_fetch_runs_or_delete(self):
         self.add(7, 'old-feature', '2026-10-01T00:00:00Z', 'factory-console-fixtures')
         self.add(8, 'main', '2026-10-02T00:00:00Z', 'factory-console-fixtures')
-        self.items += [self.item(9, 'driftward-ui-storybook-evil'), self.item(10, 'factory-release-recovery')]
+        self.items += [self.item(9, 'factory-ui-storybook-evil'), self.item(10, 'factory-release-recovery')]
         self.assertEqual(self.prune()['artifact_ids'], [1, 3, 7])
         self.assertNotIn(5, self.deleted)
         self.assertNotIn(6, self.deleted)

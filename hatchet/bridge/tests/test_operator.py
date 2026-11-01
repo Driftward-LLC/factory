@@ -417,8 +417,8 @@ class FactoryOperatorTests(unittest.TestCase):
             self.assertEqual(
                 _operator_paths(),
                 (
-                    "/var/lib/driftward-hatchet-bridge/bridge.db",
-                    "/var/lib/driftward-hatchet-event-ingress/ingress.db",
+                    "/var/lib/factory-hatchet-bridge/bridge.db",
+                    "/var/lib/factory-hatchet-event-ingress/ingress.db",
                     "/etc/factory/config/routing-registry.json",
                     "/etc/factory/config/verifier-policy.json",
                 ),
@@ -426,13 +426,13 @@ class FactoryOperatorTests(unittest.TestCase):
         with patch.dict(os.environ, {"HATCHET_FACTORY_OPERATOR_RUNTIME": "docker"}, clear=True):
             with self.assertRaisesRegex(OperatorError, "HATCHET_VERIFIER_POLICY_PATH is required"):
                 _operator_paths()
-        with patch.dict(os.environ, {**env, "HATCHET_VERIFIER_POLICY_PATH": "/etc/driftward/hatchet-verifier-policy.json"}, clear=True):
+        with patch.dict(os.environ, {**env, "HATCHET_VERIFIER_POLICY_PATH": "/etc/factory/hatchet-verifier-policy.json"}, clear=True):
             with self.assertRaisesRegex(OperatorError, "HATCHET_VERIFIER_POLICY_PATH must be /etc/factory/config/verifier-policy.json"):
                 _operator_paths()
         with patch.dict(os.environ, env, clear=True):
-            self.assertEqual(_operator_lifecycle_path(), "/var/lib/driftward-factory-lifecycle-writer/outbox.db")
+            self.assertEqual(_operator_lifecycle_path(), "/var/lib/factory-lifecycle-writer/outbox.db")
         with patch.dict(os.environ, {**env, "HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB": "/tmp/outbox.db"}, clear=True):
-            with self.assertRaisesRegex(OperatorError, "must be /var/lib/driftward-factory-lifecycle-writer/outbox.db"):
+            with self.assertRaisesRegex(OperatorError, "must be /var/lib/factory-lifecycle-writer/outbox.db"):
                 _operator_lifecycle_path()
 
     def test_operator_mode_prefers_environment_before_host_env_file(self):

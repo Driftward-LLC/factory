@@ -1,15 +1,15 @@
 [Unit]
-Description=Driftward Factory Linear lifecycle writer
-After=network-online.target driftward-hatchet-bridge.service driftward-hatchet-event-ingress.service
+Description=Factory Linear lifecycle writer
+After=network-online.target factory-hatchet-bridge.service factory-hatchet-event-ingress.service
 Wants=network-online.target
 Documentation=file:__REPO_ROOT__/hatchet/factory-lifecycle-writer/README.md
 
 [Service]
 Type=simple
-User=driftward-factory-writer
-Group=driftward-factory-writer
+User=factory-writer
+Group=factory-writer
 WorkingDirectory=__INSTALL_ROOT__
-LoadCredential=factory-lifecycle.env:/etc/driftward/factory-lifecycle-writer.env
+LoadCredential=factory-lifecycle.env:/etc/factory/factory-lifecycle-writer.env
 ExecStart=__INSTALL_ROOT__/factory-lifecycle-service serve --interval 30
 Restart=always
 RestartSec=5
@@ -24,7 +24,7 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
-ReadWritePaths=/var/lib/driftward-factory-lifecycle-writer
+ReadWritePaths=/var/lib/factory-lifecycle-writer
 PrivateTmp=true
 
 [Install]

@@ -1,0 +1,23 @@
+[Unit]
+Description=Factory Hatchet Lite control plane
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+Documentation=file:/root/factory/repos/factory/docs/hatchet-hermes-control-plane.md
+Documentation=file:/root/factory/repos/factory/hatchet/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=/docker/factory/hatchet
+Environment=COMPOSE_PROJECT_NAME=factory-hatchet
+ExecStart=/usr/bin/docker compose --env-file /etc/factory/hatchet.env up --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/factory/hatchet.env down
+Restart=always
+RestartSec=10
+TimeoutStartSec=180
+TimeoutStopSec=60
+CPUQuota=150%
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target

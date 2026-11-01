@@ -53,7 +53,7 @@ _GITHUB_SCHEMA = {
 
 
 def _tool_span_id(kwargs: dict[str, Any], call_id: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:tool:{_request_key(kwargs)}:{call_id}"))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory-hermes:tool:{_request_key(kwargs)}:{call_id}"))
 
 
 def _github_operation(args: list[str]) -> str:
@@ -130,7 +130,7 @@ def _github_event(context: dict[str, Any], operation: str, status: str, exit_cod
             "output_limit": "GitHubCliOutputLimit",
             "interrupted": "GitHubCliInterrupted", "interrupted_before_spawn": "GitHubCliInterrupted",
         }[status]})
-    return {"event": "$ai_span", "distinct_id": "driftward-hermes",
+    return {"event": "$ai_span", "distinct_id": "factory-hermes",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "properties": properties}
 
 
@@ -304,7 +304,7 @@ def _trace_id(kwargs: dict[str, Any]) -> str:
     else:
         # A standalone conversation retains one trace across turns.
         scope = f"session:{kwargs.get('session_id') or _PROCESS_TRACE}"
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:trace:{scope}"))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory-hermes:trace:{scope}"))
 
 
 def observe_owner(event: object) -> bool:
@@ -330,7 +330,7 @@ def observe_owner(event: object) -> bool:
                   '$ai_span_id': span, '$ai_session_id': p['hermes.session_id'],
                   '$ai_span_name': 'factory.native_owner.' + p['factory.stop.stage']}
     try:
-        _enqueue({'event': '$ai_span', 'distinct_id': 'driftward-hermes',
+        _enqueue({'event': '$ai_span', 'distinct_id': 'factory-hermes',
                   'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'properties': properties})
         return True
     except Exception:
@@ -338,7 +338,7 @@ def observe_owner(event: object) -> bool:
 
 
 def _span_id(kwargs: dict[str, Any]) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward-hermes:span:{_request_key(kwargs)}"))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory-hermes:span:{_request_key(kwargs)}"))
 
 
 def _deliver(event: dict[str, Any]) -> None:
@@ -441,7 +441,7 @@ def _event(kwargs: dict[str, Any], *, error: str = "") -> dict[str, Any]:
                 properties["$ai_tool_call_count"] = count
     return {
         "event": "$ai_generation",
-        "distinct_id": "driftward-hermes",
+        "distinct_id": "factory-hermes",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "properties": properties,
     }
@@ -499,7 +499,7 @@ def on_post_tool_call(**kwargs: Any) -> None:
         properties["$ai_error"] = error_type if re.fullmatch(r"[A-Za-z0-9_]{1,128}", error_type) else "ToolError"
     _enqueue({
         "event": "$ai_span",
-        "distinct_id": "driftward-hermes",
+        "distinct_id": "factory-hermes",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "properties": properties,
     })

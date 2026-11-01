@@ -25,7 +25,7 @@ CONFIG_FILES = {".env", bootstrap.MARKER, "env/hatchet-client.env",
                 *("env/" + name for name in bootstrap.ENV_FILES),
                 *("keys/hatchet/" + name for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"))}
 DEPLOYMENT_FILES = ("docker-compose.yml", "compose.portable.yml")
-IDENTITY_LABEL = "io.driftward.factory.installation"
+IDENTITY_LABEL = "io.factory.installation"
 PRODUCTION = "same-host-production"
 PROVENANCE = ".factory-cutover.json"
 UNIFIED = "unified-v1"
@@ -216,6 +216,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     if (profile == PRODUCTION) != production:
         raise ValueError("snapshot profile requires its matching operations wrapper")
     marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
+    bootstrap.validate_naming_generation(marker)
     expected_config = config_files(profile, marker)
     if manifest.get("deployment_sha256") != {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile, marker)}:
         raise ValueError("restore requires the same deployment bundle; cross-version restore is unsupported")

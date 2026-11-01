@@ -1,4 +1,4 @@
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { compareCrossProvider } from '../workflows/cross-provider-reconciliation';
 
 const jobId = process.argv[2];

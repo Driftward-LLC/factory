@@ -15,9 +15,9 @@ import {
   CubeIcon,
   LockClosedIcon,
   ActivityLogIcon,
-} from '@driftward/ui/icons';
+} from '@factory/ui/icons';
 import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark,
-  FactoryTheme, Card, Heading, TextInput, EmptyState, Link } from '@driftward/ui';
+  FactoryTheme, Card, Heading, TextInput, EmptyState, Link } from '@factory/ui';
 import Analytics from './Analytics.jsx';
 import VerificationEvidence from './VerificationEvidence.jsx';
 import IssueControl from './IssueControl.jsx';
@@ -997,11 +997,11 @@ function App() {
         Skip to work
       </a>
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="Driftward Factory home">
+        <a className="brand" href="/" aria-label="Factory home">
           <BrandMark />
           <span>
             <strong>Factory</strong>
-            <small>Driftward Engineering</small>
+            <small>Factory Engineering</small>
           </span>
         </a>
         <p className="nav-label">Workspace</p>

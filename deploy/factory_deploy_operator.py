@@ -32,7 +32,7 @@ ACTIVATION_BLOBS = {
     "deploy/independent-reviewer/native_agent.py": "82adedaecf357c0a8806e2317998490f5a315a4d",
     "deploy/independent-reviewer/review_observer.py": "e0257d7c70450642221987e952812273d3f9d8db",
     "deploy/independent-reviewer/runner.py": "5b50c94e6422e9936ebf5e418d7b467f56d1517d",
-    "deploy/systemd/driftward-hermes-factory-gateway.service": "51e4eabdefac240cf34f798fd2a209366866d665",
+    "deploy/systemd/factory-hermes-factory-gateway.service": "51e4eabdefac240cf34f798fd2a209366866d665",
     "hatchet/workers/bridge-executor-worker/src/hermes/create-draft-pr.test.ts": "51f67b925c7e4e08225ee86d6b9bd9419e764dac",
     "hatchet/workers/bridge-executor-worker/src/hermes/create-draft-pr.ts": "8c8138d0fe3348d83a35f8e4c4601c73095417e6",
     "hatchet/workers/bridge-executor-worker/src/hermes/independent-review.ts": "e74eb196d831f18994fef22e62a071aa6ee7243a",
@@ -345,8 +345,8 @@ def report(value):
 def execution_flags(install):
     effective = json.loads(install.compose('config', '--format', 'json', private=True))
     environment = effective['services']['bridge-executor-worker'].get('environment', {})
-    return {'execution_enabled': environment.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '1',
-            'independent_reviewer_enabled': environment.get('DRIFTWARD_FACTORY_REVIEWER_ENABLED') == '1'}
+    return {'execution_enabled': environment.get('FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED') == '1',
+            'independent_reviewer_enabled': environment.get('FACTORY_REVIEWER_ENABLED') == '1'}
 
 
 def execution_snapshot(auto, binding, config, install, installed, readiness, *, configuring=False):
@@ -463,7 +463,7 @@ def execution_run(auto, binding, args, installed, readiness):
 
 def reviewer_configuration(auto, prod, install):
     """Prove the fixed private env file is the sole reviewer-flag source."""
-    key = 'DRIFTWARD_FACTORY_REVIEWER_ENABLED'
+    key = 'FACTORY_REVIEWER_ENABLED'
     target = install.directory / 'env/hatchet-worker-bridge-executor.env'
     private_directory(target.parent)
     require(not exists(target.with_suffix('.pending')), 'interrupted_execution_configuration')
@@ -493,15 +493,15 @@ def reviewer_configuration(auto, prod, install):
     require(references == [target], 'reviewer_flag_ambiguous_source')
     effective = json.loads(install.compose('config', '--format', 'json', private=True))
     environment = effective['services']['bridge-executor-worker'].get('environment', {})
-    require(environment.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '1'
+    require(environment.get('FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED') == '1'
             and environment.get(key) in (None, '0', 'false'), 'reviewer_flag_effective_mismatch')
     before = target.read_bytes()
-    pattern = rb"(?m)^DRIFTWARD_FACTORY_REVIEWER_ENABLED='(?:0|false)'(?=\r?$)"
+    pattern = rb"(?m)^FACTORY_REVIEWER_ENABLED='(?:0|false)'(?=\r?$)"
     if key in prod.portable.bootstrap.read_env(target):
-        after, count = re.subn(pattern, b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='1'", before)
+        after, count = re.subn(pattern, b"FACTORY_REVIEWER_ENABLED='1'", before)
         require(count == 1, 'reviewer_flag_ambiguous_source')
     else:
-        after = before + (b'\n' if before and not before.endswith(b'\n') else b'') + b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='1'\n"
+        after = before + (b'\n' if before and not before.endswith(b'\n') else b'') + b"FACTORY_REVIEWER_ENABLED='1'\n"
     return target, before, after, effective
 
 
@@ -547,7 +547,7 @@ def configure_execution(auto, binding, args, installed, readiness, config, prod,
         os.replace(pending, target)
         sync_parent(target)
         expected = strict_json(json.dumps(effective))
-        expected['services']['bridge-executor-worker']['environment']['DRIFTWARD_FACTORY_REVIEWER_ENABLED'] = '1'
+        expected['services']['bridge-executor-worker']['environment']['FACTORY_REVIEWER_ENABLED'] = '1'
         require(json.loads(install.compose('config', '--format', 'json', private=True)) == expected,
                 'execution_configuration_effective_mismatch')
         require(target.read_bytes() == after, 'execution_configuration_changed')
@@ -606,9 +606,9 @@ def dispatch_request(auto, binding, requested):
 
 def forced_deployment(auto, run_id, commit, credentials):
     """Existing forced-SSH grammar supplies credentials only for the exact approved release."""
-    if not exists(Path('/etc/driftward/factory-cli.json')):
+    if not exists(Path('/etc/factory/factory-cli.json')):
         return False
-    binding = private_json(Path('/etc/driftward/factory-cli.json'))
+    binding = private_json(Path('/etc/factory/factory-cli.json'))
     config = config_for(auto, binding)
     directory = records_directory(config, create=False)
     if not exists(directory / 'latest.json'):

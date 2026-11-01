@@ -275,7 +275,7 @@ def reserve_policy_repair(conn, review: dict[str, Any], authorized_policy: dict[
         store._queue_pr_inspection(conn, intent["issue"], intent["pr_url"], intent["source_attempt_id"])
         return False
     authority = {"kind": "independent_review_policy_v1", "review_id": current["review_id"], "policy_digest": policy["digest"]}
-    previewed = _preview(conn, ingress_db=os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/driftward-hatchet-event-ingress/ingress.db"),
+    previewed = _preview(conn, ingress_db=os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/factory-hatchet-event-ingress/ingress.db"),
         registry_path=os.environ.get("HATCHET_INTAKE_ROUTING_REGISTRY_PATH", str(independent_review.POLICY_PATH.parent / "routing-registry.json")),
         policy_path=os.environ.get("HATCHET_VERIFIER_POLICY_PATH", store.DOCKER_VERIFIER_POLICY_PATH),
         actor="independent-review-policy", intent=intent, policy_authority=authority)

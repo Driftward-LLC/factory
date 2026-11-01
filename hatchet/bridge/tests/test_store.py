@@ -183,7 +183,7 @@ class BridgeStoreTests(unittest.TestCase):
         old_policy = os.environ.get("HATCHET_VERIFIER_POLICY_PATH")
         try:
             os.environ["HATCHET_FACTORY_RUNTIME"] = "docker"
-            os.environ["HATCHET_VERIFIER_POLICY_PATH"] = "/etc/driftward/hatchet-verifier-policy.json"
+            os.environ["HATCHET_VERIFIER_POLICY_PATH"] = "/etc/factory/hatchet-verifier-policy.json"
             with self.assertRaisesRegex(BridgeValidationError, "must be /etc/factory/config/verifier-policy.json"):
                 _canonical_verifier_policy("example/widgets")
         finally:
@@ -210,7 +210,7 @@ class BridgeStoreTests(unittest.TestCase):
                 {
                     "idempotency_key": "hatchet:run-1:create-pr",
                     "requested_action": "create_draft_pr",
-                    "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "Driftward-LLC/other"},
+                    "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "ExampleOrg/other"},
                 },
             )
 
