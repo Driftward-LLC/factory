@@ -1,6 +1,8 @@
 """One root-approved repair of the exact independently reviewed draft head."""
 from __future__ import annotations
 
+import factory_organization as organization
+
 import copy
 import re
 from typing import Any
@@ -33,7 +35,7 @@ def _intent(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reauthorize_policy(source: Any, target: dict[str, Any], intent: dict[str, Any]) -> None:
-    """Only the reviewed Capykit ignore-file addition can cross a policy epoch."""
+    """Only an explicit, exact ignore-file addition can cross a policy epoch."""
     transition = intent.get("policy_reauthorization")
     if transition is None and source == target:
         return
@@ -42,7 +44,7 @@ def _reauthorize_policy(source: Any, target: dict[str, Any], intent: dict[str, A
     if ".gitleaksignore" in paths:
         paths.remove(".gitleaksignore")
     previous["digest"] = store.payload_hash({key: value for key, value in previous.items() if key not in {"digest", "catalog_version"}})
-    if (not transition or target["repo"] != "Driftward-LLC/capykit"
+    if (not transition or not store._canonical_enabled_repo(target["repo"])
             or ".gitleaksignore" not in target["allowed_changed_paths"] or source != previous
             or transition != {"source_digest": previous["digest"], "target_digest": target["digest"]}):
         raise store.BridgeConflict("review repair source artifact or policy changed; explicit compatible policy reauthorization required")
@@ -141,9 +143,9 @@ def _preview(conn, *, ingress_db: str, registry_path: str, policy_path: str, act
     # Review follows an existing artifact. In Review is intentional; fresh intake
     # still requires Ready, and neither terminal nor blocked work is eligible here.
     source = operator._latest_linear(ingress_db, issue)
-    if (not source or source.get("identifier") != issue or source.get("team") != "Engineering"
+    if (not source or source.get("identifier") != issue or not organization.matches_observation(source)
             or source.get("status") not in {"Ready", "In Review"}
-            or source.get("delegate") == "Driftward Factory" or source.get("blockedBy")):
+            or source.get("delegate") == organization.linear_identity()["delegate_name"] or source.get("blockedBy")):
         raise operator.OperatorError("trusted_review_repair_eligibility_failed")
     if not operator._services_healthy() or operator._mode() != "real":
         raise operator.OperatorError("review repair requires healthy real execution mode")

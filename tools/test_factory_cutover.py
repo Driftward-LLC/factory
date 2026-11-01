@@ -122,6 +122,10 @@ class CutoverTests(unittest.TestCase):
         self.directory, self.snapshot = self.root / "destination", self.root / "snapshot"
         self.env_dir.mkdir(mode=0o700)
         self.keys.mkdir(mode=0o700)
+        self.configuration = self.root / "configuration"
+        self.configuration.mkdir(mode=0o700)
+        for name, value in bootstrap.ORGANIZATION_DEFAULTS.items():
+            bootstrap._create_private(self.configuration / name, json.dumps(value))
         self.project = "legacy-fixture"
         self.envs = {name: {} for name in bootstrap.ENV_FILES}
         self.envs.update({
@@ -183,7 +187,7 @@ class CutoverTests(unittest.TestCase):
 
     def prepare(self, apply=False):
         return cutover.prepare(self.project, self.env_dir, self.keys, self.directory,
-                               "factory-target", self.snapshot, port_offset=10000, apply=apply)
+                               "factory-target", self.snapshot, port_offset=10000, apply=apply, configuration=self.configuration)
 
     def service(self, name):
         return next(row for row in self.docker.rows if row["Config"]["Labels"]["com.docker.compose.service"] == name)
@@ -211,6 +215,13 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(source["values"]["HATCHET_POSTGRES_PASSWORD"], "db-password")
         self.assertEqual(source["envs"]["factory-linear-token.env"], self.envs["factory-linear-token.env"])
         self.assertEqual(source["keys"], {name: (self.keys / name).read_text() for name in cutover.KEYS})
+
+    def test_apply_requires_explicit_configuration_before_copy(self):
+        with self.assertRaisesRegex(ValueError, "--configuration"):
+            cutover.prepare(self.project, self.env_dir, self.keys, self.directory,
+                            "factory-target", self.snapshot, apply=True)
+        self.assertFalse(self.snapshot.exists())
+        self.assertFalse(self.directory.exists())
 
     def test_reordered_inspection_inventory_does_not_signal_configuration_drift(self):
         inspections = 0

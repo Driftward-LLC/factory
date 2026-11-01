@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -76,6 +78,48 @@ class FactoryBootstrapTests(unittest.TestCase):
         self.assertNotIn("HATCHET_HERMES_BRIDGE_TOKEN", operator)
         self.assertEqual(env("hatchet-worker-bridge-executor.env")["DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
         self.assertNotIn("must-not-be-copied", "".join(path.read_text() for path in self.directory.rglob("*") if path.is_file()))
+
+    def test_disabled_configuration_is_explicit_and_malformed_files_refuse_restart(self):
+        self.initialize(apply=True)
+        contents = bootstrap.configuration(self.directory / "config")
+        organization = json.loads(contents["organization.json"])
+        self.assertIsNone(organization["linear"])
+        self.assertFalse(organization["github"]["enabled"])
+        self.assertEqual(json.loads(contents["routing-registry.json"])["routes"], [])
+        self.assertEqual(json.loads(contents["verifier-policy.json"])["policies"], [])
+        self.assertFalse(json.loads(contents["independent-review-policy.json"])["enabled"])
+        cases = {
+            "organization.json": {**organization, "linear": {"team_key": "INVALID"}},
+            "routing-registry.json": {"version": 2, "routes": [{"project_id": "bad", "repo": "Example/widget", "execution_enabled": True}]},
+            "verifier-policy.json": {"version": 1, "policies": [{"repo": "Example/widget"}]},
+            "independent-review-policy.json": {"schema": "factory-independent-review-policy-v1", "enabled": "false"},
+        }
+        for name, value in cases.items():
+            path = self.directory / "config" / name
+            original = path.read_text()
+            path.write_text(json.dumps(value))
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                bootstrap.validate_directory(self.directory)
+            path.write_text(original)
+        path = self.directory / "config/organization.json"
+        path.unlink()
+        with self.assertRaises(ValueError):
+            bootstrap.validate_directory(self.directory)
+
+    def test_image_entrypoint_rejects_malformed_policy_before_command_and_absence_boots(self):
+        marker = self.parent / "started"
+        command = ["sh", str(ROOT / "deploy/configuration-entrypoint.sh"), sys.executable, "-c",
+                   "from pathlib import Path; Path(" + repr(str(marker)) + ").touch()"]
+        environment = {"PATH": os.environ["PATH"], "PYTHONPATH": str(ROOT / "hatchet/bridge")}
+        result = subprocess.run(command, env=environment, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        policy = self.parent / "bad-policy.json"
+        policy.write_text('{"version": 2, "routes": [{"project_id": "malformed"}]}')
+        result = subprocess.run(command, env={**environment, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(policy)}, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(marker.exists())
 
     def test_foreign_partial_symlink_and_changed_identity_are_refused(self):
         self.directory.mkdir()

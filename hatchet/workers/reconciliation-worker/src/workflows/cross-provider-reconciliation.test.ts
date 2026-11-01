@@ -197,10 +197,10 @@ test('the canonical contract taxonomy covers every emitted reconciliation kind',
 test('compares GitHub repository, commit, draft and Linear route eligibility', () => {
   const job = completedRealJob({
     state: 'running',
-    payload: { repo: 'Driftward-LLC/driftward-host', linear_issue: 'ENG-39', dry_run: false, routing: { project_id: 'project-a' } },
+    payload: { repo: 'example/platform', linear_issue: 'ENG-39', dry_run: false, routing: { project_id: 'project-a' } },
   });
   const findings = compareCrossProvider(job, hermesEvents(job), {
-    github: { status: 'matched', observation: githubObservation({ repo: 'Driftward-LLC/capykit', headSha: 'different', isDraft: false }) },
+    github: { status: 'matched', observation: githubObservation({ repo: 'example/widgets', headSha: 'different', isDraft: false }) },
     linear: { status: 'matched', observation: linearObservation({ dispatchEligible: false, projectId: 'project-b' }) },
   }, CUTOFF);
   assert.deepEqual(findings.map((item) => item.kind), ['github_pr_repo_mismatch', 'github_pr_commit_mismatch', 'github_pr_not_draft', 'linear_issue_ineligible_with_active_bridge_job', 'linear_route_mismatch']);
@@ -222,7 +222,7 @@ test('human draft promotion after completed or verified handoff is expected', ()
 test('handoff keeps PR identity mismatches critical, but human closure is only a warning', () => {
   const job = completedRealJob({ state: 'ready_for_human_review' });
   const findings = compareCrossProvider(job, hermesEvents(job), {
-    github: { status: 'matched', observation: githubObservation({ repo: 'Driftward-LLC/capykit', prUrl: 'https://github.com/Driftward-LLC/capykit/pull/456', headRefName: 'codex/wrong', isDraft: false, state: 'closed' }) },
+    github: { status: 'matched', observation: githubObservation({ repo: 'example/widgets', prUrl: 'https://github.com/example/widgets/pull/456', headRefName: 'codex/wrong', isDraft: false, state: 'closed' }) },
   }, CUTOFF);
   assert.deepEqual(findings.map(({ kind, severity }) => ({ kind, severity })), [
     { kind: 'github_pr_url_mismatch', severity: 'critical' },
@@ -292,11 +292,11 @@ test('detects ingress publication and consumption drift from the sanitized inven
 test('reconciles ingress consumption by event key while preserving legacy issue fallback', () => {
   const first = { eventKey: 'linear:issue:ENG-40:update:first', source: 'linear' as const, subject: 'ENG-40', observedAt: '2026-08-13T09:00:00Z', hatchetPublished: true, linear: { dispatchEligible: true } };
   const second = { eventKey: 'linear:issue:ENG-40:update:second', source: 'linear' as const, subject: 'ENG-40', observedAt: '2026-08-13T08:00:00Z', hatchetPublished: true, linear: { dispatchEligible: true } };
-  const correlated = completedRealJob({ payload: { repo: 'Driftward-LLC/driftward-host', linear_issue: 'ENG-40', dry_run: true, source_event_key: first.eventKey, source_event_keys: [first.eventKey] } });
+  const correlated = completedRealJob({ payload: { repo: 'example/platform', linear_issue: 'ENG-40', dry_run: true, source_event_key: first.eventKey, source_event_keys: [first.eventKey] } });
   const findings = inspectIngressInventory({ status: 'matched', complete: true, observations: [first, second] }, [correlated], CUTOFF);
   assert.deepEqual(findings.map((item) => item.kind), ['ingress_published_unconsumed']);
   assert.equal(findings[0].subject, `ingress:${second.eventKey}`);
-  const legacy = completedRealJob({ payload: { repo: 'Driftward-LLC/driftward-host', linear_issue: 'ENG-40', dry_run: true } });
+  const legacy = completedRealJob({ payload: { repo: 'example/platform', linear_issue: 'ENG-40', dry_run: true } });
   assert.equal(inspectIngressInventory({ status: 'matched', complete: true, observations: [first, second] }, [legacy], CUTOFF).length, 0);
 });
 
@@ -319,7 +319,7 @@ function completedRealJob(overrides: Partial<BridgeJob> = {}): BridgeJob {
   return {
     ...baseJob(),
     state: 'completed',
-    pr_url: 'https://github.com/Driftward-LLC/driftward-host/pull/123',
+    pr_url: 'https://github.com/example/platform/pull/123',
     hermes_session_id: 'hermes-session-123',
     reason_code: 'hermes_created_completed',
     updated_at: '2026-08-13T10:00:00Z',
@@ -343,7 +343,7 @@ function baseJob(): BridgeJob {
     state: 'accepted',
     requested_action: 'create_draft_pr',
     payload: {
-      repo: 'Driftward-LLC/driftward-host',
+      repo: 'example/platform',
       linear_issue: 'ENG-39',
       dry_run: false,
     },
@@ -378,14 +378,14 @@ function hermesEvents(job: BridgeJob) {
 
 function githubObservation(overrides: NonNullable<ProviderObservation['github']> = {}) {
   return {
-    eventKey: 'github:pull_request:Driftward-LLC/driftward-host:123:created:delivery-1',
+    eventKey: 'github:pull_request:example/platform:123:created:delivery-1',
     source: 'github' as const,
-    subject: 'Driftward-LLC/driftward-host#123',
+    subject: 'example/platform#123',
     action: 'opened',
     observedAt: '2026-08-13T09:30:00Z',
     github: {
-      repo: 'Driftward-LLC/driftward-host',
-      prUrl: 'https://github.com/Driftward-LLC/driftward-host/pull/123',
+      repo: 'example/platform',
+      prUrl: 'https://github.com/example/platform/pull/123',
       state: 'open',
       merged: false,
       headRefName: 'codex/hatchet-hermes-example',

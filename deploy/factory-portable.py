@@ -127,12 +127,26 @@ class Installation:
                 if not labels or labels.get(label) != self.metadata["installation_id"]:
                     raise ValueError("Compose project collides with resources owned by another installation; choose a new project")
 
+    def assert_config(self) -> None:
+        config = json.loads(self.compose("config", "--format", "json", private=True))
+        for name, service in config["services"].items():
+            mounts = [mount for mount in service.get("volumes", []) if mount.get("target") == "/etc/factory/config"]
+            if name in bootstrap.CONFIG_SERVICES:
+                if (len(mounts) != 1 or mounts[0].get("type") != "bind"
+                        or mounts[0].get("source") != str(self.directory / "config").replace("$", "$$")
+                        or not mounts[0].get("read_only") or mounts[0].get("bind", {}).get("create_host_path", False)
+                        or any(service.get("environment", {}).get(key) != value for key, value in bootstrap.CONFIG_ENV.items())):
+                    raise ValueError("organization configuration boundary differs")
+            elif mounts:
+                raise ValueError("organization configuration mounted into an unrelated role")
+
     def up(self) -> None:
         self.assert_owned_resources()
         workers = bootstrap.read_env(self.directory / "env" / "hatchet-workers.env")
         executor = bootstrap.read_env(self.directory / "env" / "hatchet-worker-bridge-executor.env")
         if workers.get("HATCHET_INTAKE_DRY_RUN") != "true" or executor.get("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED") != "0":
             raise ValueError("this portable profile supports dry-run only; real execution requires a separately reviewed executor rollout")
+        self.assert_config()
         # Explicit migrations run with all Factory writers stopped. This never
         # addresses the existing driftward-factory project or its volumes.
         self.compose("stop")

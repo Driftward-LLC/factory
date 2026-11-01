@@ -103,7 +103,7 @@ function executorFixture(status = 'verification_pending', verificationReason?: s
   const recovery: boolean[] = [];
   const job: BridgeJob = {
     job_id: 'same-job', idempotency_key: 'long-idempotency-key:'.repeat(25), state: 'verification_pending', requested_action: 'create_draft_pr',
-    payload: { dry_run: false }, payload_hash: 'hash', branch: 'codex/same-branch', commit_sha: 'a'.repeat(40), pr_url: 'https://github.com/Driftward-LLC/factory/pull/1', hermes_session_id: 'same-session',
+    payload: { dry_run: false }, payload_hash: 'hash', branch: 'codex/same-branch', commit_sha: 'a'.repeat(40), pr_url: 'https://github.com/example/control-plane/pull/1', hermes_session_id: 'same-session',
     hatchet_workflow_run_id: null, hatchet_step_run_id: null, verification_context: {}, verification_observed_context: null, verification_receipt: null, verification_digest: null,
     reason_code: null, error: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
   };

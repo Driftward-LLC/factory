@@ -44,6 +44,7 @@ class ProductionProfileTests(unittest.TestCase):
             "FACTORY_INSTALLATION_ID": "fixture-installation",
             "FACTORY_INSTALL_DIR": str(self.directory),
             "FACTORY_ENV_DIR": str(self.env_directory),
+            "FACTORY_CONFIG_DIR": str(self.directory / "config"),
             "FACTORY_SOURCE_ROOT": str(ROOT),
             "HATCHET_DEFAULT_TENANT_ID": "fixture-tenant",
             "HATCHET_POSTGRES_PASSWORD": "fixture-postgres",
@@ -79,7 +80,7 @@ class ProductionProfileTests(unittest.TestCase):
         # Compose versions may omit the false create_host_path default.
         gateway_mounts = [
             {**mount, "bind": {"create_host_path": False, **mount.get("bind", {})}}
-            for mount in executor["volumes"]
+            for mount in executor["volumes"] if mount["target"] == SOCKET_DIRECTORY
         ]
         self.assertEqual(gateway_mounts, [{
             "type": "bind", "source": SOCKET_DIRECTORY, "target": SOCKET_DIRECTORY,
@@ -100,6 +101,7 @@ class ProductionProfileTests(unittest.TestCase):
                     self.assertIn((name, mount["source"]), {
                         ("hatchet-lite", str(self.directory / "keys/hatchet")),
                         ("bridge-executor-worker", SOCKET_DIRECTORY),
+                        *{(role, str(self.directory / "config")) for role in config["services"] if role not in {"postgres", "hatchet-lite"}},
                     })
                 else:
                     self.assertTrue(config["volumes"][mount["source"]]["name"].startswith("factory-profile-test-"))
@@ -162,7 +164,7 @@ class ProductionProfileTests(unittest.TestCase):
         services = self.render(production=False)["services"]
         self.assertFalse(LINEAR_SERVICES & services.keys())
         executor = services["bridge-executor-worker"]
-        self.assertFalse(executor.get("volumes"))
+        self.assertEqual([mount["target"] for mount in executor["volumes"]], ["/etc/factory/config"])
         self.assertNotIn("DRIFTWARD_HERMES_GRPC_TARGET", executor["environment"])
         self.assertEqual(executor["environment"]["DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED"], "0")
         operator = services["factory-operator"]

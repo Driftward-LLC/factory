@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import test from 'node:test';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';

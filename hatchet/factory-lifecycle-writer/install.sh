@@ -17,6 +17,7 @@ install -d -m 0700 -o driftward-factory-writer -g driftward-factory-writer "$sta
 chown -R driftward-factory-writer:driftward-factory-writer "$state_dir"
 install -d -m 0755 -o root -g root "$install_root/factory_lifecycle_writer"
 install -m 0644 "$script_dir"/factory_lifecycle_writer/*.py "$install_root/factory_lifecycle_writer/"
+install -m 0644 "$script_dir/factory_organization.py" "$install_root/factory_organization.py"
 install -m 0755 "$script_dir/factory-lifecycle-token-refresh" "$script_dir/factory-lifecycle-service" "$install_root/"
 [[ -e "$env_file" ]] || install -m 0600 -o root -g root /dev/null "$env_file"
 chown root:root "$env_file"; chmod 0600 "$env_file"

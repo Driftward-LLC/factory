@@ -1,7 +1,7 @@
 import BeforeExecution from '../src/BeforeExecution.jsx';
 import '../src/styles.css';
 
-const item = { issue: 'ENG-999', linear_status: 'Blocked', blocked_by: ['ENG-998'], blocked_by_count: 1, dispatch_eligible: false, observed_at: '2026-10-06T18:00:00Z', provider_updated_at: '2026-10-06T17:59:00Z' };
+const item = { issue: 'ACME-999', issue_url: 'https://linear.app/example/issue/ACME-999', linear_status: 'Blocked', blocked_by: ['ACME-998'], blocked_by_urls: { 'ACME-998': 'https://linear.app/example/issue/ACME-998' }, blocked_by_count: 1, dispatch_eligible: false, observed_at: '2026-10-06T18:00:00Z', provider_updated_at: '2026-10-06T17:59:00Z' };
 const intake = { available: true, items: [item], limit: 100, scan_limit: 500, truncated: false };
 export default {
   title: 'Factory/BeforeExecution', component: BeforeExecution, args: { intake },
@@ -14,3 +14,5 @@ export const Unavailable = { args: { intake: { ...intake, available: false, item
 export const Stale = { args: { stale: true } };
 export const Partial = { args: { intake: { ...intake, truncated: true } } };
 export const IssueWithoutObservation = { args: { intake: { ...intake, items: [] }, issue: true } };
+
+export const IntegrationDisabled = { args: { intake: { ...intake, items: [{ ...item, issue_url: null, blocked_by_urls: {} }] } } };

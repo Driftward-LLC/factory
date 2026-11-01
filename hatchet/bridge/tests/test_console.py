@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import sqlite3
@@ -108,7 +111,7 @@ class FactoryConsoleTests(unittest.TestCase):
             "outbox_key": "lifecycle:v2:console", "phase": "unresolved", "delivery_state": "dead_letter",
             "issue_id": None, "identifier": None, "issue_url": None, "job_id": "job-inspect",
             "idempotency_key": "inspect:console", "source_event_key": None, "source_delivery_id": None,
-            "repo": "Driftward-LLC/capykit", "pr_url": None, "reason_code": "linear_issue_identity_invalid",
+            "repo": "example/widgets", "pr_url": None, "reason_code": "linear_issue_identity_invalid",
             "execution_mode": "real", "source_kind": "bridge_event", "source_recorded_at": "2026-01-01T00:00:00.000000Z",
             "marker": "private", "body": "private", "next_attempt_at": None,
             "delivered_at": None, "suppressed_at": None, "last_error_code": None,
@@ -186,9 +189,9 @@ class FactoryConsoleTests(unittest.TestCase):
         from hatchet_hermes_bridge.store import reserve_factory_retry
         from test_store import verifier_payload
         conn = connect_runtime(self.db)
-        with patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "hatchet/workers/verifier-policy.json")}):
+        with patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "hatchet/workers/test-fixtures/verifier-policy.json")}):
             attempt, _, _ = reserve_factory_retry(conn, work_item_key="ENG-120", mode="real",
-                request_id="trace", reason="trace test", actor="test", payload=verifier_payload("Driftward-LLC/capykit"))
+                request_id="trace", reason="trace test", actor="test", payload=verifier_payload("example/widgets"))
         conn.close()
         before = Path(self.db).read_bytes()
         with patch.dict(os.environ, {"FACTORY_CONSOLE_POSTHOG_PROJECT_URL": "https://us.posthog.com/project/12345"}):
@@ -267,7 +270,7 @@ class FactoryConsoleTests(unittest.TestCase):
 
     def test_analytics_uses_optional_ingress_and_preserves_unverified_coverage(self):
         conn = connect_runtime(self.db)
-        conn.execute("UPDATE factory_attempts SET prior_pr_url = ?", ("https://github.com/Driftward-LLC/capykit/pull/119",))
+        conn.execute("UPDATE factory_attempts SET prior_pr_url = ?", ("https://github.com/example/widgets/pull/119",))
         conn.commit()
         conn.close()
         conn = sqlite3.connect(self.ingress_db)

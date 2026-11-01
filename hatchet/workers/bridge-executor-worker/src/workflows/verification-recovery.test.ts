@@ -6,7 +6,7 @@ import { recoverClaimedVerification } from './verification-recovery';
 function job(): BridgeJob {
   return {
     job_id: 'job-recovery', idempotency_key: 'hatchet:ENG-61:recovery', state: 'verification_pending', requested_action: 'create_draft_pr',
-    payload: { repo: 'Driftward-LLC/capykit', dry_run: false }, payload_hash: 'hash', branch: 'codex/recovery', commit_sha: 'abc', pr_url: 'https://github.com/Driftward-LLC/capykit/pull/61', hermes_session_id: null, hatchet_workflow_run_id: null, hatchet_step_run_id: null,
+    payload: { repo: 'example/widgets', dry_run: false }, payload_hash: 'hash', branch: 'codex/recovery', commit_sha: 'abc', pr_url: 'https://github.com/example/widgets/pull/61', hermes_session_id: null, hatchet_workflow_run_id: null, hatchet_step_run_id: null,
     verification_context: null, verification_observed_context: null, verification_receipt: null, verification_digest: null, reason_code: null, error: null, created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T00:00:00Z',
   };
 }

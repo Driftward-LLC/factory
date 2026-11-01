@@ -4,14 +4,15 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import test from 'node:test';
 import type { BridgeJob } from '@driftward/hatchet-worker-shared';
 import { boundedIndependentReview, inconclusiveReview, IndependentReviewer, reviewIntent, runIndependentReviewRelay, readableReviewSnapshot, type ReviewIntent } from './independent-review';
 
 const requirements = { description: 'The counter must increase once per click.', title: 'Fix counter' };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-const legacyIntent: ReviewIntent = { review_id: 'review-1', repository: 'Driftward-LLC/demo',
-  pr_url: 'https://github.com/Driftward-LLC/demo/pull/7', branch: 'codex/demo', head_sha: 'a'.repeat(40),
+const legacyIntent: ReviewIntent = { review_id: 'review-1', repository: 'example/demo',
+  pr_url: 'https://github.com/example/demo/pull/7', branch: 'codex/demo', head_sha: 'a'.repeat(40),
   expected_base: 'main', requirements, requirements_digest: digest(JSON.stringify(requirements)),
   generator_session_id: 'generator-1', pass_number: 1, policy_digest: 'b'.repeat(64) };
 const { generator_session_id: _legacySession, ...commonIntent } = legacyIntent;
@@ -249,5 +250,25 @@ test('long review retains its receipt after launch inspection expires but still 
     if (before === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
     else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = before;
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('disabled GitHub refuses independent reviewer execution with an enabled reviewer flag', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-github-disabled-'));
+  const previous = process.env.FACTORY_ORGANIZATION_CONFIG;
+  const previousEnabled = process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
+  try {
+    const configuration = path.join(directory, 'organization.json');
+    writeFileSync(configuration, JSON.stringify({ schema: 'factory-organization-v1', linear: null, github: { enabled: false } }));
+    process.env.FACTORY_ORGANIZATION_CONFIG = configuration;
+    process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = '1';
+    let calls = 0;
+    const adapter = new IndependentReviewer(path.join(directory, 'journal'), '/nonexistent', async () => { calls++; return ''; }, undefined, async () => true);
+    assert.equal((await adapter.run(job())).reason, 'review_isolation_unavailable');
+    assert.equal(calls, 0);
+  } finally {
+    if (previous === undefined) delete process.env.FACTORY_ORGANIZATION_CONFIG; else process.env.FACTORY_ORGANIZATION_CONFIG = previous;
+    if (previousEnabled === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED; else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = previousEnabled;
+    rmSync(directory, { recursive: true });
   }
 });

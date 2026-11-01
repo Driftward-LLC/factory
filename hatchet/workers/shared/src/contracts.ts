@@ -254,7 +254,7 @@ export const HATCHET_CONTRACT = {
       "label": "Linear issue was removed"
     },
     "linear_issue_wrong_team": {
-      "label": "Linear issue is not on the Engineering team"
+      "label": "Linear issue does not match the configured workspace and team"
     },
     "linear_issue_status_not_ready": {
       "label": "Linear issue is not Ready"

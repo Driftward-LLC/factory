@@ -82,7 +82,7 @@ class MigrationTests(unittest.TestCase):
         install = production.Production(self.directory)
         snapshot = Path(self.temp.name) / "unified-snapshot"
         snapshot.mkdir(mode=0o700)
-        for folder in ("config", "config/env", "config/keys", "config/keys/hatchet", "volumes"):
+        for folder in ("config", "config/env", "config/config", "config/keys", "config/keys/hatchet", "volumes"):
             (snapshot / folder).mkdir(mode=0o700)
         for name in production.state.config_files(production.state.PRODUCTION, metadata):
             production.bootstrap._create_private(snapshot / "config" / name, production.bootstrap._read_private(self.directory / name))

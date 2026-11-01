@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import base64
 from dataclasses import replace
 import os
@@ -23,6 +26,7 @@ def release_tree(root: Path) -> None:
     (root / "worker-triggers").mkdir()
     (root / "README.md").write_text("runtime release\n")
     (root / "predeploy-check.py").write_text("print('ok')\n")
+    (root / "factory_organization.py").write_text("# organization config validator\n")
     (root / "verifier-policy.json").write_text("{}\n")
     (root / "independent-review-policy.json").write_text("{}\n")
     (root / "hatchet_hermes_bridge" / "__init__.py").write_text("")

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 
-const DOCKER_VERIFIER_POLICY_PATH = '/app/hatchet/workers/verifier-policy.json';
+const DOCKER_VERIFIER_POLICY_PATH = '/etc/factory/config/verifier-policy.json';
 
 export type DraftPrVerifierPolicy = {
   catalog_version: number;

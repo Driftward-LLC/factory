@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import factory_organization as organization
+
 import hashlib
 import hmac
 import json
@@ -60,8 +62,9 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     def _require_github_signature(self, raw: bytes) -> bool:
         secret = os.environ.get("HATCHET_EVENT_INGRESS_GITHUB_WEBHOOK_SECRET", "")
-        if not secret:
-            return True
+        if not organization.load()["github"]["enabled"] or not secret:
+            self._write_json(503, {"error": "GitHub webhook integration is disabled or unconfigured"})
+            return False
 
         got = self.headers.get("X-Hub-Signature-256", "")
         expected = "sha256=" + hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
@@ -72,8 +75,9 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     def _require_linear_signature(self, raw: bytes, body: dict[str, Any]) -> bool:
         secret = os.environ.get("HATCHET_EVENT_INGRESS_LINEAR_WEBHOOK_SECRET", "")
-        if not secret:
-            return True
+        if organization.load()["linear"] is None or not secret:
+            self._write_json(503, {"error": "Linear webhook integration is disabled or unconfigured"})
+            return False
 
         got = self.headers.get("Linear-Signature", "")
         expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
@@ -250,6 +254,7 @@ def _publish_event(conn, event: dict[str, Any]) -> dict[str, Any]:
 
 
 def serve(db_path: str, host: str, port: int) -> None:
+    organization.validate_startup()
     conn = connect(db_path)
     httpd = HTTPServer((host, port), IngressHandler)
     httpd.conn = conn

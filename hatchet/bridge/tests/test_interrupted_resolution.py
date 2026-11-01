@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import tempfile
 import threading
@@ -24,7 +27,7 @@ class InterruptedResolutionTests(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.attempt, self.job, _ = store.reserve_factory_retry(
             self.conn, work_item_key="ENG-600", mode="real", request_id="fixture", reason="fixture", actor="test",
-            payload=verifier_payload("Driftward-LLC/capykit"))
+            payload=verifier_payload("example/widgets"))
         self.aid = self.attempt["attempt_id"]
         self.absence = None
         store.transition_job(self.conn, self.job["job_id"], state="running")
@@ -38,7 +41,7 @@ class InterruptedResolutionTests(unittest.TestCase):
         control = store.get_factory_issue_control(self.conn, "ENG-600")
         store.take_factory_issue_control(self.conn, work_item_key="ENG-600", request_id="take-fixture", reason="manual",
             actor="operator", expected_revision=control["revision"], expected_snapshot_digest=control["snapshot_digest"])
-        self.url = "https://github.com/Driftward-LLC/capykit/pull/600"
+        self.url = "https://github.com/example/widgets/pull/600"
         with self.conn:
             self.conn.execute("UPDATE factory_attempts SET prior_pr_url=? WHERE attempt_id=?", (self.url, self.aid))
             self.conn.execute("UPDATE factory_execution_leases SET expires_at='2000-01-01T00:00:00Z'")
@@ -50,7 +53,7 @@ class InterruptedResolutionTests(unittest.TestCase):
         self.inspection()
 
     def inspection(self, **changes):
-        result = {"repository": "Driftward-LLC/capykit", "number": 600, "url": self.url, "state": "open", "merged": False,
+        result = {"repository": "example/widgets", "number": 600, "url": self.url, "state": "open", "merged": False,
                   "draft": True, "head_branch": self.job["branch"], "head_sha": "a" * 40, "base_ref": "main", "reason": "ok", **changes}
         with self.conn:
             self.conn.execute("INSERT OR REPLACE INTO factory_inspection_requests (request_key,repository,number,url,prior_attempt_id,state,result_json,result_digest,observed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -70,7 +73,7 @@ class InterruptedResolutionTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE factory_attempts SET prior_pr_url=NULL WHERE attempt_id=?", (self.aid,))
             self.conn.execute("DELETE FROM factory_inspection_requests")
-        self.absence = {"kind": "github_branch_pr_absence_v1", "repository": "Driftward-LLC/capykit",
+        self.absence = {"kind": "github_branch_pr_absence_v1", "repository": "example/widgets",
                         "head_branch": self.job["branch"], "branch_exists": False, "pull_requests": [], "observed_at": store.utc_now()}
 
     def test_no_pr_inspect_uses_ledger_identity_and_does_not_queue_work(self):
@@ -78,7 +81,7 @@ class InterruptedResolutionTests(unittest.TestCase):
         before = self.conn.total_changes
         result = recovery.inspect(self.conn, self.aid, actor=ACTOR)
         self.assertEqual(result, {"created": False, "absence_evidence_target": {
-            "repository": "Driftward-LLC/capykit", "head_branch": self.job["branch"]}})
+            "repository": "example/widgets", "head_branch": self.job["branch"]}})
         self.assertEqual(self.conn.total_changes, before)
 
     def test_no_pr_requires_fresh_bound_absence_after_containment(self):
@@ -101,7 +104,7 @@ class InterruptedResolutionTests(unittest.TestCase):
         self.assertEqual(result["context"]["inspection"]["source"], "trusted_root_absence_attestation")
 
     def test_absence_cannot_bypass_known_pr_or_repair_target(self):
-        absence = {"kind": "github_branch_pr_absence_v1", "repository": "Driftward-LLC/capykit",
+        absence = {"kind": "github_branch_pr_absence_v1", "repository": "example/widgets",
                    "head_branch": self.job["branch"], "branch_exists": False, "pull_requests": [], "observed_at": store.utc_now()}
         with self.assertRaises(store.BridgeValidationError): self.preview(absence_evidence=absence)
         self.no_prior_pr()
@@ -207,7 +210,7 @@ class InterruptedResolutionTests(unittest.TestCase):
             store.transition_job(self.conn, self.job["job_id"], state="running")
         with self.assertRaises(store.BridgeConflict):
             store.reserve_factory_intake(self.conn, work_item_key="ENG-600", mode="real", request_id="late", actor="intake",
-                reason="late", payload=verifier_payload("Driftward-LLC/capykit"))
+                reason="late", payload=verifier_payload("example/widgets"))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_attempts").fetchone()[0], 1)
 
     def test_repeated_command_survives_restart_and_stale_evidence_but_not_changed_intent(self):
@@ -276,7 +279,7 @@ class InterruptedResolutionTests(unittest.TestCase):
 
     def test_other_unresolved_execution_still_blocks_manual_editing(self):
         other, other_job, _ = store.reserve_factory_retry(self.conn, work_item_key="ENG-601", mode="real", request_id="other",
-            actor="test", reason="test", payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-601"})
+            actor="test", reason="test", payload={**verifier_payload("example/widgets"), "linear_issue": "ENG-601"})
         store.transition_job(self.conn, other_job["job_id"], state="running")
         store.claim_factory_execution(self.conn, other_job["job_id"], owner="other-executor")
         # Fixture for multiple historical unresolved attempts on one issue.

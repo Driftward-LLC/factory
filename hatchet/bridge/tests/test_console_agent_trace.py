@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import copy
 import os
 import sqlite3

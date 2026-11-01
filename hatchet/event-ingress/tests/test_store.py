@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import copy
 import json
 import sqlite3
@@ -48,7 +51,7 @@ class IngressStoreTest(unittest.TestCase):
         payload = _payload()
         current = normalize_github_pull_request(payload, delivery_id="current-delivery")
         legacy = copy.deepcopy(current)
-        legacy["eventKey"] = "github:Driftward-LLC/capykit:pr:11:closed:legacy-delivery"
+        legacy["eventKey"] = "github:example/widgets:pr:11:closed:legacy-delivery"
         legacy["deliveryId"] = "legacy-delivery"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -407,10 +410,10 @@ class IngressStoreTest(unittest.TestCase):
 def _payload() -> dict:
     return {
         "action": "closed",
-        "repository": {"full_name": "Driftward-LLC/capykit"},
+        "repository": {"full_name": "example/widgets"},
         "pull_request": {
             "number": 11,
-            "html_url": "https://github.com/Driftward-LLC/capykit/pull/11",
+            "html_url": "https://github.com/example/widgets/pull/11",
             "title": "ENG-7: implement Capykit discovery CLI commands",
             "body": "Refs ENG-7",
             "state": "closed",
@@ -426,17 +429,18 @@ def _linear_payload() -> dict:
     return {
         "action": "update",
         "type": "Issue",
+            "organizationId": "11111111-1111-4111-8111-111111111111",
         "createdAt": "2026-08-11T17:00:00.000Z",
-        "url": "https://linear.app/driftward/issue/ENG-40/example",
+        "url": "https://linear.app/example/issue/ENG-40/example",
         "webhookTimestamp": 1797008400000,
         "data": {
             "id": "issue-uuid",
             "identifier": "ENG-40",
             "title": "Build a narrow Linear ingress test",
             "updatedAt": "2026-08-11T17:00:00.000Z",
-            "team": {"name": "Engineering", "key": "ENG"},
+            "team": {"name": "Engineering", "key": "ENG", "id": "22222222-2222-4222-8222-222222222222"},
             "project": {
-                "id": "d779c532-620d-458c-8abd-05e37f5ca4c1",
+                "id": "11111111-1111-4111-8111-111111111111",
                 "name": "Capykit",
             },
             "state": {"name": "Ready", "type": "unstarted"},

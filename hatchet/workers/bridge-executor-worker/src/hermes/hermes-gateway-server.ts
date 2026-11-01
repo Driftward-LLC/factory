@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { executionRuntimeBinding, sameExecutionRuntime, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { requireGithubOrganization, loadFactoryOrganization, executionRuntimeBinding, sameExecutionRuntime, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
@@ -113,6 +113,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       return { state: 'running', executionRuntimeJson: JSON.stringify(runtime), executionLeaseJson: JSON.stringify(lease) };
     }),
     createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest, call) => {
+      requireGithubOrganization();
       const job = parseBridgeJob(request);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const runtime = executionRuntimeBinding(JSON.parse(requiredString(request.executionRuntimeJson, 'execution_runtime_json')));
@@ -202,6 +203,7 @@ function loadGatewayService(): GatewayService {
 }
 
 async function main(): Promise<void> {
+  loadFactoryOrganization();
   const target = parseTarget(process.argv.slice(2));
   validateServerTarget(target);
   const socketPath = unixSocketPathFromTarget(target);

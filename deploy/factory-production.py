@@ -237,6 +237,11 @@ class Production(portable.Installation):
                     or any(service.get(key) for key in ("privileged", "network_mode", "pid", "ipc", "devices", "cap_add", "volumes_from", "secrets", "configs"))):
                 raise ProductionRefusal("Compose service isolation differs")
             expected = {("volume", "factory-" + suffix, target, readonly) for suffix, target, readonly in MOUNTS.get(name, [])}
+            if name in bootstrap.CONFIG_SERVICES:
+                expected.add(("bind", str(self.directory / "config"), "/etc/factory/config", True))
+                if (any(service.get("environment", {}).get(key) != value for key, value in bootstrap.CONFIG_ENV.items())
+                        or any(mount.get("bind", {}).get("create_host_path", False) for mount in service.get("volumes", []))):
+                    raise ProductionRefusal("organization configuration boundary differs")
             if name == "factory-hermes":
                 expected.add(("volume", "factory-hermes-data", "/opt/data", False))
                 if (service.get("command") != ["sleep", "infinity"]

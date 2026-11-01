@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import factory_organization as organization
+
 import ast
 import copy
 import hashlib
@@ -24,7 +26,7 @@ from .runtime import acquire_shared, migration_capability, release
 from . import work_evidence
 
 DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
-DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
+DOCKER_VERIFIER_POLICY_PATH = "/etc/factory/config/verifier-policy.json"
 SCHEMA_VERSION = 10
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
@@ -1589,6 +1591,11 @@ def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = Fal
         raise BridgeValidationError(f"requested_action must be one of {sorted(ALLOWED_ACTIONS)}")
     if not isinstance(payload, dict):
         raise BridgeValidationError("payload must be a JSON object")
+    if payload.get("dry_run") is not True:
+        if not organization.load()["github"]["enabled"]:
+            raise BridgeValidationError("Factory GitHub integration is disabled")
+        if action in DRAFT_PR_EFFECT_ACTIONS and payload.get("linear_issue") and not organization.matches_issue(payload["linear_issue"]):
+            raise BridgeValidationError("Linear issue does not match the configured organization")
     if action == "read_only_review":
         if not internal_review:
             raise BridgeValidationError("review jobs are created only by the policy-controlled review ledger")
@@ -4276,6 +4283,8 @@ def authorize_factory_effect(conn: sqlite3.Connection, job_id: str, claim: dict[
         job = get_job(conn, job_id)
         attempt = get_factory_attempt(conn, row["attempt_id"])
         if _issue_control_held(conn, attempt["work_item_key"]):
+            return False
+        if job["payload"].get("dry_run") is not True and (not organization.load()["github"]["enabled"] or not organization.matches_issue(attempt["work_item_key"])):
             return False
         from . import independent_review
         if not independent_review.repair_authorized(conn, job, attempt["attempt_id"]):

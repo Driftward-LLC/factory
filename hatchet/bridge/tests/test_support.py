@@ -1,6 +1,9 @@
 """Private test-only migration utility; never imported by production code."""
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import fcntl
 import os
 import tempfile

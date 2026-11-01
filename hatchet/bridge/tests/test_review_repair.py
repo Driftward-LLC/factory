@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import shutil
@@ -17,7 +20,7 @@ from test_store import verifier_payload, original_context, verification_receipt
 from test_support import connect_migrate
 
 ACTOR = "uid:0;pid:1;account:root"
-REPO = "Driftward-LLC/capykit"
+REPO = "example/widgets"
 PR = f"https://github.com/{REPO}/pull/77"
 
 
@@ -28,7 +31,7 @@ class ReviewRepairTests(unittest.TestCase):
         self.db = str(self.root / "bridge.db"); self.ingress = str(self.root / "ingress.db")
         self.conn = connect_migrate(self.db); self.addCleanup(self.conn.close)
         self.env = patch.dict(os.environ, {"HATCHET_FACTORY_OPERATOR_TEST_HEALTH": "healthy", "HATCHET_INTAKE_DRY_RUN": "false",
-            "HATCHET_VERIFIER_POLICY_PATH": POLICY, "HATCHET_FACTORY_OPERATOR_BRIDGE_DB": self.db,
+            "HATCHET_VERIFIER_POLICY_PATH": POLICY, "HATCHET_INDEPENDENT_REVIEW_POLICY_PATH": str(ROOT / "hatchet/workers/test-fixtures/independent-review-policy.json"), "HATCHET_FACTORY_OPERATOR_BRIDGE_DB": self.db,
             "HATCHET_FACTORY_OPERATOR_INGRESS_DB": self.ingress, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": ROUTES})
         self.env.start(); self.addCleanup(self.env.stop)
         c = sqlite3.connect(self.ingress)
@@ -238,7 +241,7 @@ validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({
 
     def test_snapshot_ingress_policy_mode_control_and_lineage_guards(self):
         self.inspect(); digest = self.preview()["snapshot_digest"]
-        for changes in ({"status": "Blocked"}, {"status": "Done"}, {"blockedBy": ["issue"]}, {"delegate": "Driftward Factory"}):
+        for changes in ({"status": "Blocked"}, {"status": "Done"}, {"blockedBy": ["issue"]}, {"delegate": "Example Executor"}):
             self.observe(**changes)
             with self.assertRaises(operator.OperatorError): self.confirm(digest)
         self.observe(status="In Review", title="new intent")
@@ -246,7 +249,7 @@ validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({
         self.observe(status="In Review", dispatchEligible=False, reasonCode="linear_issue_not_ready")
         with patch.dict(os.environ, {"HATCHET_INTAKE_DRY_RUN": "true"}):
             with self.assertRaises(operator.OperatorError): self.preview()
-        for field, value in (("pr_url", f"https://github.com/{REPO}/pull/78"), ("repository", "Driftward-LLC/factory"),
+        for field, value in (("pr_url", f"https://github.com/{REPO}/pull/78"), ("repository", "example/control-plane"),
                              ("source_attempt_id", "missing"), ("reviewed_head_sha", "abc123")):
             with self.assertRaises(store.BridgeError): review_repair.preview(**self.paths, **{**self.intent, field: value})
         with self.assertRaises(store.BridgeValidationError):
@@ -379,7 +382,7 @@ class PolicyReauthorizationTests(unittest.TestCase):
         return self.preview()
 
     def test_explicit_transition_preserves_source_and_uses_current_enforcement(self):
-        self.assertEqual(self.old_policy["digest"], "0ce5a999e7c58b67904da5b57fa8855e6780a29a03fa193c55baf525323e2494")
+        self.assertEqual(self.old_policy["digest"], "3c4d84677b761b9b4575ed9609670f07de48fc054ed82803c03c383c4b27c09b")
         self.inspect()
         with self.assertRaisesRegex(store.BridgeConflict, "explicit compatible"): self.preview()
         source = store.get_job(self.conn, self.job["job_id"])
@@ -398,6 +401,11 @@ class PolicyReauthorizationTests(unittest.TestCase):
         self.assertEqual(json.loads(event[0])["policy_reauthorization"], self.transition)
         self.assertFalse(self.confirm(approved["snapshot_digest"])["created"])
         with self.assertRaises(store.BridgeConflict): self.confirm(approved["snapshot_digest"], policy_reauthorization={**self.transition, "target_digest": "f" * 64})
+
+    def test_unenrolled_repository_cannot_reauthorize_policy(self):
+        with patch.object(store, "_canonical_enabled_repo", return_value=False):
+            with self.assertRaises(store.BridgeConflict):
+                review_repair._reauthorize_policy(self.old_policy, self.current_policy, {"policy_reauthorization": self.transition})
 
     def test_wrong_digests_changed_policy_and_nonroot_fail_without_writes(self):
         self.inspect(); before = self.counts()

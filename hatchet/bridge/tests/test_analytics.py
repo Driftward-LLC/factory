@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import hashlib
 import json
 import sqlite3
@@ -45,8 +48,8 @@ from test_support import connect_migrate as connect
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def verifier_payload(repository: str = "Driftward-LLC/capykit") -> dict:
-    catalog = json.loads((ROOT / "workers/verifier-policy.json").read_text())
+def verifier_payload(repository: str = "example/widgets") -> dict:
+    catalog = json.loads((ROOT / "workers/test-fixtures/verifier-policy.json").read_text())
     policy = next(item for item in catalog["policies"] if item["repo"] == repository)
     digest = hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     canonical = {"catalog_version": catalog["version"], "digest": digest, **policy}
@@ -275,7 +278,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_horizon_outcome_uses_latest_state_after_reopen(self) -> None:
         origin = datetime(2026, 9, 10, tzinfo=timezone.utc)
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/80"
+        pr_url = "https://github.com/example/widgets/pull/80"
         observations = {
             pr_url: [
                 {
@@ -310,7 +313,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_horizon_without_observation_is_unknown_not_measured_failure(self) -> None:
         origin = datetime(2026, 9, 10, tzinfo=timezone.utc)
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/81"
+        pr_url = "https://github.com/example/widgets/pull/81"
 
         result = _github_within_horizon(
             {}, {pr_url: origin}, {pr_url}, timedelta(hours=24),
@@ -331,7 +334,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
     def test_horizon_uses_post_boundary_state_as_nonmerge_evidence(self) -> None:
         origin = datetime(2026, 9, 10, tzinfo=timezone.utc)
         cutoff = origin + timedelta(hours=24)
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/83"
+        pr_url = "https://github.com/example/widgets/pull/83"
         observations = {
             pr_url: [
                 {
@@ -395,7 +398,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ready_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
         merge_at = ready_at + timedelta(days=1)
         association_at = ready_at + timedelta(days=2)
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/84"
+        pr_url = "https://github.com/example/widgets/pull/84"
         attempt = {
             "attempt_id": "attempt-post-merge",
             "job_id": "job-post-merge",
@@ -451,9 +454,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_ready_multi_pr_outcomes_are_exclusive_and_evidence_bounded(self) -> None:
         origin = datetime(2026, 8, 1, tzinfo=timezone.utc)
-        closed_url = "https://github.com/Driftward-LLC/capykit/pull/90"
-        unobserved_url = "https://github.com/Driftward-LLC/capykit/pull/91"
-        merged_url = "https://github.com/Driftward-LLC/capykit/pull/92"
+        closed_url = "https://github.com/example/widgets/pull/90"
+        unobserved_url = "https://github.com/example/widgets/pull/91"
+        merged_url = "https://github.com/example/widgets/pull/92"
         attempts = {
             "ENG-MIX": [
                 {"attempt_id": "mix-closed", "job_id": "job-mix-closed", "status": "completed", "pr_url": closed_url},
@@ -521,7 +524,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_check_suite_summary_counts_every_authenticated_observation(self) -> None:
         _attempt, job, _ = self._reserve("ENG-80")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/80"
+        pr_url = "https://github.com/example/widgets/pull/80"
         self.conn.execute(
             "UPDATE bridge_jobs SET pr_url=?,commit_sha='abc0080',"
             "updated_at='2026-09-11T00:00:00Z' WHERE job_id=?",
@@ -534,7 +537,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
                 "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     f"github-check-80-{index}", "github",
-                    "Driftward-LLC/capykit#80",
+                    "example/widgets#80",
                     json.dumps({
                         "prUrl": pr_url,
                         "headSha": "abc0080",
@@ -620,7 +623,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         )
         commit_factory_execution(self.conn, success_job["job_id"], lease, {
             "commit_sha": "abc1234",
-            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/40",
+            "pr_url": "https://github.com/example/widgets/pull/40",
             "branch": success_job["branch"],
             "reason_code": "hermes_created",
             **identity,
@@ -660,8 +663,8 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-1", "github", "Driftward-LLC/capykit#40",
-                json.dumps({"prUrl": "https://github.com/Driftward-LLC/capykit/pull/40", "state": "closed", "merged": True}),
+                "github-1", "github", "example/widgets#40",
+                json.dumps({"prUrl": "https://github.com/example/widgets/pull/40", "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1, "2026-09-12T12:00:00Z",
                 int(datetime(2026, 9, 12, 12, tzinfo=timezone.utc).timestamp() * 1_000_000),
             ),
@@ -669,8 +672,8 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-stale", "github", "Driftward-LLC/capykit#40",
-                json.dumps({"prUrl": "https://github.com/Driftward-LLC/capykit/pull/40", "state": "open", "merged": False}),
+                "github-stale", "github", "example/widgets#40",
+                json.dumps({"prUrl": "https://github.com/example/widgets/pull/40", "state": "open", "merged": False}),
                 "observe_only", "github_pr_open", 1, "2026-09-13T12:00:00Z",
                 int(datetime(2026, 9, 11, 12, tzinfo=timezone.utc).timestamp() * 1_000_000),
             ),
@@ -678,8 +681,8 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-tied-open", "github", "Driftward-LLC/capykit#40",
-                json.dumps({"prUrl": "https://github.com/Driftward-LLC/capykit/pull/40", "state": "open", "merged": False}),
+                "github-tied-open", "github", "example/widgets#40",
+                json.dumps({"prUrl": "https://github.com/example/widgets/pull/40", "state": "open", "merged": False}),
                 "observe_only", "github_pr_open", 1, "2026-09-13T13:00:00Z",
                 int(datetime(2026, 9, 12, 12, tzinfo=timezone.utc).timestamp() * 1_000_000),
             ),
@@ -687,8 +690,8 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-checks", "github", "Driftward-LLC/capykit#40",
-                json.dumps({"prUrl": "https://github.com/Driftward-LLC/capykit/pull/40", "checkConclusion": "success"}),
+                "github-checks", "github", "example/widgets#40",
+                json.dumps({"prUrl": "https://github.com/example/widgets/pull/40", "checkConclusion": "success"}),
                 "observe_only", "github_checks_completed", 1, "2026-09-12T13:00:00Z",
                 int(datetime(2026, 9, 12, 13, tzinfo=timezone.utc).timestamp() * 1_000_000),
             ),
@@ -696,9 +699,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-review", "github", "Driftward-LLC/capykit#40",
+                "github-review", "github", "example/widgets#40",
                 json.dumps({
-                    "prUrl": "https://github.com/Driftward-LLC/capykit/pull/40",
+                    "prUrl": "https://github.com/example/widgets/pull/40",
                     "reviewState": "changes_requested", "actorKind": "human",
                 }),
                 "observe_only", "github_review_submitted", 1, "2026-09-12T14:00:00Z",
@@ -810,7 +813,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         authorize_factory_effect(self.conn, job["job_id"], lease)
         commit_factory_execution(self.conn, job["job_id"], lease, {
             "commit_sha": "abc1245",
-            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/44",
+            "pr_url": "https://github.com/example/widgets/pull/44",
             "branch": job["branch"],
             "reason_code": "hermes_created",
             **analytics_identity("dispatch-compatibility"),
@@ -891,7 +894,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         identity = self._register_invocation(job, lease, "primary-bound-receipt")
         receipt = {
             "commit_sha": "abcdef1",
-            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/57",
+            "pr_url": "https://github.com/example/widgets/pull/57",
             "branch": job["branch"],
         }
         for mutation in (
@@ -1167,7 +1170,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
             "operator_intervention_required": True,
             "effect_outcome": "observed",
             "elapsed_ms": 510,
-            "observed_pr_url": "https://github.com/Driftward-LLC/capykit/pull/47",
+            "observed_pr_url": "https://github.com/example/widgets/pull/47",
             "observed_commit_sha": None,
             "observed_branch": job["branch"],
             "observed_hermes_session_id": None,
@@ -1202,7 +1205,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         details_by_type = {row["event_type"]: json.loads(row["details_json"]) for row in events}
         self.assertEqual(
             details_by_type["execution_effect_commit_failed"]["observed_pr_url"],
-            "https://github.com/Driftward-LLC/capykit/pull/47",
+            "https://github.com/example/widgets/pull/47",
         )
         observed_at = self.conn.execute(
             "SELECT effect_observed_at FROM factory_execution_leases WHERE attempt_id=?",
@@ -1232,9 +1235,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
             self.conn,
             inspection["job_id"],
             {
-                "repository": "Driftward-LLC/capykit",
+                "repository": "example/widgets",
                 "number": 47,
-                "url": "https://github.com/Driftward-LLC/capykit/pull/47",
+                "url": "https://github.com/example/widgets/pull/47",
                 "state": "unknown",
                 "merged": False,
                 "draft": False,
@@ -1256,9 +1259,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
             self.conn,
             refreshed["job_id"],
             {
-                "repository": "Driftward-LLC/capykit",
+                "repository": "example/widgets",
                 "number": 47,
-                "url": "https://github.com/Driftward-LLC/capykit/pull/47",
+                "url": "https://github.com/example/widgets/pull/47",
                 "state": "open",
                 "merged": False,
                 "draft": True,
@@ -1361,7 +1364,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
                 "operator_intervention_required": True,
                 "effect_outcome": "observed",
                 "elapsed_ms": 25,
-                "observed_pr_url": "https://github.com/Driftward-LLC/capykit/pull/48",
+                "observed_pr_url": "https://github.com/example/widgets/pull/48",
                 "observed_commit_sha": "abcdef1",
                 "observed_branch": job["branch"],
                 "observed_hermes_session_id": None,
@@ -1419,7 +1422,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
                     "effect_outcome": "observed",
                     "elapsed_ms": 25,
                     "observed_pr_url": (
-                        f"https://github.com/Driftward-LLC/capykit/pull/{issue[4:]}"
+                        f"https://github.com/example/widgets/pull/{issue[4:]}"
                     ),
                     "observed_commit_sha": "abcdef1",
                     "observed_branch": job["branch"],
@@ -1506,7 +1509,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
                 "operator_intervention_required": True,
                 "effect_outcome": "observed",
                 "elapsed_ms": 25,
-                "observed_pr_url": "https://github.com/Driftward-LLC/capykit/pull/49",
+                "observed_pr_url": "https://github.com/example/widgets/pull/49",
                 "observed_commit_sha": None,
                 "observed_branch": job["branch"],
                 "observed_hermes_session_id": None,
@@ -1515,9 +1518,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
             },
         )
         unavailable = {
-            "repository": "Driftward-LLC/capykit",
+            "repository": "example/widgets",
             "number": 49,
-            "url": "https://github.com/Driftward-LLC/capykit/pull/49",
+            "url": "https://github.com/example/widgets/pull/49",
             "state": "unknown",
             "merged": False,
             "draft": False,
@@ -1583,9 +1586,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
             self.conn,
             request["job_id"],
             {
-                "repository": "Driftward-LLC/capykit",
+                "repository": "example/widgets",
                 "number": 49,
-                "url": "https://github.com/Driftward-LLC/capykit/pull/49",
+                "url": "https://github.com/example/widgets/pull/49",
                 "state": "open",
                 "merged": False,
                 "draft": True,
@@ -1612,7 +1615,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         )["lease"]
         authorize_factory_effect(self.conn, job["job_id"], lease)
         identity = self._register_invocation(job, lease, "commit-inspection-timeout")
-        url = "https://github.com/Driftward-LLC/capykit/pull/59"
+        url = "https://github.com/example/widgets/pull/59"
         settle_factory_execution(
             self.conn,
             job["job_id"],
@@ -1646,8 +1649,8 @@ class FactoryAnalyticsTests(unittest.TestCase):
                 "(request_key,repository,number,url,job_id,work_item_key,prior_attempt_id,capability,state,created_at,updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    f"irrelevant-{number}", "Driftward-LLC/capykit", number,
-                    f"https://github.com/Driftward-LLC/capykit/pull/{number}", None,
+                    f"irrelevant-{number}", "example/widgets", number,
+                    f"https://github.com/example/widgets/pull/{number}", None,
                     irrelevant["work_item_key"], irrelevant["attempt_id"], str(uuid.uuid4()),
                     "pending", "2019-01-01T00:00:00.000000Z", "2019-01-01T00:00:00.000000Z",
                 ),
@@ -1695,7 +1698,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         lease = claim_factory_execution(self.conn, job["job_id"], owner="executor-commit")["lease"]
         authorize_factory_effect(self.conn, job["job_id"], lease)
         identity = self._register_invocation(job, lease, "commit-cached-inspection")
-        url = "https://github.com/Driftward-LLC/capykit/pull/50"
+        url = "https://github.com/example/widgets/pull/50"
         _queue_pr_inspection(self.conn, "ENG-50", url, attempt["attempt_id"])
         cached = self.conn.execute(
             "SELECT * FROM factory_inspection_requests WHERE prior_attempt_id=?",
@@ -1705,7 +1708,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
             self.conn,
             cached["job_id"],
             {
-                "repository": "Driftward-LLC/capykit",
+                "repository": "example/widgets",
                 "number": 50,
                 "url": url,
                 "state": "open",
@@ -1760,7 +1763,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         )["lease"]
         authorize_factory_effect(self.conn, job["job_id"], lease)
         identity = self._register_invocation(job, lease, "commit-stale-inspection")
-        url = "https://github.com/Driftward-LLC/capykit/pull/58"
+        url = "https://github.com/example/widgets/pull/58"
         _queue_pr_inspection(self.conn, "ENG-58", url, attempt["attempt_id"])
         cached = self.conn.execute(
             "SELECT * FROM factory_inspection_requests WHERE prior_attempt_id=?",
@@ -1770,7 +1773,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
             self.conn,
             cached["job_id"],
             {
-                "repository": "Driftward-LLC/capykit",
+                "repository": "example/widgets",
                 "number": 58,
                 "url": url,
                 "state": "open",
@@ -1858,7 +1861,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
                 "operator_intervention_required": True,
                 "effect_outcome": "observed",
                 "elapsed_ms": 25,
-                "observed_pr_url": "https://github.com/Driftward-LLC/capykit/pull/51",
+                "observed_pr_url": "https://github.com/example/widgets/pull/51",
                 "observed_commit_sha": None,
                 "observed_branch": job["branch"],
                 "observed_hermes_session_id": None,
@@ -1875,9 +1878,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
             self.conn,
             request["job_id"],
             {
-                "repository": "Driftward-LLC/capykit",
+                "repository": "example/widgets",
                 "number": 51,
-                "url": "https://github.com/Driftward-LLC/capykit/pull/51",
+                "url": "https://github.com/example/widgets/pull/51",
                 "state": "open",
                 "merged": False,
                 "draft": True,
@@ -2108,7 +2111,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
             (retry["attempt_id"],),
         )
         self.conn.execute(
-            "UPDATE bridge_jobs SET pr_url='https://github.com/Driftward-LLC/capykit/pull/72',"
+            "UPDATE bridge_jobs SET pr_url='https://github.com/example/widgets/pull/72',"
             "updated_at='2026-09-11T01:00:00Z' "
             "WHERE job_id=?",
             (retry_job["job_id"],),
@@ -2127,9 +2130,9 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-merged-72", "github", "Driftward-LLC/capykit#72",
+                "github-merged-72", "github", "example/widgets#72",
                 json.dumps({
-                    "prUrl": "https://github.com/Driftward-LLC/capykit/pull/72",
+                    "prUrl": "https://github.com/example/widgets/pull/72",
                     "state": "closed", "merged": True,
                 }),
                 "observe_only", "github_pr_closed_merged", 1,
@@ -2343,8 +2346,8 @@ class FactoryAnalyticsTests(unittest.TestCase):
         repair, repair_job, _ = self._reserve("ENG-61003")
         older, _, _ = self._reserve("ENG-61004")
         self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-01T00:00:00Z'")
-        self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/119", "2026-09-11T12:00:00Z", job["job_id"]))
-        self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-13T10:00:00Z',prior_pr_url=? WHERE attempt_id=?", ("https://github.com/Driftward-LLC/capykit/pull/119", repair["attempt_id"]))
+        self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/example/widgets/pull/119", "2026-09-11T12:00:00Z", job["job_id"]))
+        self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-13T10:00:00Z',prior_pr_url=? WHERE attempt_id=?", ("https://github.com/example/widgets/pull/119", repair["attempt_id"]))
         self.conn.execute("UPDATE bridge_jobs SET requested_action='repair_draft_pr' WHERE job_id=?", (repair_job["job_id"],))
         self._series_event(original, "attempt_effect_committed", "2026-09-11T12:00:00Z")
         self._series_event(original, "attempt_verified_ready", "2026-09-11T21:00:00-03:00")
@@ -2383,7 +2386,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
             elif kind == "future-created":
                 self.conn.execute("UPDATE factory_attempts SET created_at='2026-09-15T00:00:00Z' WHERE attempt_id=?", (attempt["attempt_id"],))
             at = "2026-09-15T00:00:00Z" if kind == "future-events" else "2026-09-13T00:00:00Z"
-            self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", (f"https://github.com/Driftward-LLC/capykit/pull/{120 + index}", at, job["job_id"]))
+            self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", (f"https://github.com/example/widgets/pull/{120 + index}", at, job["job_id"]))
             for event_type in ("attempt_effect_committed", "attempt_verified_ready", "attempt_failed", "repair_reserved"):
                 self._series_event(attempt, event_type, at)
             self.conn.commit()
@@ -2403,7 +2406,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         self._series_event(missing, "attempt_verified_ready", "not-a-timestamp")
         self._series_event(missing, "attempt_failed", "2026-09-13T00:00:00Z")
         self._series_event(missing, "attempt_effect_committed", "invalid")
-        self.conn.execute("UPDATE bridge_jobs SET pr_url=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/122", job["job_id"]))
+        self.conn.execute("UPDATE bridge_jobs SET pr_url=? WHERE job_id=?", ("https://github.com/example/widgets/pull/122", job["job_id"]))
         self.conn.execute("UPDATE bridge_jobs SET requested_action='repair_draft_pr' WHERE job_id=?", (job["job_id"],))
         self.conn.commit()
 
@@ -2421,7 +2424,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         _attempt, job, _ = self._reserve("ENG-64001")
         reports = []
         for updated_at in ("2026-09-12T00:00:00Z", "2026-09-13T12:00:00Z"):
-            self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/123", updated_at, job["job_id"]))
+            self.conn.execute("UPDATE bridge_jobs SET pr_url=?,updated_at=? WHERE job_id=?", ("https://github.com/example/widgets/pull/123", updated_at, job["job_id"]))
             self.conn.commit()
             series = factory_analytics(self.bridge_db, self.ingress_db, self.lifecycle_db, days=3, now=datetime(2026, 9, 14, 12, tzinfo=timezone.utc))["time_series"]
             reports.append(series)
@@ -2436,7 +2439,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         authorize_factory_effect(self.conn, job["job_id"], lease)
         with patch("hatchet_hermes_bridge.store.utc_now", return_value="2026-09-13T00:00:00.000000Z"):
             committed = commit_factory_execution(self.conn, job["job_id"], lease, {
-                "commit_sha": "abc1245", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/124",
+                "commit_sha": "abc1245", "pr_url": "https://github.com/example/widgets/pull/124",
                 "branch": job["branch"], "reason_code": "hermes_created",
                 **analytics_identity("daily-commit"), "backend_outcome": "created", "backend_elapsed_ms": 432,
             })
@@ -2448,12 +2451,12 @@ class FactoryAnalyticsTests(unittest.TestCase):
         self.assertEqual([(point["date"], point["prs_recorded"]) for point in series["points"]], [("2026-09-11", 0), ("2026-09-12", 0), ("2026-09-13", 1), ("2026-09-14", 0)])
 
     def test_time_series_real_automatic_repair_missing_marker_is_unknown(self) -> None:
-        policy_env = patch.dict("os.environ", {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "workers/verifier-policy.json"), "HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
+        policy_env = patch.dict("os.environ", {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "workers/test-fixtures/verifier-policy.json"), "HATCHET_FACTORY_AUTO_REPAIR_MAX_GENERATIONS": "2"})
         policy_env.start()
         self.addCleanup(policy_env.stop)
         attempt, job, _ = self._reserve("ENG-64003")
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc1245", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/125"}, _factory_execution_commit=True)
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc1245", "pr_url": "https://github.com/example/widgets/pull/125"}, _factory_execution_commit=True)
         context = {
             "local_commands": [{"command": command, "exit_code": 0} for command in job["payload"]["required_local_commands"]],
             "secret_check": {"command": job["payload"]["secret_check_command"], "exit_code": 0},
@@ -2507,7 +2510,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_ready_reuse_observes_pr_from_pre_window_attempt(self) -> None:
         attempt, job, _ = self._reserve("ENG-82")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/82"
+        pr_url = "https://github.com/example/widgets/pull/82"
         self.conn.execute(
             "UPDATE factory_attempts SET created_at='2026-07-01T00:00:00Z',"
             "updated_at='2026-07-02T00:00:00Z' WHERE attempt_id=?",
@@ -2596,7 +2599,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-merged-82", "github", "Driftward-LLC/capykit#82",
+                "github-merged-82", "github", "example/widgets#82",
                 json.dumps({"prUrl": pr_url, "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1,
                 merge_at.isoformat().replace("+00:00", "Z"),
@@ -2640,7 +2643,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_inherited_repair_pr_is_included_when_source_predates_cohort(self) -> None:
         source, source_job, _ = self._reserve("ENG-76")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/76"
+        pr_url = "https://github.com/example/widgets/pull/76"
         self.conn.execute(
             "UPDATE factory_attempts SET status='failed',created_at='2026-07-01T00:00:00Z',"
             "updated_at='2026-07-03T00:00:00Z' WHERE attempt_id=?",
@@ -2689,7 +2692,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-merged-76", "github", "Driftward-LLC/capykit#76",
+                "github-merged-76", "github", "example/widgets#76",
                 json.dumps({"prUrl": pr_url, "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1,
                 "2026-09-12T00:00:00Z",
@@ -2722,7 +2725,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
     def test_post_merge_pr_association_does_not_seed_repair_efficiency(self) -> None:
         source, source_job, _ = self._reserve("ENG-81")
         old_unrelated, _old_job, _ = self._reserve("ENG-65081")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/81"
+        pr_url = "https://github.com/example/widgets/pull/81"
         self.conn.execute(
             "UPDATE factory_attempts SET prior_pr_url=?,created_at='2026-07-01T00:00:00Z',"
             "updated_at='2026-07-01T00:00:00Z' WHERE attempt_id=?",
@@ -2774,7 +2777,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-merged-81", "github", "Driftward-LLC/capykit#81",
+                "github-merged-81", "github", "example/widgets#81",
                 json.dumps({"prUrl": pr_url, "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1,
                 "2026-09-12T00:00:00Z",
@@ -2808,7 +2811,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_unjoinable_ingress_authenticity_makes_metrics_null_not_zero(self) -> None:
         _attempt, job, _ = self._reserve("ENG-77")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/77"
+        pr_url = "https://github.com/example/widgets/pull/77"
         self.conn.execute(
             "UPDATE bridge_jobs SET pr_url=? WHERE job_id=?",
             (pr_url, job["job_id"]),
@@ -2818,7 +2821,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-merged-77", "github", "Driftward-LLC/capykit#77",
+                "github-merged-77", "github", "example/widgets#77",
                 json.dumps({"prUrl": pr_url, "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1,
                 "2026-09-12T00:00:00Z",
@@ -2935,7 +2938,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_invalid_receipt_time_cannot_authenticate_provider_event(self) -> None:
         attempt, _job, _created = self._reserve("ENG-86")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/86"
+        pr_url = "https://github.com/example/widgets/pull/86"
         self.conn.execute(
             "UPDATE factory_attempts SET prior_pr_url=?,created_at='2026-09-10T00:00:00Z',"
             "updated_at='2026-09-10T00:00:00Z' WHERE attempt_id=?",
@@ -2951,7 +2954,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-invalid-receipt-86", "github", "Driftward-LLC/capykit#86",
+                "github-invalid-receipt-86", "github", "example/widgets#86",
                 json.dumps({"prUrl": pr_url, "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1,
                 "2026-09-12T00:00:00Z",
@@ -2982,7 +2985,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_future_provider_timestamp_is_excluded_from_canonical_outcome(self) -> None:
         attempt, _job, _created = self._reserve("ENG-85")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/85"
+        pr_url = "https://github.com/example/widgets/pull/85"
         self.conn.execute(
             "UPDATE factory_attempts SET prior_pr_url=?,created_at='2026-09-10T00:00:00Z',"
             "updated_at='2026-09-10T00:00:00Z' WHERE attempt_id=?",
@@ -2998,7 +3001,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-future-85", "github", "Driftward-LLC/capykit#85",
+                "github-future-85", "github", "example/widgets#85",
                 json.dumps({"prUrl": pr_url, "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1,
                 "2026-09-12T00:00:00Z",
@@ -3030,7 +3033,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
 
     def test_receipt_fallback_merge_is_state_only_not_temporal_attribution(self) -> None:
         attempt, _job, _created = self._reserve("ENG-87")
-        pr_url = "https://github.com/Driftward-LLC/capykit/pull/87"
+        pr_url = "https://github.com/example/widgets/pull/87"
         ready_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
         self.conn.execute(
             "UPDATE factory_attempts SET prior_pr_url=?,created_at=?,updated_at=?,"
@@ -3056,7 +3059,7 @@ class FactoryAnalyticsTests(unittest.TestCase):
         ingress.execute(
             "INSERT INTO ingress_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                "github-fallback-87", "github", "Driftward-LLC/capykit#87",
+                "github-fallback-87", "github", "example/widgets#87",
                 json.dumps({"prUrl": pr_url, "state": "closed", "merged": True}),
                 "observe_only", "github_pr_closed_merged", 1,
                 "2026-09-12T00:00:00Z", 0,

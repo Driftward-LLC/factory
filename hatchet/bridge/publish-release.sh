@@ -53,6 +53,7 @@ mkdir -p "$source_root"
 if [[ "${BRIDGE_TEST_MODE:-}" == 1 ]]; then
   install -d -m 0755 "$stage/hatchet_hermes_bridge" "$stage/worker-triggers"
   install -m 0644 "$repo_root/hatchet/bridge/hatchet_hermes_bridge/"*.py "$stage/hatchet_hermes_bridge/"
+  install -m 0644 "$repo_root/hatchet/bridge/factory_organization.py" "$stage/factory_organization.py"
   install -m 0644 "$repo_root/hatchet/bridge/test_capability.py" "$stage/test_capability.py"
   install -m 0644 "$repo_root/hatchet/bridge/README.md" "$stage/README.md"
   install -m 0644 "$repo_root/hatchet/bridge/predeploy-check.py" "$stage/predeploy-check.py"
@@ -71,6 +72,7 @@ else
   npm run build --prefix "$source_root/hatchet/workers" >/dev/null
   install -d -m 0755 "$stage/hatchet_hermes_bridge" "$stage/worker-triggers"
   install -m 0644 "$source_root/hatchet/bridge"/hatchet_hermes_bridge/*.py "$stage/hatchet_hermes_bridge/"
+  install -m 0644 "$source_root/hatchet/bridge/factory_organization.py" "$stage/factory_organization.py"
   install -m 0644 "$source_root/hatchet/bridge/test_capability.py" "$stage/test_capability.py"
   install -m 0644 "$source_root/hatchet/bridge/README.md" "$stage/README.md"
   install -m 0644 "$source_root/hatchet/bridge/predeploy-check.py" "$stage/predeploy-check.py"

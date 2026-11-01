@@ -165,8 +165,9 @@ class PortableStateTests(unittest.TestCase):
         self.assertEqual(values["HATCHET_POSTGRES_PASSWORD"], self.installation.values["HATCHET_POSTGRES_PASSWORD"])
         self.assertEqual(values["FACTORY_CONSOLE_PORT"], str(bootstrap.PORTS["FACTORY_CONSOLE_PORT"] + 100))
         self.assertEqual(values["FACTORY_INSTALL_DIR"], str(self.restored))
-        for name in state.CONFIG_FILES - {".env", bootstrap.MARKER}:
+        for name in state.config_files("portable-dry-run", original) - {".env", bootstrap.MARKER}:
             self.assertEqual((self.source / name).read_bytes(), (self.restored / name).read_bytes())
+        self.assertEqual(values["FACTORY_CONFIG_DIR"], str(self.restored / "config"))
         for suffix in state.PORTABLE_VOLUMES:
             volume = self.docker.volumes[f"factory-restored-{suffix}"]
             self.assertEqual(volume["data"], self.docker.volumes[f"factory-source-{suffix}"]["data"])
@@ -285,8 +286,9 @@ class PortableStateTests(unittest.TestCase):
                     "HATCHET_SERVER_AUTH_COOKIE_SECRETS", "FACTORY_IMAGE", "FACTORY_POSTGRES_IMAGE", "FACTORY_HATCHET_IMAGE"):
             self.assertEqual(values[key], self.installation.values[key])
         self.assertEqual(values["FACTORY_CONSOLE_PORT"], str(bootstrap.PORTS["FACTORY_CONSOLE_PORT"] + 100))
-        for name in state.CONFIG_FILES - {".env", bootstrap.MARKER}:
+        for name in state.config_files(state.PRODUCTION, metadata) - {".env", bootstrap.MARKER, state.PROVENANCE}:
             self.assertEqual((self.source / name).read_bytes(), (self.restored / name).read_bytes())
+        self.assertEqual(values["FACTORY_CONFIG_DIR"], str(self.restored / "config"))
         for suffix in state.VOLUMES:
             volume = self.docker.volumes[f"factory-restored-{suffix}"]
             self.assertEqual(volume["data"], self.docker.volumes[f"factory-source-{suffix}"]["data"])

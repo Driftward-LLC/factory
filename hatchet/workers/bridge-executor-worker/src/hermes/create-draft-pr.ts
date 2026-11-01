@@ -2,7 +2,7 @@ import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { executionTraceparent, telemetryEndpoint, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { requireGithubOrganization, configuredRepositories, configuredLinearIssue, loadFactoryOrganization, executionTraceparent, telemetryEndpoint, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import type { BridgeJob, FactoryAttempt, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 import type { Duration } from '@hatchet-dev/typescript-sdk/v1/client/duration';
 import {
@@ -472,6 +472,7 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
     'HATCHET_HERMES_BRIDGE_TIMEOUT_MS',
     'HATCHET_FACTORY_RUNTIME',
     'HATCHET_VERIFIER_POLICY_PATH',
+    'FACTORY_ORGANIZATION_CONFIG',
     'DRIFTWARD_HERMES_GRPC_TARGET',
     'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
     'DRIFTWARD_HERMES_GRPC_TLS',
@@ -518,12 +519,28 @@ function safeSystemdUnitPart(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'unknown';
 }
 
+function assertGitHubIntegration(): void {
+  try { requireGithubOrganization(); } catch {
+    throw new NonRetryableBridgeExecutionError('organization_not_configured', 'Factory GitHub integration is disabled or unavailable');
+  }
+}
+
 export function validateRealCreateDraftPrJob(job: BridgeJob): void {
+  try {
+    const organization = loadFactoryOrganization();
+    if (!organization.github.enabled) throw new Error('GitHub integration is disabled');
+    const issue = optionalPayloadString(job, 'linear_issue');
+    if (issue && !configuredLinearIssue(issue, organization)) throw new Error('Linear issue does not match the configured team');
+  } catch (error) {
+    throw new NonRetryableBridgeExecutionError('organization_not_configured', error instanceof Error ? error.message : String(error));
+  }
   const repo = requiredPayloadString(job, 'repo');
-  const allowedRepos = (process.env.DRIFTWARD_HERMES_ALLOWED_REPOS || 'Driftward-LLC/driftward-host')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
+  let allowedRepos: string[];
+  try {
+    allowedRepos = configuredRepositories('DRIFTWARD_HERMES_ALLOWED_REPOS');
+  } catch (error) {
+    throw new NonRetryableBridgeExecutionError('repo_not_allowlisted', error instanceof Error ? error.message : String(error));
+  }
 
   if (!allowedRepos.includes(repo)) {
     throw new NonRetryableBridgeExecutionError(
@@ -814,12 +831,14 @@ export async function validateHermesDraftPrSideEffect(job: BridgeJob, result: He
 }
 
 async function inspectDraftPullRequest(repo: string, prNumber: number, timeout: number, maxBuffer: number): Promise<GithubPrView & { diffText: string }> {
+  assertGitHubIntegration();
   return hermesGrpcGatewayEnabled()
     ? inspectDraftPullRequestViaGrpc(repo, prNumber, timeout)
     : inspectDraftPullRequestViaCommand(repo, prNumber, timeout, maxBuffer);
 }
 
 export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: number, timeout: number, maxBuffer = DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES): Promise<GithubPrView & { diffText: string }> {
+  assertGitHubIntegration();
   assertSafeGitHubRepo(repo);
   if (!Number.isSafeInteger(prNumber) || prNumber < 1 || !Number.isSafeInteger(timeout) || timeout < 1
     || !Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > 16 * 1024 * 1024) {
@@ -902,6 +921,8 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
 
 /** A fixed, read-only Hermes action used only for retry artifact fencing. */
 export async function inspectDraftPrState(repository: string, reference: string | number): Promise<DraftPrStateInspection> {
+  assertGitHubIntegration();
+  assertGitHubIntegration();
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     return { repository, number: 0, url: '', state: 'unknown', merged: false, draft: false, head_branch: null, head_sha: null, base_ref: null, reason: 'invalid_reference' };
   }
@@ -925,6 +946,7 @@ export async function inspectDraftPrStateViaCommand(
   repository: string,
   parsed: { number: number; url: string }
 ): Promise<DraftPrStateInspection> {
+  assertGitHubIntegration();
   const view = await execHermesRuntimeJson<{ number?: number; url?: string; state?: string; mergedAt?: string | null; isDraft?: boolean; headRefName?: string; headRefOid?: string; baseRefName?: string }>(
     ['gh', 'pr', 'view', String(parsed.number), '--repo', repository, '--json', 'number,url,state,mergedAt,isDraft,headRefName,headRefOid,baseRefName'],
     parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000), 128 * 1024
@@ -935,6 +957,8 @@ export async function inspectDraftPrStateViaCommand(
 
 /** A fixed, read-only Hermes action used only for force-absence retry fences. */
 export async function inspectGitHubHead(repository: string, headBranch: string): Promise<GitHubHeadInspection> {
+  assertGitHubIntegration();
+  assertGitHubIntegration();
   if (!safeGitHubRepo(repository) || !safeGitHubBranch(headBranch)) {
     return unavailableGitHubHeadInspection(repository, headBranch, 'invalid_reference');
   }
@@ -953,6 +977,7 @@ export async function inspectGitHubHeadViaCommand(
   headBranch: string,
   timeout: number = parsePositiveInt(process.env.DRIFTWARD_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000)
 ): Promise<GitHubHeadInspection> {
+  assertGitHubIntegration();
   assertSafeGitHubRepo(repository);
   assertSafeGitHubBranch(headBranch);
   const raw = await execHermesRuntimeJson<GitHubHeadInspectionCommandResponse>([
@@ -1086,6 +1111,8 @@ export async function assertHermesIdentity(repo: string): Promise<void> {
 }
 
 export async function checkHermesIdentity(repo: string): Promise<HermesIdentityCheck> {
+  assertGitHubIntegration();
+  assertGitHubIntegration();
   const expectation = hermesIdentityExpectation(repo);
   if (hermesGrpcGatewayEnabled()) {
     const observed = await checkHermesIdentityViaGrpc({
@@ -1116,8 +1143,8 @@ function hermesIdentityExpectation(repo: string): HermesIdentityExpectation {
     'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME',
     'hermes_git_author_not_configured'
   );
-  const forbiddenGithubLogins = parseCsv(process.env.DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS || 'derek-nguyen');
-  const forbiddenGitAuthorEmails = parseCsv(process.env.DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS || 'derek@driftward.io');
+  const forbiddenGithubLogins = parseCsv(process.env.DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS || '');
+  const forbiddenGitAuthorEmails = parseCsv(process.env.DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS || '');
   const timeout = parsePositiveInt(process.env.DRIFTWARD_HERMES_IDENTITY_CHECK_TIMEOUT_MS, 10_000);
 
   assertExpectedGithubAppBotIdentity(expectedGithubLogin, expectedGitAuthorName, expectedGitAuthorEmail);
@@ -1143,6 +1170,7 @@ export async function assertHermesIdentityViaCommand(
   repo: string,
   expectation: HermesIdentityExpectation = hermesIdentityExpectation(repo)
 ): Promise<HermesIdentityCheck> {
+  assertGitHubIntegration();
   if (process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
     const actor = (await execHermesRuntimeCommand(['gh', 'api', 'graphql', '-f',
       'query=query { viewer { login } }', '--jq', '.data.viewer.login'], expectation.timeout, 4096,
@@ -1910,7 +1938,7 @@ function verificationPolicy(job: BridgeJob): VerificationPolicy {
 function loadCanonicalPolicy(repo: string): VerificationPolicy {
   const policyPath = process.env.HATCHET_VERIFIER_POLICY_PATH || (process.env.NODE_ENV === 'test' ? path.resolve(process.cwd(), '..', 'verifier-policy.json') : undefined);
   if (!policyPath) throw new NonRetryableBridgeExecutionError('verification_policy_unavailable', 'HATCHET_VERIFIER_POLICY_PATH is required outside test mode');
-  if (process.env.HATCHET_FACTORY_RUNTIME === 'docker' && policyPath !== '/app/hatchet/workers/verifier-policy.json') throw new NonRetryableBridgeExecutionError('verification_policy_unavailable', 'HATCHET_VERIFIER_POLICY_PATH must be /app/hatchet/workers/verifier-policy.json for Docker Factory');
+  if (process.env.HATCHET_FACTORY_RUNTIME === 'docker' && policyPath !== '/etc/factory/config/verifier-policy.json') throw new NonRetryableBridgeExecutionError('verification_policy_unavailable', 'HATCHET_VERIFIER_POLICY_PATH must be /etc/factory/config/verifier-policy.json for Docker Factory');
   try {
     const catalog = JSON.parse(readFileSync(policyPath, 'utf8')) as { version?: unknown; policies?: unknown };
     if (!Number.isInteger(catalog.version) || !Array.isArray(catalog.policies)) throw new Error('invalid catalog');

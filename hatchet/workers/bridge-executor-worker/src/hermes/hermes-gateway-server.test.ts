@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import test from 'node:test';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
@@ -17,7 +18,7 @@ test('real gateway uses the shared bounded PR inspection default', async () => {
 const args = process.argv.slice(2);
 if (args.includes('python3')) { process.stderr.write('PRIVATE_FALLBACK_CONTENT'); process.exit(Number(process.env.TEST_FALLBACK_CODE)); }
 else if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify({changedFiles: 1, headRefOid: 'a'.repeat(40)}))});
-else if (args.includes('repos/Driftward-LLC/capykit/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify({baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40)}))});
+else if (args.includes('repos/example/widgets/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify({baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40)}))});
 else if (args.some(a => a.includes('/compare/'))) {
   if (process.env.TEST_DIFF_FAILURE) {
     process.stderr.write('HTTP ' + process.env.TEST_DIFF_FAILURE + ' Comparison.diff too_large PRIVATE_CONTENT');
@@ -32,10 +33,10 @@ else process.exit(1);
       await withGateway({ PATH: `${directory}${path.delimiter}${process.env.PATH || ''}`, DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', TEST_DIFF_BYTES: String(diffBytes) }, async (target) => {
         process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
         if (diffBytes < 2 * 1024 * 1024) {
-          const observation = await inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 77, 5000);
+          const observation = await inspectDraftPullRequestViaGrpc('example/widgets', 77, 5000);
           assert.equal(Buffer.byteLength(observation.diffText), diffBytes);
         } else {
-          await assert.rejects(inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 77, 5000), (error: unknown) => {
+          await assert.rejects(inspectDraftPullRequestViaGrpc('example/widgets', 77, 5000), (error: unknown) => {
             assert.ok(error instanceof NonRetryableBridgeExecutionError);
             assert.equal(error.reasonCode, 'hermes_process_output_limit_exceeded');
             assert.equal(error.bufferExceeded, true);
@@ -49,7 +50,7 @@ else process.exit(1);
       await withGateway({ PATH: `${directory}${path.delimiter}${process.env.PATH || ''}`, DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000',
         TEST_DIFF_FAILURE: String(status), TEST_FALLBACK_CODE: String(fallbackCode) }, async (target) => {
         process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-        await assert.rejects(inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 77, 5000), (error: unknown) => {
+        await assert.rejects(inspectDraftPullRequestViaGrpc('example/widgets', 77, 5000), (error: unknown) => {
           assert.ok(error instanceof NonRetryableBridgeExecutionError);
           assert.equal(error.reasonCode, status === 406 && fallbackCode === 73 ? 'hermes_process_output_limit_exceeded' : 'verification_evidence_unavailable');
           assert.equal(error.failureDomain, 'verification');
@@ -160,7 +161,7 @@ async function withGateway(
   target = '127.0.0.1:0',
 ): Promise<string> {
   const child = spawn(process.execPath, [path.join(__dirname, 'hermes-gateway-server.js'), '--target', target], {
-    env: { PATH: process.env.PATH, DRIFTWARD_HERMES_COMMAND: '/nonexistent/test-hermes', DRIFTWARD_HERMES_GRPC_ALLOW_TCP: '1', ...environment },
+    env: { PATH: process.env.PATH, FACTORY_ORGANIZATION_CONFIG: process.env.FACTORY_ORGANIZATION_CONFIG, DRIFTWARD_HERMES_COMMAND: '/nonexistent/test-hermes', DRIFTWARD_HERMES_GRPC_ALLOW_TCP: '1', ...environment },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

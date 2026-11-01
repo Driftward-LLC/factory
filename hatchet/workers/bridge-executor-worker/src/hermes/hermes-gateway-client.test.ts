@@ -73,18 +73,18 @@ test('Hermes gRPC client speaks over a Unix domain socket', async () => {
     process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
 
     const identity = await checkHermesIdentityViaGrpc({
-      repo: 'Driftward-LLC/capykit',
+      repo: 'example/widgets',
       expectedGithubLogin: 'factory-hermes[bot]',
       expectedGitAuthorName: 'factory-hermes[bot]',
-      expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
-      forbiddenGithubLogins: ['derek-nguyen'],
-      forbiddenGitAuthorEmails: ['derek@driftward.io'],
+      expectedGitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
+      forbiddenGithubLogins: ['example-human'],
+      forbiddenGitAuthorEmails: ['human@example.test'],
       timeoutMs: 5000
     });
-    assert.equal(identity.accessibleRepo, 'Driftward-LLC/capykit');
+    assert.equal(identity.accessibleRepo, 'example/widgets');
 
     const result = await runHermesCreateDraftPrViaGrpc(greenJob(), 5000, testLease);
-    assert.equal(result.prUrl, 'https://github.com/Driftward-LLC/capykit/pull/28');
+    assert.equal(result.prUrl, 'https://github.com/example/widgets/pull/28');
     assert.deepEqual(result.validation, {
       local_commands: [{ command: 'npm test', exit_code: 0 }],
       secret_check: { command: 'npm run check:secrets', exit_code: 0 },
@@ -93,16 +93,16 @@ test('Hermes gRPC client speaks over a Unix domain socket', async () => {
     assert.equal(result.summary, 'draft_pr_created');
     assert.doesNotMatch(JSON.stringify(result), /FAKE_(?:SESSION|SUMMARY|OUTPUT)_VALUE/);
 
-    const observation = await inspectDraftPullRequestViaGrpc('Driftward-LLC/capykit', 28, 5000);
+    const observation = await inspectDraftPullRequestViaGrpc('example/widgets', 28, 5000);
     assert.equal(observation.headRefName, 'codex/hermes-grpc-gateway');
     assert.equal(observation.statusCheckRollup?.[0]?.conclusion, 'SUCCESS');
     assert.equal(observation.diffText, 'diff --git a/README.md b/README.md');
 
-    const state = await inspectDraftPrStateViaGrpc('Driftward-LLC/capykit', 'https://github.com/Driftward-LLC/capykit/pull/28', 5000);
+    const state = await inspectDraftPrStateViaGrpc('example/widgets', 'https://github.com/example/widgets/pull/28', 5000);
     assert.equal(state.state, 'open');
     assert.equal(state.head_sha, 'abc123');
 
-    const head = await inspectGitHubHeadViaGrpc('Driftward-LLC/capykit', 'codex/hermes-grpc-gateway', 5000);
+    const head = await inspectGitHubHeadViaGrpc('example/widgets', 'codex/hermes-grpc-gateway', 5000);
     assert.equal(head.kind, 'github_branch_pr_absence_v1');
     assert.equal(head.branch_exists, false);
     assert.equal(head.pull_requests.length, 0);
@@ -113,12 +113,12 @@ test('identity preflight rejects a gateway without durable invocation support', 
   const gateway = mockGateway();
   gateway.checkIdentity = (_call: MockCall, callback: MockCallback) => callback(null, {
     githubLogin: 'factory-hermes[bot]', gitAuthorName: 'factory-hermes[bot]',
-    gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com', accessibleRepo: 'Driftward-LLC/capykit',
+    gitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com', accessibleRepo: 'example/widgets',
   });
   await withGateway(async (target) => {
     process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-    await assert.rejects(checkHermesIdentityViaGrpc({ repo: 'Driftward-LLC/capykit', expectedGithubLogin: 'factory-hermes[bot]',
-      expectedGitAuthorName: 'factory-hermes[bot]', expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
+    await assert.rejects(checkHermesIdentityViaGrpc({ repo: 'example/widgets', expectedGithubLogin: 'factory-hermes[bot]',
+      expectedGitAuthorName: 'factory-hermes[bot]', expectedGitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
       forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeoutMs: 5000 }),
     (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'hermes_grpc_invocation_protocol_unsupported' && error.failureStage === 'preflight');
   }, gateway);
@@ -176,10 +176,10 @@ test('Hermes gRPC connection failures are attributed to the transport boundary',
     process.env.DRIFTWARD_HERMES_GRPC_TARGET = `unix://${path.join(tmp, 'missing.sock')}`;
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
-        repo: 'Driftward-LLC/capykit',
+        repo: 'example/widgets',
         expectedGithubLogin: 'factory-hermes[bot]',
         expectedGitAuthorName: 'factory-hermes[bot]',
-        expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
+        expectedGitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
         forbiddenGithubLogins: [],
         forbiddenGitAuthorEmails: [],
         timeoutMs: 100,
@@ -204,7 +204,7 @@ test('malformed Hermes gRPC results are attributed to protocol result parsing', 
   gateway.createDraftPullRequest = (_call: MockCall, callback: MockCallback) => {
     callback(null, {
       status: 'created',
-      prUrl: 'https://github.com/Driftward-LLC/capykit/pull/28',
+      prUrl: 'https://github.com/example/widgets/pull/28',
       prNumber: 28,
       branch: 'codex/hermes-grpc-gateway',
       validationJson: '{"token":"ghp_not-a-real-secret"'
@@ -248,10 +248,10 @@ test('untrusted gateway failure metadata is discarded before Factory settlement'
     process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
-        repo: 'Driftward-LLC/capykit',
+        repo: 'example/widgets',
         expectedGithubLogin: 'factory-hermes[bot]',
         expectedGitAuthorName: 'factory-hermes[bot]',
-        expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
+        expectedGitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
         forbiddenGithubLogins: [],
         forbiddenGitAuthorEmails: [],
         timeoutMs: 5000,
@@ -288,10 +288,10 @@ test('synchronous Hermes gRPC client setup failures are classified and sanitized
 
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
-        repo: 'Driftward-LLC/capykit',
+        repo: 'example/widgets',
         expectedGithubLogin: 'factory-hermes[bot]',
         expectedGitAuthorName: 'factory-hermes[bot]',
-        expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
+        expectedGitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
         forbiddenGithubLogins: [],
         forbiddenGitAuthorEmails: [],
         timeoutMs: 5000,
@@ -328,10 +328,10 @@ test('synchronous Hermes gRPC request metadata failures do not expose auth mater
 
     await assert.rejects(
       () => checkHermesIdentityViaGrpc({
-        repo: 'Driftward-LLC/capykit',
+        repo: 'example/widgets',
         expectedGithubLogin: 'factory-hermes[bot]',
         expectedGitAuthorName: 'factory-hermes[bot]',
-        expectedGitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
+        expectedGitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
         forbiddenGithubLogins: [],
         forbiddenGitAuthorEmails: [],
         timeoutMs: 5000,
@@ -388,13 +388,13 @@ function loadGatewayService(): grpc.ServiceClientConstructor & { service: grpc.S
 function mockGateway(): grpc.UntypedServiceImplementation {
   return {
     checkIdentity: (call: MockCall, callback: MockCallback) => {
-      assert.equal(call.request.repo, 'Driftward-LLC/capykit');
+      assert.equal(call.request.repo, 'example/widgets');
       callback(null, {
         invocationProtocolVersion: 2,
         githubLogin: 'factory-hermes[bot]',
         gitAuthorName: 'factory-hermes[bot]',
-        gitAuthorEmail: '4491454+factory-hermes[bot]@users.noreply.github.com',
-        accessibleRepo: 'Driftward-LLC/capykit'
+        gitAuthorEmail: '12345+factory-hermes[bot]@users.noreply.github.com',
+        accessibleRepo: 'example/widgets'
       });
     },
     createDraftPullRequest: (call: MockCall, callback: MockCallback) => {
@@ -403,7 +403,7 @@ function mockGateway(): grpc.UntypedServiceImplementation {
       assert.equal(call.request.branch, 'codex/hermes-grpc-gateway');
       callback(null, {
         status: 'created',
-        prUrl: 'https://github.com/Driftward-LLC/capykit/pull/28',
+        prUrl: 'https://github.com/example/widgets/pull/28',
         prNumber: 28,
         commitSha: 'abc1234',
         branch: 'codex/hermes-grpc-gateway',
@@ -421,7 +421,7 @@ function mockGateway(): grpc.UntypedServiceImplementation {
         headRefName: 'codex/hermes-grpc-gateway',
         baseRefName: 'main',
         isDraft: true,
-        url: 'https://github.com/Driftward-LLC/capykit/pull/28',
+        url: 'https://github.com/example/widgets/pull/28',
         author: { login: 'factory-hermes[bot]' },
         body: 'Refs Linear ENG-28',
         files: [{ path: 'README.md' }],
@@ -432,9 +432,9 @@ function mockGateway(): grpc.UntypedServiceImplementation {
     },
     inspectPullRequestState: (_call: MockCall, callback: MockCallback) => {
       callback(null, {
-        repository: 'Driftward-LLC/capykit',
+        repository: 'example/widgets',
         number: 28,
-        url: 'https://github.com/Driftward-LLC/capykit/pull/28',
+        url: 'https://github.com/example/widgets/pull/28',
         state: 'open',
         merged: false,
         draft: true,
@@ -447,7 +447,7 @@ function mockGateway(): grpc.UntypedServiceImplementation {
     inspectGitHubHead: (_call: MockCall, callback: MockCallback) => {
       callback(null, {
         kind: 'github_branch_pr_absence_v1',
-        repository: 'Driftward-LLC/capykit',
+        repository: 'example/widgets',
         headBranch: 'codex/hermes-grpc-gateway',
         branchExists: false,
         pullRequests: [],
@@ -475,7 +475,7 @@ function greenJob(): BridgeJob {
     state: 'running',
     requested_action: 'create_draft_pr',
     payload: {
-      repo: 'Driftward-LLC/capykit',
+      repo: 'example/widgets',
       dry_run: false,
       verification_policy: {
         required_local_commands: ['npm test'],

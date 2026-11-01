@@ -27,9 +27,9 @@ export default function BeforeExecution({ intake, onOpen, issue = false, stale =
           : item.dispatch_eligible ? 'Awaiting intake: eligibility was recorded, but no attempt is recorded. This is not confirmation that work is queued or running.'
           : item.dispatch_eligible == null ? 'Intake eligibility was not recorded. Check Linear and Factory controls; no execution can be inferred.'
           : 'Not eligible at the last observation. Review the issue status, prerequisites and Factory controls before requesting intake.'}</p>
-        {item.blocked_by?.length > 0 && <p>Observed blockers: {item.blocked_by.map(key => <ExternalLink key={key} href={'https://linear.app/driftward/issue/' + encodeURIComponent(key)}>{key} <ArrowTopRightIcon aria-hidden="true" /></ExternalLink>)}</p>}
+        {item.blocked_by?.length > 0 && <p>Observed blockers: {item.blocked_by.map(key => item.blocked_by_urls?.[key] ? <ExternalLink key={key} href={item.blocked_by_urls[key]}>{key} <ArrowTopRightIcon aria-hidden="true" /></ExternalLink> : <span key={key}>{key} </span>)}</p>}
         <p className="muted">Last observed {time(item.observed_at)} · Linear updated {time(item.provider_updated_at)}. Not revalidated with Linear.</p>
-        <ExternalLink href={'https://linear.app/driftward/issue/' + encodeURIComponent(item.issue)}>Open in Linear <ArrowTopRightIcon aria-hidden="true" /></ExternalLink>
+        {item.issue_url && <ExternalLink href={item.issue_url}>Open in Linear <ArrowTopRightIcon aria-hidden="true" /></ExternalLink>}
         </Card>
       </li>)}</ul>}
   </section>;

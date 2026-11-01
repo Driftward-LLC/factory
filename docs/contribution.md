@@ -32,19 +32,16 @@ pin or activating profiles requires a reviewed operational change.
 
 ## Integration portability
 
-The portable dry-run installation is independent of a source checkout. Real
-execution integrations still contain installation-specific assumptions:
+The public image is independent of any organization. Deployment-owned JSON files
+supply Linear identity, project routes, verifier branches and independent review
+scope; source catalogs deny execution by default. See the [organization
+configuration guide](../deploy/ORGANIZATION.md) for the schema, examples, startup
+validation and secret boundaries. Changing credentials alone never grants
+execution authority.
 
-- Linear project IDs and repository policies in the routing registry.
-- Linear workspace/team identity checks, the `ENG-` issue-key validation, and
-  console issue-link construction.
-- Repository and App allowlists in execution and source-review helpers.
-- The externally provisioned Hermes wrapper, profile plugin, and instruction pins.
-
-Review these against the source and your own installation before enabling real
-work. Supplying credentials alone does not adapt these policies. Preserve
-identity checks and execution gates when changing them; documentation examples
-do not override the deployed policy.
+The dedicated Hermes wrapper, profile plugins and instruction pins still require
+a reviewed installation-specific binding. Preserve identity checks and execution
+gates; documentation examples do not override deployed policy.
 
 ## Develop and validate
 

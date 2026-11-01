@@ -116,7 +116,7 @@ class IssueControl:
 
     def read(self, issue: str) -> dict[str, Any]:
         if not operator.ISSUE_RE.fullmatch(issue):
-            raise store.BridgeValidationError("issue must be an ENG identifier")
+            raise store.BridgeValidationError("issue must be a Linear issue identifier")
         conn = store.connect_readonly(self.db_path)
         try:
             with conn:

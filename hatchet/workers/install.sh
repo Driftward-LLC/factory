@@ -14,7 +14,7 @@ bridge_env="/etc/driftward/hatchet-bridge.env"
 verifier_env="/etc/driftward/hatchet-verifier.env"
 operator_env="/etc/driftward/factory-operator.env"
 policy_src="$workers_root/verifier-policy.json"
-policy_dst="$policy_src"
+policy_dst="${HATCHET_VERIFIER_POLICY_PATH:-}"
 units=(
   driftward-hatchet-hermes-gateway.service
   driftward-hatchet-worker-intake.service
@@ -174,9 +174,14 @@ ensure_env_file "$bridge_executor_env"
 ensure_env_file "$reconciliation_env"
 ensure_env_file "$verifier_env"
 ensure_env_file "$operator_env"
+# Preserve an installation's reviewed policy selection across worker upgrades.
+policy_dst="${policy_dst:-$(env_file_value "$common_env" HATCHET_VERIFIER_POLICY_PATH)}"
+policy_dst="${policy_dst:-$policy_src}"
+policy_source="$policy_src"
+[[ "$policy_dst" == "$policy_src" ]] || policy_source=""
 ensure_env_secret "$operator_env" HATCHET_FACTORY_OPERATOR_TOKEN
-HATCHET_VERIFIER_ENV_PATH="$verifier_env" HATCHET_VERIFIER_POLICY_PATH="$policy_dst" HATCHET_VERIFIER_POLICY_SOURCE="$policy_src" "$repo_root/hatchet/bridge/verifier-env.sh" provision
-HATCHET_VERIFIER_ENV_PATH="$verifier_env" HATCHET_VERIFIER_POLICY_PATH="$policy_dst" HATCHET_VERIFIER_POLICY_SOURCE="$policy_src" "$repo_root/hatchet/bridge/verifier-env.sh" status
+HATCHET_VERIFIER_ENV_PATH="$verifier_env" HATCHET_VERIFIER_POLICY_PATH="$policy_dst" HATCHET_VERIFIER_POLICY_SOURCE="$policy_source" "$repo_root/hatchet/bridge/verifier-env.sh" provision
+HATCHET_VERIFIER_ENV_PATH="$verifier_env" HATCHET_VERIFIER_POLICY_PATH="$policy_dst" HATCHET_VERIFIER_POLICY_SOURCE="$policy_source" "$repo_root/hatchet/bridge/verifier-env.sh" status
 
 upsert_env "$common_env" HATCHET_CLIENT_API_URL "$(read_profile_value apiserverurl)"
 upsert_env "$common_env" HATCHET_CLIENT_HOST_PORT "$(read_profile_value grpchostport)"
@@ -197,8 +202,9 @@ upsert_env "$common_env" RECONCILIATION_OBSERVATION_TIMEOUT_MS "${RECONCILIATION
 upsert_env "$common_env" RECONCILIATION_OBSERVATION_MAX_AGE_MS "${RECONCILIATION_OBSERVATION_MAX_AGE_MS:-86400000}"
 upsert_env "$common_env" HATCHET_CLIENT_LOG_LEVEL "${HATCHET_CLIENT_LOG_LEVEL:-INFO}"
 remove_env "$common_env" HATCHET_INTAKE_DEFAULT_REPO
-upsert_env "$common_env" HATCHET_INTAKE_ROUTING_REGISTRY_PATH "${HATCHET_INTAKE_ROUTING_REGISTRY_PATH:-$workers_root/routing-registry.json}"
-upsert_env "$common_env" HATCHET_INTAKE_ALLOWED_REPOS "${HATCHET_INTAKE_ALLOWED_REPOS:-Driftward-LLC/driftward-host,Driftward-LLC/capykit}"
+upsert_env "$common_env" HATCHET_INTAKE_ROUTING_REGISTRY_PATH "${HATCHET_INTAKE_ROUTING_REGISTRY_PATH:-$(env_file_value "$common_env" HATCHET_INTAKE_ROUTING_REGISTRY_PATH)}"
+upsert_env "$common_env" HATCHET_INTAKE_ALLOWED_REPOS "${HATCHET_INTAKE_ALLOWED_REPOS:-$(env_file_value "$common_env" HATCHET_INTAKE_ALLOWED_REPOS)}"
+upsert_env "$common_env" FACTORY_ORGANIZATION_CONFIG "${FACTORY_ORGANIZATION_CONFIG:-$(env_file_value "$common_env" FACTORY_ORGANIZATION_CONFIG)}"
 upsert_env "$common_env" HATCHET_INTAKE_DRY_RUN "${HATCHET_INTAKE_DRY_RUN:-true}"
 upsert_env "$common_env" HATCHET_VERIFIER_POLICY_PATH "$policy_dst"
 
@@ -209,6 +215,8 @@ for key in HATCHET_CLIENT_API_URL HATCHET_CLIENT_HOST_PORT HATCHET_CLIENT_TLS_ST
   upsert_env "$operator_env" "$key" "$value"
 done
 
+upsert_env "$bridge_executor_env" FACTORY_ORGANIZATION_CONFIG "${FACTORY_ORGANIZATION_CONFIG:-$(env_file_value "$common_env" FACTORY_ORGANIZATION_CONFIG)}"
+upsert_env "$bridge_executor_env" HATCHET_VERIFIER_POLICY_PATH "$policy_dst"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED "${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED:-1}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_GRPC_TARGET "${DRIFTWARD_HERMES_GRPC_TARGET:-unix:///run/driftward-hermes-factory/hermes.sock}"
 normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_AUTH_MODE auth "${DRIFTWARD_HERMES_AUTH_MODE:-}"
@@ -217,12 +225,12 @@ remove_env "$bridge_executor_env" DRIFTWARD_HERMES_MODEL
 normalize_analytics_label "$bridge_executor_env" DRIFTWARD_HERMES_VERSION version "${DRIFTWARD_HERMES_VERSION:-}"
 normalize_analytics_label "$bridge_executor_env" FACTORY_RELEASE_VERSION version "${FACTORY_RELEASE_VERSION:-}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_COMMAND "${DRIFTWARD_HERMES_COMMAND:-driftward-hermes}"
-upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_ALLOWED_REPOS "${DRIFTWARD_HERMES_ALLOWED_REPOS:-Driftward-LLC/driftward-host,Driftward-LLC/capykit}"
+upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_ALLOWED_REPOS "${DRIFTWARD_HERMES_ALLOWED_REPOS:-$(env_file_value "$bridge_executor_env" DRIFTWARD_HERMES_ALLOWED_REPOS)}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN "${DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN:-factory-hermes[bot]}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME "${DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME:-factory-hermes[bot]}"
-upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL "${DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL:-4491454+factory-hermes[bot]@users.noreply.github.com}"
-upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS "${DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS:-derek-nguyen}"
-upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS "${DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS:-derek@driftward.io}"
+upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL "${DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL:-$(env_file_value "$bridge_executor_env" DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL)}"
+upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS "${DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS:-$(env_file_value "$bridge_executor_env" DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS)}"
+upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS "${DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS:-$(env_file_value "$bridge_executor_env" DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS)}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS "${DRIFTWARD_HERMES_CREATE_DRAFT_PR_TIMEOUT_MS:-1200000}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_ASYNC_RECEIPTS_ENABLED "${DRIFTWARD_HERMES_ASYNC_RECEIPTS_ENABLED:-1}"
 upsert_env "$bridge_executor_env" DRIFTWARD_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS "${DRIFTWARD_HERMES_ASYNC_CREATE_DRAFT_PR_TIMEOUT_MS:-14400000}"

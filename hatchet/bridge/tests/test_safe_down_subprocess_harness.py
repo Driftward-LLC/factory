@@ -6,6 +6,9 @@ after the inherited FD 8 capability has validated a private temporary root.
 """
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import contextlib
 import hashlib
 import json
@@ -130,9 +133,9 @@ class SafeDownSubprocessFixture:
             clone = _bounded_run(["git", "clone", "--quiet", "--no-hardlinks", str(REPO_ROOT), str(self.repo)], timeout=SETUP_TIMEOUT_SECONDS)
             if clone.returncode: raise AssertionError(clone.stderr)
             shutil.copytree(ROOT / "bridge", self.repo / "hatchet/bridge", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            for policy in ("verifier-policy.json", "independent-review-policy.json"):
-                shutil.copy2(ROOT / "workers" / policy, self.repo / "hatchet/workers" / policy)
-            for command in (["git", "-C", str(self.repo), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(self.repo), "config", "user.name", "bridge test"], ["git", "-C", str(self.repo), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json"]):
+            for policy in ("verifier-policy.json", "independent-review-policy.json", "routing-registry.json"):
+                shutil.copy2(ROOT / "workers/test-fixtures" / policy, self.repo / "hatchet/workers" / policy)
+            for command in (["git", "-C", str(self.repo), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(self.repo), "config", "user.name", "bridge test"], ["git", "-C", str(self.repo), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json", "hatchet/workers/routing-registry.json"]):
                 result = _bounded_run(command, timeout=SETUP_TIMEOUT_SECONDS)
                 if result.returncode: raise AssertionError(result.stderr)
             _commit_if_staged(self.repo)
@@ -277,8 +280,8 @@ exit 22
             job_id = f"legacy-eng{index:02d}"
             key = f"hatchet:work-item:linear:{work_item}:create_draft_pr:real:active"
             branch = deterministic_branch(key)
-            pr_url = f"https://github.com/Driftward-LLC/capykit/pull/{20 + index}"
-            payload = json.dumps({"linear_issue": work_item, "repo": "Driftward-LLC/capykit", "dry_run": False}, sort_keys=True)
+            pr_url = f"https://github.com/example/widgets/pull/{20 + index}"
+            payload = json.dumps({"linear_issue": work_item, "repo": "example/widgets", "dry_run": False}, sort_keys=True)
             con.execute(
                 "INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (job_id, key, "completed", "create_draft_pr", payload, f"fixture-{index:02d}", branch, pr_url, now, now),
@@ -489,9 +492,9 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         clone = _bounded_run(["git", "clone", "--quiet", "--no-hardlinks", str(REPO_ROOT), str(template)], timeout=SETUP_TIMEOUT_SECONDS)
         if clone.returncode: raise AssertionError(clone.stderr)
         shutil.copytree(ROOT / "bridge", template / "hatchet/bridge", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        for policy in ("verifier-policy.json", "independent-review-policy.json"):
-            shutil.copy2(ROOT / "workers" / policy, template / "hatchet/workers" / policy)
-        for command in (["git", "-C", str(template), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(template), "config", "user.name", "bridge test"], ["git", "-C", str(template), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json"]):
+        for policy in ("verifier-policy.json", "independent-review-policy.json", "routing-registry.json"):
+            shutil.copy2(ROOT / "workers/test-fixtures" / policy, template / "hatchet/workers" / policy)
+        for command in (["git", "-C", str(template), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(template), "config", "user.name", "bridge test"], ["git", "-C", str(template), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json", "hatchet/workers/routing-registry.json"]):
             result = _bounded_run(command, timeout=SETUP_TIMEOUT_SECONDS)
             if result.returncode: raise AssertionError(result.stderr)
         _commit_if_staged(template)
@@ -545,7 +548,7 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         self.assertEqual((release_root / "current").resolve(), release)
         self.assertFalse(any(path.suffix == ".pyc" or "__pycache__" in path.parts for path in release.rglob("*")))
         self.assertEqual((release / "independent-review-policy.json").read_bytes(),
-                         (ROOT / "workers/independent-review-policy.json").read_bytes())
+                         (ROOT / "workers/test-fixtures/independent-review-policy.json").read_bytes())
         verified = _bounded_run(
             ["python3", str(ROOT / "bridge/release_hygiene.py"), "verify", "--tree", str(release), "--commit", fixture.release_version, "--source-tree", fixture.release_version],
             timeout=DIRECT_TIMEOUT_SECONDS,

@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import unittest
 import os
 import sqlite3
@@ -243,14 +246,15 @@ class InstallerPolicyTests(unittest.TestCase):
         verifier_env = (ROOT / "bridge" / "verifier-env.sh").read_text()
         executor_unit = (ROOT / "workers" / "systemd" / "driftward-hatchet-worker-bridge-executor.service").read_text()
         workers_install = (ROOT / "workers" / "install.sh").read_text()
-        self.assertIn('HATCHET_VERIFIER_POLICY_PATH: /app/hatchet/workers/verifier-policy.json', compose)
+        self.assertIn('HATCHET_VERIFIER_POLICY_PATH: /etc/factory/config/verifier-policy.json', compose)
         self.assertIn('HATCHET_FACTORY_OPERATOR_RUNTIME: docker', compose)
-        self.assertIn('expected_policy_path="/app/hatchet/workers/verifier-policy.json"', smoke)
+        self.assertIn('expected_policy_path="/etc/factory/config/verifier-policy.json"', smoke)
         self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH", "/etc/driftward/hatchet-verifier-policy.json"', operator)
         self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-/etc/driftward/hatchet-verifier-policy.json', verifier_env)
         self.assertIn('EnvironmentFile=-/etc/driftward/hatchet-verifier.env', executor_unit)
         self.assertIn('upsert_env "$common_env" HATCHET_VERIFIER_POLICY_PATH "$policy_dst"', workers_install)
-        self.assertNotIn('HATCHET_VERIFIER_POLICY_PATH:-', workers_install)
+        self.assertIn('policy_dst="${HATCHET_VERIFIER_POLICY_PATH:-}"', workers_install)
+        self.assertIn('env_file_value "$common_env" HATCHET_VERIFIER_POLICY_PATH', workers_install)
 
     def test_verifier_env_requires_explicit_policy_path(self):
         helper = ROOT / "bridge" / "verifier-env.sh"
@@ -307,7 +311,7 @@ class InstallerPolicyTests(unittest.TestCase):
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("INSERT INTO bridge_jobs VALUES ('legacy', 'hatchet:work-item:linear:eng-8:create_draft_pr:real:active', '{', 'branch', NULL, 'completed', NULL)")
             conn.commit(); conn.close()
-            result = subprocess.run(["python3", str(check), "--db", database.name, "--validate-legacy-import"], capture_output=True, text=True)
+            result = subprocess.run(["python3", str(check), "--db", database.name, "--routing-registry", str(ROOT / "workers/test-fixtures/routing-registry.json"), "--validate-legacy-import"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn("legacy import validation errors: 1", result.stdout)
 
@@ -323,11 +327,11 @@ class InstallerPolicyTests(unittest.TestCase):
             conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?,'codex/hatchet-hermes-same',NULL,'completed',NULL)", (first,))
             conn.execute("INSERT INTO bridge_jobs VALUES ('b','hatchet:work-item:linear:ENG-9:create_draft_pr:real:active',?,'codex/hatchet-hermes-same',NULL,'completed',NULL)", (second,))
             # ENG-8's historical PR reference appears only in an event.
-            conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/Driftward-LLC/capykit/pull/20"}}),))
-            conn.execute("INSERT INTO bridge_events VALUES ('b',?)", (json.dumps({"effect":{"pr_url":"https://github.com/Driftward-LLC/capykit/pull/20"}}),))
+            conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/example/widgets/pull/20"}}),))
+            conn.execute("INSERT INTO bridge_events VALUES ('b',?)", (json.dumps({"effect":{"pr_url":"https://github.com/example/widgets/pull/20"}}),))
             conn.execute("INSERT INTO bridge_events VALUES ('a','[]')")
             conn.commit(); conn.close()
-            result = subprocess.run(["python3", str(check), "--db", database.name, "--validate-legacy-import"], capture_output=True, text=True)
+            result = subprocess.run(["python3", str(check), "--db", database.name, "--routing-registry", str(ROOT / "workers/test-fixtures/routing-registry.json"), "--validate-legacy-import"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn("legacy import validation errors:", result.stdout)
 
@@ -338,11 +342,11 @@ class InstallerPolicyTests(unittest.TestCase):
             conn = sqlite3.connect(database.name)
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
-            payload = json.dumps({"linear_issue":"ENG-8", "repo":"Driftward-LLC/capykit", "dry_run":False})
-            conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?,NULL,'https://github.com/Driftward-LLC/driftward-host/pull/143','completed',NULL)", (payload,))
-            conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/Driftward-LLC/driftward-host/pull/143"}}),))
+            payload = json.dumps({"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
+            conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?,NULL,'https://github.com/example/platform/pull/143','completed',NULL)", (payload,))
+            conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/example/platform/pull/143"}}),))
             conn.commit(); conn.close()
-            result = subprocess.run(["python3", str(check), "--db", database.name, "--validate-legacy-import"], capture_output=True, text=True)
+            result = subprocess.run(["python3", str(check), "--db", database.name, "--routing-registry", str(ROOT / "workers/test-fixtures/routing-registry.json"), "--validate-legacy-import"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn("legacy import validation errors: 1", result.stdout)
 
@@ -354,20 +358,20 @@ class InstallerPolicyTests(unittest.TestCase):
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
             conn.execute("CREATE TABLE factory_inspection_requests (work_item_key TEXT, url TEXT, result_json TEXT)")
-            payload = json.dumps({"linear_issue":"ENG-8", "repo":"Driftward-LLC/capykit", "dry_run":False})
+            payload = json.dumps({"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
             conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?,NULL,NULL,'completed',NULL)", (payload,))
-            conn.execute("INSERT INTO factory_inspection_requests VALUES ('ENG-8','https://github.com/Driftward-LLC/driftward-host/pull/143',NULL)")
+            conn.execute("INSERT INTO factory_inspection_requests VALUES ('ENG-8','https://github.com/example/platform/pull/143',NULL)")
             conn.commit(); conn.close()
-            result = subprocess.run(["python3", str(check), "--db", database.name, "--validate-legacy-import"], capture_output=True, text=True)
+            result = subprocess.run(["python3", str(check), "--db", database.name, "--routing-registry", str(ROOT / "workers/test-fixtures/routing-registry.json"), "--validate-legacy-import"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
         with tempfile.NamedTemporaryFile() as database:
             import sqlite3
             conn = sqlite3.connect(database.name)
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("CREATE TABLE factory_inspection_requests (url TEXT)")
-            conn.execute("INSERT INTO factory_inspection_requests VALUES ('https://github.com/Driftward-LLC/capykit/pull/20')")
+            conn.execute("INSERT INTO factory_inspection_requests VALUES ('https://github.com/example/widgets/pull/20')")
             conn.commit(); conn.close()
-            result = subprocess.run(["python3", str(check), "--db", database.name, "--validate-legacy-import"], capture_output=True, text=True)
+            result = subprocess.run(["python3", str(check), "--db", database.name, "--routing-registry", str(ROOT / "workers/test-fixtures/routing-registry.json"), "--validate-legacy-import"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn("legacy import validation errors: 1", result.stdout)
 
@@ -378,19 +382,19 @@ class InstallerPolicyTests(unittest.TestCase):
             conn = sqlite3.connect(database.name)
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
-            payload = json.dumps({"linear_issue":"ENG-8", "repo":"Driftward-LLC/capykit", "dry_run":False})
+            payload = json.dumps({"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
             branch = "codex/hatchet-hermes-d648b143d1aa45d1"
             conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?, ?,NULL,'completed',NULL)", (payload, branch))
-            conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/Driftward-LLC/capykit/pull/20", "head_branch":branch}}),))
+            conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/example/widgets/pull/20", "head_branch":branch}}),))
             conn.commit(); conn.close()
-            result = subprocess.run(["python3", str(check), "--db", database.name, "--validate-legacy-import"], capture_output=True, text=True)
+            result = subprocess.run(["python3", str(check), "--db", database.name, "--routing-registry", str(ROOT / "workers/test-fixtures/routing-registry.json"), "--validate-legacy-import"], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_predeploy_rejects_present_malformed_artifact_fields_in_every_source(self):
         check = ROOT / "bridge" / "predeploy-check.py"
         cases = (
             ("payload", {"pr_url": "https://example.invalid/pull/20"}),
-            ("direct_url", "https://github.com/Driftward-LLC/capykit/issues/20"),
+            ("direct_url", "https://github.com/example/widgets/issues/20"),
             ("direct_branch", "codex/not-a-factory-branch"),
             ("event", {"result": {"head_branch": ["codex/hatchet-hermes-0123456789abcdef"]}}),
             ("inspection", {"url": {"not": "a string"}}),
@@ -401,7 +405,7 @@ class InstallerPolicyTests(unittest.TestCase):
                 conn = sqlite3.connect(database.name)
                 conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
                 conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
-                payload = {"linear_issue":"ENG-8", "repo":"Driftward-LLC/capykit", "dry_run":False}
+                payload = {"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False}
                 branch = None; pr_url = None
                 if source == "payload": payload.update(malformed)
                 if source == "direct_url": pr_url = malformed
@@ -415,5 +419,5 @@ class InstallerPolicyTests(unittest.TestCase):
                     conn.execute("CREATE TABLE factory_inspection_requests (work_item_key TEXT, url TEXT, result_json TEXT)")
                     conn.execute("INSERT INTO factory_inspection_requests VALUES ('ENG-8',?,NULL)", (json.dumps(malformed["url"]),))
                 conn.commit(); conn.close()
-                result = subprocess.run(["python3", str(check), "--db", database.name, "--validate-legacy-import"], capture_output=True, text=True)
+                result = subprocess.run(["python3", str(check), "--db", database.name, "--routing-registry", str(ROOT / "workers/test-fixtures/routing-registry.json"), "--validate-legacy-import"], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import factory_organization as organization
+
 import json
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -482,6 +484,7 @@ def _error_response(exc: Exception) -> tuple[int, dict[str, str]]:
 
 
 def serve(db_path: str, host: str, port: int) -> None:
+    organization.validate_startup()
     conn = connect_runtime(db_path, check_same_thread=False)
     httpd = HTTPServer((host, port), BridgeHandler)
     httpd.conn = conn

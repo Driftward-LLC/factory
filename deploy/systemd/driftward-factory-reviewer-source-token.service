@@ -6,6 +6,8 @@ Wants=network-online.target driftward-hermes.service
 
 [Service]
 Type=oneshot
+Environment=FACTORY_ORGANIZATION_CONFIG=/etc/driftward/factory/organization.json
+Environment=HATCHET_INDEPENDENT_REVIEW_POLICY_PATH=/etc/driftward/factory/independent-review-policy.json
 User=root
 ExecStart=/usr/bin/python3 __FACTORY_SHARE_DIR__/independent-reviewer/deploy/independent-reviewer/renew_source_token.py
 TimeoutStartSec=60

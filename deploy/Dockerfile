@@ -114,5 +114,5 @@ ENV NODE_ENV=production \
     FACTORY_HATCHET_DOCTOR_SCRIPT=/app/tools/factory-hatchet-doctor.py \
     FACTORY_HATCHET_DESIRED_STATE=/app/hatchet/desired-state/factory-hatchet.json
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "/app/deploy/configuration-entrypoint.sh"]
 CMD ["/app/factory/factory", "status"]

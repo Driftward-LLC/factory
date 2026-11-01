@@ -184,8 +184,12 @@ def main() -> int:
             run(*command, image)
             containers.append(name)
 
+        configuration = root / "configuration"
+        configuration.mkdir(mode=0o700)
+        for name, value in bootstrap.ORGANIZATION_DEFAULTS.items():
+            bootstrap._create_private(configuration / name, json.dumps(value))
         command = [sys.executable, str(ROOT / "deploy/factory-cutover.py"), "--source-project", source_project,
-                   "--source-env-dir", str(env_dir), "--source-keys", str(keys), "--directory", str(directory),
+                   "--source-env-dir", str(env_dir), "--source-keys", str(keys), "--configuration", str(configuration), "--directory", str(directory),
                    "--project", project, "--snapshot", str(snapshot), "--port-offset", "22000"]
         print("Checking read-only cutover preview.", flush=True)
         run(*command, stage="cutover preview")

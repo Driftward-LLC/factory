@@ -70,7 +70,7 @@ def _validate_registry(value: Any) -> dict[str, Any]:
     if value.get("version") != 2:
         raise LinearProjectExecutionPolicyError("routing_registry_version_invalid")
     routes = value.get("routes")
-    if not isinstance(routes, list) or not routes:
+    if not isinstance(routes, list):
         raise LinearProjectExecutionPolicyError("routing_registry_routes_invalid")
 
     normalized_routes: list[dict[str, Any]] = []

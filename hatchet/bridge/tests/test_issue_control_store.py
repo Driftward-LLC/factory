@@ -1,3 +1,7 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+import json
 import os
 import sqlite3
 import tempfile
@@ -19,14 +23,14 @@ class IssueControlStoreTests(unittest.TestCase):
         self.path = str(Path(self.tmp.name) / "bridge.db")
         self.conn = connect_migrate(self.path)
         self.addCleanup(self.conn.close)
-        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/verifier-policy.json")})
+        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/test-fixtures/verifier-policy.json")})
         env.start()
         self.addCleanup(env.stop)
         self.issue = "ENG-600"
 
     def intake(self, request_id="original"):
         return store.reserve_factory_intake(self.conn, work_item_key=self.issue, mode="real", request_id=request_id,
-                                            reason="Ready intake", actor="intake-worker", payload=verifier_payload("Driftward-LLC/capykit"))
+                                            reason="Ready intake", actor="intake-worker", payload=verifier_payload("example/widgets"))
 
     def command(self, request_id="take-1", **overrides):
         control = store.get_factory_issue_control(self.conn, self.issue)
@@ -38,7 +42,7 @@ class IssueControlStoreTests(unittest.TestCase):
 
     def return_request(self):
         return {**self.command("return-1", reason="Fresh reviewed attempt"),
-                "payload": {**verifier_payload("Driftward-LLC/capykit"), "trusted_snapshot_digest": "a" * 64}}
+                "payload": {**verifier_payload("example/widgets"), "trusted_snapshot_digest": "a" * 64}}
 
     def claim(self, job, *, authorize=False):
         store.transition_job(self.conn, job["job_id"], state="running")
@@ -49,8 +53,19 @@ class IssueControlStoreTests(unittest.TestCase):
 
     def commit(self, job, lease):
         return store.commit_factory_execution(self.conn, job["job_id"], lease, {
-            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/600", "commit_sha": "a" * 40, "branch": job["branch"],
+            "pr_url": "https://github.com/example/widgets/pull/600", "commit_sha": "a" * 40, "branch": job["branch"],
         })
+
+    def test_disabled_organization_cannot_authorize_queued_external_effect(self):
+        _, job, _ = self.intake()
+        claim = self.claim(job)
+        identity = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
+        identity["github"]["enabled"] = False
+        path = Path(self.tmp.name) / "disabled.json"
+        path.write_text(json.dumps(identity))
+        with patch.dict(os.environ, {"FACTORY_ORGANIZATION_CONFIG": str(path)}):
+            self.assertFalse(store.authorize_factory_effect(self.conn, job["job_id"], claim))
+        self.assertIsNone(self.conn.execute("SELECT effect_authorized_at FROM factory_execution_leases WHERE attempt_id=?", (claim["attempt_id"],)).fetchone()[0])
 
     def test_default_read_is_factory_and_does_not_create_ownership(self):
         result = store.get_factory_issue_control(self.conn, self.issue)
@@ -88,7 +103,7 @@ class IssueControlStoreTests(unittest.TestCase):
         with self.assertRaises(store.BridgeConflict):
             store.reserve_factory_retry(self.conn, work_item_key=self.issue, mode="real", request_id="root-retry", reason="retry", actor="root", payload=verifier_payload())
         with self.assertRaises(store.BridgeConflict):
-            store.submit_job(self.conn, {"idempotency_key": "bypass", "requested_action": "create_draft_pr", "payload": {"linear_issue": self.issue, "repo": "Driftward-LLC/capykit"}})
+            store.submit_job(self.conn, {"idempotency_key": "bypass", "requested_action": "create_draft_pr", "payload": {"linear_issue": self.issue, "repo": "example/widgets"}})
         with self.assertRaises(store.BridgeConflict):
             store.transition_job(self.conn, job["job_id"], state="running")
 
@@ -184,7 +199,7 @@ class IssueControlStoreTests(unittest.TestCase):
         self.assertEqual(len(result["control"]["history"]), 2)
 
     def test_legacy_active_job_prevents_false_safe_handoff(self):
-        store.submit_job(self.conn, {"idempotency_key": "legacy", "requested_action": "create_draft_pr", "payload": {"repo": "Driftward-LLC/capykit", "linear_issue": self.issue}})
+        store.submit_job(self.conn, {"idempotency_key": "legacy", "requested_action": "create_draft_pr", "payload": {"repo": "example/widgets", "linear_issue": self.issue}})
         control = self.take()
         self.assertEqual(control["mode"], "handoff_pending")
         self.assertEqual(control["blockers"][0]["kind"], "untracked_active_job")

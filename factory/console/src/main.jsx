@@ -829,10 +829,8 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange, returnView }) 
         <div className="issue-links">
           <ExternalLink
             id="linear-link"
-            hidden={!valid}
-            href={
-              valid ? 'https://linear.app/driftward/issue/' + encodeURIComponent(issue) : undefined
-            }
+            hidden={!value?.issue_url}
+            href={value?.issue_url || undefined}
           >
             Linear <ArrowTopRightIcon aria-hidden="true" />
           </ExternalLink>
@@ -859,7 +857,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange, returnView }) 
       </p>
       <Notice id="issue-notice">
         {!valid
-          ? 'Enter an Engineering issue such as ENG-119.'
+          ? 'Enter a Linear issue identifier such as ACME-119.'
           : error
             ? `Could not refresh ${issue}. ${error}`
             : ''}

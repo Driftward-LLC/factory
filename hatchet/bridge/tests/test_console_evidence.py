@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import tempfile
@@ -18,12 +21,12 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.path = str(Path(temp.name) / "bridge.db")
         self.conn = connect_migrate(self.path)
         self.addCleanup(self.conn.close)
-        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/verifier-policy.json")})
+        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/test-fixtures/verifier-policy.json")})
         env.start()
         self.addCleanup(env.stop)
         self.attempt, self.job, _ = store.reserve_factory_intake(
             self.conn, work_item_key="ENG-801", mode="real", request_id="console-evidence",
-            reason="fixture", actor="test", payload={**verifier_payload("Driftward-LLC/capykit"), "implementation_prompt": "private requirements"},
+            reason="fixture", actor="test", payload={**verifier_payload("example/widgets"), "implementation_prompt": "private requirements"},
         )
 
     def evidence(self):
@@ -34,7 +37,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         lease = store.claim_factory_execution(self.conn, self.job["job_id"], owner="executor")["lease"]
         store.authorize_factory_effect(self.conn, self.job["job_id"], lease)
         store.commit_factory_execution(self.conn, self.job["job_id"], lease, {
-            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/801",
+            "pr_url": "https://github.com/example/widgets/pull/801",
             "commit_sha": "a" * 40, "branch": self.job["branch"],
         })
 
@@ -53,11 +56,11 @@ class ConsoleEvidenceTests(unittest.TestCase):
         request = self.conn.execute("SELECT * FROM factory_inspection_requests ORDER BY created_at DESC LIMIT 1").fetchone()
         if request is None:
             with self.conn:
-                store._queue_pr_inspection(self.conn, "ENG-801", "https://github.com/Driftward-LLC/capykit/pull/801", self.attempt["attempt_id"])
+                store._queue_pr_inspection(self.conn, "ENG-801", "https://github.com/example/widgets/pull/801", self.attempt["attempt_id"])
             request = self.conn.execute("SELECT * FROM factory_inspection_requests ORDER BY created_at DESC LIMIT 1").fetchone()
         return store.complete_pr_inspection(self.conn, request["job_id"], {
-            "repository": "Driftward-LLC/capykit", "number": 801,
-            "url": "https://github.com/Driftward-LLC/capykit/pull/801", "state": state,
+            "repository": "example/widgets", "number": 801,
+            "url": "https://github.com/example/widgets/pull/801", "state": state,
             "merged": merged, "draft": True, "head_branch": self.job["branch"],
             "head_sha": sha, "base_ref": "main", "reason": "private inspection details",
         }, request_key=request["request_key"], capability=request["capability"])
@@ -177,7 +180,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(prior["head_comparison"], "unavailable")
 
     def test_dry_run_and_legacy_without_checkpoints_never_look_verified(self):
-        store.reserve_factory_intake(self.conn, work_item_key="ENG-802", mode="dry-run", request_id="dry", reason="test", actor="test", payload={"repo": "Driftward-LLC/capykit"})
+        store.reserve_factory_intake(self.conn, work_item_key="ENG-802", mode="dry-run", request_id="dry", reason="test", actor="test", payload={"repo": "example/widgets"})
         dry = console.lifecycle(self.path, "ENG-802")["verification_evidence"]
         self.assertEqual(dry["verification"]["result"], "not_applicable")
         self.assertEqual(dry["inspection"]["status"], "unavailable")
@@ -189,8 +192,8 @@ class ConsoleEvidenceTests(unittest.TestCase):
     def review_record(self, state="pending", *, receipt=None, legacy=False):
         created = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         requirements = {"title": "Fixture", "description": "private requirements"}
-        request = {"review_id": "fictional-review", "repository": "Driftward-LLC/capykit",
-                   "pr_url": "https://github.com/Driftward-LLC/capykit/pull/801", "head_sha": "a" * 40,
+        request = {"review_id": "fictional-review", "repository": "example/widgets",
+                   "pr_url": "https://github.com/example/widgets/pull/801", "head_sha": "a" * 40,
                    "branch": self.job["branch"], "policy_digest": "b" * 64, "pass_number": 1,
                    "expected_base": "main", "requirements": requirements,
                    "requirements_digest": independent_review.requirements_digest(requirements)}
@@ -205,15 +208,15 @@ class ConsoleEvidenceTests(unittest.TestCase):
              head_sha,policy_digest,capability,state,result_json,result_digest,reason,created_at,updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                 "fictional-review", "fictional-lineage", 1, self.attempt["attempt_id"], self.job["job_id"], review_job["job_id"],
-                "Driftward-LLC/capykit", "https://github.com/Driftward-LLC/capykit/pull/801", "a" * 40, "b" * 64,
+                "example/widgets", "https://github.com/example/widgets/pull/801", "a" * 40, "b" * 64,
                 "private-capability-not-for-console", state, store.canonical_json(receipt) if receipt else None,
                 store.payload_hash(receipt) if receipt else None, "review_inconclusive" if state == "needs_operator" else None,
                 created, store.utc_now()))
         self.conn.commit()
 
     def review_receipt(self, verdict="passed"):
-        return {"schema": "factory-independent-review-v1", "review_id": "fictional-review", "repository": "Driftward-LLC/capykit",
-                "pr_url": "https://github.com/Driftward-LLC/capykit/pull/801", "head_sha": "a" * 40, "verdict": verdict,
+        return {"schema": "factory-independent-review-v1", "review_id": "fictional-review", "repository": "example/widgets",
+                "pr_url": "https://github.com/example/widgets/pull/801", "head_sha": "a" * 40, "verdict": verdict,
                 "reviewer_model": "gpt-6-astra", "reviewer_session_id": "fictional-review-session", "backend": "isolated_codex",
                 "isolation": {"separate_session": True, "isolated_checkout": True, "isolated_browser": True, "write_credentials": False},
                 "reason": "ok", "findings": [] if verdict == "passed" else [{"priority": 1, "file": "src/example.ts", "line": 7,
@@ -284,7 +287,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(review["reviewer_session_id"], "fictional-review-session")
         for private in ("capability", "private-capability", "isolation", "generator_session", "private requirements"):
             self.assertNotIn(private, json.dumps(review))
-        inspection = store.get_pr_inspection(self.conn, "Driftward-LLC/capykit", "https://github.com/Driftward-LLC/capykit/pull/801")
+        inspection = store.get_pr_inspection(self.conn, "example/widgets", "https://github.com/example/widgets/pull/801")
         with patch.object(console_evidence, "get_pr_inspection", return_value={**inspection, "result": {**inspection["result"], "head_sha": "b" * 40}}):
             self.assertEqual(self.evidence()["independent_review"]["status"], "stale")
         self.assertEqual(self.evidence()["verification"]["result"], "passed")

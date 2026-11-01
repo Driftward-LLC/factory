@@ -50,7 +50,7 @@ hermes_gateway_bundle_target="$factory_share_dir/hermes-gateway/hermes-gateway-s
 hermes_gateway_proto_source="$repo_root/hatchet/workers/bridge-executor-worker/src/hermes/hermes-gateway.proto"
 hermes_gateway_proto_target="$factory_share_dir/hermes-gateway/hermes-gateway.proto"
 verifier_policy_source="$repo_root/hatchet/workers/verifier-policy.json"
-verifier_policy_target="$factory_share_dir/verifier-policy.json"
+verifier_policy_target="/etc/driftward/factory/verifier-policy.json"
 factory_image_tag="${FACTORY_IMAGE_TAG:-local}"
 factory_image_override="${FACTORY_IMAGE:-}"
 smoke_timeout="${DRIFTWARD_FACTORY_SMOKE_TIMEOUT:-90}"
@@ -440,7 +440,13 @@ install -m 0644 "$script_dir/INDEPENDENT-REVIEW.md" "$factory_share_dir/independ
 install -m 0755 "$factory_hatchet_doctor_source" "$factory_hatchet_doctor_target"
 install -m 0644 "$factory_hatchet_desired_state_source" "$factory_hatchet_desired_state_target"
 install -m 0644 "$hermes_gateway_proto_source" "$hermes_gateway_proto_target"
-install -m 0644 "$verifier_policy_source" "$verifier_policy_target"
+install -d -m 0700 -o root -g root /etc/driftward/factory
+for configuration_name in organization routing-registry verifier-policy independent-review-policy; do
+  configuration_target="/etc/driftward/factory/$configuration_name.json"
+  if [[ ! -e "$configuration_target" && ! -L "$configuration_target" ]]; then
+    install -m 0600 "$script_dir/examples/$configuration_name.json" "$configuration_target"
+  fi
+done
 
 npm ci --prefix "$repo_root/hatchet/workers" --ignore-scripts >/dev/null
 npm exec --prefix "$repo_root/hatchet/workers" -- esbuild \

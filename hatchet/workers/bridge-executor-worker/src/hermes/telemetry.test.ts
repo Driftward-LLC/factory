@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import * as grpc from '@grpc/grpc-js';
 import { test } from 'node:test';
 import { BridgeClient, executionTraceId, executionTraceparent, flushExecutionTelemetry, parseTraceparent,

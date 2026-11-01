@@ -1,4 +1,4 @@
-export const issuePattern = /^ENG-[1-9][0-9]*$/;
+export const issuePattern = /^[A-Z][A-Z0-9]{0,15}-[1-9][0-9]{0,8}$/;
 export const activeStates = new Set([
   'reserved',
   'accepted',

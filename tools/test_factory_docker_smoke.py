@@ -123,10 +123,11 @@ case "${{1:-}}" in
     if [[ "$service" =~ ^(bridge|intake-worker|bridge-executor-worker|factory-operator)$ && "${{1:-}}" == "printenv" ]]; then
       case "${{2:-}}" in
         HATCHET_FACTORY_RUNTIME) printf 'docker\\n'; exit 0 ;;
-        HATCHET_VERIFIER_POLICY_PATH) printf '/app/hatchet/workers/verifier-policy.json\\n'; exit 0 ;;
+        HATCHET_VERIFIER_POLICY_PATH) printf '/etc/factory/config/verifier-policy.json\\n'; exit 0 ;;
       esac
       exit 0
     fi
+    if [[ "$service" == "factory-operator" && "${{1:-}}" == "python3" ]]; then printf 'OPS\\n'; fi
     exit 0
     ;;
   *) exit 2 ;;

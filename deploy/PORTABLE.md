@@ -57,7 +57,10 @@ are not enabled. The bundled `factory-hermes` service starts idle, with no
 provider credentials and no connection from the workers. Authenticate and review
 the gateway binding separately before enabling execution. Its new `hermes-data`
 volume belongs only to this installation and is included in cold backups.
-Do not initialize a fresh profile over an existing installation's state.
+Do not initialize a fresh profile over an existing installation's state. Bootstrap
+also creates explicit disabled organization and deny-all policy files; see
+[organization configuration](ORGANIZATION.md). These non-secret files are mounted
+read-only separately from role-scoped credentials and preserved in backups.
 
 Moving the existing Compose deployment is a separate workflow: see
 [same-host cutover preparation](CUTOVER.md). Its explicit production overlay

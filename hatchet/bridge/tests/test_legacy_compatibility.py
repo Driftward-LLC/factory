@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import sqlite3
 import subprocess
@@ -13,12 +16,12 @@ from hatchet_hermes_bridge.store import init_db
 
 ROOT = Path(__file__).resolve().parents[3]
 CHECK = ROOT / "hatchet/bridge/predeploy-check.py"
-ROUTES = ROOT / "hatchet/workers/routing-registry.json"
-POLICY = ROOT / "hatchet/workers/verifier-policy.json"
-CAPYKIT = "Driftward-LLC/capykit"
-HOST = "Driftward-LLC/driftward-host"
-CAPYKIT_PROJECT = "d779c532-620d-458c-8abd-05e37f5ca4c1"
-HOST_PROJECT = "c670f223-bcaf-4e48-9209-6cca65da4568"
+ROUTES = ROOT / "hatchet/workers/test-fixtures/routing-registry.json"
+POLICY = ROOT / "hatchet/workers/test-fixtures/verifier-policy.json"
+CAPYKIT = "example/widgets"
+HOST = "example/platform"
+CAPYKIT_PROJECT = "11111111-1111-4111-8111-111111111111"
+HOST_PROJECT = "22222222-2222-4222-8222-222222222222"
 NOW = "2026-08-17T00:00:00Z"
 SENTINEL = "dry-run://github/pr/01234567-89ab-4cde-8fab-0123456789ab"
 
@@ -155,12 +158,12 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.assertEqual(self.predeploy().returncode, 0)
         self.assertIn(HOST, self.routed)
         self.assertNotIn(HOST, self.enabled)
-        self.assertEqual(_load_route(HOST_PROJECT, str(ROUTES))[0], "Driftward-LLC/factory")
+        self.assertEqual(_load_route(HOST_PROJECT, str(ROUTES))[0], "example/control-plane")
 
     def test_retired_repositories_are_validated_and_never_enable_execution(self):
         registry = json.loads(ROUTES.read_text())
         routed, enabled = routing_repositories(registry)
-        self.assertIn("Driftward-LLC/factory", enabled)
+        self.assertIn("example/control-plane", enabled)
         self.assertIn(HOST, routed)
         self.assertNotIn(HOST, enabled)
         for retired in [HOST, [HOST, HOST], [CAPYKIT], ["not-canonical"]]:
@@ -211,7 +214,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
             "prior-mismatch": (row, legacy_attempt(row, prior_pr_url=f"https://github.com/{CAPYKIT}/pull/21")),
             "non-legacy-actor": (row, legacy_attempt(row, actor="operator")),
             "arbitrary-status": (row, legacy_attempt(row, status="legacy_permitted")),
-            "malformed-source-url": ({**row, "pr_url": "https://github.com/Driftward-LLC/capykit/pull/not-a-number"}, base),
+            "malformed-source-url": ({**row, "pr_url": "https://github.com/example/widgets/pull/not-a-number"}, base),
             "malformed-source-branch": ({**row, "branch": "codex/not-deterministic"}, base),
         }
         for name, (source, attempt) in forged.items():

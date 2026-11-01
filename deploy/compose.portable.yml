@@ -51,7 +51,13 @@ services:
     <<: *portable
   bridge-executor-worker:
     <<: *portable
-    volumes: !reset []
+    volumes: !override
+      - type: bind
+        source: ${FACTORY_CONFIG_DIR:-/etc/driftward/factory}
+        target: /etc/factory/config
+        read_only: true
+        bind:
+          create_host_path: false
   pr-event-worker:
     <<: *portable
   reconciliation-worker:
@@ -74,6 +80,12 @@ services:
       event-ingress:
         condition: service_healthy
     volumes: !override
+      - type: bind
+        source: ${FACTORY_CONFIG_DIR:-/etc/driftward/factory}
+        target: /etc/factory/config
+        read_only: true
+        bind:
+          create_host_path: false
       - factory-operator-socket:/run/driftward-factory-operator
       - factory-bridge-data:/var/lib/driftward-hatchet-bridge
       - factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro

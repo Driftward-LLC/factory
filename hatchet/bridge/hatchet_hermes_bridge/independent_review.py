@@ -1,7 +1,10 @@
 """Policy-controlled review decisions; evidence never grants merge/deploy authority."""
 from __future__ import annotations
 
+import factory_organization as organization
+
 import json
+import os
 import hashlib
 import re
 import uuid
@@ -42,11 +45,12 @@ def _generator_identity_valid(review: dict[str, Any]) -> bool:
 
 def policy() -> dict[str, Any]:
     try:
-        if not POLICY_PATH.exists():
+        policy_path = Path(os.environ.get("HATCHET_INDEPENDENT_REVIEW_POLICY_PATH", str(POLICY_PATH)))
+        if not policy_path.exists() and not os.environ.get("HATCHET_INDEPENDENT_REVIEW_POLICY_PATH"):
             value = {"schema": "factory-independent-review-policy-v1", "enabled": False,
                      "automatic_repairs_allowed": False, "max_passes": 2, "repositories": []}
             return {**value, "digest": store.payload_hash(value)}
-        value = json.loads(POLICY_PATH.read_text())
+        value = json.loads(policy_path.read_text())
         if (set(value) != {"schema", "enabled", "automatic_repairs_allowed", "max_passes", "repositories"}
                 or value["schema"] != "factory-independent-review-policy-v1"
                 or type(value["enabled"]) is not bool or type(value["automatic_repairs_allowed"]) is not bool
@@ -222,7 +226,7 @@ def authorization(conn, job_id: str, capability: str) -> dict[str, Any]:
             current = policy()
             source = store.get_job(conn, row["source_job_id"])
             attempt, _, _ = review_repair._source(conn, store.get_factory_attempt(conn, row["source_attempt_id"])["work_item_key"], row["source_attempt_id"])
-            completion_allowed = current["enabled"] and current["digest"] == row["policy_digest"] and row["repository"] in current["repositories"]
+            completion_allowed = organization.load()["github"]["enabled"] and current["enabled"] and current["digest"] == row["policy_digest"] and row["repository"] in current["repositories"]
             # The bridge still obtains a fresh final inspection before any pass.
             _fresh_artifact(conn, attempt, source, require_fresh=False)
             allowed = completion_allowed
@@ -245,7 +249,7 @@ def claim(conn, job_id: str, capability: str) -> bool:
             _stop(conn, row, "review_inconclusive")
             return False
         current = policy()
-        if not current["enabled"] or current["digest"] != row["policy_digest"]:
+        if not organization.load()["github"]["enabled"] or not current["enabled"] or current["digest"] != row["policy_digest"]:
             _stop(conn, row, "review_policy_changed")
             return False
         try:
@@ -350,7 +354,7 @@ def _settle_receipt(conn, review_id: str) -> bool:
         state, reason = receipt["verdict"], receipt["reason"]
         if state == "inconclusive":
             state, reason = "needs_operator", reason if reason != "ok" else "review_inconclusive"
-        if not current["enabled"] or current["digest"] != row["policy_digest"]:
+        if not organization.load()["github"]["enabled"] or not current["enabled"] or current["digest"] != row["policy_digest"]:
             state, reason = "needs_operator", "review_policy_changed"
         try:
             source = store.get_job(conn, row["source_job_id"])

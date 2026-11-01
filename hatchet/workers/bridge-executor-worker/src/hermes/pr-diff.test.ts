@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import test from 'node:test';
 import { assertHermesIdentityViaCommand, findAddedTempFileReference, inspectDraftPullRequestViaCommand } from './create-draft-pr';
 import { NonRetryableBridgeExecutionError } from './errors';
@@ -43,7 +44,7 @@ test('pinned PR diff inspection uses complete bounded evidence and cleans up run
     const files = git('diff', '--name-only', '-z', '--find-renames', `${base}...${head}`).split('\0').filter(Boolean).map((p) => ({ path: p }));
     assert.equal(files.length, 304);
     const view = { headRefName: 'head', headRefOid: head, baseRefName: 'main', baseRefOid: base,
-      isDraft: true, changedFiles: files.length, url: 'https://github.com/Driftward-LLC/capykit/pull/82',
+      isDraft: true, changedFiles: files.length, url: 'https://github.com/example/widgets/pull/82',
       author: { login: 'factory-hermes[bot]' }, body: 'Refs Linear ENG-161', statusCheckRollup: [] };
     writeFileSync(path.join(directory, 'view.json'), JSON.stringify(view));
     writeFileSync(path.join(directory, 'files.json'), JSON.stringify(files));
@@ -95,7 +96,7 @@ if (args.includes('view')) {
   if (count && mode === 'head-drift') view.headRefOid = 'a'.repeat(40);
   delete view.baseRefOid;
   process.stdout.write(JSON.stringify(view));
-} else if (args.includes('repos/Driftward-LLC/capykit/pulls/82')) {
+} else if (args.includes('repos/example/widgets/pulls/82')) {
   const view = JSON.parse(fs.readFileSync(path.join(root, 'view.json')));
   const count = Number(fs.readFileSync(path.join(root, 'views')));
   if (count > 1 && mode === 'head-drift') view.headRefOid = 'a'.repeat(40);
@@ -106,7 +107,7 @@ if (args.includes('view')) {
   process.stdout.write(JSON.stringify(view));
 } else if (args.some(a => a.includes('/compare/'))) {
   const view = JSON.parse(fs.readFileSync(path.join(root, 'view.json')));
-  if (!args.includes('repos/Driftward-LLC/capykit/compare/' + view.baseRefOid + '...' + view.headRefOid)) process.exit(9);
+  if (!args.includes('repos/example/widgets/compare/' + view.baseRefOid + '...' + view.headRefOid)) process.exit(9);
   if (mode === 'api-success' || mode === 'api-partial' || mode === 'head-drift' || mode === 'base-drift') {
     process.stdout.write('diff --git a/README.md b/README.md\\n'.repeat(mode === 'api-partial' ? 1 : view.changedFiles) + '+@/tmp/not-file-content\\n');
   } else {
@@ -148,7 +149,7 @@ os.execv('/usr/bin/git', ['git'] + args)
       for (const name of ['views', 'fallback-called', 'fetch-pid']) rmSync(path.join(directory, name), { force: true });
     };
     const failure = async (reason = 'verification_evidence_unavailable', timeout = 10_000, limit?: number) => {
-      await assert.rejects(inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 82, timeout, limit), (error: unknown) => {
+      await assert.rejects(inspectDraftPullRequestViaCommand('example/widgets', 82, timeout, limit), (error: unknown) => {
         assert.ok(error instanceof NonRetryableBridgeExecutionError);
         assert.equal(error.reasonCode, reason);
         assert.doesNotMatch(JSON.stringify(error) + error.message, /PRIVATE_|not-file-content/);
@@ -158,7 +159,7 @@ os.execv('/usr/bin/git', ['git'] + args)
     };
     await t.test('HTTP 406 falls back to a real merge-base diff including binary and renamed files', async () => {
       reset('too-large');
-      const observed = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 82, 10_000);
+      const observed = await inspectDraftPullRequestViaCommand('example/widgets', 82, 10_000);
       assert.equal(observed.headRefOid, head);
       assert.equal(observed.baseRefOid, base);
       assert.equal(observed.files?.length, 304);
@@ -173,7 +174,7 @@ os.execv('/usr/bin/git', ['git'] + args)
       try {
         process.env.TEST_DIFF_SCAN_PROBE = 'removed-file';
         reset('too-large');
-        const observed = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 82, 10_000);
+        const observed = await inspectDraftPullRequestViaCommand('example/widgets', 82, 10_000);
         assert.equal(observed.files?.length, 304);
         assert.deepEqual(readdirSync(temporary), []);
         assert.equal(readFileSync(path.join(directory, 'disk-scan-probed'), 'utf8'), 'yes');
@@ -190,7 +191,7 @@ os.execv('/usr/bin/git', ['git'] + args)
     });
     await t.test('supported CLI fields join exact REST revisions and API success needs no local source', async () => {
       reset('api-success');
-      await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 82, 5000);
+      await inspectDraftPullRequestViaCommand('example/widgets', 82, 5000);
       assert.equal(existsSync(path.join(directory, 'fallback-called')), false);
     });
     for (const mode of ['api-partial', 'head-drift', 'base-drift', 'missing-sha', 'snapshot-head-mismatch', 'snapshot-base-branch-mismatch', 'unrelated-error', 'incomplete', 'wrong-paths', 'fetch-error']) {
@@ -214,7 +215,7 @@ os.execv('/usr/bin/git', ['git'] + args)
     });
     await t.test('identity command failures keep their identity reason', async () => {
       reset('identity-error');
-      await assert.rejects(assertHermesIdentityViaCommand('Driftward-LLC/capykit', {
+      await assert.rejects(assertHermesIdentityViaCommand('example/widgets', {
         expectedGithubLogin: 'factory-hermes[bot]', expectedGitAuthorName: 'factory-hermes[bot]',
         expectedGitAuthorEmail: '123+factory-hermes[bot]@users.noreply.github.com',
         forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeout: 1000,

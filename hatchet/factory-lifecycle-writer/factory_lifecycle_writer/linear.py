@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import factory_organization as organization
 import json
 import socket
 import urllib.error
@@ -11,14 +12,7 @@ from typing import Any, Callable
 
 
 ENDPOINT = "https://api.linear.app/graphql"
-EXPECTED_WORKSPACE = "Driftward"
-EXPECTED_ACTOR = "Shipwright"
-EXPECTED_TEAM = "Engineering"
-EXPECTED_TEAM_KEY = "ENG"
-EXPECTED_ACTOR_ID = "4945f724-8539-46c6-b024-e03b90257ac2"
-EXPECTED_WORKSPACE_ID = "aa6f0902-c91a-4aa3-a8cb-13f03df89bbf"
-EXPECTED_TEAM_ID = "2e9999a3-4e98-4c3f-ba16-1de1406dfa89"
-DENIED_TEAM_ID = "ea7dc7b9-7d13-4147-9db8-387a8fa8b715"
+
 
 
 class LinearError(RuntimeError):
@@ -38,6 +32,7 @@ class LinearClient:
     def __init__(self, token: str, *, timeout: int = 15):
         if not token or "\n" in token or "\r" in token:
             raise LinearError("factory_access_token_invalid")
+        self.identity = organization.linear_identity()
         self.token = token
         self.timeout = timeout
 
@@ -56,10 +51,10 @@ class LinearClient:
         organization = viewer.get("organization")
         workspace = organization.get("name") if isinstance(organization, dict) else None
         workspace_id = organization.get("id") if isinstance(organization, dict) else None
-        if actor_id != EXPECTED_ACTOR_ID or workspace_id != EXPECTED_WORKSPACE_ID:
+        if actor_id != self.identity["actor_id"] or workspace_id != self.identity["workspace_id"]:
             raise LinearError("linear_actor_mismatch")
         visible = {entry.get("id") for entry in teams if isinstance(entry, dict)}
-        if visible != {EXPECTED_TEAM_ID} or DENIED_TEAM_ID in visible:
+        if visible != {self.identity["team_id"]}:
             raise LinearError("linear_team_scope_mismatch")
         return Actor(actor_id=actor_id, name=name, workspace=workspace)
 
@@ -69,7 +64,7 @@ class LinearClient:
         """, {"id": issue_id})
         issue = data.get("issue")
         team = issue.get("team") if isinstance(issue, dict) else None
-        if not isinstance(issue, dict) or issue.get("id") != issue_id or not isinstance(team, dict) or team.get("id") != EXPECTED_TEAM_ID:
+        if not isinstance(issue, dict) or issue.get("id") != issue_id or not isinstance(team, dict) or team.get("id") != self.identity["team_id"]:
             raise LinearError("linear_issue_team_mismatch")
 
     def marker_exists(self, issue_id: str, marker: str, *, heartbeat: Callable[[], bool] | None = None) -> bool:
@@ -116,6 +111,11 @@ class LinearClient:
             raise LinearError("linear_comment_create_failed")
 
     def _request(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if organization.linear_identity() != self.identity:
+                raise LinearError("linear_configuration_changed")
+        except ValueError as exc:
+            raise LinearError("linear_configuration_disabled") from exc
         request = urllib.request.Request(ENDPOINT, data=json.dumps({"query": query, "variables": variables}).encode(), headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:

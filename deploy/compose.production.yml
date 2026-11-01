@@ -68,6 +68,12 @@ services:
       DRIFTWARD_HERMES_GRPC_TARGET: unix:///run/driftward-hermes-factory/hermes.sock
     volumes: !override
       - type: bind
+        source: ${FACTORY_CONFIG_DIR:-/etc/driftward/factory}
+        target: /etc/factory/config
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: /run/driftward-hermes-factory
         target: /run/driftward-hermes-factory
         read_only: true

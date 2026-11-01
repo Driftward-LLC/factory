@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import fcntl
@@ -25,7 +28,7 @@ from test_support import connect_migrate
 
 
 ROOT = Path(__file__).resolve().parents[3]
-CAPYKIT = "Driftward-LLC/capykit"
+CAPYKIT = "example/widgets"
 NOW = "2026-08-17T00:00:00Z"
 
 
@@ -244,9 +247,9 @@ class ConflictResolutionTests(unittest.TestCase):
         branch = deterministic_branch(key)
         job_id = f"legacy-eng{number}"
         issue = f"ENG-{number}"
-        row = (job_id, key, "completed", "create_draft_pr", json.dumps({"linear_issue": issue, "repo": CAPYKIT, "dry_run": False}), "fixture", branch, f"https://github.com/Driftward-LLC/capykit/pull/{number}", NOW, NOW)
+        row = (job_id, key, "completed", "create_draft_pr", json.dumps({"linear_issue": issue, "repo": CAPYKIT, "dry_run": False}), "fixture", branch, f"https://github.com/example/widgets/pull/{number}", NOW, NOW)
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", row)
-        conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)", (f"effect-{number}", job_id, "transition:completed", "completed", json.dumps({"effect": {"pr_url": f"https://github.com/Driftward-LLC/capykit/pull/{number}", "head_branch": branch}}), NOW))
+        conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)", (f"effect-{number}", job_id, "transition:completed", "completed", json.dumps({"effect": {"pr_url": f"https://github.com/example/widgets/pull/{number}", "head_branch": branch}}), NOW))
         attempt_id = "legacy-" + job_id
         conn.execute("INSERT INTO factory_attempts (attempt_id,work_item_key,action,mode,generation,request_id,idempotency_key,branch,status,job_id,actor,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (attempt_id, issue, "create_draft_pr", "real", 1, "legacy:" + job_id, key, branch, "legacy_completed", job_id, "legacy-import", NOW, NOW))
         conn.execute("INSERT INTO factory_attempt_events (event_id,attempt_id,event_type,details_json,created_at) VALUES (?,?,?,?,?)", (f"imported-{number}", attempt_id, "legacy_imported", json.dumps({"job_id": job_id}), NOW))
@@ -338,7 +341,7 @@ class ConflictResolutionTests(unittest.TestCase):
                 init_db(conn)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations").fetchone()[0], 38)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations WHERE producing_release_sha=?", (sha_one,)).fetchone()[0], 38)
-            registry = json.loads((ROOT / "hatchet/workers/routing-registry.json").read_text())
+            registry = json.loads((ROOT / "hatchet/workers/test-fixtures/routing-registry.json").read_text())
             registry["routes"] = list(reversed(registry["routes"]))
             formatted = Path(directory) / "format-only.json"; formatted.write_text(json.dumps(registry, indent=4) + "\n")
             with patch.dict(os.environ, {"DRIFTWARD_BRIDGE_RELEASE_VERSION": sha_two, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(formatted)}):
@@ -436,7 +439,7 @@ class ConflictResolutionTests(unittest.TestCase):
             conn = connect_migrate(str(path)); self._v3_38(conn)
             conn.execute("INSERT INTO factory_import_conflicts (conflict_key,work_item_key,job_id,reason,created_at) VALUES (?,?,?,?,?)", ("runtime-inspection:inspection_repository_not_canonical", "ENG-11", "runtime-inspection", "inspection_repository_not_canonical", NOW))
             conn.commit()
-            command = ["python3", str(ROOT / "hatchet/bridge/predeploy-check.py"), "--db", str(path), "--routing-registry", str(ROOT / "hatchet/workers/routing-registry.json"), "--require-zero-legacy-ready", "--require-zero-import-conflicts", "--validate-legacy-import"]
+            command = ["python3", str(ROOT / "hatchet/bridge/predeploy-check.py"), "--db", str(path), "--routing-registry", str(ROOT / "hatchet/workers/test-fixtures/routing-registry.json"), "--require-zero-legacy-ready", "--require-zero-import-conflicts", "--validate-legacy-import"]
             env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(ROOT / "hatchet/bridge"), "DRIFTWARD_BRIDGE_RELEASE_VERSION": "3" * 40}
             initial = subprocess.run(command, text=True, capture_output=True, check=False, env=env)
             self.assertEqual(initial.returncode, 0, initial.stdout + initial.stderr)

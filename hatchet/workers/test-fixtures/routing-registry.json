@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "project_id": "11111111-1111-4111-8111-111111111111",
+      "repo": "example/widgets",
+      "execution_enabled": true
+    },
+    {
+      "project_id": "22222222-2222-4222-8222-222222222222",
+      "repo": "example/control-plane",
+      "execution_enabled": true
+    }
+  ],
+  "retired_repositories": ["example/platform"]
+}

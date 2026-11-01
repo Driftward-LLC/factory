@@ -6,6 +6,8 @@ actions.
 """
 from __future__ import annotations
 
+import factory_organization as organization
+
 import hashlib
 import json
 import logging
@@ -30,7 +32,7 @@ from . import review_repair
 from . import review_recovery
 from .human_time import record_human_time
 
-ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
+ISSUE_RE = organization.ISSUE
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PR_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)$")
 ACTIVE_ATTEMPT_STATUSES = {"reserved", "accepted", "running", "effect_authorized", "effect_committed", "verification_pending", "cancellation_requested", "effect_outcome_unknown"}
@@ -39,8 +41,8 @@ RETRY_IGNORED_LINEAR_REASON_CODES = frozenset({"linear_issue_factory_lifecycle_a
 DOCKER_BRIDGE_DB = "/var/lib/driftward-hatchet-bridge/bridge.db"
 DOCKER_INGRESS_DB = "/var/lib/driftward-hatchet-event-ingress/ingress.db"
 DOCKER_LIFECYCLE_DB = "/var/lib/driftward-factory-lifecycle-writer/outbox.db"
-DOCKER_ROUTING_REGISTRY = "/app/hatchet/workers/routing-registry.json"
-DOCKER_VERIFIER_POLICY = "/app/hatchet/workers/verifier-policy.json"
+DOCKER_ROUTING_REGISTRY = "/etc/factory/config/routing-registry.json"
+DOCKER_VERIFIER_POLICY = "/etc/factory/config/verifier-policy.json"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -240,7 +242,7 @@ def _eligibility(issue: str, ingress_db: str, registry_path: str) -> tuple[dict[
     normalized = _latest_linear(ingress_db, issue, skip_reason_codes=RETRY_IGNORED_LINEAR_REASON_CODES)
     if not normalized:
         raise OperatorError("trusted_ingress_observation_missing")
-    if normalized.get("identifier") != issue or normalized.get("team") != "Engineering" or normalized.get("status") != "Ready" or normalized.get("dispatchEligible") is not True or normalized.get("decision") != "ready_for_implementation" or normalized.get("reasonCode") != "linear_issue_ready_for_implementation" or normalized.get("delegate") == "Driftward Factory" or normalized.get("blockedBy"):
+    if normalized.get("identifier") != issue or not organization.matches_observation(normalized) or normalized.get("status") != "Ready" or normalized.get("dispatchEligible") is not True or normalized.get("decision") != "ready_for_implementation" or normalized.get("reasonCode") != "linear_issue_ready_for_implementation" or normalized.get("delegate") == organization.linear_identity()["delegate_name"] or normalized.get("blockedBy"):
         raise OperatorError("trusted_retry_eligibility_failed")
     repo, version = _load_route(normalized.get("projectId"), registry_path)
     if not _services_healthy():
@@ -353,7 +355,7 @@ def _inspection_fresh(recorded: dict[str, Any]) -> bool:
 
 def preview_retry(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path: str, issue: str, mode: str | None = None, supersede_pr_url: str | None = None, supersede_job_id: str | None = None) -> dict[str, Any]:
     if not isinstance(issue, str) or not ISSUE_RE.fullmatch(issue):
-        raise OperatorError("work item must be an ENG issue identifier")
+        raise OperatorError("work item must be a Linear issue identifier")
     supersede_job_id = _optional_bridge_job_id(supersede_job_id)
     mode = mode or _mode()
     if mode not in {"real", "dry-run"}: raise OperatorError("invalid factory mode")
@@ -460,7 +462,7 @@ def reserve_retry(*, bridge_db: str, ingress_db: str, registry_path: str, policy
 
 def preview_force_absence_retry(*, bridge_db: str, ingress_db: str, registry_path: str, policy_path: str, issue: str, attempt_id: str, mode: str | None = None, absence_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(issue, str) or not ISSUE_RE.fullmatch(issue):
-        raise OperatorError("work item must be an ENG issue identifier")
+        raise OperatorError("work item must be a Linear issue identifier")
     attempt_id = _bounded_text(attempt_id, name="attempt_id", limit=200)
     mode = mode or _mode()
     if mode not in {"real", "dry-run"}: raise OperatorError("invalid factory mode")
@@ -789,6 +791,7 @@ class OperatorHandler(BaseHTTPRequestHandler):
 
 
 def serve_operator(socket_path: str) -> None:
+    organization.validate_startup()
     if os.geteuid() != 0: raise SystemExit("factory operator requires root")
     path = Path(socket_path); path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     if path.exists(): path.unlink()

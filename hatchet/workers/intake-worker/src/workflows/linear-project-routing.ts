@@ -99,8 +99,8 @@ export function validateLinearProjectRoutingRegistry(value: unknown): LinearProj
   if (value.version !== 2) {
     throw new LinearProjectRoutingError('routing_registry_version_invalid', 'Linear project routing registry version must be 2');
   }
-  if (!Array.isArray(value.routes) || value.routes.length === 0) {
-    throw new LinearProjectRoutingError('routing_registry_routes_invalid', 'Linear project routing registry must contain routes');
+  if (!Array.isArray(value.routes)) {
+    throw new LinearProjectRoutingError('routing_registry_routes_invalid', 'Linear project routing registry routes must be an array');
   }
 
   const routes: LinearProjectRoute[] = [];

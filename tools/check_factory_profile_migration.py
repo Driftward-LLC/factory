@@ -40,6 +40,7 @@ def main():
     source, destination, snapshot = (root / n for n in ("source", "target", "snapshot"))
     bundle = root / "old-bundle"
     shutil.copytree(ROOT / "deploy", bundle, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(ROOT / "hatchet/bridge/factory_organization.py", bundle / "factory_organization.py")
     source_id = str(uuid.uuid4())
     containers, volumes = [], []
     try:
@@ -132,9 +133,11 @@ def main():
         state._tar(args.image, hermes_name, root, "hermes.tar", restore=True)
         source_install = fixtures.production.Production(source)
         state.backup(source_install, snapshot, apply=True)
+        configuration = root / "reviewed-configuration"
+        shutil.copytree(source / "config", configuration)
         command = [sys.executable, str(ROOT / "deploy/profile_migration.py"), "--source-bundle", str(bundle), "--source", str(source),
                    "--snapshot", str(snapshot), "--destination", str(destination), "--project", target, "--image", args.image,
-                   "--hermes-container", project + "-hermes"]
+                   "--configuration", str(configuration), "--hermes-container", project + "-hermes"]
         preview = json.loads(pg.run(command))
         assert not destination.exists()
         rejected = subprocess.run([*command, "--apply", "--approve-digest", "0" * 64], capture_output=True)
@@ -143,6 +146,8 @@ def main():
         candidate = fixtures.production.Production(destination)
         candidate.preflight()
         assert not candidate.service_rows()
+        assert bootstrap.configuration(candidate.directory / "config") == bootstrap.configuration(configuration)
+        assert candidate.provenance["profile_migration"]["configuration_sha256"] == preview["plan"]["configuration_sha256"]
         assert candidate.provenance["source_images"] == provenance["source_images"]
         assert len(candidate.durable_volumes) == 8
         assert set(candidate.images.values()) == {args.image}

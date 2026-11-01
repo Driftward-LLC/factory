@@ -45,6 +45,19 @@ class PortableTests(unittest.TestCase):
                 if mount["target"] == "/opt/data":
                     self.assertEqual(name, "factory-hermes")
 
+    def test_configuration_mounts_are_private_read_only_and_cannot_be_redirected(self):
+        install = portable.Installation(self.directory)
+        install.assert_config()
+        config = json.loads(install.compose("config", "--format", "json", private=True))
+        for role, service in config["services"].items():
+            mounts = [mount for mount in service.get("volumes", []) if mount["target"] == "/etc/factory/config"]
+            self.assertEqual(len(mounts), int(role in portable.bootstrap.CONFIG_SERVICES))
+        bridge = config["services"]["bridge"]
+        mount = next(mount for mount in bridge["volumes"] if mount["target"] == "/etc/factory/config")
+        mount["read_only"] = False
+        with patch.object(install, "compose", return_value=json.dumps(config)), self.assertRaisesRegex(ValueError, "configuration boundary"):
+            install.assert_config()
+
     def test_altered_identity_is_rejected_before_docker(self):
         path = self.directory / ".env"
         path.write_text(path.read_text().replace("factory-unit-test", "factory-another"))
@@ -142,7 +155,9 @@ class PortableTests(unittest.TestCase):
 
     def test_portable_profile_has_no_host_executor_socket_or_docker_socket(self):
         source = (DEPLOY / "compose.portable.yml").read_text()
-        self.assertIn("bridge-executor-worker:\n    <<: *portable\n    volumes: !reset []", source)
+        executor = source.split("  bridge-executor-worker:\n", 1)[1].split("  pr-event-worker:", 1)[0]
+        self.assertIn("target: /etc/factory/config", executor)
+        self.assertNotIn("/run/driftward-hermes-factory", executor)
         self.assertNotIn("docker.sock", source)
         self.assertIn("127.0.0.1:${FACTORY_CONSOLE_PORT", source)
         self.assertNotIn("FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED", source)
@@ -166,7 +181,7 @@ class PortableTests(unittest.TestCase):
                     (self.directory / "keys" / "hatchet" / name).write_text("fixture")
             return ""
 
-        with patch.object(install, "assert_owned_resources"), patch.object(install, "status"), \
+        with patch.object(install, "assert_owned_resources"), patch.object(install, "assert_config"), patch.object(install, "status"), \
                 patch.object(install, "compose", side_effect=compose) as invoked, \
                 patch.object(portable.os, "geteuid", return_value=1001), \
                 patch.object(portable.os, "getegid", return_value=1002), patch("builtins.print"):

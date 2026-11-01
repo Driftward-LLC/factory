@@ -8,7 +8,7 @@
     "start": "npx ts-node src/worker.ts",
     "start:prod": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/workflows/*.test.js"
+    "test": "npm run build && node --test dist/workflows/*.test.js ../shared/dist/organization.test.js"
   },
   "dependencies": {
     "@driftward/hatchet-worker-shared": "0.1.0",

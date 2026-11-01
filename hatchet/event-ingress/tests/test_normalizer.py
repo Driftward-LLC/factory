@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import os
 import json
 import tempfile
@@ -28,7 +31,7 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_CREATED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:created:"
+            "github:pull_request:example/widgets:11:created:"
             f"sha256:{payload_hash(payload)}",
         )
         self.assertEqual(normalized["linearIssues"], ["ENG-7"])
@@ -46,7 +49,7 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_SYNCHRONIZED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:synchronized:"
+            "github:pull_request:example/widgets:11:synchronized:"
             f"sha256:{payload_hash(payload)}",
         )
         self.assertEqual(normalized["headSha"], "def456")
@@ -62,7 +65,7 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_CLOSED_UNMERGED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:closed_unmerged:"
+            "github:pull_request:example/widgets:11:closed_unmerged:"
             f"sha256:{payload_hash(payload)}",
         )
         self.assertEqual(normalized["linearIssues"], ["ENG-7"])
@@ -78,7 +81,7 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_CLOSED_MERGED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:closed_merged:"
+            "github:pull_request:example/widgets:11:closed_merged:"
             f"sha256:{payload_hash(payload)}",
         )
         self.assertTrue(normalized["merged"])
@@ -94,7 +97,7 @@ class NormalizeGitHubPullRequestTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_PR_REOPENED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:pull_request:Driftward-LLC/capykit:11:reopened:"
+            "github:pull_request:example/widgets:11:reopened:"
             f"sha256:{payload_hash(payload)}",
         )
         self.assertEqual(normalized["action"], "reopened")
@@ -137,10 +140,10 @@ class NormalizeGitHubChecksAndReviewsTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_CHECKS_COMPLETED"])
         self.assertEqual(
             normalized["eventKey"],
-            "github:check_suite:Driftward-LLC/capykit:987:completed:"
+            "github:check_suite:example/widgets:987:completed:"
             f"sha256:{payload_hash(payload)}",
         )
-        self.assertEqual(normalized["subject"], "Driftward-LLC/capykit#11")
+        self.assertEqual(normalized["subject"], "example/widgets#11")
         self.assertEqual(normalized["pullRequestNumbers"], [11])
         self.assertEqual(normalized["checkConclusion"], "success")
         self.assertEqual(normalized["checkRunCount"], 3)
@@ -155,7 +158,7 @@ class NormalizeGitHubChecksAndReviewsTest(unittest.TestCase):
         normalized = normalize_github_check_suite(payload, delivery_id="delivery-checks-2")
 
         self.assertIsNone(normalized["prNumber"])
-        self.assertEqual(normalized["subject"], "Driftward-LLC/capykit@abc123")
+        self.assertEqual(normalized["subject"], "example/widgets@abc123")
 
     def test_non_completed_check_suite_is_rejected(self) -> None:
         payload = _github_check_suite_payload()
@@ -168,7 +171,7 @@ class NormalizeGitHubChecksAndReviewsTest(unittest.TestCase):
         normalized = normalize_github_pull_request_review(payload, delivery_id="delivery-review-1")
 
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["GITHUB_REVIEW_SUBMITTED"])
-        self.assertEqual(normalized["subject"], "Driftward-LLC/capykit#11")
+        self.assertEqual(normalized["subject"], "example/widgets#11")
         self.assertEqual(normalized["reviewState"], "changes_requested")
         self.assertEqual(normalized["actorKind"], "human")
         self.assertEqual(normalized["linearIssues"], ["ENG-7"])
@@ -202,7 +205,7 @@ class NormalizeLinearIssueTest(unittest.TestCase):
         self.assertEqual(normalized["decision"], DECISIONS["READY_FOR_IMPLEMENTATION"])
         self.assertEqual(normalized["reasonCode"], REASON_CODES["LINEAR_ISSUE_READY_FOR_IMPLEMENTATION"])
         self.assertEqual(normalized["labels"], ["Feature", "has-active-pr"])
-        self.assertEqual(normalized["projectId"], "d779c532-620d-458c-8abd-05e37f5ca4c1")
+        self.assertEqual(normalized["projectId"], "11111111-1111-4111-8111-111111111111")
         self.assertEqual(normalized["projectName"], "Capykit")
         self.assertEqual(normalized["updatedFields"], ["state"])
         self.assertTrue(all(gate["passed"] for gate in normalized["gateResults"]))
@@ -219,21 +222,21 @@ class NormalizeLinearIssueTest(unittest.TestCase):
     def test_project_id_is_preserved_when_only_project_id_is_present(self) -> None:
         payload = _ready_linear_issue_payload()
         payload["data"]["project"] = None
-        payload["data"]["projectId"] = "c670f223-bcaf-4e48-9209-6cca65da4568"
+        payload["data"]["projectId"] = "22222222-2222-4222-8222-222222222222"
 
         normalized = normalize_linear_issue(payload, delivery_id="linear-delivery-project-id")
 
-        self.assertEqual(normalized["projectId"], "c670f223-bcaf-4e48-9209-6cca65da4568")
+        self.assertEqual(normalized["projectId"], "22222222-2222-4222-8222-222222222222")
         self.assertIsNone(normalized["projectName"])
 
     def test_disabled_project_is_observed_without_ready_dispatch(self) -> None:
         payload = _ready_linear_issue_payload()
         payload["data"]["project"] = {
-            "id": "c670f223-bcaf-4e48-9209-6cca65da4568",
+            "id": "22222222-2222-4222-8222-222222222222",
             "name": "Driftward Software Factory",
         }
 
-        registry = json.loads((Path(__file__).resolve().parents[2] / "workers/routing-registry.json").read_text())
+        registry = json.loads((Path(__file__).resolve().parents[2] / "workers/test-fixtures/routing-registry.json").read_text())
         next(route for route in registry["routes"] if route["project_id"] == payload["data"]["project"]["id"])["execution_enabled"] = False
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "routes.json"
@@ -265,11 +268,11 @@ class NormalizeLinearIssueTest(unittest.TestCase):
             missing["reasonCode"],
             REASON_CODES["LINEAR_ISSUE_PROJECT_EXECUTION_POLICY_INVALID"],
         )
-        self.assertEqual(missing["projectId"], "d779c532-620d-458c-8abd-05e37f5ca4c1")
+        self.assertEqual(missing["projectId"], "11111111-1111-4111-8111-111111111111")
 
         with tempfile.TemporaryDirectory() as directory:
             registry = Path(directory) / "routing-registry.json"
-            registry.write_text('{"version":2,"routes":[{"project_id":"d779c532-620d-458c-8abd-05e37f5ca4c1","repo":"Driftward-LLC/capykit"}]}')
+            registry.write_text('{"version":2,"routes":[{"project_id":"11111111-1111-4111-8111-111111111111","repo":"example/widgets"}]}')
             with patch.dict(os.environ, {"HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(registry)}):
                 malformed = normalize_linear_issue(payload, delivery_id="linear-delivery-malformed-policy")
         self.assertEqual(malformed["eventName"], HATCHET_EVENTS["LINEAR_ISSUE_OBSERVED"])
@@ -286,7 +289,7 @@ class NormalizeLinearIssueTest(unittest.TestCase):
             "title": "Implement Capykit discovery CLI commands",
             "state": {"name": "Done", "type": "completed"},
             "labels": [{"name": "Feature"}, {"name": "Human Decision"}],
-            "delegate": {"name": "Driftward Factory"},
+            "delegate": {"name": "Example Executor"},
             "relations": {
                 "blockedBy": [{"id": "ENG-6", "title": "Implement layered registry loading"}]
             },
@@ -302,9 +305,16 @@ class NormalizeLinearIssueTest(unittest.TestCase):
         self.assertIn(REASON_CODES["LINEAR_ISSUE_RETIRED_FACTORY_DELEGATE"], failed_reasons)
         self.assertIn(REASON_CODES["LINEAR_ISSUE_BLOCKED"], failed_reasons)
 
+    def test_other_organization_cannot_dispatch_matching_team_key(self):
+        payload = _ready_linear_issue_payload()
+        payload["organizationId"] = "44444444-4444-4444-8444-444444444444"
+        normalized = normalize_linear_issue(payload)
+        self.assertFalse(normalized["dispatchEligible"])
+        self.assertEqual(normalized["reasonCode"], REASON_CODES["LINEAR_ISSUE_WRONG_TEAM"])
+
     def test_shipwright_comment_update_is_observed_and_never_dispatched(self) -> None:
         payload = _ready_linear_issue_payload()
-        payload["actor"] = {"name": "Shipwright"}
+        payload["actor"] = {"name": "Example Writer", "id": "33333333-3333-4333-8333-333333333333"}
         payload["updatedFrom"] = {"comments": None}
 
         normalized = normalize_linear_issue(payload, delivery_id="linear-delivery-shipwright-comment")
@@ -312,7 +322,7 @@ class NormalizeLinearIssueTest(unittest.TestCase):
         self.assertEqual(normalized["eventName"], HATCHET_EVENTS["LINEAR_ISSUE_OBSERVED"])
         self.assertFalse(normalized["dispatchEligible"])
         self.assertEqual(normalized["reasonCode"], REASON_CODES["LINEAR_ISSUE_FACTORY_LIFECYCLE_ACTOR"])
-        self.assertEqual(normalized["actorName"], "Shipwright")
+        self.assertEqual(normalized["actorName"], "Example Writer")
 
     def test_comment_only_update_is_observed_and_never_dispatched(self) -> None:
         payload = _ready_linear_issue_payload()
@@ -341,8 +351,9 @@ def _ready_linear_issue_payload() -> dict:
     return {
         "action": "update",
         "type": "Issue",
+            "organizationId": "11111111-1111-4111-8111-111111111111",
         "createdAt": "2026-08-11T17:00:00.000Z",
-        "url": "https://linear.app/driftward/issue/ENG-40/example",
+        "url": "https://linear.app/example/issue/ENG-40/example",
         "webhookTimestamp": 1797008400000,
         "data": {
             "id": "issue-uuid",
@@ -350,9 +361,9 @@ def _ready_linear_issue_payload() -> dict:
             "title": "Build a narrow Linear ingress test",
             "description": "Implementation-ready work item.",
             "updatedAt": "2026-08-11T17:00:00.000Z",
-            "team": {"name": "Engineering", "key": "ENG"},
+            "team": {"name": "Engineering", "key": "ENG", "id": "22222222-2222-4222-8222-222222222222"},
             "project": {
-                "id": "d779c532-620d-458c-8abd-05e37f5ca4c1",
+                "id": "11111111-1111-4111-8111-111111111111",
                 "name": "Capykit",
             },
             "state": {"name": "Ready", "type": "unstarted"},
@@ -368,10 +379,10 @@ def _ready_linear_issue_payload() -> dict:
 def _github_pr_payload(*, action: str, state: str, merged: bool) -> dict:
     return {
         "action": action,
-        "repository": {"full_name": "Driftward-LLC/capykit"},
+        "repository": {"full_name": "example/widgets"},
         "pull_request": {
             "number": 11,
-            "html_url": "https://github.com/Driftward-LLC/capykit/pull/11",
+            "html_url": "https://github.com/example/widgets/pull/11",
             "title": "ENG-7: implement Capykit discovery CLI commands",
             "body": "Refs ENG-7",
             "state": state,
@@ -391,7 +402,7 @@ def _github_pr_payload(*, action: str, state: str, merged: bool) -> dict:
 def _github_check_suite_payload() -> dict:
     return {
         "action": "completed",
-        "repository": {"full_name": "Driftward-LLC/capykit"},
+        "repository": {"full_name": "example/widgets"},
         "check_suite": {
             "id": 987,
             "head_sha": "abc123",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import factory_organization as organization
+
 import argparse
 import json
 import os
@@ -40,10 +42,15 @@ def lifecycle_bind_host() -> str:
 
 
 def serve(interval: int) -> int:
+    configured = organization.validate_startup()["linear"] is not None
     outbox = Outbox(os.environ.get("FACTORY_LIFECYCLE_DB", "/var/lib/driftward-factory-lifecycle-writer/outbox.db"))
     state = {"ok": False, "last_error": "starting", "last_attempt": None, "last_success": None, "source_errors": {}}
     def loop() -> None:
         while True:
+            if not configured:
+                state.update(ok=True, last_error=None, disabled=True)
+                time.sleep(interval)
+                continue
             try:
                 writer = LifecycleWriter(Config.from_env(), outbox)
                 result = scan_and_deliver(writer)
@@ -79,10 +86,11 @@ def main(argv: list[str] | None = None) -> int:
     canary.add_argument("--issue-id", required=True); canary.add_argument("--identifier", required=True); canary.add_argument("--issue-url", required=True)
     serve_parser = commands.add_parser("serve"); serve_parser.add_argument("--interval", type=int, default=30)
     args = parser.parse_args(argv)
+    organization.validate_startup()
+    if args.command == "serve":
+        return serve(max(10, min(args.interval, 300)))
     writer, outbox = build_writer()
     try:
-        if args.command == "serve":
-            outbox.close(); return serve(max(10, min(args.interval, 300)))
         writer.verify()
         if args.command == "canary":
             key = writer.canary(issue_id=args.issue_id, identifier=args.identifier, issue_url=args.issue_url)

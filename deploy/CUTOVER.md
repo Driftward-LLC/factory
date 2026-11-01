@@ -49,11 +49,17 @@ python3 deploy/factory-cutover.py \
   --source-project driftward-factory \
   --source-env-dir /etc/driftward \
   --source-keys /docker/driftward/factory/keys/hatchet \
+  --configuration /srv/factory-reviewed-config \
   --directory /srv/factory-candidate \
   --project factory-candidate \
   --snapshot /srv/factory-cutover-snapshot \
   --port-offset 22000
 ```
+
+`--configuration` supplies exactly four reviewed organization/policy files; see
+[ORGANIZATION.md](ORGANIZATION.md). Apply requires this explicit input and retains
+its bytes in the snapshot and destination. It never infers the original workspace
+or execution policies from the new public image.
 
 The destination and snapshot must be new private paths with existing parents;
 the destination project must have no containers, network, or named volumes.

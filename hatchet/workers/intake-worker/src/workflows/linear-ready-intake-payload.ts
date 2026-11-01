@@ -1,3 +1,4 @@
+import { configuredRepositories, configuredLinearIssue, loadFactoryOrganization } from '@driftward/hatchet-worker-shared';
 import type { BridgeJob, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 import {
   resolveLinearProjectRoute,
@@ -22,6 +23,8 @@ export type LinearReadyIssueEligibilityInput = LinearReadyIssuePayloadInput & {
   eventKey?: string;
   team?: string;
   teamKey?: string;
+  teamId?: string;
+  workspaceId?: string;
   blockedBy?: JsonValue[];
   dispatchEligible?: boolean;
   decision?: string;
@@ -35,7 +38,10 @@ export function assertReadyLinearIssueDispatch(input: LinearReadyIssueEligibilit
   if (input.dispatchEligible !== true) failures.push('dispatch_not_eligible');
   if (input.decision !== 'ready_for_implementation') failures.push('decision_not_ready_for_implementation');
   if (input.reasonCode !== 'linear_issue_ready_for_implementation') failures.push('reason_code_not_ready');
-  if (input.team !== 'Engineering' && input.teamKey !== 'ENG') failures.push('team_not_engineering');
+  const organization = loadFactoryOrganization();
+  if (!organization.linear || input.teamKey !== organization.linear.team_key
+    || input.teamId !== organization.linear.team_id || input.workspaceId !== organization.linear.workspace_id) failures.push('team_not_configured');
+  if (!configuredLinearIssue(input.identifier, organization)) failures.push('identifier_not_configured');
   if (input.status !== 'Ready') failures.push('status_not_ready');
   if (Array.isArray(input.blockedBy) && input.blockedBy.length > 0) failures.push('blocked_by_not_empty');
 
@@ -47,10 +53,7 @@ export function assertReadyLinearIssueDispatch(input: LinearReadyIssueEligibilit
 }
 
 export function assertRepoAllowed(repo: string): void {
-  const allowed = (process.env.HATCHET_INTAKE_ALLOWED_REPOS || 'Driftward-LLC/driftward-host,Driftward-LLC/capykit')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const allowed = configuredRepositories('HATCHET_INTAKE_ALLOWED_REPOS');
 
   if (!allowed.includes(repo)) {
     throw new Error(`repo ${repo} is not in HATCHET_INTAKE_ALLOWED_REPOS`);

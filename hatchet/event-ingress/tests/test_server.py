@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import json
 import hashlib
 import hmac
@@ -106,7 +109,7 @@ class IngressServerTransportTest(unittest.TestCase):
                 "/events/github/check_suite",
                 {
                     "action": "completed",
-                    "repository": {"full_name": "Driftward-LLC/factory"},
+                    "repository": {"full_name": "example/control-plane"},
                     "check_suite": {
                         "id": 901,
                         "head_sha": "abc123",
@@ -123,10 +126,10 @@ class IngressServerTransportTest(unittest.TestCase):
                 "/events/github/pull_request_review",
                 {
                     "action": "submitted",
-                    "repository": {"full_name": "Driftward-LLC/factory"},
+                    "repository": {"full_name": "example/control-plane"},
                     "pull_request": {
                         "number": 28,
-                        "html_url": "https://github.com/Driftward-LLC/factory/pull/28",
+                        "html_url": "https://github.com/example/control-plane/pull/28",
                         "title": "ENG-40: Factory analytics",
                         "body": "Refs ENG-40",
                         "state": "open",
@@ -197,10 +200,10 @@ class IngressServerTransportTest(unittest.TestCase):
     def test_signed_reopened_pull_request_is_published_as_open_unmerged(self) -> None:
         payload = {
             "action": "reopened",
-            "repository": {"full_name": "Driftward-LLC/factory"},
+            "repository": {"full_name": "example/control-plane"},
             "pull_request": {
                 "number": 28,
-                "html_url": "https://github.com/Driftward-LLC/factory/pull/28",
+                "html_url": "https://github.com/example/control-plane/pull/28",
                 "title": "ENG-40: Factory analytics",
                 "body": "Refs ENG-40",
                 "state": "open",
@@ -259,7 +262,7 @@ class IngressServerTransportTest(unittest.TestCase):
     def test_signed_github_body_replay_with_new_delivery_header_is_duplicate(self) -> None:
         payload = {
             "action": "completed",
-            "repository": {"full_name": "Driftward-LLC/factory"},
+            "repository": {"full_name": "example/control-plane"},
             "check_suite": {
                 "id": 903,
                 "head_sha": "abc123",

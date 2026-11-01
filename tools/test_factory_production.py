@@ -59,12 +59,14 @@ class ProductionTests(unittest.TestCase):
         services = {}
         for name in production.SERVICES:
             mounts = [{"type": "volume", "source": "factory-" + suffix, "target": target, "read_only": readonly} for suffix, target, readonly in production.MOUNTS.get(name, [])]
+            if name in production.bootstrap.CONFIG_SERVICES:
+                mounts.append({"type": "bind", "source": str(self.directory / "config"), "target": "/etc/factory/config", "read_only": True})
             if name == "hatchet-lite":
                 mounts.append({"type": "bind", "source": str(self.directory / "keys/hatchet"), "target": "/keys", "read_only": True})
             if name == "bridge-executor-worker":
                 mounts.append({"type": "bind", "source": production.SOCKET, "target": production.SOCKET, "read_only": True})
-            services[name] = {"image": self.provenance["source_images"][name], "labels": labels, "networks": {"factory": {}}, "volumes": mounts}
-        services["bridge-executor-worker"]["environment"] = {"DRIFTWARD_HERMES_GRPC_TARGET": "unix://" + production.SOCKET + "/hermes.sock"}
+            services[name] = {"environment": dict(production.bootstrap.CONFIG_ENV) if name in production.bootstrap.CONFIG_SERVICES else {}, "image": self.provenance["source_images"][name], "labels": labels, "networks": {"factory": {}}, "volumes": mounts}
+        services["bridge-executor-worker"]["environment"]["DRIFTWARD_HERMES_GRPC_TARGET"] = "unix://" + production.SOCKET + "/hermes.sock"
         for name, key, target in (("hatchet-lite", "FACTORY_HATCHET_PORT", 8888), ("linear-webhook-proxy", "FACTORY_WEBHOOK_PORT", 19879), ("factory-operator", "FACTORY_CONSOLE_PORT", 19881)):
             services[name]["ports"] = [{"host_ip": "127.0.0.1", "published": self.values[key], "target": target}]
         return {"services": services, "volumes": volumes, "networks": {"factory": {"name": self.install.project, "labels": labels}}}
@@ -89,9 +91,9 @@ class ProductionTests(unittest.TestCase):
     def upgrade_backup(self):
         snapshot = Path(self.temp.name) / "snapshot"
         snapshot.mkdir(mode=0o700)
-        for folder in ("config", "config/env", "config/keys", "config/keys/hatchet", "volumes"):
+        for folder in ("config", "config/env", "config/config", "config/keys", "config/keys/hatchet", "volumes"):
             (snapshot / folder).mkdir(mode=0o700)
-        for name in production.state.config_files(production.state.PRODUCTION):
+        for name in production.state.config_files(production.state.PRODUCTION, self.metadata):
             production.bootstrap._create_private(snapshot / "config" / name,
                                                   production.bootstrap._read_private(self.directory / name))
         for name in production.state.VOLUMES:

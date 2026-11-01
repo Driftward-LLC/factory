@@ -1,6 +1,8 @@
 """Sanitized Factory console with opt-in, narrowly scoped issue approvals."""
 from __future__ import annotations
 
+import factory_organization as organization
+
 import os
 import re
 import socket
@@ -38,7 +40,7 @@ from .store import (
 )
 
 
-ISSUE_RE = re.compile(r"^ENG-[1-9][0-9]*$")
+ISSUE_RE = organization.ISSUE
 DEFAULT_ASSET_ROOT = Path(__file__).resolve().parents[3] / "factory" / "console"
 ASSETS = {
     "/": ("index.html", "text/html"),
@@ -213,13 +215,14 @@ def _review_work(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[s
 
 def lifecycle(db_path: str, issue: str, ingress_db_path: str | None = None) -> dict[str, Any]:
     if not ISSUE_RE.fullmatch(issue):
-        raise BridgeValidationError("issue must be an ENG identifier")
+        raise BridgeValidationError("issue must be a Linear issue identifier")
     conn = connect_readonly(db_path)
     try:
         # Keep the attempt, immutable checkpoints and inspection in one read snapshot.
         with conn:
             conn.execute("BEGIN")
             report = get_factory_lifecycle(conn, issue)
+            report["issue_url"] = organization.issue_url(issue)
             report["attempts"] = [_with_review(row, conn) for row in report["attempts"]]
             report["verification_evidence"] = attempt_evidence(conn, report["attempts"][0]) if report["attempts"] else None
             report["intake"] = observed_intake(conn, ingress_db_path, issue)
@@ -308,6 +311,7 @@ def _error(status: int, message: str) -> JSONResponse:
 
 
 def create_console_app(db_path: str, asset_root: str | Path | None = None, lifecycle_db_path: str | None = None, ingress_db_path: str | None = None) -> FastAPI:
+    organization.validate_startup()
     assets = Path(asset_root or DEFAULT_ASSET_ROOT)
     app = FastAPI(
         title="Driftward Factory Console API",

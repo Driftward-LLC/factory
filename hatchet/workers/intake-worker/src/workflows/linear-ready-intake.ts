@@ -24,6 +24,8 @@ export type LinearReadyIssueInput = LinearReadyIssuePayloadInput & {
   issueId?: string;
   team?: string;
   teamKey?: string;
+  teamId?: string;
+  workspaceId?: string;
   labels?: string[];
   blockedBy?: JsonValue[];
   dispatchEligible?: boolean;

@@ -11,7 +11,9 @@ RuntimeDirectory=driftward-hermes-factory
 RuntimeDirectoryPreserve=yes
 WorkingDirectory=__FACTORY_SHARE_DIR__/hermes-gateway
 Environment=NODE_ENV=production
-Environment=HATCHET_VERIFIER_POLICY_PATH=__FACTORY_SHARE_DIR__/verifier-policy.json
+Environment=FACTORY_ORGANIZATION_CONFIG=/etc/driftward/factory/organization.json
+Environment=HATCHET_VERIFIER_POLICY_PATH=/etc/driftward/factory/verifier-policy.json
+Environment=HATCHET_INDEPENDENT_REVIEW_POLICY_PATH=/etc/driftward/factory/independent-review-policy.json
 Environment=DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
 EnvironmentFile=-/etc/driftward/hatchet-worker-bridge-executor.env
 ExecStartPre=/bin/sh -c 'group=driftward; getent group "$group" >/dev/null || group=root; install -d -m 2770 -o root -g "$group" /run/driftward-hermes-factory'

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import factory_organization as organization
+
 import hashlib
 import json
 import logging
@@ -48,8 +50,8 @@ FAILURE_MESSAGES = {
     "verification_evidence_unavailable": "Draft PR verification evidence was unavailable.",
 }
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-IDENTIFIER = re.compile(r"^ENG-[1-9][0-9]{0,8}$")
-REPO = re.compile(r"^Driftward-LLC/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+IDENTIFIER = organization.ISSUE
+REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 DRAFT_PR_ACTIONS = {"create_draft_pr", "repair_draft_pr"}
 
 
@@ -68,11 +70,12 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        organization.linear_identity()
         env = lifecycle_env()
         token = env.get("LINEAR_FACTORY_ACCESS_TOKEN", "").strip()
         bridge_token = env.get("HATCHET_HERMES_BRIDGE_TOKEN", "").strip()
         watermark = _canonical_timestamp(env.get("FACTORY_LIFECYCLE_ACTIVATION_WATERMARK", "").strip())
-        repos = frozenset(item.strip() for item in env.get("FACTORY_LIFECYCLE_ALLOWED_REPOS", "Driftward-LLC/capykit").split(",") if item.strip())
+        repos = frozenset(item.strip() for item in env.get("FACTORY_LIFECYCLE_ALLOWED_REPOS", "").split(",") if item.strip())
         if not token or not bridge_token or not watermark or not repos or any(not REPO.fullmatch(repo) for repo in repos):
             raise SourceError("writer_configuration_invalid")
         return cls(env.get("FACTORY_LIFECYCLE_BRIDGE_URL", "http://127.0.0.1:19877").rstrip("/"), bridge_token, env.get("FACTORY_LIFECYCLE_INGRESS_URL", "http://127.0.0.1:19878").rstrip("/"), token, watermark, repos)
@@ -340,7 +343,7 @@ class LifecycleWriter:
         if not isinstance(value.get("issue_id"), str) or not UUID.fullmatch(value["issue_id"]):
             return False
         identifier, raw_url = value.get("identifier"), value.get("issue_url")
-        if not isinstance(identifier, str) or not IDENTIFIER.fullmatch(identifier) or not isinstance(raw_url, str) or len(raw_url) > 500:
+        if not isinstance(identifier, str) or not organization.matches_issue(identifier) or not isinstance(raw_url, str) or len(raw_url) > 500:
             return False
         if any(ord(char) < 32 or ord(char) == 127 for char in raw_url):
             return False
@@ -350,7 +353,7 @@ class LifecycleWriter:
         except ValueError:
             return False
         parts = parsed.path.split("/")
-        return parsed.scheme == "https" and parsed.netloc == "linear.app" and parsed.hostname == "linear.app" and port is None and parsed.username is None and parsed.password is None and not parsed.params and not parsed.query and not parsed.fragment and len(parts) == 5 and parts[0] == "" and parts[1] == "driftward" and parts[2] == "issue" and parts[3] == identifier and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,199}", parts[4]))
+        return parsed.scheme == "https" and parsed.netloc == "linear.app" and parsed.hostname == "linear.app" and port is None and parsed.username is None and parsed.password is None and not parsed.params and not parsed.query and not parsed.fragment and len(parts) == 5 and parts[0] == "" and parts[1] == organization.linear_identity()["workspace_slug"] and parts[2] == "issue" and parts[3] == identifier and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,199}", parts[4]))
 
     def _valid_repo(self, value: Any) -> bool:
         return isinstance(value, str) and bool(REPO.fullmatch(value)) and value in self.config.allowed_repos

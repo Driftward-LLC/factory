@@ -41,17 +41,17 @@ test('absence retry fence requires matching factory_absence_retry lineage', asyn
 test('superseded PR fence still passes for the same closed unmerged PR', async () => {
   const result = await validateFactoryArtifactFence(baseJob({
     factory_artifact_fence: {
-      prior_pr_url: 'https://github.com/Driftward-LLC/capykit/pull/28',
-      repository: 'Driftward-LLC/capykit',
+      prior_pr_url: 'https://github.com/example/widgets/pull/28',
+      repository: 'example/widgets',
       head_branch: 'codex/old-branch',
       head_sha: 'abc123',
       base_ref: 'main'
     }
   }), {
     inspectDraftPrState: async () => ({
-      repository: 'Driftward-LLC/capykit',
+      repository: 'example/widgets',
       number: 28,
-      url: 'https://github.com/Driftward-LLC/capykit/pull/28',
+      url: 'https://github.com/example/widgets/pull/28',
       state: 'closed',
       merged: false,
       draft: true,
@@ -68,14 +68,14 @@ test('superseded PR fence still passes for the same closed unmerged PR', async (
 test('operator review repair rechecks the exact source draft and fails on drift', async () => {
   const job = reviewRepairJob();
   const observe = (): DraftPrStateInspection => ({
-    repository: 'Driftward-LLC/capykit', number: 77, url: 'https://github.com/Driftward-LLC/capykit/pull/77',
+    repository: 'example/widgets', number: 77, url: 'https://github.com/example/widgets/pull/77',
     state: 'open', merged: false, draft: true, head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main', reason: 'ok',
   });
   let calls = 0;
   assert.deepEqual(await validateFactoryArtifactFence(job, { inspectDraftPrState: async (repo, reference) => {
     calls += 1;
-    assert.equal(repo, 'Driftward-LLC/capykit');
-    assert.equal(reference, 'https://github.com/Driftward-LLC/capykit/pull/77');
+    assert.equal(repo, 'example/widgets');
+    assert.equal(reference, 'https://github.com/example/widgets/pull/77');
     return observe();
   } }), { ok: true });
   assert.equal(calls, 1);
@@ -106,18 +106,18 @@ test('operator review repair rechecks the exact source draft and fails on drift'
 
 function reviewRepairJob(): BridgeJob {
   const job = baseJob({});
-  const prUrl = 'https://github.com/Driftward-LLC/capykit/pull/77';
+  const prUrl = 'https://github.com/example/widgets/pull/77';
   job.requested_action = 'repair_draft_pr';
   job.branch = 'codex/existing';
   job.payload = {
     ...job.payload, expected_head_sha: 'a'.repeat(40), expected_base: 'main',
-    factory_artifact_fence: { kind: 'operator_review_repair_v1', repository: 'Driftward-LLC/capykit',
+    factory_artifact_fence: { kind: 'operator_review_repair_v1', repository: 'example/widgets',
       prior_attempt_id: 'source-attempt', prior_job_id: 'source-job', prior_pr_url: prUrl,
       head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main' },
     factory_repair: { source_attempt_id: 'source-attempt', source_job_id: 'source-job', source_generation: 1,
       reason_code: 'operator_review_feedback', error: 'review', verification_attempt_id: null,
       pr_url: prUrl, branch: job.branch, commit_sha: 'a'.repeat(40) },
-    factory_review_repair: { source_attempt_id: 'source-attempt', repository: 'Driftward-LLC/capykit',
+    factory_review_repair: { source_attempt_id: 'source-attempt', repository: 'example/widgets',
       pr_url: prUrl, branch: job.branch, reviewed_head_sha: 'a'.repeat(40), feedback: 'Fix stale observations', automatic_repairs_allowed: false },
   };
   return job;
@@ -129,8 +129,8 @@ test('policy review repair uses separate authority and the same exact-head fence
   (job.payload.factory_repair as JsonObject).reason_code = 'policy_review_feedback';
   const review = job.payload.factory_review_repair as JsonObject;
   review.policy_authority = { kind: 'independent_review_policy_v1', review_id: 'review-1', policy_digest: 'c'.repeat(64) };
-  const observation: DraftPrStateInspection = { repository: 'Driftward-LLC/capykit', number: 77,
-    url: 'https://github.com/Driftward-LLC/capykit/pull/77', state: 'open', merged: false, draft: true,
+  const observation: DraftPrStateInspection = { repository: 'example/widgets', number: 77,
+    url: 'https://github.com/example/widgets/pull/77', state: 'open', merged: false, draft: true,
     head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main', reason: 'ok' };
   assert.deepEqual(await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => observation }), { ok: true });
   assert.equal((await validateFactoryArtifactFence(job, { inspectDraftPrState: async () => ({ ...observation, head_sha: 'b'.repeat(40) }) })).ok, false);
@@ -151,7 +151,7 @@ function absenceFence(): JsonObject {
     kind: 'github_branch_pr_absence_v1',
     prior_attempt_id: 'attempt-1',
     prior_job_id: 'job-1',
-    repository: 'Driftward-LLC/capykit',
+    repository: 'example/widgets',
     head_branch: 'codex/hatchet-hermes-old',
     lease_id: 'lease-1',
     lease_epoch: 1,
@@ -183,7 +183,7 @@ function baseJob(payload: JsonObject): BridgeJob {
     state: 'running',
     requested_action: 'create_draft_pr',
     payload: {
-      repo: 'Driftward-LLC/capykit',
+      repo: 'example/widgets',
       dry_run: false,
       ...payload
     },

@@ -2,6 +2,9 @@
 """Hermetic proof tests for absent planned writer units."""
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import json
 import os
 import subprocess

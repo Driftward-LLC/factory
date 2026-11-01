@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import os
 import runpy
 import sys
@@ -13,6 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TokenRefreshTest(unittest.TestCase):
+    def test_disabled_integration_does_not_read_credentials_or_publish_token(self):
+        import runpy
+        from unittest.mock import patch
+        with patch.dict(os.environ, {}, clear=True):
+            script = runpy.run_path(str(ROOT / "factory-lifecycle-token-refresh"), run_name="token_refresh_disabled")
+            with patch.dict(script["main"].__globals__, {"credential": lambda _name: self.fail("credentials read while integration disabled"), "publish_token": lambda _token: self.fail("token published while disabled")}):
+                self.assertEqual(script["main"](), 0)
+
     def test_credentials_can_come_from_container_env(self) -> None:
         sys.path.insert(0, str(ROOT))
         try:

@@ -120,7 +120,7 @@ HATCHET_CONTRACT = {'version': 1,
                   'pr_event_observed': {'label': 'PR event observed'},
                   'linear_issue_ready_for_implementation': {'label': 'Linear issue is ready for implementation'},
                   'linear_issue_removed': {'label': 'Linear issue was removed'},
-                  'linear_issue_wrong_team': {'label': 'Linear issue is not on the Engineering team'},
+                  'linear_issue_wrong_team': {'label': 'Linear issue does not match the configured workspace and team'},
                   'linear_issue_status_not_ready': {'label': 'Linear issue is not Ready'},
                   'linear_issue_blocked': {'label': 'Linear issue has active blockers'},
                   'linear_issue_terminal_or_operator_state': {'label': 'Linear issue is terminal or needs operator '
