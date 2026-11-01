@@ -55,9 +55,10 @@ before a restart is refused even when its configuration is unchanged.
 
 The command copies the SQLite/configuration volumes and dedicated Hermes data
 into new owned volumes, checking contents and ownership after copying. Hermes
-symlinks are preserved only when their targets stay within `/opt/data`; links
-outside that volume, hard links, special files and entries beneath a symlink
-are refused. Other state archives continue to reject all links. It runs
+symlinks are preserved only when their targets stay within `/opt/data` and contain
+no `..` path components; links outside that volume, hard links, special files
+and entries beneath a symlink are refused. Other state archives continue to
+reject all links. It runs
 `pg_dumpall` from a network-disabled copy of the old PostgreSQL archive and
 restores it with `ON_ERROR_STOP` into a fresh target volume. Rebuilding through a
 logical restore accommodates the new image's libc/collation version. Rows,

@@ -189,16 +189,29 @@ class MigrationTests(unittest.TestCase):
                 handle.addfile(link)
                 if child:
                     handle.addfile(tarfile.TarInfo("./current/overwrite"))
-        for target in ("/opt/data/releases/current", "releases/current"):
+        for target in ("/opt/data/releases/current", "releases/current", "."):
             make(target)
             production.state._archive_check(archive, hermes=True)
             with self.assertRaises(ValueError):
                 production.state._archive_check(archive)
         for target, child in (("/etc/shadow", False), ("../../etc/shadow", False),
-                              ("/opt/data/../../etc", False), ("/opt/data/releases", True)):
+                              ("/opt/data/../../etc", False), ("/opt/data/releases/../current", False),
+                              ("releases/../current", False), ("/opt/data/releases", True)):
             make(target, child)
             with self.subTest(target=target, child=child), self.assertRaises(ValueError):
                 production.state._archive_check(archive, hermes=True)
+
+    def test_hermes_chained_links_cannot_escape_through_parent_traversal(self):
+        archive = Path(self.temp.name) / "links.tar"
+        for target in ("a/../outside", "/opt/data/a/../outside"):
+            with self.subTest(target=target):
+                with tarfile.open(archive, "w") as handle:
+                    for name, linkname in (("./a", "."), ("./b", target)):
+                        link = tarfile.TarInfo(name)
+                        link.type, link.linkname = tarfile.SYMTYPE, linkname
+                        handle.addfile(link)
+                with self.assertRaisesRegex(ValueError, "parent traversal"):
+                    production.state._archive_check(archive, hermes=True)
 
     def test_apply_rejects_changed_cold_data_before_creating_destination_volumes(self):
         snapshot = self.upgrade_backup()

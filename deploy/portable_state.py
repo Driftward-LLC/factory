@@ -106,6 +106,9 @@ def _archive_check(path: Path, *, hermes: bool = False) -> None:
             if hermes and entry.issym():
                 # Hermes owns /opt/data. Preserve only links inside that volume;
                 # tar must never restore another entry through a symlink parent.
+                # Reject parent traversal before normalization: a prior link can redirect it.
+                if ".." in PurePosixPath(entry.linkname).parts:
+                    raise ValueError("Hermes archive link cannot contain parent traversal")
                 target = posixpath.normpath(posixpath.join("/opt/data", str(name.parent), entry.linkname))
                 if not (target == "/opt/data" or target.startswith("/opt/data/")):
                     raise ValueError("Hermes archive link escapes its dedicated data volume")
