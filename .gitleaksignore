@@ -4,5 +4,7 @@ de82dc2b399af9eea438260d98fae6111b3415d4:deploy/factory-portable.py:generic-api-
 de82dc2b399af9eea438260d98fae6111b3415d4:deploy/portable_state.py:generic-api-key:20
 676ca35abb57bf0de1495a96ef978b9a5d07b513:tools/test_factory_portable.py:generic-api-key:116
 8b994fed628770a0905f030e63a1c0e7401108b9:tools/check_factory_profile_migration.py:generic-api-key:59
+# Squash-merged finding now on main; later squashes preserve this ancestor.
+de95d84547d895969374f5bb5207e4f78e772669:tools/check_factory_profile_migration.py:generic-api-key:59
 # Public Hermes source compatibility SHA-256, never an API credential.
 3af2624e4b0f79732b1b5db276104ec6cb315b40:deploy/independent-reviewer/native_agent.py:generic-api-key:25
