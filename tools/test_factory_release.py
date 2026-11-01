@@ -143,7 +143,10 @@ class FactoryReleaseTests(unittest.TestCase):
             matching = [step for step in steps if command in step]
             self.assertEqual(len(matching), 1, command)
             self.assertIn("if: env.DRY_RUN != 'true'", matching[0])
-        self.assertIn("docker build --platform linux/amd64", workflow)
+        self.assertIn("uses: docker/build-push-action@v7", workflow)
+        self.assertIn("platforms: linux/amd64", workflow)
+        self.assertIn("load: true", workflow)
+        self.assertIn("push: false", workflow)
         self.assertIn("packages: write", workflow)
         self.assertIn("--validation-only", workflow)
         self.assertLess(workflow.index("python3 tools/check_factory_portable.py --image driftward/factory:ci"), workflow.index("docker push"))
