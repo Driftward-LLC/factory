@@ -1,17 +1,35 @@
 ARG FACTORY_RELEASE_COMMIT=development-unversioned
 ARG FACTORY_RELEASE_VERSION=local
 
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim AS node
 
+FROM node AS console-dependencies
+WORKDIR /app
+COPY factory/console/package.json factory/console/package-lock.json factory/console/
+COPY factory/console/ui/package.json factory/console/ui/
+RUN npm ci --prefix factory/console
+
+FROM node AS worker-dependencies
+WORKDIR /app
+COPY hatchet/workers/package.json hatchet/workers/package-lock.json hatchet/workers/
+COPY hatchet/workers/shared/package.json hatchet/workers/shared/
+COPY hatchet/workers/intake-worker/package.json hatchet/workers/intake-worker/
+COPY hatchet/workers/execution-dispatch-worker/package.json hatchet/workers/execution-dispatch-worker/
+COPY hatchet/workers/bridge-executor-worker/package.json hatchet/workers/bridge-executor-worker/
+COPY hatchet/workers/pr-event-worker/package.json hatchet/workers/pr-event-worker/
+COPY hatchet/workers/reconciliation-worker/package.json hatchet/workers/reconciliation-worker/
+RUN npm ci --prefix hatchet/workers
+
+FROM node AS build
 WORKDIR /app
 COPY . .
+COPY --from=console-dependencies /app/factory/console/ factory/console/
+COPY --from=worker-dependencies /app/hatchet/workers/ hatchet/workers/
 
-RUN npm ci --prefix factory/console \
-  && npm run build --prefix factory/console \
+RUN npm run build --prefix factory/console \
   && rm -rf factory/console/node_modules
 
-RUN npm ci --prefix hatchet/workers \
-  && npm run build --prefix hatchet/workers \
+RUN npm run build --prefix hatchet/workers \
   && mkdir -p /app/worker-triggers \
   && npm exec --prefix hatchet/workers -- esbuild \
     /app/hatchet/workers/bridge-executor-worker/src/triggers/push-accepted-event.ts \
@@ -32,7 +50,7 @@ FROM nousresearch/hermes-agent@sha256:32d095e84190ae7266afbb361579e6921f2c633e89
 USER root
 # Preserve Hermes' own interpreter and Node; Factory keeps the Node 22 it builds with.
 RUN mv /usr/local/bin/node /usr/local/bin/hermes-node
-COPY --from=build /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=postgres /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --from=hatchet /hatchet-lite /hatchet-admin /hatchet-migrate /
 COPY --from=hatchet /static-assets /static-assets
@@ -61,7 +79,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && ln -sf /usr/local/bin/node /usr/bin/node
 
-COPY --from=build /app/hatchet/bridge/requirements.txt /tmp/factory-requirements.txt
+COPY hatchet/bridge/requirements.txt /tmp/factory-requirements.txt
 RUN /usr/bin/python3 -m venv /opt/driftward-factory \
   && /opt/driftward-factory/bin/pip install --no-cache-dir --requirement /tmp/factory-requirements.txt \
   && rm /tmp/factory-requirements.txt
@@ -81,7 +99,7 @@ LABEL org.opencontainers.image.source="https://github.com/Driftward-LLC/factory"
 
 WORKDIR /app
 COPY --from=build /app /app
-COPY --from=build /usr/local/share/doc/node /usr/local/share/doc/node
+COPY --from=node /usr/local/share/doc/node /usr/local/share/doc/node
 
 RUN printf '{"commit":"%s","version":"%s"}\n' "$FACTORY_RELEASE_COMMIT" "$FACTORY_RELEASE_VERSION" \
   > /app/hatchet/bridge/RELEASE_METADATA.json

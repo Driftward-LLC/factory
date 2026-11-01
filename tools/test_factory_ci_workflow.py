@@ -1,6 +1,7 @@
 """Keep cheap checks first and every quality/evidence/release gate blocking."""
 from contextlib import redirect_stdout
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -24,22 +25,23 @@ class QualityWorkflowTests(unittest.TestCase):
     def step(self, job, name):
         return self.jobs[job].split(f'      - name: {name}\n', 1)[1].split('      - ', 1)[0]
 
-    def test_cheap_preflight_gates_parallel_code_and_ui_then_release(self):
+    def test_cheap_preflight_gates_parallel_checks_then_release(self):
         expected = {
             'preflight': [], 'validate': ['preflight'], 'console-browser': ['preflight'],
             'required-evidence': ['console-browser'],
-            'release-readiness': ['preflight', 'validate', 'console-browser', 'required-evidence'],
+            'image-checks': ['preflight'],
+            'release-readiness': ['preflight', 'validate', 'console-browser', 'required-evidence', 'image-checks'],
         }
         self.assertEqual(set(self.jobs), set(expected))
         for name, dependencies in expected.items():
             job = self.jobs[name]
             found = re.search(r'^    needs: \[([^\]]*)\]$', job, re.M)
             self.assertEqual(found.group(1).split(', ') if found else [], dependencies)
-            if name == 'required-evidence':
+            if name in ('required-evidence', 'release-readiness'):
                 self.assertIn('    if: ${{ always() }}\n', job)
             else:
-                # GitHub's default success() requires every dependency to pass;
-                # no always()/custom condition may bypass this gate for releases.
+                # Work starts only after its prerequisites succeed; final gates
+                # run even after failures and explicitly reject those results.
                 self.assertNotRegex(job, re.compile(r'^    if:', re.M), name)
             self.assertNotRegex(job, re.compile(r'^    continue-on-error:', re.M), name)
         preflight = self.jobs['preflight']
@@ -51,6 +53,30 @@ class QualityWorkflowTests(unittest.TestCase):
         self.assertIn('/tmp/gitleaks git --redact --verbose .', preflight)
         self.assertNotIn('setup-node', preflight)
         self.assertNotIn('docker build', preflight)
+
+    def test_release_gate_executes_and_rejects_missing_or_unsuccessful_dependencies(self):
+        step = self.step('release-readiness', 'Require every quality gate')
+        self.assertIn('GATE_RESULTS: ${{ toJSON(needs) }}', step)
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        script = script.split('\n', 1)[1].rsplit('\nPY', 1)[0]
+        names = ('preflight', 'validate', 'console-browser', 'required-evidence', 'image-checks')
+        success = {name: {'result': 'success'} for name in names}
+
+        def run(results):
+            with patch.dict(os.environ, {'GATE_RESULTS': json.dumps(results)}, clear=True), redirect_stdout(io.StringIO()):
+                exec(compile(script, 'release-readiness', 'exec'), {})
+
+        run(success)
+        for name in names:
+            for result in ('failure', 'cancelled', 'skipped', '', 'neutral', None):
+                with self.subTest(job=name, result=result), self.assertRaises(SystemExit):
+                    run({**success, name: {'result': result}})
+            with self.subTest(missing=name), self.assertRaises(SystemExit):
+                run({key: value for key, value in success.items() if key != name})
+            with self.subTest(missing_result=name), self.assertRaises(SystemExit):
+                run({**success, name: {}})
+        with self.assertRaises(SystemExit):
+            run({})
 
     def evidence(self, **changes):
         step = self.step('required-evidence', 'Require both browser evidence artifacts')
@@ -107,13 +133,13 @@ class QualityWorkflowTests(unittest.TestCase):
         self.assertIn('${{ needs.console-browser.result }}', gate)
 
     def test_quality_keeps_image_rehearsals_without_publication_or_host_access(self):
-        release = self.jobs['release-readiness']
-        names = ['Validate Docker deployment', 'Prove isolated fresh install, restart, and restore',
+        release = self.jobs['image-checks']
+        names = ['Validate Docker deployment', 'Build cached runtime image', 'Prove isolated fresh install, restart, and restore',
                  'Rehearse stopped production-state relocation']
         self.assertEqual(sorted(names, key=release.index), names)
         for command in ['docker compose -f deploy/docker-compose.yml config >/dev/null',
-                        'FACTORY_RELEASE_COMMIT="$(git rev-parse HEAD)"', 'FACTORY_RELEASE_VERSION=ci',
-                        '-f deploy/Dockerfile -t driftward/factory:ci .',
+                        'FACTORY_RELEASE_COMMIT=${{ github.sha }}', 'FACTORY_RELEASE_VERSION=ci',
+                        'file: deploy/Dockerfile', 'tags: driftward/factory:ci',
                         'python3 tools/check_factory_portable.py --image driftward/factory:ci --telemetry',
                         'python3 tools/check_factory_cutover.py --image driftward/factory:ci']:
             self.assertIn(command, release)
@@ -123,6 +149,22 @@ class QualityWorkflowTests(unittest.TestCase):
         self.assertNotIn('permissions:', self.jobs['validate'])
         self.assertNotIn('download-artifact', self.workflow)
         self.assertNotIn('continue-on-error:', release)
+
+    def test_quality_and_release_cache_the_checked_out_single_platform_image(self):
+        release = (ROOT / '.github/workflows/factory-release.yml').read_text()
+        for workflow, version in [(self.jobs['image-checks'], 'ci'), (release, '${{ inputs.release_tag }}')]:
+            with self.subTest(version=version):
+                self.assertIn('uses: docker/setup-buildx-action@v4', workflow)
+                build = workflow.split('      - name: Build cached runtime image\n', 1)[1].split('      - ', 1)[0]
+                for value in ('uses: docker/build-push-action@v7', 'context: .', 'file: deploy/Dockerfile',
+                              'platforms: linux/amd64', 'load: true', 'push: false', 'tags: driftward/factory:ci',
+                              'FACTORY_RELEASE_COMMIT=${{ github.sha }}', f'FACTORY_RELEASE_VERSION={version}',
+                              'cache-from: type=gha,scope=factory-linux-amd64',
+                              'cache-to: type=gha,scope=factory-linux-amd64,mode=max,ignore-error=true,timeout=2m'):
+                    self.assertIn(value, build)
+                self.assertNotIn('continue-on-error:', build)
+                self.assertNotIn('secrets:', build)
+                self.assertNotIn('no-cache:', build)
 
     def test_code_and_browser_assertions_remain_blocking(self):
         for name in ['validate', 'console-browser']:

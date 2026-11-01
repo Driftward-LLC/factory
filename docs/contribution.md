@@ -105,19 +105,30 @@ and generated files, but no secrets, runtime databases, profiles or session data
 Follow the model routing and review limits supplied in the task's repository
 instructions; report implementation and review models when requested.
 
-[Hatchet Quality](../.github/workflows/hatchet-quality.yml) has five blocking gates:
+[Hatchet Quality](../.github/workflows/hatchet-quality.yml) has six blocking gates:
 
 1. **Cheap preflight:** whitespace and pinned, redacted secret scanning.
 2. **Code checks:** contracts, builds, unit and transport checks.
 3. **Browser and UI checks:** real console behavior and component catalog checks.
 4. **Required evidence publication:** both browser evidence uploads and their IDs.
-5. **Release readiness:** tested image plus isolated install, restart,
+5. **Image and installation checks:** tested image plus isolated install, restart,
    backup/restore and stopped-state cutover rehearsals.
+6. **Release readiness:** requires all five preceding gates to succeed, including
+   when a dependency fails, is cancelled or is skipped.
 
-Code and browser checks run in parallel after preflight; release readiness waits
-for all preceding gates. Green browser assertions alone do not satisfy missing
+Code, browser and image checks run in parallel after preflight; release readiness
+waits for all preceding gates. Green browser assertions alone do not satisfy missing
 evidence publication. The workflow filters PR paths (currently including
 `README.md`, but not `docs/**`); every push to `main` runs the complete graph.
+
+Quality and release builds share a GitHub Actions Docker layer-cache scope for
+Linux/amd64. Main pushes seed the default-branch cache; PR cache writes remain
+scoped to their merge ref. npm installation layers depend on the lockfiles and
+workspace manifests, not application source. Cache export failures are nonblocking;
+the backend's timeout setting does not cap total transfer time. First exports can
+take several minutes. Image builds and installation assertions remain blocking.
+Running image checks alongside code checks shortens feedback but also spends
+build minutes on revisions that later fail code or browser checks.
 
 Release publication tests and publishes versioned images to
 `ghcr.io/driftward-llc/factory`, together with a digest-pinned installation
