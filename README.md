@@ -23,7 +23,9 @@ installations also start an idle `factory-hermes` container with its own data.
 Real agent execution still requires provider authentication, a reviewed gateway
 binding, and explicit execution configuration. Installing Factory does not
 enable it. Existing production installations retain their recorded database
-and Hatchet images until a separate migration is approved.
+and Hatchet images until a separate migration is approved. The
+[unified-image migration guide](deploy/MIGRATE.md) prepares a new, stopped
+installation while retaining the original state for rollback.
 
 The console currently requires a trusted Tailscale Serve proxy. GitHub and
 Linear integrations also require installation-specific credentials and routing

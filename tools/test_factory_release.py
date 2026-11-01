@@ -25,6 +25,11 @@ FILES = (
     "deploy/portable_state.py",
     "deploy/PORTABLE.md",
     "deploy/CUTOVER.md",
+    "deploy/compose.unified.yml",
+    "deploy/profile_migration.py",
+    "deploy/migration_postgres.py",
+    "deploy/postgres-fingerprint.sql",
+    "deploy/MIGRATE.md",
 )
 IMAGE = "ghcr.io/driftward-llc/factory@sha256:" + "a" * 64
 

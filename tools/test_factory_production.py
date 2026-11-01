@@ -254,7 +254,7 @@ class ProductionTests(unittest.TestCase):
             responses = [ids, json.dumps(self.source_rows()), previous_ids] + ([json.dumps(previous_rows)] if previous_ids else []) + [""]
             with patch.object(production.state, "_docker", side_effect=responses), patch.object(production.state, "_no_writers") as writers:
                 self.install.assert_source_fenced()
-                self.assertEqual(writers.call_args.args[0], ["factory-predecessor-" + suffix for suffix in production.state.VOLUMES])
+                self.assertEqual(writers.call_args.args[0], ["factory-predecessor-" + suffix for suffix in production.state.DURABLE_VOLUMES])
         for field, value in (("State", {"Status": "running"}), ("HostConfig", {"RestartPolicy": {"Name": "unless-stopped"}}), ("Config", {"Labels": {}})):
             bad = {**row, field: value}
             with self.subTest(field=field), patch.object(production.state, "_docker", side_effect=[ids, json.dumps(self.source_rows()), "predecessor-container", json.dumps([bad])]), patch.object(production.state, "_no_writers"):
