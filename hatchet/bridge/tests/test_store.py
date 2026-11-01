@@ -56,7 +56,7 @@ def canonical_verifier_policy(repository="example/platform"):
 def verifier_payload(repository="example/platform"):
     canonical = canonical_verifier_policy(repository)
     policy = canonical
-    return {"repo": policy["repo"], "dry_run": False, "verification_policy": canonical, "expected_base": policy["expected_base"], "allowed_changed_paths": policy["allowed_changed_paths"], "forbidden_changed_paths": policy["forbidden_changed_paths"], "required_local_commands": policy["required_local_commands"], "secret_check_command": policy["secret_check_command"]}
+    return {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": policy["repo"], "dry_run": False, "verification_policy": canonical, "expected_base": policy["expected_base"], "allowed_changed_paths": policy["allowed_changed_paths"], "forbidden_changed_paths": policy["forbidden_changed_paths"], "required_local_commands": policy["required_local_commands"], "secret_check_command": policy["secret_check_command"]}
 
 
 def legacy_verifier_payload(repository="example/platform"):
@@ -118,7 +118,7 @@ class BridgeStoreTests(unittest.TestCase):
         request = {
             "idempotency_key": "hatchet:run-1:create-pr",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform", "linear_issue": "ENG-35"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "linear_issue": "ENG-35"},
         }
 
         first, first_created = submit_job(self.conn, request)
@@ -359,7 +359,7 @@ class BridgeStoreTests(unittest.TestCase):
 
     def test_real_jobs_cannot_take_legacy_completed_transition(self):
         job, _ = submit_job(self.conn, {
-            "idempotency_key": "hatchet:real:completed", "requested_action": "create_draft_pr", "payload": {"repo": "example/platform", "dry_run": False},
+            "idempotency_key": "hatchet:real:completed", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "dry_run": False},
         })
         transition_job(self.conn, job["job_id"], state="running")
         with self.assertRaises(BridgeValidationError):
@@ -574,7 +574,7 @@ class BridgeStoreTests(unittest.TestCase):
     def test_lifecycle_event_cursor_exposes_sanitized_history_in_order(self):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:lifecycle:cursor", "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/widgets", "linear_issue_id": "11111111-2222-4333-8444-555555555555", "linear_issue": "ENG-52", "linear_issue_url": "https://linear.app/example/issue/ENG-52/test", "dry_run": False},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue_id": "11111111-2222-4333-8444-555555555555", "linear_issue": "ENG-52", "linear_issue_url": "https://linear.app/example/issue/ENG-52/test", "dry_run": False},
         })
         transition_job(self.conn, job["job_id"], state="running")
         first = list_lifecycle_events(self.conn, after_created_at=None, after_event_id=None, limit=1)
@@ -730,7 +730,7 @@ class BridgeStoreTests(unittest.TestCase):
         base = {
             "idempotency_key": "hatchet:correlation:ENG-39",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform", "linear_issue": "ENG-39", "source_event_key": "linear:issue:ENG-39:update:first", "source_delivery_id": "first"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "linear_issue": "ENG-39", "source_event_key": "linear:issue:ENG-39:update:first", "source_delivery_id": "first"},
         }
         first, created = submit_job(self.conn, base)
         self.assertTrue(created)
@@ -744,7 +744,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:correlation:changed-payload",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/platform", "linear_issue": "ENG-39", "implementation_prompt": "first", "source_event_key": "linear:issue:ENG-39:update:first"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "linear_issue": "ENG-39", "implementation_prompt": "first", "source_event_key": "linear:issue:ENG-39:update:first"},
         })
         correlated = record_job_correlation(self.conn, job["idempotency_key"], {
             "source_event_key": "linear:issue:ENG-39:update:second", "source_delivery_id": "second",

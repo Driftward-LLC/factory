@@ -53,7 +53,7 @@ def verifier_payload(repository: str = "example/widgets") -> dict:
     policy = next(item for item in catalog["policies"] if item["repo"] == repository)
     digest = hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     canonical = {"catalog_version": catalog["version"], "digest": digest, **policy}
-    return {
+    return {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"},
         "repo": repository,
         "dry_run": False,
         "verification_policy": canonical,

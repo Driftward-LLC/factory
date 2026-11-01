@@ -69,3 +69,16 @@ export function requireGithubOrganization(): FactoryOrganization {
   if (!organization.github.enabled) throw new Error('Factory GitHub integration is disabled');
   return organization;
 }
+
+export type OrganizationBinding = { workspace_id: string; team_id: string; team_key: string };
+
+export function organizationBinding(organization = loadFactoryOrganization()): OrganizationBinding | null {
+  const linear = organization.linear;
+  return linear ? { workspace_id: linear.workspace_id, team_id: linear.team_id, team_key: linear.team_key } : null;
+}
+
+export function matchesOrganizationBinding(value: unknown, organization = loadFactoryOrganization()): boolean {
+  const expected = organizationBinding(organization);
+  return expected !== null && record(value) && keys(value, ['workspace_id', 'team_id', 'team_key'])
+    && value.workspace_id === expected.workspace_id && value.team_id === expected.team_id && value.team_key === expected.team_key;
+}

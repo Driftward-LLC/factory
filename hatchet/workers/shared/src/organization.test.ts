@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { configuredRepositories, configuredLinearIssue, loadFactoryOrganization, validateFactoryOrganization } from './organization';
+import { organizationBinding, matchesOrganizationBinding, configuredRepositories, configuredLinearIssue, loadFactoryOrganization, validateFactoryOrganization } from './organization';
 
 const organization = {
   schema: 'factory-organization-v1', github: { enabled: true },
@@ -58,4 +58,19 @@ test('explicit repository allowlists default empty and reject malformed or dupli
   } finally {
     if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
   }
+});
+
+test('organization binding requires the original exact workspace, team and key', () => {
+  const configured = validateFactoryOrganization(organization);
+  const binding = organizationBinding(configured)!;
+  assert.equal(matchesOrganizationBinding(binding, configured), true);
+  for (const value of [undefined, null, {}, { ...binding, extra: true }, { ...binding, team_key: 'ENG' },
+    { ...binding, workspace_id: '44444444-4444-4444-8444-444444444444' },
+    { ...binding, team_id: '44444444-4444-4444-8444-444444444444' }]) {
+    assert.equal(matchesOrganizationBinding(value, configured), false);
+  }
+  const reconfigured = validateFactoryOrganization({ ...organization, linear: { ...organization.linear,
+    workspace_id: '44444444-4444-4444-8444-444444444444', team_id: '55555555-5555-4555-8555-555555555555' } });
+  assert.equal(reconfigured.linear!.team_key, configured.linear!.team_key);
+  assert.equal(matchesOrganizationBinding(binding, reconfigured), false);
 });

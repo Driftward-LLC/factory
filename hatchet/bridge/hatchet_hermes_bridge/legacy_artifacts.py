@@ -96,12 +96,14 @@ def routing_repositories(raw: Any) -> tuple[set[str], set[str]]:
         raise ValueError("routing registry is invalid")
     routed: set[str] = set()
     enabled: set[str] = set()
+    identities: set[str] = set()
     for route in registry["routes"]:
         if not isinstance(route, dict) or not isinstance(route.get("execution_enabled"), bool):
             raise ValueError("routing registry is invalid")
         repository = canonical_repository(route.get("repo"))
-        if repository in routed:
+        if repository.lower() in identities:
             raise ValueError("routing registry has duplicate repository")
+        identities.add(repository.lower())
         routed.add(repository)
         if route["execution_enabled"]:
             enabled.add(repository)
@@ -110,8 +112,9 @@ def routing_repositories(raw: Any) -> tuple[set[str], set[str]]:
         raise ValueError("retired repositories are invalid")
     for value in retired:
         repository = canonical_repository(value)
-        if repository in routed:
+        if repository.lower() in identities:
             raise ValueError("retired repository is duplicated or still routed")
+        identities.add(repository.lower())
         routed.add(repository)
     return routed, enabled
 

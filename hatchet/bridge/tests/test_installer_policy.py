@@ -342,7 +342,7 @@ class InstallerPolicyTests(unittest.TestCase):
             conn = sqlite3.connect(database.name)
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
-            payload = json.dumps({"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
+            payload = json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
             conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?,NULL,'https://github.com/example/platform/pull/143','completed',NULL)", (payload,))
             conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/example/platform/pull/143"}}),))
             conn.commit(); conn.close()
@@ -358,7 +358,7 @@ class InstallerPolicyTests(unittest.TestCase):
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
             conn.execute("CREATE TABLE factory_inspection_requests (work_item_key TEXT, url TEXT, result_json TEXT)")
-            payload = json.dumps({"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
+            payload = json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
             conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?,NULL,NULL,'completed',NULL)", (payload,))
             conn.execute("INSERT INTO factory_inspection_requests VALUES ('ENG-8','https://github.com/example/platform/pull/143',NULL)")
             conn.commit(); conn.close()
@@ -382,7 +382,7 @@ class InstallerPolicyTests(unittest.TestCase):
             conn = sqlite3.connect(database.name)
             conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
             conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
-            payload = json.dumps({"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
+            payload = json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False})
             branch = "codex/hatchet-hermes-d648b143d1aa45d1"
             conn.execute("INSERT INTO bridge_jobs VALUES ('a','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active',?, ?,NULL,'completed',NULL)", (payload, branch))
             conn.execute("INSERT INTO bridge_events VALUES ('a',?)", (json.dumps({"effect":{"pr_url":"https://github.com/example/widgets/pull/20", "head_branch":branch}}),))
@@ -405,7 +405,7 @@ class InstallerPolicyTests(unittest.TestCase):
                 conn = sqlite3.connect(database.name)
                 conn.execute("CREATE TABLE bridge_jobs (job_id TEXT, idempotency_key TEXT, payload_json TEXT, branch TEXT, pr_url TEXT, state TEXT, verification_original_context_json TEXT)")
                 conn.execute("CREATE TABLE bridge_events (job_id TEXT, details_json TEXT)")
-                payload = {"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False}
+                payload = {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False}
                 branch = None; pr_url = None
                 if source == "payload": payload.update(malformed)
                 if source == "direct_url": pr_url = malformed

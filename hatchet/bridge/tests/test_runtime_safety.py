@@ -223,7 +223,7 @@ class RuntimeConnectionTests(unittest.TestCase):
             path = str(Path(directory) / "bridge.db")
             conn = connect_migrate(path)
             key = legacy_active_key("ENG-9", "real")
-            payload = {"linear_issue": "ENG-9", "work_item_id": "ENG-9", "dry_run": False, "repo": CAPYKIT}
+            payload = {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": "ENG-9", "work_item_id": "ENG-9", "dry_run": False, "repo": CAPYKIT}
             conn.execute(
                 "INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 ("failed-current-factory", key, "failed", "create_draft_pr", json.dumps(payload, sort_keys=True), "hash", deterministic_branch(key), None, NOW, NOW),
@@ -247,7 +247,7 @@ class ConflictResolutionTests(unittest.TestCase):
         branch = deterministic_branch(key)
         job_id = f"legacy-eng{number}"
         issue = f"ENG-{number}"
-        row = (job_id, key, "completed", "create_draft_pr", json.dumps({"linear_issue": issue, "repo": CAPYKIT, "dry_run": False}), "fixture", branch, f"https://github.com/example/widgets/pull/{number}", NOW, NOW)
+        row = (job_id, key, "completed", "create_draft_pr", json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": issue, "repo": CAPYKIT, "dry_run": False}), "fixture", branch, f"https://github.com/example/widgets/pull/{number}", NOW, NOW)
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", row)
         conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES (?,?,?,?,?,?)", (f"effect-{number}", job_id, "transition:completed", "completed", json.dumps({"effect": {"pr_url": f"https://github.com/example/widgets/pull/{number}", "head_branch": branch}}), NOW))
         attempt_id = "legacy-" + job_id

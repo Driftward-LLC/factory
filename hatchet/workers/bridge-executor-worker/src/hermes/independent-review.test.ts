@@ -19,7 +19,7 @@ const { generator_session_id: _legacySession, ...commonIntent } = legacyIntent;
 const intent: ReviewIntent = { ...commonIntent,
   generator_execution_id: 'factory-execution:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' };
 const job = (r: ReviewIntent = intent) => ({ requested_action: 'read_only_review', branch: r.branch,
-  payload: { repo: r.repository, review: r, dry_run: false } }) as unknown as BridgeJob;
+  payload: { organization_binding: { workspace_id: '11111111-1111-4111-8111-111111111111', team_id: '22222222-2222-4222-8222-222222222222', team_key: 'ENG' }, repo: r.repository, review: r, dry_run: false } }) as unknown as BridgeJob;
 
 test('immutable source export is readable under gateway umask while journal stays private', () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-source-umask-'));
@@ -269,6 +269,26 @@ test('disabled GitHub refuses independent reviewer execution with an enabled rev
   } finally {
     if (previous === undefined) delete process.env.FACTORY_ORGANIZATION_CONFIG; else process.env.FACTORY_ORGANIZATION_CONFIG = previous;
     if (previousEnabled === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED; else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = previousEnabled;
+    rmSync(directory, { recursive: true });
+  }
+});
+
+test('independent reviewer rejects unbound and stale same-prefix organization jobs before backend', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-organization-'));
+  const before = process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
+  process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = '1';
+  try {
+    let calls = 0;
+    const adapter = new IndependentReviewer(path.join(directory, 'journal'), '/nonexistent', async () => { calls++; return ''; }, undefined, async () => true);
+    for (const [index, binding] of [undefined, { workspace_id: '44444444-4444-4444-8444-444444444444',
+      team_id: '55555555-5555-4555-8555-555555555555', team_key: 'ENG' }].entries()) {
+      const old = job({ ...intent, review_id: `old-organization-${index}` });
+      if (binding) old.payload.organization_binding = binding; else delete old.payload.organization_binding;
+      assert.equal((await adapter.run(old)).reason, 'review_policy_changed');
+    }
+    assert.equal(calls, 0);
+  } finally {
+    if (before === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED; else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = before;
     rmSync(directory, { recursive: true });
   }
 });

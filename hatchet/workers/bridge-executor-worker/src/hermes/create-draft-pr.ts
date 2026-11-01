@@ -2,7 +2,7 @@ import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { requireGithubOrganization, configuredRepositories, configuredLinearIssue, loadFactoryOrganization, executionTraceparent, telemetryEndpoint, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { matchesOrganizationBinding, requireGithubOrganization, configuredRepositories, configuredLinearIssue, loadFactoryOrganization, executionTraceparent, telemetryEndpoint, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import type { BridgeJob, FactoryAttempt, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 import type { Duration } from '@hatchet-dev/typescript-sdk/v1/client/duration';
 import {
@@ -533,6 +533,9 @@ export function validateRealCreateDraftPrJob(job: BridgeJob): void {
     if (issue && !configuredLinearIssue(issue, organization)) throw new Error('Linear issue does not match the configured team');
   } catch (error) {
     throw new NonRetryableBridgeExecutionError('organization_not_configured', error instanceof Error ? error.message : String(error));
+  }
+  if (!matchesOrganizationBinding(job.payload.organization_binding)) {
+    throw new NonRetryableBridgeExecutionError('organization_binding_mismatch', 'Real job organization binding is missing or differs from current configuration');
   }
   const repo = requiredPayloadString(job, 'repo');
   let allowedRepos: string[];

@@ -789,7 +789,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#work-count').textContent.startsWith('0 of 0'));
     assert.match(await page.locator('#work-attempts').textContent(), /No active or recent/);
     await page.goto(base + '/?issue=not-an-issue');
-    await page.waitForFunction(() => document.querySelector('#issue-notice').textContent.includes('Engineering issue'));
+    await page.waitForFunction(() => document.querySelector('#issue-notice').textContent.includes('Linear issue identifier'));
     assert.equal(await page.locator('#linear-link').isVisible(), false);
     assert.equal(await page.locator('#issue-content').isVisible(), false);
     failOverview = true;

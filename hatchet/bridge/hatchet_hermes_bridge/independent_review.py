@@ -64,7 +64,7 @@ def policy() -> dict[str, Any]:
 
 
 def validate_request(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict) or set(payload) != {"repo", "review", "review_capability", "dry_run"}:
+    if not isinstance(payload, dict) or set(payload) != {"repo", "review", "review_capability", "dry_run", "organization_binding"}:
         raise store.BridgeValidationError("review request is malformed")
     review = payload["review"]
     if (payload["dry_run"] is not False or not isinstance(review, dict) or set(review) - GENERATOR_FIELDS != REQUEST_FIELDS
@@ -193,7 +193,7 @@ def reserve(conn, source_job_id: str) -> dict[str, Any] | None:
                    "requirements": requirements, "requirements_digest": requirements_digest(requirements)}
         review_job, _ = store.submit_job(conn, {"idempotency_key": f"factory:independent-review:{lineage}:{number}",
             "requested_action": "read_only_review", "payload": {"repo": request["repository"], "review": request,
-                "review_capability": capability, "dry_run": False}}, internal_review=True)
+                "review_capability": capability, "dry_run": False, "organization_binding": job["payload"].get("organization_binding")}}, internal_review=True)
         conn.execute("INSERT INTO factory_independent_reviews (review_id,lineage_key,pass_number,source_attempt_id,source_job_id,job_id,repository,pr_url,head_sha,policy_digest,capability,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)",
             (review_id, lineage, number, attempt["attempt_id"], source_job_id, review_job["job_id"], request["repository"], request["pr_url"], request["head_sha"], current["digest"], capability, now, now))
         conn.execute("INSERT INTO factory_inspection_outbox (outbox_key,request_key,job_id,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",

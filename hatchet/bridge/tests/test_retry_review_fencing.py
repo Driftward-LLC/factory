@@ -52,7 +52,7 @@ class RetryReviewFencingTests(unittest.TestCase):
 
     def test_real_job_without_attempt_is_never_claimable(self):
         conn = connect(self.db)
-        job, _ = submit_job(conn, {"idempotency_key":"hatchet:unimportable:real","requested_action":"create_draft_pr","payload":{"repo":"example/widgets","dry_run":False}})
+        job, _ = submit_job(conn, {"idempotency_key":"hatchet:unimportable:real","requested_action":"create_draft_pr","payload":{"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo":"example/widgets","dry_run":False}})
         self.assertEqual(claim_factory_execution(conn, job["job_id"], owner="executor")["reason"], "factory_attempt_required")
         self.assertEqual(get_job(conn, job["job_id"])["state"], "accepted")
         conn.close()
@@ -100,7 +100,7 @@ class RetryReviewFencingTests(unittest.TestCase):
     def test_eng8_legacy_event_pr20_is_imported_as_a_blocking_artifact(self):
         conn = connect(self.db)
         conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
-        payload = json.dumps({"linear_issue": "ENG-8", "work_item_id": "ENG-8", "repo": "example/widgets", "dry_run": False})
+        payload = json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": "ENG-8", "work_item_id": "ENG-8", "repo": "example/widgets", "dry_run": False})
         branch = "codex/hatchet-hermes-d648b143d1aa45d1"
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('eng8-legacy','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr',?,?, ?,'2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')", (payload, "fixture", branch))
         conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('00000000-0000-4000-8000-000000000020','eng8-legacy','effect_committed','effect_committed',?, '2026-01-01T00:01:00.000000Z')", (json.dumps({"pr_url": "https://github.com/example/widgets/pull/20"}),))
@@ -114,7 +114,7 @@ class RetryReviewFencingTests(unittest.TestCase):
     def test_legacy_cross_repository_event_is_recorded_as_an_import_conflict(self):
         conn = connect(self.db)
         conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
-        payload = json.dumps({"linear_issue": "ENG-8", "repo": "example/widgets", "dry_run": False})
+        payload = json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": "ENG-8", "repo": "example/widgets", "dry_run": False})
         conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('wrong-repo','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr',?,?,NULL,'2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')", (payload, "fixture"))
         conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('00000000-0000-4000-8000-000000000021','wrong-repo','effect_committed','effect_committed',?, '2026-01-01T00:01:00.000000Z')", (json.dumps({"pr_url": "https://github.com/example/platform/pull/143"}),))
         conn.commit(); conn.close()
@@ -135,7 +135,7 @@ class RetryReviewFencingTests(unittest.TestCase):
                 db = str(Path(directory) / "bridge.db")
                 conn = connect(db)
                 conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
-                payload = {"linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False}
+                payload = {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue":"ENG-8", "repo":"example/widgets", "dry_run":False}
                 if source == "payload": payload.update(malformed)
                 branch = malformed["branch"] if source == "direct" else None
                 conn.execute("INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,created_at,updated_at) VALUES ('bad','hatchet:work-item:linear:ENG-8:create_draft_pr:real:active','completed','create_draft_pr',?,?,?,'2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00.000000Z')", (json.dumps(payload), "fixture", branch))

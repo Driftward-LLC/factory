@@ -62,12 +62,22 @@ def validate_policy(value: Any, kind: str) -> None:
             if value.get("version") != 2 or not isinstance(value.get("routes"), list):
                 raise ValueError
             projects = set()
+            repositories = set()
             for route in value["routes"]:
                 if (not isinstance(route, dict) or not isinstance(route.get("project_id"), str) or not UUID.fullmatch(route["project_id"])
                         or not isinstance(route.get("repo"), str) or not REPOSITORY.fullmatch(route["repo"])
-                        or type(route.get("execution_enabled")) is not bool or route["project_id"] in projects):
+                        or type(route.get("execution_enabled")) is not bool or route["project_id"] in projects
+                        or route["repo"].lower() in repositories):
                     raise ValueError
                 projects.add(route["project_id"])
+                repositories.add(route["repo"].lower())
+            retired = value.get("retired_repositories", [])
+            if not isinstance(retired, list) or len(retired) > 32:
+                raise ValueError
+            for repo in retired:
+                if not isinstance(repo, str) or not REPOSITORY.fullmatch(repo) or repo.lower() in repositories:
+                    raise ValueError
+                repositories.add(repo.lower())
         elif kind == "verifier":
             if type(value.get("version")) is not int or value["version"] < 1 or not isinstance(value.get("policies"), list):
                 raise ValueError
@@ -113,6 +123,16 @@ def linear_identity() -> dict[str, str]:
     if value is None:
         raise ValueError("Factory Linear integration is disabled")
     return value
+
+
+def binding() -> dict[str, str] | None:
+    identity = load()["linear"]
+    return {key: identity[key] for key in ("workspace_id", "team_id", "team_key")} if identity else None
+
+
+def matches_binding(value: Any) -> bool:
+    expected = binding()
+    return expected is not None and isinstance(value, dict) and value == expected
 
 
 def matches_issue(issue: Any) -> bool:

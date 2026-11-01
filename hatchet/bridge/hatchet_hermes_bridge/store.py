@@ -1594,6 +1594,8 @@ def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = Fal
     if payload.get("dry_run") is not True:
         if not organization.load()["github"]["enabled"]:
             raise BridgeValidationError("Factory GitHub integration is disabled")
+        if action in DRAFT_PR_EFFECT_ACTIONS | {"read_only_review"} and not organization.matches_binding(payload.get("organization_binding")):
+            raise BridgeValidationError("organization_binding_mismatch")
         if action in DRAFT_PR_EFFECT_ACTIONS and payload.get("linear_issue") and not organization.matches_issue(payload["linear_issue"]):
             raise BridgeValidationError("Linear issue does not match the configured organization")
     if action == "read_only_review":
@@ -3652,6 +3654,9 @@ def claim_factory_execution(conn: sqlite3.Connection, job_id: str, *, owner: str
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         attempt = get_factory_attempt_for_job(conn, job_id)
+        job = get_job(conn, job_id)
+        if job["requested_action"] in DRAFT_PR_EFFECT_ACTIONS and job["payload"].get("dry_run") is not True and not organization.matches_binding(job["payload"].get("organization_binding")):
+            return {"claimed": False, "reason": "organization_binding_mismatch", "attempt": attempt}
         if _issue_control_held(conn, attempt["work_item_key"] if attempt else _job_work_item(get_job(conn, job_id))):
             return {"claimed": False, "reason": "factory_issue_manual_control", "attempt": attempt}
         if not attempt:
@@ -3718,7 +3723,9 @@ def heartbeat_factory_execution(conn: sqlite3.Connection, job_id: str, claim: di
 
 
 def execution_may_effect(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any]) -> bool:
-    return not _issue_control_held(conn, _job_work_item(get_job(conn, job_id))) and _current_execution_lease(conn, job_id, claim) is not None
+    job = get_job(conn, job_id)
+    return (not _issue_control_held(conn, _job_work_item(job)) and _current_execution_lease(conn, job_id, claim) is not None
+            and (job["payload"].get("dry_run") is True or (organization.load()["github"]["enabled"] and organization.matches_binding(job["payload"].get("organization_binding")))))
 
 
 def _execution_route_details(details: Any) -> dict[str, Any]:
@@ -4284,7 +4291,7 @@ def authorize_factory_effect(conn: sqlite3.Connection, job_id: str, claim: dict[
         attempt = get_factory_attempt(conn, row["attempt_id"])
         if _issue_control_held(conn, attempt["work_item_key"]):
             return False
-        if job["payload"].get("dry_run") is not True and (not organization.load()["github"]["enabled"] or not organization.matches_issue(attempt["work_item_key"])):
+        if job["payload"].get("dry_run") is not True and (not organization.load()["github"]["enabled"] or not organization.matches_issue(attempt["work_item_key"]) or not organization.matches_binding(job["payload"].get("organization_binding"))):
             return False
         from . import independent_review
         if not independent_review.repair_authorized(conn, job, attempt["attempt_id"]):

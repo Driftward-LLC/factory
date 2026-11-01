@@ -202,7 +202,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         else:
             request["generator_execution_id"] = f"factory-execution:{self.attempt['attempt_id']}:{self.job['job_id']}"
         review_job, _ = store.submit_job(self.conn, {"requested_action": "read_only_review", "idempotency_key": "fictional-review",
-            "payload": {"repo": request["repository"], "review": request, "review_capability": "private-capability-not-for-console", "dry_run": False}}, internal_review=True)
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": request["repository"], "review": request, "review_capability": "private-capability-not-for-console", "dry_run": False}}, internal_review=True)
         self.conn.execute("""INSERT INTO factory_independent_reviews
             (review_id,lineage_key,pass_number,source_attempt_id,source_job_id,job_id,repository,pr_url,
              head_sha,policy_digest,capability,state,result_json,result_digest,reason,created_at,updated_at)

@@ -53,7 +53,8 @@ def _reauthorize_policy(source: Any, target: dict[str, Any], intent: dict[str, A
 def _source_record(conn, issue: str, attempt_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     attempt = store.get_factory_attempt(conn, attempt_id)
     job = store.get_job(conn, attempt["job_id"]) if attempt.get("job_id") else None
-    if (attempt["work_item_key"] != issue or attempt["mode"] != "real" or attempt["actor"] == "legacy-import"
+    if (not job or not organization.matches_binding(job["payload"].get("organization_binding"))
+            or attempt["work_item_key"] != issue or attempt["mode"] != "real" or attempt["actor"] == "legacy-import"
             or attempt["status"] not in {"verified_ready", "failed"} or not job
             or job["requested_action"] not in store.DRAFT_PR_EFFECT_ACTIONS
             or job["state"] not in {"ready_for_human_review", "failed"}

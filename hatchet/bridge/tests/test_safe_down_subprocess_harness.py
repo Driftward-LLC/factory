@@ -281,7 +281,7 @@ exit 22
             key = f"hatchet:work-item:linear:{work_item}:create_draft_pr:real:active"
             branch = deterministic_branch(key)
             pr_url = f"https://github.com/example/widgets/pull/{20 + index}"
-            payload = json.dumps({"linear_issue": work_item, "repo": "example/widgets", "dry_run": False}, sort_keys=True)
+            payload = json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": work_item, "repo": "example/widgets", "dry_run": False}, sort_keys=True)
             con.execute(
                 "INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (job_id, key, "completed", "create_draft_pr", payload, f"fixture-{index:02d}", branch, pr_url, now, now),

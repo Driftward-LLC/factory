@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import factory_organization as organization
 import json
 import os
 import re
@@ -75,6 +76,7 @@ def _validate_registry(value: Any) -> dict[str, Any]:
 
     normalized_routes: list[dict[str, Any]] = []
     project_ids: set[str] = set()
+    repositories: set[str] = set()
     for route in routes:
         if not isinstance(route, dict):
             raise LinearProjectExecutionPolicyError("routing_registry_route_malformed")
@@ -91,6 +93,9 @@ def _validate_registry(value: Any) -> dict[str, Any]:
             raise LinearProjectExecutionPolicyError("routing_registry_execution_policy_malformed")
         if project_id in project_ids:
             raise LinearProjectExecutionPolicyError("routing_registry_project_id_duplicate")
+        if repo.lower() in repositories:
+            raise LinearProjectExecutionPolicyError("routing_registry_repo_duplicate")
+        repositories.add(repo.lower())
         project_ids.add(project_id)
         normalized_routes.append({
             "project_id": project_id,
@@ -98,6 +103,10 @@ def _validate_registry(value: Any) -> dict[str, Any]:
             "execution_enabled": execution_enabled,
         })
 
+    try:
+        organization.validate_policy(value, "routing")
+    except ValueError as exc:
+        raise LinearProjectExecutionPolicyError("routing_registry_malformed") from exc
     return {"version": 2, "routes": normalized_routes}
 
 

@@ -1,6 +1,7 @@
 """Migration refusal boundaries and unified production behavior, with synthetic state."""
 import argparse
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -126,6 +127,37 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already stopped"):
                 self.install.start(core=False, apply=True, paused=True, approve_effects=True)
             compose.assert_not_called()
+
+    def test_migration_preserves_crlf_configuration_bytes_and_receipt_hashes(self):
+        supplied = self.directory / "config"
+        original = {}
+        for name in production.bootstrap.ORGANIZATION_DEFAULTS:
+            path = supplied / name
+            original[name] = path.read_bytes().replace(b"\n", b"\r\n")
+            path.write_bytes(original[name])
+        hashes = {name: hashlib.sha256(content).hexdigest() for name, content in original.items()}
+        plan = {"hermes": {"volume": "factory-dedicated-data"}, "previous_images": {"postgres": self.image},
+                "configuration_sha256": hashes, "image": "sha256:" + "d" * 64,
+                "snapshot_sha256": "e" * 64, "commit": "f" * 40}
+        args = argparse.Namespace(approve_digest=migration.digest(plan), destination=Path(self.temp.name) / "destination",
+                                  source=self.directory, configuration=supplied, snapshot=Path(self.temp.name) / "snapshot",
+                                  image=plan["image"], project="factory-new")
+        def archive(image, volume, work, name, **kwargs):
+            production.bootstrap._create_private(work / name, "synthetic archive")
+        runtime = Mock(SERVICES=())
+        with patch.object(migration, "production_module", return_value=runtime), patch.object(migration, "source_stopped"), \
+                patch.object(migration, "hermes_stopped"), patch.object(migration, "source_check"), \
+                patch.object(migration.state, "_no_writers"), patch.object(migration.state, "_tar", side_effect=archive), \
+                patch.object(migration.state, "_archive_check"), patch.object(migration.state, "VOLUMES", ()), \
+                patch.object(migration.state, "DURABLE_VOLUMES", ()), patch.object(migration.pg, "migrate", return_value={"rows": 0}):
+            migration.apply(args, plan, self.metadata, self.values, self.provenance, set())
+        for name, content in original.items():
+            self.assertEqual((args.destination / "config" / name).read_bytes(), content)
+        receipt = json.loads((args.destination / production.state.PROVENANCE).read_text())["profile_migration"]
+        self.assertEqual(receipt["configuration_sha256"], hashes)
+        self.assertEqual(receipt["preview_sha256"], migration.digest(plan))
+        self.assertEqual(receipt["previous_deployment_sha256"], self.provenance["deployment_sha256"])
+        self.assertEqual({name: text.encode("utf-8") for name, text in production.bootstrap.configuration(args.destination / "config").items()}, original)
 
     def test_apply_rejects_stale_digest_before_mutation(self):
         args = argparse.Namespace(approve_digest="stale")

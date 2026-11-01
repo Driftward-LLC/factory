@@ -1,4 +1,4 @@
-import { configuredRepositories, configuredLinearIssue, loadFactoryOrganization } from '@driftward/hatchet-worker-shared';
+import { matchesOrganizationBinding, configuredRepositories, configuredLinearIssue, loadFactoryOrganization } from '@driftward/hatchet-worker-shared';
 import type { BridgeJob, JsonObject, JsonValue } from '@driftward/hatchet-worker-shared';
 import {
   resolveLinearProjectRoute,
@@ -17,6 +17,9 @@ export type LinearReadyIssuePayloadInput = {
   projectId?: string;
   projectName?: string;
   status?: string;
+  teamKey?: string;
+  teamId?: string;
+  workspaceId?: string;
 };
 
 export type LinearReadyIssueEligibilityInput = LinearReadyIssuePayloadInput & {
@@ -75,6 +78,7 @@ export function assertExistingJobRouting(job: Pick<BridgeJob, 'payload'>, route:
     }
   }
   if (job.payload.dry_run === true) return;
+  if (!matchesOrganizationBinding(job.payload.organization_binding)) throw new Error('existing bridge job organization binding conflicts with current configuration');
   const verifier = job.payload.verification_policy;
   if (!isJsonObject(verifier) || verifier.repo !== route.repo || typeof verifier.id !== 'string' || !verifier.id.trim()) {
     throw new Error('existing bridge job verifier policy conflicts with the resolved Linear project route');
@@ -86,12 +90,16 @@ export function buildBridgePayload(
   route: ResolvedLinearProjectRoute,
   dryRun: boolean
 ): JsonObject {
+  if (!input.workspaceId || !input.teamId || !input.teamKey) throw new Error('Normalized issue organization identity is required for admission');
+  const organizationBinding = { workspace_id: input.workspaceId, team_id: input.teamId, team_key: input.teamKey };
+  if (!matchesOrganizationBinding(organizationBinding)) throw new Error('Normalized issue organization identity conflicts with current configuration');
   const verifierPolicy = resolveDraftPrVerifierPolicy(route.repo);
   return {
     work_item_id: input.identifier || '',
     source_event_key: input.eventKey || null,
     source_delivery_id: input.deliveryId || null,
     repo: route.repo,
+    organization_binding: organizationBinding,
     linear_issue_id: input.issueId || null,
     linear_issue: input.identifier || null,
     linear_issue_url: input.issueUrl || null,

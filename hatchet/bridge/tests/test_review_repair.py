@@ -102,6 +102,20 @@ class ReviewRepairTests(unittest.TestCase):
         self.assertEqual(self.counts(), before)
         self.assertEqual((preview["context"]["review_round"], preview["context"]["next_generation"]), (1, 2))
 
+    def test_changed_organization_cannot_repair_an_old_bound_artifact(self):
+        self.inspect()
+        value = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
+        value["linear"]["workspace_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        value["linear"]["team_id"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        changed = self.root / "changed-organization.json"
+        changed.write_text(json.dumps(value))
+        self.observe(teamId=value["linear"]["team_id"], workspaceId=value["linear"]["workspace_id"])
+        before = self.counts()
+        with patch.dict(os.environ, {"FACTORY_ORGANIZATION_CONFIG": str(changed)}):
+            with self.assertRaises(store.BridgeConflict): self.preview()
+            with self.assertRaises(store.BridgeConflict): independent_review.reserve(self.conn, self.job["job_id"])
+        self.assertEqual(self.counts(), before)
+
     def test_confirm_preserves_verified_source_and_delivers_one_existing_pr_repair(self):
         self.inspect(); digest = self.preview()["snapshot_digest"]
         source = store.get_job(self.conn, self.job["job_id"])

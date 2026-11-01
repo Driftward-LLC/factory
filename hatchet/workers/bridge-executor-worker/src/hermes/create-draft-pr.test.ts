@@ -1053,7 +1053,7 @@ function greenJob(): BridgeJob {
   const verifierPolicy = policy();
   return {
     job_id: 'job-61', idempotency_key: 'hatchet:work-item:linear:ENG-61:create_draft_pr:real:active', state: 'verification_pending', requested_action: 'create_draft_pr',
-    payload: { repo: 'example/widgets', linear_issue: 'ENG-61', expected_base: 'main', allowed_changed_paths: verifierPolicy.allowed_changed_paths, forbidden_changed_paths: verifierPolicy.forbidden_changed_paths, required_local_commands: verifierPolicy.required_local_commands, secret_check_command: verifierPolicy.secret_check_command, verification_policy: verifierPolicy, dry_run: false },
+    payload: { organization_binding: { workspace_id: '11111111-1111-4111-8111-111111111111', team_id: '22222222-2222-4222-8222-222222222222', team_key: 'ENG' }, repo: 'example/widgets', linear_issue: 'ENG-61', expected_base: 'main', allowed_changed_paths: verifierPolicy.allowed_changed_paths, forbidden_changed_paths: verifierPolicy.forbidden_changed_paths, required_local_commands: verifierPolicy.required_local_commands, secret_check_command: verifierPolicy.secret_check_command, verification_policy: verifierPolicy, dry_run: false },
     payload_hash: 'hash', branch: 'codex/eng-61-draft-pr-verification-gate', commit_sha: 'abc1234', pr_url: 'https://github.com/example/widgets/pull/61', hermes_session_id: 'session-61', hatchet_workflow_run_id: 'run-61', hatchet_step_run_id: 'step-61', verification_context: validation(policy().required_local_commands), verification_observed_context: null, verification_receipt: null, verification_digest: null, reason_code: null, error: null, created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T00:00:00Z'
   };
 }
@@ -1126,6 +1126,30 @@ test('disabled GitHub rejects credentialed inspections before invoking any comma
       (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'organization_not_configured');
   } finally {
     if (previous === undefined) delete process.env.FACTORY_ORGANIZATION_CONFIG; else process.env.FACTORY_ORGANIZATION_CONFIG = previous;
+    rmSync(directory, { recursive: true });
+  }
+});
+
+test('real execution rejects old unbound jobs and same-prefix workspace reconfiguration', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-job-organization-'));
+  const previous = process.env.FACTORY_ORGANIZATION_CONFIG;
+  const previousAllowed = process.env.DRIFTWARD_HERMES_ALLOWED_REPOS;
+  const admitted = greenJob();
+  try {
+    process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = 'example/widgets';
+    const { organization_binding: _binding, ...oldPayload } = admitted.payload;
+    assertFailure(() => validateRealCreateDraftPrJob({ ...admitted, payload: oldPayload }), 'organization_binding_mismatch');
+    const configuration = JSON.parse(readFileSync(previous!, 'utf8'));
+    configuration.linear.workspace_id = '44444444-4444-4444-8444-444444444444';
+    configuration.linear.team_id = '55555555-5555-4555-8555-555555555555';
+    assert.equal(configuration.linear.team_key, 'ENG');
+    const filename = path.join(directory, 'organization.json');
+    writeFileSync(filename, JSON.stringify(configuration));
+    process.env.FACTORY_ORGANIZATION_CONFIG = filename;
+    assertFailure(() => validateRealCreateDraftPrJob(admitted), 'organization_binding_mismatch');
+  } finally {
+    if (previous === undefined) delete process.env.FACTORY_ORGANIZATION_CONFIG; else process.env.FACTORY_ORGANIZATION_CONFIG = previous;
+    if (previousAllowed === undefined) delete process.env.DRIFTWARD_HERMES_ALLOWED_REPOS; else process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = previousAllowed;
     rmSync(directory, { recursive: true });
   }
 });

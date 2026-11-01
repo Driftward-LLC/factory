@@ -145,7 +145,7 @@ class BridgeServerTests(unittest.TestCase):
                 "reason": "Linear Ready intake reserved a factory attempt",
                 "hatchet_workflow_run_id": "workflow-1",
                 "hatchet_step_run_id": "step-1",
-                "payload": {"repo": "example/widgets", "linear_issue": "ENG-9", "dry_run": False, "source_event_key": "linear:issue:ENG-9:update:delivery"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue": "ENG-9", "dry_run": False, "source_event_key": "linear:issue:ENG-9:update:delivery"},
             }
             handler = _PostHandler(conn, body, "/factory/intake/reserve")
             handler.do_POST()
@@ -162,7 +162,7 @@ class BridgeServerTests(unittest.TestCase):
                 "mode": "dry-run",
                 "request_id": "linear:issue:ENG-10:update:delivery",
                 "reason": "Linear Ready intake reserved a factory attempt",
-                "payload": {"repo": "example/widgets", "linear_issue": "ENG-10", "dry_run": True, "source_event_key": "linear:issue:ENG-10:update:delivery"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue": "ENG-10", "dry_run": True, "source_event_key": "linear:issue:ENG-10:update:delivery"},
             }
             reserved = _PostHandler(conn, body, "/factory/intake/reserve")
             reserved.do_POST()
@@ -290,7 +290,7 @@ class BridgeServerTests(unittest.TestCase):
         os.environ["HATCHET_VERIFIER_POLICY_PATH"] = str(Path(__file__).resolve().parents[2] / "workers" / "test-fixtures" / "verifier-policy.json")
         catalog = json.loads(Path(os.environ["HATCHET_VERIFIER_POLICY_PATH"]).read_text())
         policy = next(item for item in catalog["policies"] if item["repo"] == "example/platform")
-        payload = {"repo": policy["repo"], "dry_run": False, "verification_policy": {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}}
+        payload = {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": policy["repo"], "dry_run": False, "verification_policy": {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}}
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name)
             self.addCleanup(conn.close)
@@ -310,7 +310,7 @@ class BridgeServerTests(unittest.TestCase):
         os.environ["HATCHET_HERMES_VERIFIER_TOKEN"] = "verifier-test-only"
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
-            job, _ = submit_job(conn, {"idempotency_key": "hatchet:server:terminal-failure", "requested_action": "create_draft_pr", "payload": {"repo": "example/platform", "dry_run": False}})
+            job, _ = submit_job(conn, {"idempotency_key": "hatchet:server:terminal-failure", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "dry_run": False}})
             transition_job(conn, job["job_id"], state="running")
             transition_job(conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc", "pr_url": "https://github.com/example/platform/pull/2"})
             pending = transition_job(conn, job["job_id"], state="verification_pending", details={"verification_context": {"local_commands": [{"command": "x", "exit_code": 0}], "secret_check": {"command": "y", "exit_code": 0}}})

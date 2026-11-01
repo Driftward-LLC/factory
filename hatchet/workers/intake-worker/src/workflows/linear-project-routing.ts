@@ -105,6 +105,7 @@ export function validateLinearProjectRoutingRegistry(value: unknown): LinearProj
 
   const routes: LinearProjectRoute[] = [];
   const projectIds = new Set<string>();
+  const repositories = new Set<string>();
   for (const [index, route] of value.routes.entries()) {
     if (!isRecord(route) || typeof route.project_id !== 'string' || typeof route.repo !== 'string') {
       throw new LinearProjectRoutingError('routing_registry_route_malformed', `Linear project route ${index} is malformed`);
@@ -124,6 +125,10 @@ export function validateLinearProjectRoutingRegistry(value: unknown): LinearProj
     if (projectIds.has(route.project_id)) {
       throw new LinearProjectRoutingError('routing_registry_project_id_duplicate', `Linear project route ${index} duplicates ${route.project_id}`);
     }
+    if (repositories.has(route.repo.toLowerCase())) {
+      throw new LinearProjectRoutingError('routing_registry_repo_duplicate', `Linear project route ${index} duplicates repository ${route.repo}`);
+    }
+    repositories.add(route.repo.toLowerCase());
     projectIds.add(route.project_id);
     routes.push({
       project_id: route.project_id,
@@ -132,6 +137,15 @@ export function validateLinearProjectRoutingRegistry(value: unknown): LinearProj
     });
   }
 
+  if (value.retired_repositories !== undefined) {
+    const retired = value.retired_repositories;
+    if (!Array.isArray(retired) || retired.length > 32
+      || retired.some((repo) => typeof repo !== 'string' || repo !== repo.trim() || !REPOSITORY_PATTERN.test(repo))
+      || new Set(retired.map((repo: string) => repo.toLowerCase())).size !== retired.length
+      || retired.some((repo: string) => repositories.has(repo.toLowerCase()))) {
+      throw new LinearProjectRoutingError('routing_registry_retired_repositories_invalid', 'Retired repositories must be a bounded unique repository array without routed repositories');
+    }
+  }
   return { version: 2, routes };
 }
 

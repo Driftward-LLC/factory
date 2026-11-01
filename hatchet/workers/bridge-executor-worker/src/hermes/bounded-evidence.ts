@@ -21,6 +21,7 @@ type UntrustedReceipt = {
 };
 
 const GATEWAY_REASON_CODES = new Set([
+  'organization_not_configured', 'organization_binding_mismatch',
   'hermes_invocation_conflict',
   'hermes_grpc_invocation_inspection_failed',
   'hermes_grpc_invocation_protocol_unsupported',

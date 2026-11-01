@@ -35,7 +35,7 @@ def legacy_row(issue="ENG-8", mode="real", repository=CAPYKIT, job_id="legacy-jo
     return {
         "job_id": job_id,
         "idempotency_key": key,
-        "payload_json": json.dumps({"linear_issue": issue, "repo": repository, "dry_run": mode == "dry-run"}),
+        "payload_json": json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": issue, "repo": repository, "dry_run": mode == "dry-run"}),
         "branch": deterministic_branch(key),
         "pr_url": pr_url,
         "state": state,
@@ -208,7 +208,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
         row = legacy_row(pr_url=pr_url)
         base = legacy_attempt(row)
         forged = {
-            "unknown-repository": ({**row, "payload_json": json.dumps({"linear_issue": "ENG-8", "repo": "Unknown/repo", "dry_run": False})}, base),
+            "unknown-repository": ({**row, "payload_json": json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": "ENG-8", "repo": "Unknown/repo", "dry_run": False})}, base),
             "cross-repository": (row, legacy_attempt(row, prior_pr_url=f"https://github.com/{HOST}/pull/20")),
             "missing-artifact": ({**row, "pr_url": None}, legacy_attempt({**row, "pr_url": None})),
             "prior-mismatch": (row, legacy_attempt(row, prior_pr_url=f"https://github.com/{CAPYKIT}/pull/21")),

@@ -93,7 +93,8 @@ def checked_path(path: str | Path) -> Path:
 def _read_private(path: Path) -> str:
     checked_path(path)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+    # Preserve accepted UTF-8 bytes, including CRLF, for snapshot copies and digests.
+    with os.fdopen(descriptor, "r", encoding="utf-8", newline="") as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
             raise ValueError("configuration must be a private regular file")
@@ -102,7 +103,7 @@ def _read_private(path: Path) -> str:
 
 def _create_private(path: Path, content: str) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())

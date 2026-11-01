@@ -191,7 +191,7 @@ class FactoryOperatorTests(unittest.TestCase):
         orphan, _ = submit_job(conn, {
             "idempotency_key": "hatchet:work-item:linear:ENG-8:create_draft_pr:real:active",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "example/widgets", "linear_issue": "ENG-8", "dry_run": False},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue": "ENG-8", "dry_run": False},
         })
         transition_job(conn, orphan["job_id"], state="running")
         transition_job(conn, orphan["job_id"], state="failed", details={"reason_code": "factory_attempt_required"})

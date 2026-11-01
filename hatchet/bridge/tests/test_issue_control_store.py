@@ -103,7 +103,7 @@ class IssueControlStoreTests(unittest.TestCase):
         with self.assertRaises(store.BridgeConflict):
             store.reserve_factory_retry(self.conn, work_item_key=self.issue, mode="real", request_id="root-retry", reason="retry", actor="root", payload=verifier_payload())
         with self.assertRaises(store.BridgeConflict):
-            store.submit_job(self.conn, {"idempotency_key": "bypass", "requested_action": "create_draft_pr", "payload": {"linear_issue": self.issue, "repo": "example/widgets"}})
+            store.submit_job(self.conn, {"idempotency_key": "bypass", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": self.issue, "repo": "example/widgets"}})
         with self.assertRaises(store.BridgeConflict):
             store.transition_job(self.conn, job["job_id"], state="running")
 
@@ -199,7 +199,7 @@ class IssueControlStoreTests(unittest.TestCase):
         self.assertEqual(len(result["control"]["history"]), 2)
 
     def test_legacy_active_job_prevents_false_safe_handoff(self):
-        store.submit_job(self.conn, {"idempotency_key": "legacy", "requested_action": "create_draft_pr", "payload": {"repo": "example/widgets", "linear_issue": self.issue}})
+        store.submit_job(self.conn, {"idempotency_key": "legacy", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue": self.issue}})
         control = self.take()
         self.assertEqual(control["mode"], "handoff_pending")
         self.assertEqual(control["blockers"][0]["kind"], "untracked_active_job")

@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { requireGithubOrganization, loadFactoryOrganization, executionRuntimeBinding, sameExecutionRuntime, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { matchesOrganizationBinding, requireGithubOrganization, loadFactoryOrganization, executionRuntimeBinding, sameExecutionRuntime, withExecutionSpan } from '@driftward/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
@@ -68,6 +68,13 @@ type GatewayService = grpc.ServiceClientConstructor & { service: grpc.ServiceDef
 type UnaryCall<T> = grpc.ServerUnaryCall<T, unknown>;
 type SendUnary<T> = grpc.sendUnaryData<T>;
 
+function assertInvocationOrganization(job: BridgeJob): void {
+  requireGithubOrganization();
+  if (!matchesOrganizationBinding(job.payload.organization_binding)) {
+    throw new NonRetryableBridgeExecutionError('organization_binding_mismatch', 'Invocation organization binding is missing or differs from current configuration');
+  }
+}
+
 export function createServer(target: string, runDraftPr = runHermesCreateDraftPrViaCommand): grpc.Server {
   const reviewer = new IndependentReviewer(process.env.DRIFTWARD_FACTORY_REVIEW_DIRECTORY || '/var/lib/driftward-hermes-factory/reviews');
   // Open lazily so read-only identity/inspection remains available during a storage fault.
@@ -106,6 +113,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
     }),
     prepareInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => {
       const job = parseBridgeJob(request);
+      assertInvocationOrganization(job);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const runtime = await invocations().prepare(job, lease, (invocation) =>
         withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined,
@@ -113,8 +121,8 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       return { state: 'running', executionRuntimeJson: JSON.stringify(runtime), executionLeaseJson: JSON.stringify(lease) };
     }),
     createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest, call) => {
-      requireGithubOrganization();
       const job = parseBridgeJob(request);
+      assertInvocationOrganization(job);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const runtime = executionRuntimeBinding(JSON.parse(requiredString(request.executionRuntimeJson, 'execution_runtime_json')));
       // Preparation pauses before model selection. Install its observer before

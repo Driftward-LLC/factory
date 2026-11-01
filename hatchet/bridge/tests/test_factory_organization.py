@@ -60,7 +60,7 @@ class OrganizationTests(unittest.TestCase):
         from hatchet_hermes_bridge import store
         self.value['github']['enabled'] = False
         self.path.write_text(json.dumps(self.value))
-        request = {'idempotency_key': 'fixture', 'requested_action': 'create_draft_pr', 'payload': {'repo': 'example/widgets', 'linear_issue': 'ACME-42', 'dry_run': False}}
+        request = {'idempotency_key': 'fixture', 'requested_action': 'create_draft_pr', 'payload': {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, 'repo': 'example/widgets', 'linear_issue': 'ACME-42', 'dry_run': False}}
         with patch.dict(os.environ, {'DRIFTWARD_HERMES_ALLOWED_REPOS': 'example/widgets', 'GITHUB_TOKEN': 'fixture-unusable-token'}):
             with self.assertRaisesRegex(store.BridgeValidationError, 'disabled'): store._validate_submit(request)
         request['payload']['dry_run'] = True
@@ -79,3 +79,23 @@ class OrganizationTests(unittest.TestCase):
             finally:
                 conn.close()
         self.assertEqual(routing_repositories({'version': 2, 'routes': []}), (set(), set()))
+
+    def test_routing_identity_uniqueness_and_disabled_only_catalog(self):
+        first = {"project_id": "11111111-1111-4111-8111-111111111111", "repo": "example/widgets", "execution_enabled": False}
+        second = {"project_id": "22222222-2222-4222-8222-222222222222", "repo": "example/control-plane", "execution_enabled": False}
+        organization.validate_policy({"version": 2, "routes": [first, second]}, "routing")
+        for duplicate in ({**second, "project_id": first["project_id"]}, {**second, "repo": first["repo"]}, {**second, "repo": "EXAMPLE/Widgets"}):
+            with self.subTest(route=duplicate), self.assertRaises(ValueError):
+                organization.validate_policy({"version": 2, "routes": [first, duplicate]}, "routing")
+
+    def test_retired_repository_catalog_matches_runtime_constraints(self):
+        from hatchet_hermes_bridge.legacy_artifacts import routing_repositories
+        route = {"project_id": "11111111-1111-4111-8111-111111111111", "repo": "example/widgets", "execution_enabled": False}
+        for retired in ("example/platform", ["bad repo"], ["EXAMPLE/Widgets"], ["example/platform", "EXAMPLE/Platform"], [f"example/repo{i}" for i in range(33)]):
+            policy = {"version": 2, "routes": [route], "retired_repositories": retired}
+            with self.subTest(retired=retired):
+                with self.assertRaises(ValueError): organization.validate_policy(policy, "routing")
+                with self.assertRaises(ValueError): routing_repositories(policy)
+        policy = {"version": 2, "routes": [route], "retired_repositories": ["example/platform"]}
+        organization.validate_policy(policy, "routing")
+        self.assertEqual(routing_repositories(policy), ({"example/widgets", "example/platform"}, set()))

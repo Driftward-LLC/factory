@@ -187,6 +187,7 @@ test('includes immutable project routing evidence in bridge payloads', () => {
   const input: LinearReadyIssuePayloadInput = {
     issueId: '11111111-2222-4333-8444-555555555555',
     identifier: 'ENG-7',
+    teamKey: 'ENG', teamId: '22222222-2222-4222-8222-222222222222', workspaceId: '11111111-1111-4111-8111-111111111111',
     eventKey: 'linear:issue:ENG-7:update:delivery-1',
     deliveryId: 'delivery-1',
     issueUrl: 'https://linear.app/example/issue/ENG-7/implement-capykit-discovery-cli-commands',
@@ -265,6 +266,7 @@ test('ready intake reserves a factory attempt instead of submitting a plain brid
     input: {
       issueId: '11111111-2222-4333-8444-555555555555',
       identifier: 'ENG-9',
+      teamKey: 'ENG', teamId: '22222222-2222-4222-8222-222222222222', workspaceId: '11111111-1111-4111-8111-111111111111',
       eventKey: 'linear:issue:ENG-9:update:delivery-1',
       deliveryId: 'delivery-1',
       issueUrl: 'https://linear.app/example/issue/ENG-9/implement-the-read-only-capykit-mcp-server',
@@ -383,5 +385,55 @@ test('another organization routes with its configured team and verifier base bra
   } finally {
     names.forEach((key, i) => restoreEnvironment(key, previous[i]));
     rmSync(directory, { recursive: true });
+  }
+});
+
+test('routing rejects duplicate repository identity but accepts an entirely disabled catalog', () => {
+  withRegistry({ version: 2, routes: [
+    { project_id: CAPYKIT_PROJECT_ID, repo: 'example/widgets', execution_enabled: false },
+    { project_id: HOST_PROJECT_ID, repo: 'EXAMPLE/widgets', execution_enabled: false }
+  ] }, (registryPath) => assertRoutingError(() => resolveLinearProjectRoute(CAPYKIT_PROJECT_ID, { registryPath }), 'routing_registry_repo_duplicate'));
+  withRegistry({ version: 2, routes: [
+    { project_id: CAPYKIT_PROJECT_ID, repo: 'example/widgets', execution_enabled: false },
+    { project_id: HOST_PROJECT_ID, repo: 'example/control-plane', execution_enabled: false }
+  ] }, (registryPath) => assertRoutingError(() => resolveLinearProjectRoute(CAPYKIT_PROJECT_ID, { registryPath }), 'linear_issue_project_execution_disabled'));
+});
+
+test('an organization switch between observation and admission cannot relabel the old issue', async () => {
+  const previous = process.env.FACTORY_ORGANIZATION_CONFIG;
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-stale-intake-'));
+  const input = { identifier: 'ENG-42', teamKey: 'ENG', teamId: '22222222-2222-4222-8222-222222222222',
+    workspaceId: '11111111-1111-4111-8111-111111111111', projectId: CAPYKIT_PROJECT_ID };
+  const route = resolveLinearProjectRoute(CAPYKIT_PROJECT_ID, { registryPath: CHECKED_IN_REGISTRY });
+  assert.deepEqual(buildBridgePayload(input, route, false).organization_binding, {
+    workspace_id: input.workspaceId, team_id: input.teamId, team_key: input.teamKey
+  });
+  try {
+    const configuration = JSON.parse(readFileSync(previous!, 'utf8'));
+    configuration.linear.workspace_id = '44444444-4444-4444-8444-444444444444';
+    configuration.linear.team_id = '55555555-5555-4555-8555-555555555555';
+    const filename = path.join(directory, 'organization.json');
+    writeFileSync(filename, JSON.stringify(configuration));
+    process.env.FACTORY_ORGANIZATION_CONFIG = filename;
+    let admissions = 0;
+    const bridge = { reserveFactoryIntake: async () => { admissions++; throw new Error('must not submit'); } };
+    await assert.rejects(reserveFactoryIntake(bridge, { input, route, mode: 'real', hatchetWorkflowRunId: 'workflow', hatchetStepRunId: 'step' }), /identity conflicts/);
+    assert.equal(admissions, 0);
+  } finally {
+    restoreEnvironment('FACTORY_ORGANIZATION_CONFIG', previous);
+    rmSync(directory, { recursive: true });
+  }
+});
+
+test('optional retired repositories are bounded, valid, unique and disjoint from routed repositories', () => {
+  const routes = [{ project_id: CAPYKIT_PROJECT_ID, repo: 'example/widgets', execution_enabled: false }];
+  for (const retired_repositories of ['example/retired', Array.from({ length: 33 }, (_, index) => `example/retired-${index}`),
+    ['not-a-repository'], ['example/old', 'EXAMPLE/OLD'], ['EXAMPLE/widgets']]) {
+    withRegistry({ version: 2, routes, retired_repositories }, (registryPath) => assertRoutingError(
+      () => resolveLinearProjectRoute(CAPYKIT_PROJECT_ID, { registryPath }), 'routing_registry_retired_repositories_invalid'));
+  }
+  for (const retired_repositories of [[], ['example/retired']]) {
+    withRegistry({ version: 2, routes, retired_repositories }, (registryPath) => assertRoutingError(
+      () => resolveLinearProjectRoute(CAPYKIT_PROJECT_ID, { registryPath }), 'linear_issue_project_execution_disabled'));
   }
 });

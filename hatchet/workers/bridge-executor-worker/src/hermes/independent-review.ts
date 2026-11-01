@@ -1,4 +1,4 @@
-import { requireGithubOrganization } from '@driftward/hatchet-worker-shared';
+import { matchesOrganizationBinding, requireGithubOrganization } from '@driftward/hatchet-worker-shared';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
@@ -211,6 +211,7 @@ export class IndependentReviewer {
 
   private async execute(job: BridgeJob, r: ReviewIntent, location: string): Promise<JsonObject> {
     try { requireGithubOrganization(); } catch { return inconclusiveReview(r, 'review_isolation_unavailable'); }
+    if (!matchesOrganizationBinding(job.payload.organization_binding)) return inconclusiveReview(r, 'review_policy_changed');
     if (process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED !== '1') return inconclusiveReview(r, 'review_isolation_unavailable');
     if (!r.requirements.description) return inconclusiveReview(r, 'review_inconclusive');
     if (!await this.authorize(job, r)) return inconclusiveReview(r, 'review_policy_changed');

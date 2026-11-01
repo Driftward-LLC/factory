@@ -175,6 +175,27 @@ class PortableStateTests(unittest.TestCase):
         self.assertFalse(any("operator-socket" in name for name in self.docker.volumes))
         self.assertTrue(any(args[0] == "pull" for args in self.docker.calls))
 
+    def test_crlf_organization_files_keep_exact_snapshot_hashes_and_restored_bytes(self) -> None:
+        organization = json.loads((ROOT / "deploy/examples/organization.configured.example.json").read_text())
+        organization["linear"]["delegate_name"] = "Usine équipe"
+        (self.source / "config/organization.json").write_bytes(json.dumps(organization, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
+        original = {}
+        for name in bootstrap.ORGANIZATION_DEFAULTS:
+            path = self.source / "config" / name
+            original[name] = path.read_bytes().replace(b"\n", b"\r\n")
+            path.write_bytes(original[name])
+        self.assertEqual({name: text.encode("utf-8") for name, text in bootstrap.configuration(self.source / "config").items()}, original)
+        self.backup()
+        manifest = json.loads((self.snapshot / "manifest.json").read_text())
+        for name, content in original.items():
+            relative = "config/config/" + name
+            self.assertEqual((self.snapshot / relative).read_bytes(), content)
+            self.assertEqual(manifest["sha256"][relative], hashlib.sha256(content).hexdigest())
+        state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
+        for name, content in original.items():
+            self.assertEqual((self.restored / "config" / name).read_bytes(), content)
+        bootstrap.validate_directory(self.restored)
+
     def test_backup_refuses_writers_foreign_volumes_and_existing_destination(self) -> None:
         self.docker.running = True
         with self.assertRaisesRegex(ValueError, "running container"):

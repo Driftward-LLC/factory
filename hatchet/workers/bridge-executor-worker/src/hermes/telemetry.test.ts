@@ -113,7 +113,7 @@ test('SDK exports bounded metadata across process and HTTP boundaries; concurren
     process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
     process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
     const gatewayJob = { ...job, idempotency_key: 'test:otel', requested_action: 'create_draft_pr', branch: 'codex/otel-test', state: 'running',
-      payload: { ...job.payload, repo: 'example/project', dry_run: false } } as BridgeJob;
+      payload: { ...job.payload, organization_binding: { workspace_id: '11111111-1111-4111-8111-111111111111', team_id: '22222222-2222-4222-8222-222222222222', team_key: 'ENG' }, repo: 'example/project', dry_run: false } } as BridgeJob;
     let invocations = 0;
     const runtime = { schema: 1 as const, backend: 'hermes', kind: 'docker' as const, instance_id: 'a'.repeat(64), image_digest: 'sha256:' + 'b'.repeat(64), incarnation: 'sha256:' + 'c'.repeat(64) };
     const gateway = createGateway(target, async (_job, _command, _timeout, _buffer, _selection, context) => {
