@@ -340,13 +340,13 @@ def assert_quiescent(conn):
 
 def paused_execution(install):
     return tuple(row['Service'] for row in install.service_rows()
-                 if row['Service'] == 'bridge-executor-worker' and row.get('State') == 'exited')
+                 if row['Service'] == 'bridge-executor-worker' and row.get('State') in ('created', 'exited'))
 
 
 def healthy(install, paused=()):
     rows = {row['Service']: row for row in install.service_rows()}
     require(set(rows) == set(install.services) and all(
-        (row.get('State') == 'exited' if name in paused else
+        (row.get('State') in ('created', 'exited') if name in paused else
          row.get('State') == 'running' and row.get('Health', '') in ('', 'healthy'))
         for name, row in rows.items()), 'service_health_failed')
     install.preflight()

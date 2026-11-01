@@ -97,7 +97,7 @@ def configure(installation, args) -> None:
         if bootstrap._read_private(snapshot / "config" / name) != bootstrap._read_private(installation.directory / name):
             raise ValueError("configuration changed since the telemetry backup")
     for name in volumes:
-        state._archive_check(snapshot / "volumes" / (name + ".tar"))
+        state._archive_check(snapshot / "volumes" / (name + ".tar"), hermes=name == "hermes-data")
     previous = validate(metadata)
     if previous and args.credentials:
         raise ValueError("Collector is already configured; credential rotation requires separate review")
@@ -105,7 +105,7 @@ def configure(installation, args) -> None:
     if source is None:
         raise ValueError("first Collector installation requires --credentials")
     secret = credentials(source)
-    reference = IMAGE if profile == state.PRODUCTION else installation.values["FACTORY_IMAGE"]
+    reference = IMAGE if profile == state.PRODUCTION and metadata.get("layout") != state.UNIFIED else installation.values["FACTORY_IMAGE"]
     image = state._docker(["image", "inspect", "--format", "{{.Id}}", reference], installation.env)
     feature = {"image": image, "port": args.port, "enabled": not args.paused,
                "deployment_sha256": {name: state._hash(HERE / name) for name in FILES}}

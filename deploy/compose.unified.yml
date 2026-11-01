@@ -1,0 +1,17 @@
+# Reviewed migration only; appended after the legacy production/telemetry layers.
+services:
+  postgres:
+    image: ${FACTORY_IMAGE:?}
+    entrypoint: [/usr/bin/tini, --, /usr/local/bin/docker-entrypoint.sh]
+    command: [postgres, -c, max_connections=100, -c, listen_addresses=*]
+    environment:
+      LANG: en_US.UTF-8
+  hatchet-lite:
+    image: ${FACTORY_IMAGE:?}
+    entrypoint: [/usr/bin/tini, --, /entrypoint.sh]
+    command: []
+    working_dir: /
+  factory-hermes:
+    profiles: !reset []
+    labels:
+      io.driftward.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?}

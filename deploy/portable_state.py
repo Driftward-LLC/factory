@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path, PurePosixPath
 import re
 import stat
@@ -27,12 +28,17 @@ DEPLOYMENT_FILES = ("docker-compose.yml", "compose.portable.yml")
 IDENTITY_LABEL = "io.driftward.factory.installation"
 PRODUCTION = "same-host-production"
 PROVENANCE = ".factory-cutover.json"
+UNIFIED = "unified-v1"
 
 
 def deployment_files(profile: str, metadata: dict | None = None) -> tuple[str, ...]:
     if profile not in {"portable-dry-run", PRODUCTION}:
         raise ValueError("unsupported installation profile")
     files = (*DEPLOYMENT_FILES, "compose.production.yml") if profile == PRODUCTION else DEPLOYMENT_FILES
+    if metadata and metadata.get("layout") is not None:
+        if profile != PRODUCTION or metadata["layout"] != UNIFIED:
+            raise ValueError("unsupported installation layout")
+        files = (*files, "compose.unified.yml")
     if metadata and metadata.get("telemetry") is not None:
         import telemetry
         telemetry.validate(metadata)
@@ -89,12 +95,28 @@ def _private_files(directory: Path) -> set[str]:
     return files
 
 
-def _archive_check(path: Path) -> None:
+def _archive_check(path: Path, *, hermes: bool = False) -> None:
+    links, names = set(), set()
     with tarfile.open(path) as archive:
         for entry in archive:
             name = PurePosixPath(entry.name)
-            if name.is_absolute() or ".." in name.parts or not (entry.isfile() or entry.isdir()):
+            if name.is_absolute() or ".." in name.parts or name in names:
+                raise ValueError("unsafe volume archive: invalid or duplicate path")
+            names.add(name)
+            if hermes and entry.issym():
+                # Hermes owns /opt/data. Preserve only links inside that volume;
+                # tar must never restore another entry through a symlink parent.
+                # Reject parent traversal before normalization: a prior link can redirect it.
+                if ".." in PurePosixPath(entry.linkname).parts:
+                    raise ValueError("Hermes archive link cannot contain parent traversal")
+                target = posixpath.normpath(posixpath.join("/opt/data", str(name.parent), entry.linkname))
+                if not (target == "/opt/data" or target.startswith("/opt/data/")):
+                    raise ValueError("Hermes archive link escapes its dedicated data volume")
+                links.add(name)
+            elif not (entry.isfile() or entry.isdir()):
                 raise ValueError("unsafe volume archive; links and special files are not supported")
+    if any(parent in links for name in names for parent in name.parents):
+        raise ValueError("archive entry would write through a symlink")
 
 
 def _available_volumes(env: dict | None = None) -> set[str]:
@@ -147,7 +169,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     image_ids = {image: _docker(["image", "inspect", "--format", "{{.Id}}", image], installation.env) for image in images}
     existing = _available_volumes(installation.env)
     volumes = [suffix for suffix in DURABLE_VOLUMES if f"{installation.project}-{suffix}" in existing]
-    required = set(VOLUMES if profile == PRODUCTION else PORTABLE_VOLUMES)
+    required = set(DURABLE_VOLUMES if metadata.get("layout") == UNIFIED else VOLUMES if profile == PRODUCTION else PORTABLE_VOLUMES)
     if not required.issubset(volumes):
         raise ValueError("installation has not created all required durable volumes")
     for suffix in volumes:
@@ -169,7 +191,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
         _tar(image_ids[values["FACTORY_IMAGE"]], f"{installation.project}-{suffix}", snapshot / "volumes", f"{suffix}.tar", restore=False, env=installation.env)
         archive = snapshot / "volumes" / f"{suffix}.tar"
         archive.chmod(0o600)
-        _archive_check(archive)
+        _archive_check(archive, hermes=suffix == "hermes-data")
     hashes = {name: _hash(snapshot / name) for name in sorted(_private_files(snapshot))}
     bootstrap._create_private(snapshot / "manifest.json", json.dumps({
         "format_version": 1, "project": installation.project, "installation_id": metadata["installation_id"],
@@ -202,7 +224,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     # Reuse bootstrap's project, image, path and port validation without writing.
     updated = bootstrap.init_directory(directory, manifest["factory_image"], project, port_offset=port_offset)
     volumes = manifest["volumes"]
-    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(VOLUMES if production else PORTABLE_VOLUMES).issubset(volumes) or not set(volumes).issubset(DURABLE_VOLUMES):
+    if not isinstance(volumes, list) or len(volumes) != len(set(volumes)) or not set(DURABLE_VOLUMES if marker.get("layout") == UNIFIED else VOLUMES if production else PORTABLE_VOLUMES).issubset(volumes) or not set(volumes).issubset(DURABLE_VOLUMES):
         raise ValueError("invalid snapshot volume list")
     expected = {"config/" + name for name in expected_config} | {f"volumes/{suffix}.tar" for suffix in volumes}
     if set(manifest["sha256"]) != expected or _private_files(snapshot) != expected | {"manifest.json"}:
@@ -211,7 +233,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         if _hash(snapshot / name) != digest:
             raise ValueError("snapshot checksum mismatch")
     for suffix in volumes:
-        _archive_check(snapshot / "volumes" / f"{suffix}.tar")
+        _archive_check(snapshot / "volumes" / f"{suffix}.tar", hermes=suffix == "hermes-data")
     values = bootstrap.read_env(snapshot / "config" / ".env")
     marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
     provenance = read_provenance(snapshot / "config" / PROVENANCE) if production else None
