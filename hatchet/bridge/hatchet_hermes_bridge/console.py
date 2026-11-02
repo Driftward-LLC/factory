@@ -100,6 +100,15 @@ def _with_agent_trace(record: dict[str, Any], conn: sqlite3.Connection) -> dict[
           and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt["attempt_id"])):
         # Matches the Hermes observer's attempt-scoped UUIDv5 contract.
         trace_id = uuid.uuid5(uuid.NAMESPACE_URL, f"factory-hermes:trace:attempt:{attempt['attempt_id']}")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='factory_imported_agent_traces'").fetchone():
+            imported = conn.execute(
+                "SELECT trace_id FROM factory_imported_agent_traces WHERE attempt_id=?",
+                (attempt["attempt_id"],),
+            ).fetchone()
+            if imported:
+                if not isinstance(imported[0], str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", imported[0]):
+                    return {**record, "agent_trace": trace}
+                trace_id = uuid.UUID(imported[0])
         started = conn.execute(
             "SELECT created_at FROM factory_attempt_events WHERE attempt_id=? "
             "AND event_type IN ('execution_backend_invoked','attempt_started') "

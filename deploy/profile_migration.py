@@ -19,6 +19,7 @@ import uuid
 
 import bootstrap
 import migration_postgres as pg
+import naming_migration as naming
 import portable_state as state
 import telemetry
 
@@ -46,6 +47,23 @@ def validate_receipt(install):
             and value.get("layout") == state.UNIFIED, "unified layout requires a migration receipt")
     for key in ("preview_sha256", "snapshot_sha256", "hermes_archive_sha256", "previous_profile_sha256"):
         require(re.fullmatch(HEX, str(value.get(key, ""))), "invalid migration receipt digest")
+    transition = value.get("naming_migration")
+    if transition is not None:
+        require(isinstance(transition, dict) and transition.get("source_generation") == "unmarked"
+                and transition.get("target_generation") == bootstrap.NAMING_GENERATION
+                and transition.get("gateway_policy") == "unbound"
+                and re.fullmatch(HEX, str(transition.get("mapping_sha256", "")))
+                and isinstance(transition.get("mapping"), dict), "invalid naming migration receipt")
+        legacy = transition.get("source_predecessors")
+        require(isinstance(legacy, list) and legacy
+                and all(isinstance(row, dict) and set(row) == {"project", "installation_id"}
+                        and row in install.provenance.get("predecessors", []) for row in legacy)
+                and len({row["project"] for row in legacy}) == len(legacy)
+                and {"project": value.get("previous_project"), "installation_id": value.get("previous_installation_id")} in legacy,
+                "naming migration must retain every legacy predecessor identity")
+        naming.validate_mapping(transition["mapping"], {
+            "identity_label": transition["mapping"].get("source_identity_label"),
+            "tenant_label": transition["mapping"].get("source_tenant_label")})
     previous = value.get("previous_images", {})
     require(set(previous) in ({"factory", "postgres", "hatchet-lite"}, {"factory", "postgres", "hatchet-lite", telemetry.SERVICE})
             and all(re.fullmatch(IMAGE, str(v)) for v in previous.values()), "invalid previous image pins")
@@ -90,14 +108,14 @@ def hermes_source(name):
     return {"container": row["Id"], "name": name, "project": project, "image": row["Image"], "volume": mounts[0]["Name"]}
 
 
-def source_stopped(project, identity, services):
+def source_stopped(project, identity, services, identity_label=state.IDENTITY_LABEL):
     ids = state._docker(["ps", "-aq", "--no-trunc", "--filter", "label=com.docker.compose.project=" + project]).splitlines()
     rows = json.loads(state._docker(["container", "inspect", *ids])) if ids else []
     found = set()
     for row in rows:
         labels = row.get("Config", {}).get("Labels") or {}
         role = labels.get("com.docker.compose.service")
-        require(labels.get(state.IDENTITY_LABEL) == identity and role in services and role not in found
+        require(labels.get(identity_label) == identity and role in services and role not in found
                 and labels.get("com.docker.compose.oneoff", "false").lower() == "false"
                 and row["State"]["Status"] in ("created", "exited")
                 and row["HostConfig"]["RestartPolicy"]["Name"] == "no",
@@ -161,7 +179,23 @@ def preview(args):
             and args.snapshot not in args.destination.parents, "destination must be separate from source and backup")
     require(re.fullmatch(IMAGE, args.image), "target requires an exact local Factory image ID")
     source_check(args)
-    metadata, values = bootstrap.validate_directory(args.source)
+    raw = json.loads(bootstrap._read_private(args.source / bootstrap.MARKER))
+    naming_plan = None
+    if raw.get("naming_generation") is None:
+        require(getattr(args, "naming_map", None) is not None, "markerless source requires a reviewed --naming-map")
+        info = naming.source_info(args.source_bundle, args.source)
+        metadata, values = info["metadata"], info["values"]
+        config = naming.mapping(args.naming_map, info)
+        require(info["volumes"] == list(state.VOLUMES), "source volume inventory is unsupported")
+        require(getattr(args, "gateway_journal_archive", None) is not None,
+                "markerless source requires a private cold --gateway-journal-archive for immutable evidence")
+        journal = naming.journal_evidence(args.gateway_journal_archive)
+        naming_plan = {"journal_archive": journal, "mapping": config, "mapping_sha256": state._hash(args.naming_map),
+                       "source_services": info["services"], "source_files": info["files"],
+                       "gateway_policy": "unbound", "source_generation": "unmarked"}
+    else:
+        require(getattr(args, "naming_map", None) is None, "naming mapping is only supported for markerless sources")
+        metadata, values = bootstrap.validate_directory(args.source)
     require(metadata.get("profile") == state.PRODUCTION and metadata.get("layout") is None,
             "only a legacy production installation can use this transition")
     require(args.project != metadata["project"], "migration requires a new project")
@@ -174,7 +208,7 @@ def preview(args):
             and manifest.get("factory_image") == values["FACTORY_IMAGE"]
             and set(manifest.get("volumes", [])) == set(state.VOLUMES)
             and len(manifest["volumes"]) == len(state.VOLUMES), "backup identity or volume inventory differs")
-    files = state.config_files(state.PRODUCTION, metadata)
+    files = set(naming_plan["source_files"]) if naming_plan else state.config_files(state.PRODUCTION, metadata)
     if metadata.get("telemetry"):
         files |= {telemetry.ENV_FILE}
     expected = {"config/" + n for n in files} | {"volumes/" + n + ".tar" for n in state.VOLUMES}
@@ -185,9 +219,15 @@ def preview(args):
         require(bootstrap._read_private(args.snapshot / "config" / name) == bootstrap._read_private(args.source / name), "configuration changed since backup")
     for suffix in state.VOLUMES:
         state._archive_check(args.snapshot / "volumes" / (suffix + ".tar"))
-    sqlite_checks = check_sqlite(args.snapshot)
+    sqlite_checks = ({volume: naming.sqlite_archive(args.snapshot / "volumes" / (volume + ".tar"), volume)
+                      for volume in naming.SQLITE} if naming_plan else check_sqlite(args.snapshot))
     previous = json.loads(bootstrap._read_private(args.source / state.PROVENANCE))
     require(not previous.get("profile_migration"), "source already has a profile migration")
+    if naming_plan:
+        # Every predecessor inherited from a markerless source uses that source's
+        # ownership namespace. Keep the identities fixed across later restores.
+        naming_plan["source_predecessors"] = [*previous.get("predecessors", []),
+            {"project": metadata["project"], "installation_id": metadata["installation_id"]}]
     source_files = [*state.DEPLOYMENT_FILES, "compose.production.yml"]
     if metadata.get("telemetry"):
         source_files.extend(telemetry.FILES)
@@ -212,6 +252,8 @@ def preview(args):
     if metadata.get("organization_config") != 1:
         require(configured is not None, "pre-configuration backups require --configuration with reviewed organization and policy files")
     supplied = bootstrap.configuration(configured) if configured is not None else bootstrap.configuration(args.source / "config")
+    if naming_plan:
+        naming.disabled_execution_configuration(supplied)
     hermes = hermes_source(args.hermes_container)
     require(hermes["volume"] not in {metadata["project"] + "-" + suffix for suffix in state.PROJECT_VOLUMES}, "Hermes data overlaps control-plane state")
     plan = {"format_version": 1, "layout": state.UNIFIED, "source": str(args.source), "source_bundle": str(args.source_bundle),
@@ -222,6 +264,9 @@ def preview(args):
             "snapshot": str(args.snapshot), "snapshot_sha256": state._hash(args.snapshot / "manifest.json"),
             "image": args.image, "commit": labels["org.opencontainers.image.revision"], "hermes": hermes,
             "sqlite_checks": sqlite_checks, "ports_preserved": {k: values[k] for k in bootstrap.PORTS}, "execution": "stopped", "starts_services": False}
+    if naming_plan:
+        naming_plan["postgres_checks"] = pg.naming_preview(args.snapshot, images["postgres"], args.image, args.project)
+        plan["naming_migration"] = naming_plan
     return plan, metadata, values, previous, files
 
 
@@ -241,7 +286,11 @@ def apply(args, plan, metadata, values, previous, files):
     require(args.approve_digest == digest(plan), "migration preview digest is stale or missing")
     production = production_module()
     services = (*production.SERVICES, *((telemetry.SERVICE,) if metadata.get("telemetry") else ()))
-    source_stopped(metadata["project"], metadata["installation_id"], services)
+    if plan.get("naming_migration"):
+        require(plan["naming_migration"]["source_services"] == list(production.SERVICES), "source services changed across naming generations")
+    naming_plan = plan.get("naming_migration")
+    source_label = naming_plan["mapping"]["source_identity_label"] if naming_plan else state.IDENTITY_LABEL
+    source_stopped(metadata["project"], metadata["installation_id"], services, source_label)
     hermes_stopped(plan["hermes"])
     state._no_writers([metadata["project"] + "-" + suffix for suffix in state.PROJECT_VOLUMES])
     identity = str(uuid.uuid4())
@@ -249,6 +298,18 @@ def apply(args, plan, metadata, values, previous, files):
     work = args.destination / "migration-evidence"
     work.mkdir(mode=0o700)
     bootstrap._create_private(work / "plan.json", json.dumps(plan, sort_keys=True, indent=2) + "\n")
+    if naming_plan:
+        journal = naming_plan["journal_archive"]
+        require(naming.journal_evidence(Path(journal["path"])) == journal, "gateway journal archive changed after preview")
+        # Keep unknown and partial receipts as evidence. Never mount this archive
+        # into the new executor or mark it as the new naming generation.
+        body = Path(journal["path"]).read_bytes()
+        require(hashlib.sha256(body).hexdigest() == journal["sha256"], "gateway journal archive changed while reading")
+        fd = os.open(work / "gateway-journal.tar", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(body)
+            output.flush()
+            os.fsync(output.fileno())
     # A snapshot taken before a restart is stale even if its config is unchanged.
     # Compare the actual stopped volume bytes before creating destination state.
     for suffix in state.VOLUMES:
@@ -258,20 +319,30 @@ def apply(args, plan, metadata, values, previous, files):
         (work / name).unlink()
     state._tar(args.image, plan["hermes"]["volume"], work, "hermes-data.tar", restore=False)
     state._archive_check(work / "hermes-data.tar", hermes=True)
+    if naming_plan:
+        require(state._hash(args.naming_map) == naming_plan["mapping_sha256"], "naming mapping changed after preview")
+        transformed = work / "naming-volumes"
+        transformed.mkdir(mode=0o700)
+        for volume in naming.SQLITE:
+            naming.sqlite_archive(args.snapshot / "volumes" / (volume + ".tar"), volume,
+                                  output=transformed / (volume + ".tar"), config=naming_plan["mapping"])
     for suffix in state.DURABLE_VOLUMES:
         name = create_volume(args.project, identity, suffix)
         if suffix != "hatchet-postgres-data":
-            source = work if suffix == "hermes-data" else args.snapshot / "volumes"
+            source = (transformed if naming_plan and suffix in naming.SQLITE else
+                      work if suffix == "hermes-data" else args.snapshot / "volumes")
             state._tar(args.image, name, source, suffix + ".tar", restore=True)
             check = "verify-" + suffix + ".tar"
             state._tar(args.image, name, work, check, restore=False)
             require(archive_contents(work / check, hermes=suffix == "hermes-data") == archive_contents(source / (suffix + ".tar"), hermes=suffix == "hermes-data"), "copied volume content or ownership differs")
             (work / check).unlink()
     result = pg.migrate(args.snapshot, args.project + "-hatchet-postgres-data", plan["previous_images"]["postgres"],
-                        args.image, args.project, identity, work)
+                        args.image, args.project, identity, work, **({"naming_transition": True} if naming_plan else {}))
+    if naming_plan:
+        require(result["naming_quiescence"] == naming_plan["postgres_checks"], "Hatchet quiescence changed after preview")
     # Recheck source fencing and configuration after the potentially long copy.
     source_check(args)
-    source_stopped(metadata["project"], metadata["installation_id"], services)
+    source_stopped(metadata["project"], metadata["installation_id"], services, source_label)
     hermes_stopped(plan["hermes"])
     for name in files:
         require(bootstrap._read_private(args.snapshot / "config" / name) == bootstrap._read_private(args.source / name), "source configuration changed during migration")
@@ -283,13 +354,17 @@ def apply(args, plan, metadata, values, previous, files):
     for name, content in supplied.items():
         bootstrap._create_private(args.destination / "config" / name, content)
     for name in files - {".env", bootstrap.MARKER, state.PROVENANCE, *("config/" + name for name in bootstrap.ORGANIZATION_DEFAULTS)}:
-        bootstrap._create_private(args.destination / name, bootstrap._read_private(args.snapshot / "config" / name))
-    updated = {**values, "FACTORY_PROJECT_NAME": args.project, "COMPOSE_PROJECT_NAME": args.project,
+        content = bootstrap._read_private(args.snapshot / "config" / name)
+        if naming_plan and name.startswith("env/"):
+            content = bootstrap.env_text(naming.environment(bootstrap.read_env(args.snapshot / "config" / name), naming_plan["mapping"]))
+        bootstrap._create_private(args.destination / name, content)
+    updated = {**(naming.environment(values, naming_plan["mapping"]) if naming_plan else values), "FACTORY_PROJECT_NAME": args.project, "COMPOSE_PROJECT_NAME": args.project,
                "FACTORY_INSTALL_DIR": str(args.destination), "FACTORY_ENV_DIR": str(args.destination / "env"),
                "FACTORY_CONFIG_DIR": str(args.destination / "config"),
                "FACTORY_OPERATOR_RUN_DIR": str(args.destination / "run/operator"),
                "FACTORY_IMAGE": args.image, "FACTORY_POSTGRES_IMAGE": args.image, "FACTORY_HATCHET_IMAGE": args.image}
-    marker = {**metadata, "project": args.project, "installation_id": identity, "image": args.image, "layout": state.UNIFIED, "organization_config": 1}
+    marker = {**metadata, "project": args.project, "installation_id": identity, "image": args.image, "layout": state.UNIFIED, "organization_config": 1,
+              "naming_generation": bootstrap.NAMING_GENERATION}
     if marker.get("telemetry"):
         marker["telemetry"] = {**marker["telemetry"], "image": args.image,
                                "deployment_sha256": {n: state._hash(HERE / n) for n in telemetry.FILES}}
@@ -300,6 +375,9 @@ def apply(args, plan, metadata, values, previous, files):
                "previous_deployment_sha256": previous["deployment_sha256"], "snapshot_sha256": plan["snapshot_sha256"],
                "image": args.image, "hermes_source": plan["hermes"], "hermes_archive_sha256": state._hash(work / "hermes-data.tar"),
                "postgres_verification": result}
+    if naming_plan:
+        receipt["naming_migration"] = {**naming_plan, "sqlite_checks": plan["sqlite_checks"],
+                                      "target_generation": bootstrap.NAMING_GENERATION}
     provenance = {**previous, "destination_project": args.project, "activation_approved": False,
                   "profile_sha256": state._hash(HERE / "compose.production.yml"),
                   "deployment_sha256": {n: state._hash(HERE / n) for n in state.deployment_files(state.PRODUCTION, {"layout": state.UNIFIED})},
@@ -326,6 +404,8 @@ def main():
     parser.add_argument("--image", required=True, help="verified exact local unified Factory image ID")
     parser.add_argument("--hermes-container", required=True, help="operator-reviewed dedicated Factory Hermes container; never a shared or personal runtime")
     parser.add_argument("--configuration", type=Path, help="reviewed four-file configuration; required for pre-configuration backups")
+    parser.add_argument("--gateway-journal-archive", type=Path, help="private cold host gateway journal tar; naming migration evidence only")
+    parser.add_argument("--naming-map", type=Path, help="private reviewed exact legacy naming map; markerless source only")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--approve-digest", help="exact reviewed preview digest; apply only")
     args = parser.parse_args()
@@ -335,7 +415,11 @@ def main():
             production = production_module()
             if args.apply:
                 stack.enter_context(production.portable.installation_lock(args.source))
-                metadata, values = bootstrap.validate_directory(args.source)
+                if getattr(args, "naming_map", None):
+                    info = naming.source_info(args.source_bundle, args.source)
+                    metadata, values = info["metadata"], info["values"]
+                else:
+                    metadata, values = bootstrap.validate_directory(args.source)
                 tenant = str(uuid.UUID(values["HATCHET_DEFAULT_TENANT_ID"]))
                 stack.enter_context(production.portable.installation_lock(Path("/tmp") / ("factory-tenant-" + tenant)))
                 stack.enter_context(production.portable.installation_lock(args.destination))

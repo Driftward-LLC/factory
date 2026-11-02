@@ -85,6 +85,75 @@ checking or changing services. Use the Factory-owned `factory-docker-smoke` for
 its supported production Compose layout and the portable acceptance harness for
 a fresh portable profile. Smoke checks read the configured team identity.
 
+## Markerless naming transition
+
+For an installation predating `factory-neutral-v1`, the same command additionally
+requires `--naming-map /PRIVATE/naming-map.json` and
+`--gateway-journal-archive /PRIVATE/gateway-journal-cold.tar`. The preserved
+bundle validates its own source metadata and credentials; the target bootstrap
+is never taught to accept old-generation installations. Preview binds both
+bundles, the source backup, supplied organization files, naming-map bytes and
+journal archive digest into the approval digest. Changes require a new preview.
+
+The private map has exactly this structure. These are synthetic namespace
+examples; supply the exact recorded deployment keys and labels after inspecting
+the preserved bundle. Do not infer them from a branding prefix.
+
+```json
+{
+  "format_version": 1,
+  "source_identity_label": "io.example.installation",
+  "source_tenant_label": "io.example.tenant",
+  "source_environment_prefix": "EXAMPLE_",
+  "environment_keys": {
+    "EXAMPLE_HERMES_CREATE_DRAFT_PR_ENABLED": "FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED",
+    "EXAMPLE_HERMES_GRPC_TARGET": "FACTORY_HERMES_GRPC_TARGET"
+  },
+  "environment_values": {
+    "unix:///run/example-gateway/hermes.sock": "unix:///run/factory-hermes-factory/hermes.sock"
+  },
+  "agent_trace_seed": "example-hermes:trace:attempt:{attempt_id}",
+  "gateway_policy": "unbound"
+}
+```
+
+Every source environment key in the supplied old prefix needs an explicit
+mapping. Collisions and non-path value substitutions are refused. Value changes
+match a whole environment value; historical JSON and immutable records are not
+searched/replaced. The target always sets retained create-PR/reviewer gates to
+`0` and drops retired model/provider selectors. The supplied organization files
+must disable GitHub, every routing execution gate, independent review and
+automatic repair. A reviewed Linear identity can remain configured. Secrets
+stay in their existing role-specific files; the private map contains no secrets.
+The source environment, including its execution gate, is left unchanged.
+
+Take the gateway journal archive only after the original gateway is stopped and
+its supervision fenced, using its original path and operator procedure. Keep
+that archive private alongside the cold backup. Preserve all entries, including
+intents without results and cancellation records. Preview reports aggregate
+counts and the archive hash, not receipt contents. Unknown outcomes require
+separate operator review before any later execution or rollback that could
+resume an invocation. The archive is evidence, not an active target journal.
+
+The naming preview also restores the PostgreSQL archive into a uniquely owned,
+network-disabled disposable volume and starts only a temporary PostgreSQL
+process to check every supported scheduler/dispatch store. The source volumes
+are never mounted by this check. It removes only its own disposable container
+and volume; no Factory service, worker, Hermes process or provider call runs.
+Apply repeats these checks before and after logical restore. It refuses rather
+than modifying pending work or enabled cron/scheduled triggers. A remaining
+lifecycle dead letter likewise requires the audited original-release archive
+procedure, never a direct database edit by this migration.
+
+The migration receipt retains original ownership/tenant labels and every
+predecessor identity inherited from the markerless source, including earlier
+restores. Later restores keep that recorded set unchanged and append new
+identities separately, so production fencing chooses the original label for
+every old identity and the current label for new ones. Tenant scans use both
+recorded source and current label namespaces.
+Do not relabel source containers or volumes. Keep source restarts and the
+original gateway disabled throughout target validation.
+
 ## Validate and switch
 
 The result is prepared, not deployed. Run the new bundle's production wrapper
@@ -106,7 +175,12 @@ CLI and disabled auto-deploy configuration to the new permanent bundle,
 installation path and installation ID. Do not enable auto-deploy or copy a new
 compatibility fingerprint to bypass its protected-change review.
 
-The existing gateway/runtime binding is deliberately preserved. Rebind the host
+For ordinary same-generation profile migration, the existing gateway/runtime
+binding is deliberately preserved. For a markerless naming transition the
+target stays unbound, full startup is refused, and the journal is archival only.
+`resume-paused` still requires a separate explicit approval because control-plane
+integrations and token refresh can produce effects, even with execution stopped.
+ Rebind the host
 Hermes wrapper and gateway to the new dedicated Compose container through the
 existing reviewed runtime-binding procedure before any later execution approval.
 The old Hermes supervision must remain disabled. Packaging and `resume-paused`
@@ -132,3 +206,28 @@ Never run both installations or both Hermes runtimes against the same tenant.
 Backups/restores of a completed unified installation include all eight durable
 volumes. Subsequent reviewed image-only upgrades update every role's image pin
 together; protected image/deployment changes still require the normal review.
+
+## Isolated rehearsal
+
+`python3 tools/check_factory_naming_migration.py --directory /NEW/PRIVATE/DIRECTORY`
+uses synthetic cold SQLite stores and a synthetic journal to verify backup hashes,
+metadata-only translation, historical identity retention, unchanged source state,
+and byte-identical rollback. It does not contact Docker or production.
+
+The full container rehearsal is `tools/check_factory_profile_migration.py --naming`
+with the same four exact local image arguments as its ordinary profile check. It
+creates unique synthetic projects, isolated PostgreSQL copies, and a new stopped
+target; verifies cold backup/restore and old-label fencing; and removes only its
+own resources. Never use production paths, credentials, volumes or providers in
+either rehearsal. Local source images and the target release image must already
+exist; rehearsal does not pull images.
+
+Add `--source-bundle /PRESERVED/PUBLIC/deploy` to copy and exercise the actual
+source release's bootstrap, metadata validation, ownership labels and cold-backup
+wrapper against disposable fixtures. The original bundle is read-only and its
+hashes must remain unchanged. Without this flag, the harness synthesizes a prior
+namespace in a copy of the current bundle. Both modes use minimal database
+schemas to test migration regressions; neither substitutes for validation of a
+real cold source snapshot before a separately approved cutover. The disk rehearsal
+proves rollback of its synthetic original archive/SQLite state; the Docker check
+proves backup/restore of the prepared stopped candidate, not a live rollback.

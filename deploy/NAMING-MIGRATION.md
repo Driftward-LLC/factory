@@ -6,26 +6,49 @@ Fresh installations record `naming_generation` in `.factory-install.json`.
 Installation operations and snapshot restore require that exact generation
 before starting containers or importing state.
 
-Existing installations and snapshots without this marker are unsupported by
-this bundle. Renaming source strings does not migrate persisted Hatchet
-subscriptions, queued events, lifecycle records, database values, or credentials.
-Do not add the marker to existing state to bypass this boundary. The historical
-cutover helper permits read-only preview, but refuses application before
-inspection, snapshot creation, or state mutation with this release. Profile migration likewise requires a source already using
-this generation.
+Installation operations and normal snapshot restore still refuse installations
+without this marker. Do not add it manually: source renames do not migrate
+queued events, workflow subscriptions, hash identities, or executor receipts.
+The only supported transition is the cold, stopped profile migration in
+[MIGRATE.md](MIGRATE.md), using the preserved source bundle and a separately
+reviewed private naming map. It prepares a new unified project and retains the
+original installation, bundle, volumes and backup for rollback.
 
-For a new deployment, initialize a fresh private installation directory and a
-unique Compose project with empty volumes. Configure organization identity and
-integrations using `ORGANIZATION.md`, and keep real execution disabled until
-explicitly approved. Preserve the old installation, its original deployment
-bundle, and backups for rollback; do not attach its volumes to the new project.
+The transition refuses active execution, unpublished ingress, unacknowledged
+bridge delivery/inspection, active verification leases, nonterminal reviews,
+undelivered lifecycle rows (including dead letters), pending Hatchet queues,
+and enabled schedules. It does not drain queues, archive dead letters, disable
+schedules, rewrite historical records, or interpret missing receipts as success.
+Resolve those prerequisites through separately reviewed original-release operator
+procedures before taking the final cold backup.
 
-Continuing an existing deployment requires a separately reviewed migration
-that inventories and translates all persisted namespaces, verifies pending
-work and ledger consistency, and documents rollback before marking the output
-as this generation. This release provides no such migration. Use the original
-bundle to operate or back up the existing installation until that work is
-approved.
+The three copied SQLite stores gain the generation marker only after these
+checks. Existing tables, event IDs, UUIDs, payloads, hashes, lifecycle markers,
+foreign keys, and timestamps retain their original values. A supplemental
+per-attempt mapping retains historical agent trace links; fresh attempts use the
+current trace namespace. Existing work evidence and human-time request IDs are
+resolved through their stored semantic identities, preserving idempotency across
+the seed change. Payload-free decision events did not retain their occurrence
+keys: a later repeated observation can append another audit decision, but it
+cannot authorize execution or provider effects. Original audit events remain.
+
+The complete Hatchet PostgreSQL history and subscriptions are logically restored
+without rewriting rows. Both source-copy and restored scheduler stores must be
+quiescent. New workers register current-generation event subscriptions after a
+separate activation approval; no queued old event is translated into new work.
+The old subscriptions remain historical and must not be re-enabled separately.
+
+A private cold host gateway journal archive is retained byte-for-byte under the
+new installation's `migration-evidence/`. Incomplete intents and cancellation
+records remain evidence; they are never copied into an active journal, stamped
+with a new generation, or treated as execution permission. The target gateway
+is explicitly **unbound**. Full production startup refuses this receipt until a
+separately reviewed executor-binding change is implemented. Original journal
+ownership, credentials and runtime supervision remain with the source.
+
+For fresh deployments, use a new private installation directory, a unique
+Compose project, empty volumes and reviewed organization configuration. Real
+execution remains disabled until explicitly approved.
 
 Historical source/systemd installers are disabled before taking locks, publishing
 files, changing permissions, or stopping/starting services. Their renamed unit

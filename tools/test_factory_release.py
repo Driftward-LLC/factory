@@ -27,6 +27,8 @@ FILES = (
     "deploy/CUTOVER.md",
     "deploy/compose.unified.yml",
     "deploy/profile_migration.py",
+    "deploy/naming_migration.py",
+    "deploy/NAMING-MIGRATION.md",
     "deploy/migration_postgres.py",
     "deploy/postgres-fingerprint.sql",
     "deploy/MIGRATE.md",

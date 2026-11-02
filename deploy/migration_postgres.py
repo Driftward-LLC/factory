@@ -75,7 +75,7 @@ def compare(before, after):
             "equivalent_null_defaults": equivalent_defaults}
 
 
-def migrate(snapshot, target_volume, old_image, image, project, identity, work):
+def migrate(snapshot, target_volume, old_image, image, project, identity, work, *, naming_transition=False):
     old, new = project + "-migration-old-pg", project + "-migration-new-pg"
     scratch = project + "-migration-pg-data"
     label = state.IDENTITY_LABEL + "=" + identity
@@ -106,6 +106,10 @@ def migrate(snapshot, target_volume, old_image, image, project, identity, work):
                 and inventory["roles"] == ["hatchet"] and inventory["tablespaces"] == ["pg_default", "pg_global"],
                 "migration supports the standard single-role PostgreSQL 15 Factory cluster only")
         require(inventory["locale"] == inventory["ctype"] and inventory["locale"] in ("en_US.utf8", "en_US.UTF-8"), "unsupported source database locale")
+        naming_checks = None
+        if naming_transition:
+            import naming_migration
+            naming_checks = naming_migration.postgres_quiescent(old)
         before = fingerprints(old)
         dump = work / "postgres.sql"
         with dump.open("xb") as output:
@@ -124,6 +128,9 @@ def migrate(snapshot, target_volume, old_image, image, project, identity, work):
         run(["docker", "exec", "-i", new, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", "hatchet", "-d", "postgres"], data=body)
         after = fingerprints(new)
         result = compare(before, after)
+        if naming_checks is not None:
+            require(naming_migration.postgres_quiescent(new) == naming_checks, "Hatchet pending work changed during restore")
+            result["naming_quiescence"] = naming_checks
         for sql in (
             "SELECT json_agg(t ORDER BY rolname) FROM (SELECT rolname,rolsuper,rolinherit,rolcreaterole,rolcreatedb,rolcanlogin,rolreplication,rolconnlimit,rolpassword,rolvaliduntil,rolbypassrls FROM pg_authid WHERE rolname NOT LIKE 'pg_%') t;",
             "SELECT json_agg(t ORDER BY rolname) FROM (SELECT rolname,rolconfig FROM pg_roles WHERE rolname NOT LIKE 'pg_%') t;",
@@ -142,3 +149,30 @@ def migrate(snapshot, target_volume, old_image, image, project, identity, work):
             state._docker(["stop", "--timeout", "30", container])
             state._docker(["rm", container])
         state._docker(["volume", "rm", scratch])
+
+
+def naming_preview(snapshot, old_image, image, project):
+    """Check only a disposable copy of the cold archive; never mount live data."""
+    import naming_migration
+    import uuid
+    identity = str(uuid.uuid4())
+    name = project + "-naming-check-" + uuid.uuid4().hex[:8]
+    label = state.IDENTITY_LABEL + "=" + identity
+    require(name not in state._available_volumes(), "naming check volume already exists")
+    state._docker(["volume", "create", "--label", label, name])
+    owned = json.loads(state._docker(["volume", "inspect", name]))[0]
+    require(owned.get("Labels", {}).get(state.IDENTITY_LABEL) == identity, "foreign naming check volume")
+    container = None
+    try:
+        state._tar(image, name, snapshot / "volumes", "hatchet-postgres-data.tar", restore=True)
+        container = state._docker(["run", "-d", "--name", name, "--label", label, "--network", "none",
+                                   "--restart", "no", "--security-opt", "no-new-privileges:true", "--cpus", "2", "--memory", "1g",
+                                   "--mount", f"type=volume,src={name},dst=/var/lib/postgresql/data", old_image,
+                                   "postgres", "-c", "listen_addresses=127.0.0.1"])
+        ready(container)
+        return naming_migration.postgres_quiescent(container)
+    finally:
+        if container:
+            state._docker(["stop", "--timeout", "30", container])
+            state._docker(["rm", container])
+        state._docker(["volume", "rm", name])

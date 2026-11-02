@@ -1429,11 +1429,14 @@ def _insert_work_evidence(
     if len(serialized) > 16384 or sanitize_detail(document) != document:
         raise BridgeValidationError("work evidence contains disallowed material")
     evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory.work-evidence:v1:{attempt_id}:{kind}"))
-    existing = conn.execute(f"SELECT * FROM {table} WHERE {identity}=?", (evidence_id,)).fetchone()
+    existing = conn.execute(
+        f"SELECT * FROM {table} WHERE attempt_id=? AND {kind_column}=?",
+        (attempt_id, kind),
+    ).fetchone()
     if existing:
         if existing["document_json"] != serialized or existing[reference_column] != manifest_id:
             raise BridgeConflict("work evidence is immutable")
-        return evidence_id
+        return existing[identity]
     conn.execute(
         f"INSERT INTO {table} ({identity},attempt_id,{kind_column},{reference_column},contract_version,document_json,document_digest,created_at) VALUES (?,?,?,?,1,?,?,?)",
         (evidence_id, attempt_id, kind, manifest_id, serialized, work_evidence.digest(document), utc_now()),

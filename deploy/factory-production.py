@@ -175,6 +175,9 @@ class Production(portable.Installation):
             if not isinstance(predecessor, dict) or set(predecessor) != {"project", "installation_id"}:
                 raise ProductionRefusal("invalid predecessor fencing identity")
             project, identity = predecessor["project"], predecessor["installation_id"]
+            naming = self.provenance.get("profile_migration", {}).get("naming_migration")
+            identity_label = (naming["mapping"]["source_identity_label"] if naming
+                              and predecessor in naming["source_predecessors"] else state.IDENTITY_LABEL)
             if not isinstance(project, str) or not re.fullmatch(bootstrap.PROJECT_PATTERN, project) or project in seen or not isinstance(identity, str) or str(uuid.UUID(identity)) != identity:
                 raise ProductionRefusal("invalid or duplicate predecessor fencing identity")
             seen.add(project)
@@ -183,7 +186,7 @@ class Production(portable.Installation):
             for row in json.loads(state._docker(["container", "inspect", *previous_ids], self.env)) if previous_ids else []:
                 labels = row.get("Config", {}).get("Labels") or {}
                 service = labels.get("com.docker.compose.service")
-                if (labels.get("com.docker.compose.project") != project or labels.get(state.IDENTITY_LABEL) != identity
+                if (labels.get("com.docker.compose.project") != project or labels.get(identity_label) != identity
                         or service not in (*SERVICES, telemetry.SERVICE, "factory-hermes") or service in previous_services or labels.get("com.docker.compose.oneoff", "False").lower() != "false"
                         or row["State"]["Status"] not in ("created", "exited")
                         or row.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no"):
@@ -196,14 +199,22 @@ class Production(portable.Installation):
         self.assert_tenant_fenced()
 
     def assert_tenant_fenced(self) -> None:
-        ids = state._docker(["ps", "-aq", "--no-trunc", "--filter", "label=" + TENANT_LABEL + "=" + self.tenant], self.env).splitlines()
+        scopes = [(TENANT_LABEL, state.IDENTITY_LABEL)]
+        naming = self.provenance.get("profile_migration", {}).get("naming_migration")
+        if naming:
+            scopes.append((naming["mapping"]["source_tenant_label"], naming["mapping"]["source_identity_label"]))
+        inspected = []
+        for tenant_label, identity_label in scopes:
+            ids = state._docker(["ps", "-aq", "--no-trunc", "--filter", "label=" + tenant_label + "=" + self.tenant], self.env).splitlines()
+            inspected.extend((row, tenant_label, identity_label) for row in
+                             (json.loads(state._docker(["container", "inspect", *ids], self.env)) if ids else []))
         owners, services = {}, set()
-        for row in json.loads(state._docker(["container", "inspect", *ids], self.env)) if ids else []:
+        for row, tenant_label, identity_label in inspected:
             labels = row.get("Config", {}).get("Labels") or {}
-            project, identity = labels.get("com.docker.compose.project", ""), labels.get(state.IDENTITY_LABEL, "")
+            project, identity = labels.get("com.docker.compose.project", ""), labels.get(identity_label, "")
             service = labels.get("com.docker.compose.service")
             if (not re.fullmatch(bootstrap.PROJECT_PATTERN, project) or str(uuid.UUID(identity)) != identity
-                    or labels.get(TENANT_LABEL) != self.tenant or owners.setdefault(project, identity) != identity
+                    or labels.get(tenant_label) != self.tenant or owners.setdefault(project, identity) != identity
                     or service not in (self.services if project == self.project else (*SERVICES, telemetry.SERVICE, "factory-hermes")) or (project, service) in services
                     or labels.get("com.docker.compose.oneoff", "False").lower() != "false"
                     or (project == self.project and identity != self.metadata["installation_id"])):
@@ -367,6 +378,9 @@ class Production(portable.Installation):
         # Sibling restores share authority even when their directories/projects
         # differ. This same-host lock covers the scan through container creation.
         with portable.installation_lock(Path("/tmp") / ("factory-tenant-" + self.tenant)) if apply else nullcontext():
+            if (self.provenance.get("profile_migration", {}).get("naming_migration")
+                    and not core and not paused):
+                raise ProductionRefusal("naming migration leaves the gateway unbound; a separately reviewed executor binding is required")
             self.preflight()
             selected = CORE if core else tuple(name for name in self.services if not (paused and name == "bridge-executor-worker"))
             print(f"{'Start' if apply else 'Preview'} {self.project}: " + ", ".join(selected))

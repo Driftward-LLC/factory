@@ -294,5 +294,111 @@ class MigrationTests(unittest.TestCase):
         install.preflight.assert_called_once()
 
 
+    def naming_install(self):
+        import check_factory_naming_migration as fixture
+        install = self.unified()
+        install.provenance["profile_migration"]["naming_migration"] = {
+            "mapping": fixture.configuration(), "gateway_policy": "unbound",
+            "source_predecessors": copy.deepcopy(install.provenance["predecessors"])}
+        return install
+
+    def test_naming_migration_full_start_is_unbound_even_in_preview(self):
+        install = self.naming_install()
+        with patch.object(install, "preflight") as preflight, patch.object(install, "compose") as compose:
+            with self.assertRaisesRegex(ValueError, "unbound"):
+                install.start(core=False, apply=False, approve_effects=True)
+            preflight.assert_not_called()
+            compose.assert_not_called()
+
+    def test_naming_migration_scans_original_tenant_labels_and_refuses_live_old_owner(self):
+        install = self.naming_install()
+        mapping = install.provenance["profile_migration"]["naming_migration"]["mapping"]
+        row = {"Config": {"Labels": {"com.docker.compose.project": "factory-prior",
+                "com.docker.compose.service": "bridge", mapping["source_identity_label"]: self.metadata["installation_id"],
+                mapping["source_tenant_label"]: self.tenant}},
+               "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        def docker(command, env=None):
+            if command[:2] == ["container", "inspect"]:
+                return json.dumps([row])
+            return "old-id" if command[-1] == "label=" + mapping["source_tenant_label"] + "=" + self.tenant else ""
+        with patch.object(production.state, "_docker", side_effect=docker) as called:
+            install.assert_tenant_fenced()
+            self.assertTrue(any(production.TENANT_LABEL in call.args[0][-1] for call in called.call_args_list))
+            self.assertTrue(any(mapping["source_tenant_label"] in call.args[0][-1] for call in called.call_args_list))
+            row["State"]["Status"] = "running"
+            with self.assertRaisesRegex(ValueError, "another installation"):
+                install.assert_tenant_fenced()
+
+    def test_naming_migration_fences_predecessor_with_original_installation_label(self):
+        install = self.naming_install()
+        receipt = install.provenance["profile_migration"]
+        receipt["hermes_source"] = {}
+        old_label = receipt["naming_migration"]["mapping"]["source_identity_label"]
+        original = [{"Id": container, "Image": install.provenance["source_images"][service],
+                     "Config": {"Labels": {"com.docker.compose.project": install.provenance["source_project"],
+                                           "com.docker.compose.service": service}},
+                     "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+                    for container, service in zip(install.provenance["source_container_ids"], production.SERVICES)]
+        prior = {"Config": {"Labels": {"com.docker.compose.project": receipt["previous_project"],
+                 "com.docker.compose.service": "bridge", old_label: receipt["previous_installation_id"]}},
+                 "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        def docker(command, env=None):
+            if command[:2] == ["container", "inspect"]:
+                return json.dumps([prior] if command[2] == "prior" else original)
+            return ("prior" if command[-1].endswith("=" + receipt["previous_project"])
+                    else "\n".join(install.provenance["source_container_ids"]))
+        with patch.object(production.state, "_docker", side_effect=docker), patch.object(production.state, "_no_writers"), \
+                patch.object(migration, "hermes_stopped"), patch.object(install, "assert_tenant_fenced"):
+            install.assert_source_fenced()
+            prior["Config"]["Labels"][old_label] = "foreign"
+            with self.assertRaisesRegex(ValueError, "predecessor"):
+                install.assert_source_fenced()
+
+
+    def test_inherited_legacy_predecessor_fencing_survives_a_new_restore(self):
+        install = self.naming_install()
+        receipt = install.provenance["profile_migration"]
+        receipt["hermes_source"] = {}
+        ancestor = {"project": "factory-older-restored", "installation_id": "11111111-2222-4333-8444-555555555555"}
+        install.provenance["predecessors"].insert(0, ancestor)
+        receipt["naming_migration"]["source_predecessors"].insert(0, copy.deepcopy(ancestor))
+        old_label = receipt["naming_migration"]["mapping"]["source_identity_label"]
+        source_rows = [{"Id": container, "Image": install.provenance["source_images"][service],
+                        "Config": {"Labels": {"com.docker.compose.project": install.provenance["source_project"],
+                                              "com.docker.compose.service": service}},
+                        "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+                       for container, service in zip(install.provenance["source_container_ids"], production.SERVICES)]
+        predecessors = {}
+        for identity in install.provenance["predecessors"]:
+            predecessors[identity["project"]] = {"Config": {"Labels": {"com.docker.compose.project": identity["project"],
+                "com.docker.compose.service": "bridge", old_label: identity["installation_id"]}},
+                "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        def docker(command, env=None):
+            if command[:2] == ["container", "inspect"]:
+                return json.dumps([predecessors[command[2]]] if command[2] in predecessors else source_rows)
+            project = command[-1].rsplit("=", 1)[-1]
+            return project if project in predecessors else "\n".join(install.provenance["source_container_ids"])
+        def check():
+            with patch.object(production.state, "_docker", side_effect=docker), patch.object(production.state, "_no_writers"), \
+                    patch.object(migration, "hermes_stopped"), patch.object(install, "assert_tenant_fenced"):
+                install.assert_source_fenced()
+        check()
+        # A subsequent new-generation restore appends this migration's project;
+        # it must use the new label while every recorded old identity stays old.
+        current = {"project": install.project, "installation_id": install.metadata["installation_id"]}
+        install.provenance["predecessors"].append(current)
+        predecessors[current["project"]] = {"Config": {"Labels": {"com.docker.compose.project": current["project"],
+            "com.docker.compose.service": "bridge", production.state.IDENTITY_LABEL: current["installation_id"]}},
+            "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        install.project = "factory-restored-neutral"
+        check()
+        for state, restart in (("running", "no"), ("exited", "unless-stopped")):
+            with self.subTest(state=state, restart=restart):
+                predecessors[ancestor["project"]]["State"]["Status"] = state
+                predecessors[ancestor["project"]]["HostConfig"]["RestartPolicy"]["Name"] = restart
+                with self.assertRaisesRegex(ValueError, "predecessor"):
+                    check()
+
+
 if __name__ == "__main__":
     unittest.main()
