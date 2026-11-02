@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
@@ -51,6 +52,25 @@ class AgentTraceProjectionTests(unittest.TestCase):
         self.assertEqual(parse_qs(parsed.query), {"timestamp": ["2026-09-30T05:53:34.202Z"]})
         self.assertEqual(json.dumps(self.record, sort_keys=True), before)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM factory_attempt_events").fetchone()[0], 0)
+
+    def test_imported_trace_identity_is_used_only_for_its_attempt_without_writes(self):
+        imported_trace = str(uuid.uuid5(uuid.NAMESPACE_URL, f"synthetic-history:trace:{self.attempt_id}"))
+        self.conn.execute("CREATE TABLE factory_imported_agent_traces (attempt_id TEXT PRIMARY KEY,trace_id TEXT NOT NULL)")
+        self.conn.execute("INSERT INTO factory_imported_agent_traces VALUES (?,?)", (self.attempt_id, imported_trace))
+        self.conn.execute("PRAGMA query_only=ON")
+        self.assertTrue(urlparse(self.trace()["url"]).path.endswith(imported_trace))
+        self.record["attempt"]["attempt_id"] = "abcdef01-2345-6789-abcd-ef0123456789"
+        self.record["job"]["payload"]["factory_retry"]["attempt_id"] = self.record["attempt"]["attempt_id"]
+        fresh_trace = str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory-hermes:trace:attempt:{self.record['attempt']['attempt_id']}"))
+        self.assertTrue(urlparse(self.trace()["url"]).path.endswith(fresh_trace))
+
+    def test_invalid_imported_trace_identity_never_enters_navigation_url(self):
+        self.conn.execute("CREATE TABLE factory_imported_agent_traces (attempt_id TEXT PRIMARY KEY,trace_id TEXT NOT NULL)")
+        for invalid in ("not-a-uuid", "../private", "bdb1edb7-459e-4c1c-a30f-b657c1c4833d?token=private"):
+            with self.subTest(invalid=invalid):
+                self.conn.execute("INSERT OR REPLACE INTO factory_imported_agent_traces VALUES (?,?)", (self.attempt_id, invalid))
+                self.assertIsNone(self.trace()["url"])
+                self.assertEqual(self.trace()["status"], "unavailable")
 
     def test_anchor_prefers_first_backend_invocation_over_admission_or_later_observation(self):
         for kind, time, key in [

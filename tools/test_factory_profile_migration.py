@@ -294,5 +294,65 @@ class MigrationTests(unittest.TestCase):
         install.preflight.assert_called_once()
 
 
+    def naming_install(self):
+        import check_factory_naming_migration as fixture
+        install = self.unified()
+        install.provenance["profile_migration"]["naming_migration"] = {
+            "mapping": fixture.configuration(), "gateway_policy": "unbound"}
+        return install
+
+    def test_naming_migration_full_start_is_unbound_even_in_preview(self):
+        install = self.naming_install()
+        with patch.object(install, "preflight") as preflight, patch.object(install, "compose") as compose:
+            with self.assertRaisesRegex(ValueError, "unbound"):
+                install.start(core=False, apply=False, approve_effects=True)
+            preflight.assert_not_called()
+            compose.assert_not_called()
+
+    def test_naming_migration_scans_original_tenant_labels_and_refuses_live_old_owner(self):
+        install = self.naming_install()
+        mapping = install.provenance["profile_migration"]["naming_migration"]["mapping"]
+        row = {"Config": {"Labels": {"com.docker.compose.project": "factory-prior",
+                "com.docker.compose.service": "bridge", mapping["source_identity_label"]: self.metadata["installation_id"],
+                mapping["source_tenant_label"]: self.tenant}},
+               "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        def docker(command, env=None):
+            if command[:2] == ["container", "inspect"]:
+                return json.dumps([row])
+            return "old-id" if command[-1] == "label=" + mapping["source_tenant_label"] + "=" + self.tenant else ""
+        with patch.object(production.state, "_docker", side_effect=docker) as called:
+            install.assert_tenant_fenced()
+            self.assertTrue(any(production.TENANT_LABEL in call.args[0][-1] for call in called.call_args_list))
+            self.assertTrue(any(mapping["source_tenant_label"] in call.args[0][-1] for call in called.call_args_list))
+            row["State"]["Status"] = "running"
+            with self.assertRaisesRegex(ValueError, "another installation"):
+                install.assert_tenant_fenced()
+
+    def test_naming_migration_fences_predecessor_with_original_installation_label(self):
+        install = self.naming_install()
+        receipt = install.provenance["profile_migration"]
+        receipt["hermes_source"] = {}
+        old_label = receipt["naming_migration"]["mapping"]["source_identity_label"]
+        original = [{"Id": container, "Image": install.provenance["source_images"][service],
+                     "Config": {"Labels": {"com.docker.compose.project": install.provenance["source_project"],
+                                           "com.docker.compose.service": service}},
+                     "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+                    for container, service in zip(install.provenance["source_container_ids"], production.SERVICES)]
+        prior = {"Config": {"Labels": {"com.docker.compose.project": receipt["previous_project"],
+                 "com.docker.compose.service": "bridge", old_label: receipt["previous_installation_id"]}},
+                 "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        def docker(command, env=None):
+            if command[:2] == ["container", "inspect"]:
+                return json.dumps([prior] if command[2] == "prior" else original)
+            return ("prior" if command[-1].endswith("=" + receipt["previous_project"])
+                    else "\n".join(install.provenance["source_container_ids"]))
+        with patch.object(production.state, "_docker", side_effect=docker), patch.object(production.state, "_no_writers"), \
+                patch.object(migration, "hermes_stopped"), patch.object(install, "assert_tenant_fenced"):
+            install.assert_source_fenced()
+            prior["Config"]["Labels"][old_label] = "foreign"
+            with self.assertRaisesRegex(ValueError, "predecessor"):
+                install.assert_source_fenced()
+
+
 if __name__ == "__main__":
     unittest.main()

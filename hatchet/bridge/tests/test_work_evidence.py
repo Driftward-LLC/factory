@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,6 +88,30 @@ class WorkEvidenceTests(unittest.TestCase):
         with self.assertRaises(store.BridgeConflict), self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
             store._insert_work_evidence(self.conn, attempt_id=attempt["attempt_id"], kind="admission", document={**document, "mode": "dry-run"})
+
+    def test_imported_evidence_reuses_preserved_ids_and_rejects_changed_documents(self):
+        current_uuid5 = uuid.uuid5
+        with patch.object(store.uuid, "uuid5", side_effect=lambda namespace, name: current_uuid5(namespace, f"synthetic-history:{name}")):
+            attempt, job, _ = self.reserve()
+        before = self.evidence(attempt)
+        manifest = before["manifests"][0]
+        checkpoint = before["checkpoints"][0]
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.assertEqual(store._insert_work_evidence(
+                self.conn, attempt_id=attempt["attempt_id"], kind="admission", document=manifest["document"]), manifest["manifest_id"])
+            self.assertEqual(store._insert_work_evidence(
+                self.conn, attempt_id=attempt["attempt_id"], kind="specification_snapshot", document=checkpoint["document"],
+                manifest_id=manifest["manifest_id"]), checkpoint["checkpoint_id"])
+            with self.assertRaises(store.BridgeConflict):
+                store._insert_work_evidence(self.conn, attempt_id=attempt["attempt_id"], kind="admission", document={**manifest["document"], "mode": "dry-run"})
+            with self.assertRaises(store.BridgeConflict):
+                store._insert_work_evidence(self.conn, attempt_id=attempt["attempt_id"], kind="specification_snapshot", document=checkpoint["document"], manifest_id=None)
+        self.assertEqual(self.evidence(attempt), before)
+        store.record_factory_execution_route(self.conn, job["job_id"], self.route(attempt, job))
+        execution = self.evidence(attempt)["manifests"][-1]
+        self.assertEqual(execution["parent_manifest_id"], manifest["manifest_id"])
+        self.assertEqual(execution["manifest_id"], str(current_uuid5(uuid.NAMESPACE_URL, f"factory.work-evidence:v1:{attempt['attempt_id']}:execution")))
 
     def test_route_manifest_is_atomic_and_idempotent(self):
         attempt, job, _ = self.reserve()

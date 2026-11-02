@@ -64,6 +64,40 @@ class HumanTimeTests(unittest.TestCase):
                 self.record(**change)
         self.assertEqual(self.record()["event"], first["event"])
 
+    def test_imported_event_retries_preserve_original_identity_actor_and_timestamp(self):
+        imported_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"synthetic-history:human-time:{self.aid}:session-1"))
+        details = {"schema_version": 1, "request_id": "session-1", "duration_ms": 300_000,
+                   "category": "intervention", "actor": ACTOR}
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO factory_attempt_events (event_id,attempt_id,event_type,details_json,created_at) VALUES (?,?,?,?,?)",
+                (imported_id, self.aid, human_time.EVENT, store.canonical_json(details), "2026-01-01T00:00:00Z"),
+            )
+        before = self.snapshot()
+        repeated = self.record(actor="uid:0;pid:456;account:root")
+        self.assertFalse(repeated["created"])
+        self.assertEqual(repeated["event"]["event_id"], imported_id)
+        self.assertEqual(repeated["event"]["details"], details)
+        self.assertEqual(repeated["event"]["created_at"], "2026-01-01T00:00:00Z")
+        for change in ({"duration_ms": 1}, {"category": "review"}):
+            with self.subTest(change=change), self.assertRaises(store.BridgeConflict):
+                self.record(**change)
+        self.assertEqual(self.snapshot(), before)
+        self.assertTrue(self.record(request_id="fresh-request")["created"])
+
+    def test_duplicate_imported_request_identity_is_rejected_without_writes(self):
+        first = self.record()["event"]
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO factory_attempt_events (event_id,attempt_id,event_type,details_json,created_at) VALUES (?,?,?,?,?)",
+                (str(uuid.uuid5(uuid.NAMESPACE_URL, f"synthetic-history:duplicate:{self.aid}")), self.aid,
+                 human_time.EVENT, store.canonical_json(first["details"]), first["created_at"]),
+            )
+        before = self.snapshot()
+        with self.assertRaisesRegex(store.BridgeConflict, "multiple recorded events"):
+            self.record()
+        self.assertEqual(self.snapshot(), before)
+
     def test_zero_and_maximum_duration_are_explicit_entries(self):
         for duration, category in ((0, "intervention"), (86_400_000, "review"), (1, "maintenance")):
             result = self.record(request_id=f"entry:{category}", duration_ms=duration, category=category)

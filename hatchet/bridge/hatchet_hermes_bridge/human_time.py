@@ -44,7 +44,14 @@ def record_human_time(
         if (attempt["mode"] != "real" or attempt["actor"] == "legacy-import"
                 or attempt["status"].startswith("legacy_")):
             raise store.BridgeValidationError("human time requires a real, nonlegacy attempt")
-        row = conn.execute("SELECT * FROM factory_attempt_events WHERE event_id=?", (event_id,)).fetchone()
+        rows = conn.execute(
+            "SELECT * FROM factory_attempt_events WHERE event_id=? OR "
+            "(attempt_id=? AND event_type=? AND json_extract(details_json,'$.request_id')=?) LIMIT 2",
+            (event_id, attempt_id, EVENT, request_id),
+        ).fetchall()
+        if len(rows) > 1:
+            raise store.BridgeConflict("human time request_id has multiple recorded events")
+        row = rows[0] if rows else None
         if row:
             recorded = json.loads(row["details_json"])
             # A different CLI process can retry the same intent; retain its first actor.
@@ -52,7 +59,7 @@ def record_human_time(
                     or {key: value for key, value in recorded.items() if key != "actor"}
                     != {key: value for key, value in details.items() if key != "actor"}):
                 raise store.BridgeConflict("human time request_id conflicts with existing intent")
-            return {"created": False, "event": {"event_id": event_id, "attempt_id": attempt_id,
+            return {"created": False, "event": {"event_id": row["event_id"], "attempt_id": attempt_id,
                     "event_type": EVENT, "details": recorded, "created_at": row["created_at"]}}
         now = store.utc_now()
         conn.execute(
