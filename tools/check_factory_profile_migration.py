@@ -18,7 +18,6 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "deploy")]
 import test_factory_production as fixtures
-import check_factory_cutover as cutover_check
 import check_factory_naming_migration as naming_fixture
 import migration_postgres as pg
 import profile_migration as migration
@@ -216,16 +215,11 @@ def main():
         for suffix, filename in (("bridge-data", "bridge.db"), ("ingress-data", "ingress.db"), ("lifecycle-data", "outbox.db")):
             payload = root / suffix
             payload.mkdir(mode=0o700)
-            if args.naming:
-                naming_fixture.seed(payload / filename, suffix)
-            elif suffix == "bridge-data":
-                cutover_check.seed_ledger(payload / filename)
+            naming_fixture.seed(payload / filename, suffix)
+            if not args.naming:
                 with sqlite3.connect(payload / filename) as conn:
-                    conn.execute("UPDATE factory_execution_leases SET released_at='2026-01-01T00:00:00Z'")
-            else:
-                with sqlite3.connect(payload / filename) as conn:
-                    conn.execute("CREATE TABLE history (id INTEGER PRIMARY KEY, value TEXT)")
-                    conn.execute("INSERT INTO history VALUES (1,'synthetic history')")
+                    conn.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+                    conn.execute("INSERT INTO factory_naming_generation VALUES (?)", (bootstrap.NAMING_GENERATION,))
             archive = root / (suffix + ".tar")
             with tarfile.open(archive, "w") as handle:
                 handle.add(payload / filename, arcname="./" + filename)
