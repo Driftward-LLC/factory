@@ -135,13 +135,13 @@ class QualityWorkflowTests(unittest.TestCase):
     def test_quality_keeps_image_rehearsals_without_publication_or_host_access(self):
         release = self.jobs['image-checks']
         names = ['Validate Docker deployment', 'Build cached runtime image', 'Prove isolated fresh install, restart, and restore',
-                 'Rehearse stopped production-state relocation']
+                 'Verify historical cutover naming refusal']
         self.assertEqual(sorted(names, key=release.index), names)
         for command in ['docker compose -f deploy/docker-compose.yml config >/dev/null',
                         'FACTORY_RELEASE_COMMIT=${{ github.sha }}', 'FACTORY_RELEASE_VERSION=ci',
-                        'file: deploy/Dockerfile', 'tags: driftward/factory:ci',
-                        'python3 tools/check_factory_portable.py --image driftward/factory:ci --telemetry',
-                        'python3 tools/check_factory_cutover.py --image driftward/factory:ci']:
+                        'file: deploy/Dockerfile', 'tags: factory/factory:ci',
+                        'python3 tools/check_factory_portable.py --image factory/factory:ci --telemetry',
+                        'python3 tools/check_factory_cutover.py']:
             self.assertIn(command, release)
         for forbidden in ('packages: write', 'contents: write', 'docker login', 'docker push',
                           'auto_deploy_artifact.py', 'secrets.', 'ssh ', 'factory-production-'):
@@ -157,7 +157,7 @@ class QualityWorkflowTests(unittest.TestCase):
                 self.assertIn('uses: docker/setup-buildx-action@v4', workflow)
                 build = workflow.split('      - name: Build cached runtime image\n', 1)[1].split('      - ', 1)[0]
                 for value in ('uses: docker/build-push-action@v7', 'context: .', 'file: deploy/Dockerfile',
-                              'platforms: linux/amd64', 'load: true', 'push: false', 'tags: driftward/factory:ci',
+                              'platforms: linux/amd64', 'load: true', 'push: false', 'tags: factory/factory:ci',
                               'FACTORY_RELEASE_COMMIT=${{ github.sha }}', f'FACTORY_RELEASE_VERSION={version}',
                               'cache-from: type=gha,scope=factory-linux-amd64',
                               'cache-to: type=gha,scope=factory-linux-amd64,mode=max,ignore-error=true,timeout=2m'):

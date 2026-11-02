@@ -1,4 +1,5 @@
 """Read-only, bounded pre-execution view of recorded Linear observations."""
+import factory_organization as organization
 import json
 import re
 import sqlite3
@@ -6,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-ISSUE = re.compile(r"ENG-[1-9][0-9]*")
+ISSUE = organization.ISSUE
 STATUSES = {name.lower(): name for name in (
     "Backlog", "Triage", "Todo", "To Do", "Ready", "Blocked", "Needs Operator",
     "In Progress", "In Review", "Done", "Canceled", "Cancelled", "Duplicate",
@@ -32,7 +33,7 @@ def observed_intake(bridge, ingress_path, issue=None):
             # Ready delivery cannot resurrect a subsequently completed issue.
             rows = conn.execute("""
                 SELECT subject, normalized_json, created_at FROM ingress_events e
-                WHERE source = 'linear' AND subject GLOB 'ENG-[0-9]*'
+                WHERE source = 'linear'
                   AND (? IS NULL OR subject = ?)
                   AND NOT EXISTS (
                     SELECT 1 FROM ingress_events newer
@@ -64,8 +65,9 @@ def observed_intake(bridge, ingress_path, issue=None):
             blocker_ids = sorted({b["id"] for b in blockers if isinstance(b, dict)
                                   and isinstance(b.get("id"), str) and ISSUE.fullmatch(b["id"])}) if isinstance(blockers, list) else []
             result["items"].append({
-                "issue": key, "linear_status": status,
+                "issue": key, "issue_url": organization.issue_url(key), "linear_status": status,
                 "removed": value.get("action") == "remove",
+                "blocked_by_urls": {key: organization.issue_url(key) for key in blocker_ids},
                 "blocked_by": blocker_ids, "blocked_by_count": len(blockers) if isinstance(blockers, list) else None,
                 "dispatch_eligible": value.get("dispatchEligible") if isinstance(value.get("dispatchEligible"), bool) else None,
                 "observed_at": _timestamp(row["created_at"]),

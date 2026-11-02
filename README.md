@@ -11,6 +11,10 @@ their configuration, credentials, and persistent data outside the repository.
 
 ## Install a release
 
+This revision starts the `factory-neutral-v1` naming generation. Existing
+installations and persisted state require a separately reviewed offline
+transition; see the [naming migration boundary](deploy/NAMING-MIGRATION.md).
+
 Start with the [portable installation guide](deploy/PORTABLE.md). Release
 bundles contain the Compose configuration and installation helper, with the
 Factory image pinned by digest. The supported portable profile runs on
@@ -30,9 +34,9 @@ installation while retaining the original state for rollback.
 The console currently requires a trusted Tailscale Serve proxy. GitHub and
 Linear integrations also require installation-specific credentials and routing
 configuration; the portable profile does not provision those connections.
-Some integration policies and Linear links still assume the original workspace.
-Real execution in another workspace requires reviewing those source defaults;
-see [integration limits](docs/contribution.md#integration-portability).
+The same image reads deployment-supplied organization identity, project routes,
+repository scope and base branches. See [organization configuration](deploy/ORGANIZATION.md)
+for schemas, examples, validation, and secret boundaries.
 
 - [Installation and backup/restore](deploy/PORTABLE.md)
 - [CLI setup and operator commands](deploy/CLI.md)

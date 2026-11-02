@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import factory_organization as organization
+
 import hashlib
 import json
 import logging
@@ -48,8 +50,8 @@ FAILURE_MESSAGES = {
     "verification_evidence_unavailable": "Draft PR verification evidence was unavailable.",
 }
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-IDENTIFIER = re.compile(r"^ENG-[1-9][0-9]{0,8}$")
-REPO = re.compile(r"^Driftward-LLC/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+IDENTIFIER = organization.ISSUE
+REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 DRAFT_PR_ACTIONS = {"create_draft_pr", "repair_draft_pr"}
 
 
@@ -68,11 +70,12 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        organization.linear_identity()
         env = lifecycle_env()
         token = env.get("LINEAR_FACTORY_ACCESS_TOKEN", "").strip()
         bridge_token = env.get("HATCHET_HERMES_BRIDGE_TOKEN", "").strip()
         watermark = _canonical_timestamp(env.get("FACTORY_LIFECYCLE_ACTIVATION_WATERMARK", "").strip())
-        repos = frozenset(item.strip() for item in env.get("FACTORY_LIFECYCLE_ALLOWED_REPOS", "Driftward-LLC/capykit").split(",") if item.strip())
+        repos = frozenset(item.strip() for item in env.get("FACTORY_LIFECYCLE_ALLOWED_REPOS", "").split(",") if item.strip())
         if not token or not bridge_token or not watermark or not repos or any(not REPO.fullmatch(repo) for repo in repos):
             raise SourceError("writer_configuration_invalid")
         return cls(env.get("FACTORY_LIFECYCLE_BRIDGE_URL", "http://127.0.0.1:19877").rstrip("/"), bridge_token, env.get("FACTORY_LIFECYCLE_INGRESS_URL", "http://127.0.0.1:19878").rstrip("/"), token, watermark, repos)
@@ -303,7 +306,7 @@ class LifecycleWriter:
         }[phase]
         item = self._item(phase=phase, reason_code=None, body=text, **base)
         item["outbox_key"] = "lifecycle:v2:" + hashlib.sha256(f"attempt:{attempt}:{event_type}".encode()).hexdigest()
-        item["marker"] = f"<!-- driftward-factory:lifecycle:{item['outbox_key']} -->"
+        item["marker"] = f"<!-- factory:lifecycle:{item['outbox_key']} -->"
         item["body"] = (text[:3200] + "\n\n" + item["marker"])[:3500]
         return item
 
@@ -333,14 +336,14 @@ class LifecycleWriter:
     def _item(self, *, phase: str, issue_id: Any, identifier: Any, issue_url: Any, job_id: Any, idempotency_key: Any, source_event_key: Any, source_delivery_id: Any, repo: Any, pr_url: Any, reason_code: Any, execution_mode: str, source_kind: str, source_recorded_at: Any, body: str) -> dict[str, Any]:
         subject = f"{issue_id}|{job_id or source_event_key or 'issue'}|{phase}"
         key = "lifecycle:v2:" + hashlib.sha256(subject.encode()).hexdigest()
-        marker = f"<!-- driftward-factory:lifecycle:{key} -->"
+        marker = f"<!-- factory:lifecycle:{key} -->"
         return {"outbox_key": key, "phase": phase, "delivery_state": "pending", "issue_id": issue_id if isinstance(issue_id, str) else None, "identifier": identifier if isinstance(identifier, str) else None, "issue_url": issue_url if isinstance(issue_url, str) else None, "job_id": job_id if isinstance(job_id, str) else None, "idempotency_key": idempotency_key if isinstance(idempotency_key, str) else None, "source_event_key": source_event_key if isinstance(source_event_key, str) else None, "source_delivery_id": source_delivery_id if isinstance(source_delivery_id, str) else None, "repo": repo if isinstance(repo, str) else None, "pr_url": pr_url if isinstance(pr_url, str) else None, "reason_code": reason_code if isinstance(reason_code, str) else None, "execution_mode": execution_mode, "source_kind": source_kind, "source_recorded_at": source_recorded_at if isinstance(source_recorded_at, str) else "", "marker": marker, "body": (body[:3200] + "\n\n" + marker)[:3500], "next_attempt_at": None, "delivered_at": None, "suppressed_at": None, "last_error_code": None}
 
     def _valid_issue(self, value: dict[str, Any]) -> bool:
         if not isinstance(value.get("issue_id"), str) or not UUID.fullmatch(value["issue_id"]):
             return False
         identifier, raw_url = value.get("identifier"), value.get("issue_url")
-        if not isinstance(identifier, str) or not IDENTIFIER.fullmatch(identifier) or not isinstance(raw_url, str) or len(raw_url) > 500:
+        if not isinstance(identifier, str) or not organization.matches_issue(identifier) or not isinstance(raw_url, str) or len(raw_url) > 500:
             return False
         if any(ord(char) < 32 or ord(char) == 127 for char in raw_url):
             return False
@@ -350,7 +353,7 @@ class LifecycleWriter:
         except ValueError:
             return False
         parts = parsed.path.split("/")
-        return parsed.scheme == "https" and parsed.netloc == "linear.app" and parsed.hostname == "linear.app" and port is None and parsed.username is None and parsed.password is None and not parsed.params and not parsed.query and not parsed.fragment and len(parts) == 5 and parts[0] == "" and parts[1] == "driftward" and parts[2] == "issue" and parts[3] == identifier and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,199}", parts[4]))
+        return parsed.scheme == "https" and parsed.netloc == "linear.app" and parsed.hostname == "linear.app" and port is None and parsed.username is None and parsed.password is None and not parsed.params and not parsed.query and not parsed.fragment and len(parts) == 5 and parts[0] == "" and parts[1] == organization.linear_identity()["workspace_slug"] and parts[2] == "issue" and parts[3] == identifier and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,199}", parts[4]))
 
     def _valid_repo(self, value: Any) -> bool:
         return isinstance(value, str) and bool(REPO.fullmatch(value)) and value in self.config.allowed_repos

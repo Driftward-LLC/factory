@@ -14,4 +14,4 @@ services:
   factory-hermes:
     profiles: !reset []
     labels:
-      io.driftward.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?}
+      io.factory.tenant: ${HATCHET_DEFAULT_TENANT_ID:?}

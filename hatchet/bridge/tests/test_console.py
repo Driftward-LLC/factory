@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import sqlite3
@@ -44,7 +47,7 @@ class AgentTraceProjectionTests(unittest.TestCase):
         trace = self.trace()
         self.assertEqual(trace["status"], "unverified")
         parsed = urlparse(trace["url"])
-        self.assertEqual(parsed.path, "/project/12345/ai-observability/traces/6f2539d8-3884-5813-b3d7-839a59bc54a0")
+        self.assertEqual(parsed.path, "/project/12345/ai-observability/traces/5a7fb717-09d1-55ba-9ce1-480f0a3e18a2")
         self.assertEqual(parse_qs(parsed.query), {"timestamp": ["2026-09-30T05:53:34.202Z"]})
         self.assertEqual(json.dumps(self.record, sort_keys=True), before)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM factory_attempt_events").fetchone()[0], 0)
@@ -108,7 +111,7 @@ class FactoryConsoleTests(unittest.TestCase):
             "outbox_key": "lifecycle:v2:console", "phase": "unresolved", "delivery_state": "dead_letter",
             "issue_id": None, "identifier": None, "issue_url": None, "job_id": "job-inspect",
             "idempotency_key": "inspect:console", "source_event_key": None, "source_delivery_id": None,
-            "repo": "Driftward-LLC/capykit", "pr_url": None, "reason_code": "linear_issue_identity_invalid",
+            "repo": "example/widgets", "pr_url": None, "reason_code": "linear_issue_identity_invalid",
             "execution_mode": "real", "source_kind": "bridge_event", "source_recorded_at": "2026-01-01T00:00:00.000000Z",
             "marker": "private", "body": "private", "next_attempt_at": None,
             "delivered_at": None, "suppressed_at": None, "last_error_code": None,
@@ -127,7 +130,7 @@ class FactoryConsoleTests(unittest.TestCase):
         self.thread.join(timeout=2)
 
     def get(self, path, *, identity=True):
-        headers = {"Tailscale-User-Login": "operator@driftward.test"} if identity else {}
+        headers = {"Tailscale-User-Login": "operator@factory.test"} if identity else {}
         with urlopen(Request(self.base + path, headers=headers), timeout=2) as response:
             return response.status, response.headers, response.read()
 
@@ -144,7 +147,7 @@ class FactoryConsoleTests(unittest.TestCase):
         value = json.loads(raw)
 
         self.assertEqual(status, 200)
-        self.assertEqual(value["viewer"], "operator@driftward.test")
+        self.assertEqual(value["viewer"], "operator@factory.test")
         self.assertEqual(value["mode"], "real")
         self.assertEqual(value["active_attempts"][0]["attempt"]["work_item_key"], "ENG-119")
         self.assertEqual(value["status_counts"], {"reserved": 1})
@@ -186,9 +189,9 @@ class FactoryConsoleTests(unittest.TestCase):
         from hatchet_hermes_bridge.store import reserve_factory_retry
         from test_store import verifier_payload
         conn = connect_runtime(self.db)
-        with patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "hatchet/workers/verifier-policy.json")}):
+        with patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(ROOT / "hatchet/workers/test-fixtures/verifier-policy.json")}):
             attempt, _, _ = reserve_factory_retry(conn, work_item_key="ENG-120", mode="real",
-                request_id="trace", reason="trace test", actor="test", payload=verifier_payload("Driftward-LLC/capykit"))
+                request_id="trace", reason="trace test", actor="test", payload=verifier_payload("example/widgets"))
         conn.close()
         before = Path(self.db).read_bytes()
         with patch.dict(os.environ, {"FACTORY_CONSOLE_POSTHOG_PROJECT_URL": "https://us.posthog.com/project/12345"}):
@@ -262,12 +265,12 @@ class FactoryConsoleTests(unittest.TestCase):
             with self.subTest(days=days):
                 self.assertEqual(json.loads(self.get(f"/api/analytics?days={days}")[2])["window"]["days"], days)
         with self.assertRaises(HTTPError) as raised:
-            urlopen(Request(self.base + "/api/analytics", data=b"{}", headers={"Tailscale-User-Login": "operator@driftward.test"}), timeout=2)
+            urlopen(Request(self.base + "/api/analytics", data=b"{}", headers={"Tailscale-User-Login": "operator@factory.test"}), timeout=2)
         self.assertEqual(raised.exception.code, 405)
 
     def test_analytics_uses_optional_ingress_and_preserves_unverified_coverage(self):
         conn = connect_runtime(self.db)
-        conn.execute("UPDATE factory_attempts SET prior_pr_url = ?", ("https://github.com/Driftward-LLC/capykit/pull/119",))
+        conn.execute("UPDATE factory_attempts SET prior_pr_url = ?", ("https://github.com/example/widgets/pull/119",))
         conn.commit()
         conn.close()
         conn = sqlite3.connect(self.ingress_db)

@@ -1,7 +1,7 @@
 dev:
   preCmds:
     - "npm install --prefix .."
-    - "npm run build -w @driftward/hatchet-worker-shared"
+    - "npm run build -w @factory/hatchet-worker-shared"
   runCmd: "npm start"
   files:
     - "src/**/*.ts"
@@ -11,5 +11,5 @@ dev:
 
 triggers:
   - name: pr-created
-    description: "Push a manual test driftward.github.pr.created event"
+    description: "Push a manual test factory.github.pr.created event"
     command: "npm run push:pr-created"

@@ -22,6 +22,22 @@ class PortableTests(unittest.TestCase):
         self.directory = Path(self.tmp.name) / "a space $literal"
         portable.bootstrap.init_directory(self.directory, "factory:test", "factory-unit-test", apply=True)
 
+    def test_naming_generation_is_required_before_docker(self):
+        path = self.directory / portable.bootstrap.MARKER
+        metadata = json.loads(path.read_text())
+        self.assertEqual(metadata["naming_generation"], portable.bootstrap.NAMING_GENERATION)
+        for generation in (None, "unknown", 1):
+            with self.subTest(generation=generation):
+                changed = dict(metadata)
+                if generation is None:
+                    changed.pop("naming_generation")
+                else:
+                    changed["naming_generation"] = generation
+                path.write_text(json.dumps(changed))
+                with patch.object(portable, "run") as docker, self.assertRaisesRegex(ValueError, "naming generation"):
+                    portable.Installation(self.directory)
+                docker.assert_not_called()
+
     def test_configuration_is_literal_and_ambient_project_is_ignored(self):
         with patch.dict(os.environ, {"COMPOSE_PROJECT_NAME": "production", "COMPOSE_PROFILES": "linear", "FACTORY_IMAGE": "bad:latest"}):
             install = portable.Installation(self.directory)
@@ -45,6 +61,19 @@ class PortableTests(unittest.TestCase):
                 if mount["target"] == "/opt/data":
                     self.assertEqual(name, "factory-hermes")
 
+    def test_configuration_mounts_are_private_read_only_and_cannot_be_redirected(self):
+        install = portable.Installation(self.directory)
+        install.assert_config()
+        config = json.loads(install.compose("config", "--format", "json", private=True))
+        for role, service in config["services"].items():
+            mounts = [mount for mount in service.get("volumes", []) if mount["target"] == "/etc/factory/config"]
+            self.assertEqual(len(mounts), int(role in portable.bootstrap.CONFIG_SERVICES))
+        bridge = config["services"]["bridge"]
+        mount = next(mount for mount in bridge["volumes"] if mount["target"] == "/etc/factory/config")
+        mount["read_only"] = False
+        with patch.object(install, "compose", return_value=json.dumps(config)), self.assertRaisesRegex(ValueError, "configuration boundary"):
+            install.assert_config()
+
     def test_altered_identity_is_rejected_before_docker(self):
         path = self.directory / ".env"
         path.write_text(path.read_text().replace("factory-unit-test", "factory-another"))
@@ -53,7 +82,7 @@ class PortableTests(unittest.TestCase):
 
     def test_foreign_docker_resources_are_rejected_before_stop_or_migration(self):
         install = portable.Installation(self.directory)
-        responses = ["factory-unit-test-bridge-data\n", "", "", json.dumps([{"Labels": {"io.driftward.factory.installation": "another-installation"}}])]
+        responses = ["factory-unit-test-bridge-data\n", "", "", json.dumps([{"Labels": {"io.factory.installation": "another-installation"}}])]
         with patch.object(portable, "run", side_effect=responses), patch.object(install, "compose") as compose:
             with self.assertRaisesRegex(ValueError, "collides"):
                 install.up()
@@ -61,7 +90,7 @@ class PortableTests(unittest.TestCase):
 
     def test_owned_docker_resources_can_be_reused(self):
         install = portable.Installation(self.directory)
-        responses = ["factory-unit-test-bridge-data\n", "", "", json.dumps([{"Labels": {"io.driftward.factory.installation": install.metadata["installation_id"]}}])]
+        responses = ["factory-unit-test-bridge-data\n", "", "", json.dumps([{"Labels": {"io.factory.installation": install.metadata["installation_id"]}}])]
         with patch.object(portable, "run", side_effect=responses):
             install.assert_owned_resources()
 
@@ -71,8 +100,8 @@ class PortableTests(unittest.TestCase):
         install = portable.Installation(directory)
         self.assertEqual(install.args[install.args.index("--project-name") + 1], "factory")
         volumes = [f"factory-{suffix}" for suffix in portable.portable_state.PROJECT_VOLUMES]
-        unrelated = ["factory-pilot-bridge-data", "factory-restored-maintenance", "driftward-factory-bridge-data"]
-        owned = {"Labels": {"io.driftward.factory.installation": install.metadata["installation_id"]}}
+        unrelated = ["factory-pilot-bridge-data", "factory-restored-maintenance", "another-bridge-data"]
+        owned = {"Labels": {"io.factory.installation": install.metadata["installation_id"]}}
         responses = ["\n".join(volumes + unrelated), "", "", json.dumps([owned] * len(volumes))]
         with patch.object(portable, "run", side_effect=responses) as invoked:
             install.assert_owned_resources()
@@ -142,7 +171,9 @@ class PortableTests(unittest.TestCase):
 
     def test_portable_profile_has_no_host_executor_socket_or_docker_socket(self):
         source = (DEPLOY / "compose.portable.yml").read_text()
-        self.assertIn("bridge-executor-worker:\n    <<: *portable\n    volumes: !reset []", source)
+        executor = source.split("  bridge-executor-worker:\n", 1)[1].split("  pr-event-worker:", 1)[0]
+        self.assertIn("target: /etc/factory/config", executor)
+        self.assertNotIn("/run/factory-hermes-factory", executor)
         self.assertNotIn("docker.sock", source)
         self.assertIn("127.0.0.1:${FACTORY_CONSOLE_PORT", source)
         self.assertNotIn("FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED", source)
@@ -166,7 +197,7 @@ class PortableTests(unittest.TestCase):
                     (self.directory / "keys" / "hatchet" / name).write_text("fixture")
             return ""
 
-        with patch.object(install, "assert_owned_resources"), patch.object(install, "status"), \
+        with patch.object(install, "assert_owned_resources"), patch.object(install, "assert_config"), patch.object(install, "status"), \
                 patch.object(install, "compose", side_effect=compose) as invoked, \
                 patch.object(portable.os, "geteuid", return_value=1001), \
                 patch.object(portable.os, "getegid", return_value=1002), patch("builtins.print"):

@@ -1,7 +1,7 @@
 dev:
   preCmds:
     - "npm install --prefix .."
-    - "npm run build -w @driftward/hatchet-worker-shared"
+    - "npm run build -w @factory/hatchet-worker-shared"
   runCmd: "npm start"
   files:
     - "src/**/*.ts"
@@ -11,5 +11,5 @@ dev:
 
 triggers:
   - name: accepted
-    description: "Push a driftward.hermes.job.accepted event for an existing bridge job"
+    description: "Push a factory.hermes.job.accepted event for an existing bridge job"
     command: "npm run push:accepted"

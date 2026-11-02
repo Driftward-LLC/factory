@@ -1,11 +1,11 @@
 # Experimental native invocation owner
 
 Disabled by default: the gateway selects this path only with
-`DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER=1`. This prototype is **not ready for
+`FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER=1`. This prototype is **not ready for
 activation**. No runtime/installer execution, credential change or live run is
 part of this change. It does not recover historical attempts or authorize retrying failed work.
 
-The experimental route now requires `DRIFTWARD_HERMES_PROFILE=factory-native-executor`.
+The experimental route now requires `FACTORY_HERMES_PROFILE=factory-native-executor`.
 Factory's legacy route refuses that reserved profile, and the native route refuses
 the legacy `factory-executor` profile (including an omitted profile). Identity/model queries and native journals use a fresh isolated profile for
 each invocation. Dedicated executor credentials still require a separate reviewed
@@ -233,14 +233,14 @@ the start request releases agent work. See the
 
 Before separately approved activation, provision **new executor-role** inputs:
 
-- `DRIFTWARD_HERMES_NATIVE_IMAGE`: the reviewed full `sha256:` image ID. Images
+- `FACTORY_HERMES_NATIVE_IMAGE`: the reviewed full `sha256:` image ID. Images
   with credential environment variables, build hooks or undeclared data volumes
   are refused. The isolated checks use the native canary's pinned Hermes image;
   arbitrary image compatibility is not established.
-- `DRIFTWARD_HERMES_NATIVE_SEED`: a local Docker volume named
+- `FACTORY_HERMES_NATIVE_SEED`: a local Docker volume named
   `factory-native-executor-seed-<32 lowercase hex characters>`, labeled
-  `com.driftward.factory.role=native-executor-seed` and
-  `com.driftward.factory.fresh-credentials=true`. These identify an operator
+  `com.factory.role=native-executor-seed` and
+  `com.factory.fresh-credentials=true`. These identify an operator
   provisioning assertion, not proof of credential identity.
 - Only `config.yaml`, `.env`, `.gitconfig` and `skills/` may be present. Files
   must be regular, owned by root or UID 10000, readable by UID 10000 and not

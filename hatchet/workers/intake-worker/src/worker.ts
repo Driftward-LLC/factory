@@ -1,7 +1,9 @@
+import { loadFactoryOrganization } from '@factory/hatchet-worker-shared';
 import { hatchet } from './hatchet-client';
 import { linearReadyIntake } from './workflows/linear-ready-intake';
 
 async function main() {
+  loadFactoryOrganization();
   const worker = await hatchet.worker('intake-worker', {
     workflows: [linearReadyIntake]
   });

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The pre-Compose smoke emitted organization-specific synthetic events to live services.
+# Retain an inert entry point so an old installed command cannot replay that workflow.
+printf '%s\n' 'The legacy Hatchet systemd smoke is retired. Use factory-docker-smoke for the supported Factory Compose deployment.' >&2
+exit 64

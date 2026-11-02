@@ -163,7 +163,7 @@ its synthetic probe and repeating the real canary. Unexpected tools/API fail
 closed.
 
 Named-profile activation binds the gateway's trusted
-`DRIFTWARD_HERMES_PROFILE=factory-executor` environment and the provisioning
+`FACTORY_HERMES_PROFILE=factory-executor` environment and the provisioning
 `auth_root` to `/opt/data/profiles/factory-independent-reviewer` while execution
 is drained. The executor wrapper and runtime metadata probes select the same
 profile. An unset executor profile and omitted reviewer `auth_root` preserve
@@ -177,13 +177,13 @@ Reviewer traces add `factory.profile=factory-independent-reviewer` only when
 that named auth root is selected, preserving the existing review trace identity.
 
 Activation remains a separate reviewed operator change. Root-owned mode-0600
-`/etc/driftward/factory-reviewer.json` must contain:
+`/etc/factory/factory-reviewer.json` must contain:
 
 ```json
 {
   "schema": "factory-hermes-reviewer-provisioning-v2",
   "image": "reviewer-source@sha256:REVIEWED_SOURCE_IMAGE_DIGEST",
-  "hermes_image": "sha256:REVIEWED_EXISTING_DRIFTWARD_HERMES_IMAGE_ID",
+  "hermes_image": "sha256:REVIEWED_EXISTING_FACTORY_HERMES_IMAGE_ID",
   "canary_digest": "DIGEST_OF_RETAINED_OPERATOR_CANARY_EVIDENCE",
   "policy_digest": "CURRENT_FACTORY_REVIEW_POLICY_DIGEST",
   "review_skill_digest": "SHA256_OF_REVIEW_CODE_SNAPSHOT",
@@ -193,10 +193,10 @@ Activation remains a separate reviewed operator change. Root-owned mode-0600
 ```
 
 Managed instruction snapshots are root-owned mode-0600
-`/etc/driftward/factory-reviewer/review-code.md` and `verify-app.md`. Their verified
+`/etc/factory/factory-reviewer/review-code.md` and `verify-app.md`. Their verified
 contents enter the prompt explicitly; installed plugin presence is insufficient.
 Source fetch separately requires a source-only GitHub read credential at
-`/etc/driftward/factory-reviewer/source-token`. The public
+`/etc/factory/factory-reviewer/source-token`. The public
 `source_token_broker.py` uses the existing `factory-hermes` App inside the native
 runtime: its App/installation IDs and private key stay under
 `/opt/data/github-apps/factory-hermes`. It signs in place and requests only
@@ -222,19 +222,19 @@ an activation blocker, not permission to broaden its grant automatically.
 
 The host installer packages the two public helper files and systemd templates;
 it does not enable the renewal timer. After reviewing the deployment and canary,
-install the rendered `driftward-factory-reviewer-source-token.service` and timer
+install the rendered `factory-reviewer-source-token.service` and timer
 from `independent-reviewer/systemd/` in the shared package, replacing
-`__FACTORY_SHARE_DIR__` with `/usr/local/share/driftward-factory`. Ensure the
-existing `/etc/driftward/factory-reviewer` directory is root-owned mode 0700,
+`__FACTORY_SHARE_DIR__` with `/usr/local/share/factory`. Ensure the
+existing `/etc/factory/factory-reviewer` directory is root-owned mode 0700,
 then run the oneshot once and inspect only its status and non-secret expiry
-metadata before enabling `driftward-factory-reviewer-source-token.timer`.
+metadata before enabling `factory-reviewer-source-token.timer`.
 The service can access only the local Docker socket and reviewer credential
-directory; its fixed broker executes inside `hermes-driftward-hermes-1`.
+directory; its fixed broker executes inside `hermes-factory-hermes-1`.
 
 Only trusted host Git
 subprocesses consume it, never workers, the reviewer profile, tests or browser.
 Do not copy generator GitHub write auth into a profile. Private bare mirrors at
-`/var/lib/driftward-factory-reviewer/repositories/OWNER/REPO.git` contain no shared
+`/var/lib/factory-reviewer/repositories/OWNER/REPO.git` contain no shared
 auth. Locked fixed-HTTPS fetches update the PR and configured base; immutable
 snapshots bind inspection, and a final fetch checks the head again. New commits
 require a new review ID.
@@ -244,7 +244,7 @@ source UID (directories 0755, files 0444), along with its ephemeral MCP token
 umask and private source/platform credentials are not relaxed.
 
 The host installer packages public assets under
-`/usr/local/share/driftward-factory/independent-reviewer/`, preserving build-context
+`/usr/local/share/factory/independent-reviewer/`, preserving build-context
 paths; `runner.py` and `native_agent.py` run there. The portable release does not
 install/enable the host gateway. The gateway retains Docker authority; workers
 retain only its private socket. Bridge/inspection credentials stay on the host
@@ -253,7 +253,7 @@ gateway, outside both reviewer/model and source execution boundaries.
 Run the credential-free SDK compatibility probe and focused tests with:
 
 ```bash
-python3 tools/probe_factory_native_reviewer.py hermes-driftward-hermes-1
+python3 tools/probe_factory_native_reviewer.py hermes-factory-hermes-1
 python3 -m unittest tools.test_factory_independent_reviewer -v
 python3 -m unittest tools.test_factory_reviewer_observer -v
 python3 -m unittest tools.test_factory_reviewer_source_token -v
@@ -283,7 +283,7 @@ native auth, source refresh with the read-only identity, source/browser/tests,
 absence of ambient generator context/platform auth, source egress denial,
 SHA/finding binding, native timeout/cancellation cleanup, and one invocation
 across response-loss retries. Retain non-secret raw evidence and its digest
-before enabling `DRIFTWARD_FACTORY_REVIEWER_ENABLED=1`. Bridge review, enrollment
+before enabling `FACTORY_REVIEWER_ENABLED=1`. Bridge review, enrollment
 and automatic-repair policy gates stay off until this canary and the compatible
 Factory deployment are approved.
 

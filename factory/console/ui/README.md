@@ -1,12 +1,12 @@
-# @driftward/ui
+# @factory/ui
 
 Shared React components, dark theme, and icons consumed by Factory and its
 Storybook. Version 0.2.0; private package, not published to a registry.
 
 ```jsx
-import { FactoryTheme, Button, StatusBadge } from '@driftward/ui';
-import { ReloadIcon } from '@driftward/ui/icons';
-import '@driftward/ui/styles.css';
+import { FactoryTheme, Button, StatusBadge } from '@factory/ui';
+import { ReloadIcon } from '@factory/ui/icons';
+import '@factory/ui/styles.css';
 
 <FactoryTheme>
   <Button onClick={refresh}><ReloadIcon aria-hidden="true" />Refresh</Button>

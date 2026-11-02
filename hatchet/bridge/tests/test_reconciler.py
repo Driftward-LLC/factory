@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import tempfile
 import unittest
 from datetime import timedelta
@@ -33,7 +36,7 @@ class BridgeReconcilerTests(unittest.TestCase):
         inspector = FakeGitHubInspector(
             pr=GitHubPullRequest(
                 number=99,
-                url="https://github.com/Driftward-LLC/driftward-host/pull/99",
+                url="https://github.com/example/platform/pull/99",
                 state="OPEN",
                 is_draft=True,
                 head_ref_name=job["branch"],
@@ -51,7 +54,7 @@ class BridgeReconcilerTests(unittest.TestCase):
         pending = get_job(self.conn, job["job_id"])
         self.assertEqual(pending["state"], "verification_pending")
         self.assertEqual(pending["commit_sha"], "abc123")
-        self.assertEqual(pending["pr_url"], "https://github.com/Driftward-LLC/driftward-host/pull/99")
+        self.assertEqual(pending["pr_url"], "https://github.com/example/platform/pull/99")
         self.assertEqual(
             [event["event_type"] for event in list_events(self.conn, job["job_id"])],
             ["accepted", "transition:running", "transition:effect_committed", "transition:verification_pending"],
@@ -63,7 +66,7 @@ class BridgeReconcilerTests(unittest.TestCase):
             self.conn,
             job["job_id"],
             state="effect_committed",
-            details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/99"},
+            details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/99"},
         )
 
         results = reconcile_jobs(self.conn, inspector=FakeGitHubInspector(), stale_after=timedelta(seconds=0))
@@ -124,7 +127,7 @@ class BridgeReconcilerTests(unittest.TestCase):
             {
                 "idempotency_key": key,
                 "requested_action": "create_draft_pr",
-                "payload": {"repo": "Driftward-LLC/driftward-host"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
             },
         )
         return transition_job(self.conn, job["job_id"], state="running")

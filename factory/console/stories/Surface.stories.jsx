@@ -1,4 +1,4 @@
-import { Card, Heading, EmptyState, Spinner } from '@driftward/ui';
+import { Card, Heading, EmptyState, Spinner } from '@factory/ui';
 
 export default {
   title: 'Components/Surface', component: Card, tags: ['autodocs'],

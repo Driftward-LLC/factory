@@ -5,7 +5,7 @@ import argparse,fcntl,os,stat,sys
 from pathlib import Path
 import test_capability
 
-ROOT=Path("/run/driftward-hatchet-bridge"); NAME="maintenance.lock"
+ROOT=Path("/run/factory-hatchet-bridge"); NAME="maintenance.lock"
 class LockError(RuntimeError): pass
 def _settings() -> tuple[Path, int, int]:
     cap = test_capability.load()

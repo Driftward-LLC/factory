@@ -1,7 +1,9 @@
+import { loadFactoryOrganization } from '@factory/hatchet-worker-shared';
 import { hatchet } from './hatchet-client';
 import { createDraftPrDispatch } from './workflows/create-draft-pr-dispatch';
 
 async function main() {
+  loadFactoryOrganization();
   const worker = await hatchet.worker('execution-dispatch-worker', {
     workflows: [createDraftPrDispatch]
   });

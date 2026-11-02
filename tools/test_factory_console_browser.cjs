@@ -11,7 +11,7 @@ const { chromium } = require('playwright');
 const root = resolve(__dirname, '..');
 const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
 const now = Date.now();
-function record(issue, generation, status, mode = 'real', repo = 'Driftward-LLC/capykit') {
+function record(issue, generation, status, mode = 'real', repo = 'ExampleOrg/widget') {
   const id = issue + '-' + generation;
   return {
     attempt: { attempt_id: id, work_item_key: issue, generation, status, mode, created_at: new Date(now - 3600000).toISOString(), updated_at: new Date(now - 60000).toISOString() },
@@ -23,7 +23,7 @@ function record(issue, generation, status, mode = 'real', repo = 'Driftward-LLC/
 const running = record('ENG-101', 2, 'running');
 const failed = record('ENG-101', 1, 'failed');
 const verified = record('ENG-102', 1, 'verified_ready');
-const simulated = record('ENG-103', 1, 'verified_ready', 'dry-run', 'Driftward-LLC/driftward-host');
+const simulated = record('ENG-103', 1, 'verified_ready', 'dry-run', 'ExampleOrg/other');
 const unknown = record('ENG-104', 1, 'effect_outcome_unknown');
 const verifying = record('ENG-107', 1, 'verification_pending');
 const traceBase = 'https://us.posthog.com/project/12345/ai-observability/traces/';
@@ -406,10 +406,10 @@ async function main() {
     assert.match(await page.locator('#work-attempts').textContent(), /ENG-104/);
     assert.equal(await page.locator('#work-attempts tr').count(), 1);
     await page.locator('#clear-filters').click();
-    await page.locator('#work-query').fill('capykit');
+    await page.locator('#work-query').fill('widget');
     await page.locator('#mode-filter').selectOption('real');
     await page.locator('[data-work-scope="failed"]').click();
-    assert.equal(await page.locator('#work-query').inputValue(), 'capykit');
+    assert.equal(await page.locator('#work-query').inputValue(), 'widget');
     assert.equal(await page.locator('#mode-filter').inputValue(), 'real');
     assert.equal(await page.locator('#work-attempts tr').count(), 1);
     await page.locator('#status-filter').selectOption('verified');
@@ -419,7 +419,7 @@ async function main() {
     await page.reload();
     await page.waitForFunction(() => document.querySelector('#work-count').textContent.startsWith('1 of 8'));
     assert.equal(page.url(), filteredUrl);
-    assert.equal(await page.locator('#work-query').inputValue(), 'capykit');
+    assert.equal(await page.locator('#work-query').inputValue(), 'widget');
     await page.locator('#work-attempts [data-issue="ENG-102"]').click();
     await page.waitForFunction(() => !document.querySelector('#issue-content').hidden);
     assert.equal(await page.locator('[data-view="work"]').isVisible(), false);
@@ -789,7 +789,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#work-count').textContent.startsWith('0 of 0'));
     assert.match(await page.locator('#work-attempts').textContent(), /No active or recent/);
     await page.goto(base + '/?issue=not-an-issue');
-    await page.waitForFunction(() => document.querySelector('#issue-notice').textContent.includes('Engineering issue'));
+    await page.waitForFunction(() => document.querySelector('#issue-notice').textContent.includes('Linear issue identifier'));
     assert.equal(await page.locator('#linear-link').isVisible(), false);
     assert.equal(await page.locator('#issue-content').isVisible(), false);
     failOverview = true;

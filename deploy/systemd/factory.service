@@ -1,0 +1,23 @@
+[Unit]
+Description=Factory Docker runtime
+Requires=docker.service
+After=docker.service network-online.target factory-hermes.service factory-hermes-factory-gateway.service
+Wants=network-online.target factory-hermes.service factory-hermes-factory-gateway.service
+Documentation=file:__SOURCE_ROOT__/deploy/README.md
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__RUNTIME_ROOT__
+Environment=COMPOSE_PROJECT_NAME=factory
+Environment=FACTORY_SOURCE_ROOT=__SOURCE_ROOT__
+ExecStart=/usr/bin/docker compose --env-file /etc/factory/hatchet.env --project-directory __RUNTIME_ROOT__ up -d --remove-orphans
+ExecReload=/usr/bin/docker compose --env-file /etc/factory/hatchet.env --project-directory __RUNTIME_ROOT__ up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/factory/hatchet.env --project-directory __RUNTIME_ROOT__ stop
+TimeoutStartSec=240
+TimeoutStopSec=60
+CPUQuota=250%
+MemoryMax=2048M
+
+[Install]
+WantedBy=multi-user.target

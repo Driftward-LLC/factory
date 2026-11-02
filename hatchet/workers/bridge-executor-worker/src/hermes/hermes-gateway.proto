@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package driftward.factory.hermes.v1;
+package factory.hermes.v1;
 
 service HermesFactoryGateway {
   rpc ReadOnlyReview(ReadOnlyReviewRequest) returns (ReadOnlyReviewResponse);

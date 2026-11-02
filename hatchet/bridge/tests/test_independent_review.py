@@ -1,4 +1,8 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import copy
+import json
 import json
 import sqlite3
 import unittest
@@ -52,6 +56,30 @@ class IndependentReviewTests(unittest.TestCase):
         reviews._settle_receipt(self.conn, row["review_id"])
         return output
 
+    def test_unbound_review_job_cannot_claim_even_when_source_is_bound(self):
+        row = self.reserve()
+        job = store.get_job(self.conn, row["job_id"])
+        payload = dict(job["payload"]); payload.pop("organization_binding")
+        with self.conn:
+            self.conn.execute("UPDATE bridge_jobs SET payload_json=?,payload_hash=? WHERE job_id=?", (store.canonical_json(payload), store.payload_hash(payload), row["job_id"]))
+        self.assertFalse(reviews.claim(self.conn, row["job_id"], row["capability"]))
+        self.assertFalse(reviews.authorization(self.conn, row["job_id"], row["capability"])["invocation_allowed"])
+        self.assertEqual(store.get_job(self.conn, row["job_id"])["job_id"], row["job_id"])
+
+    def test_org_change_revokes_pending_and_running_review_invocation(self):
+        from pathlib import Path
+        import tempfile
+        row = self.reserve()
+        self.assertTrue(reviews.claim(self.conn, row["job_id"], row["capability"]))
+        value = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
+        value["linear"]["workspace_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        value["linear"]["team_id"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        with tempfile.TemporaryDirectory() as directory:
+            changed = Path(directory) / "organization.json"; changed.write_text(json.dumps(value))
+            with patch.dict(os.environ, {"FACTORY_ORGANIZATION_CONFIG": str(changed)}):
+                self.assertFalse(reviews.authorization(self.conn, row["job_id"], row["capability"])["invocation_allowed"])
+        self.assertTrue(reviews.authorization(self.conn, row["job_id"], row["capability"])["invocation_allowed"])
+
     def test_default_policy_does_not_enroll_historical_verified_rows(self):
         self.conn.execute("UPDATE bridge_jobs SET payload_json=json_remove(payload_json,'$.independent_review_enrollment') WHERE job_id=?", (self.job["job_id"],)); self.conn.commit()
         self.assertIsNone(self.reserve())
@@ -83,7 +111,7 @@ class IndependentReviewTests(unittest.TestCase):
             "requirements": requirements, "requirements_digest": reviews.requirements_digest(requirements)}
         capability, now = str(uuid.uuid4()), store.utc_now()
         job, _ = store.submit_job(self.conn, {"idempotency_key": f"legacy-review:{review_id}", "requested_action": "read_only_review",
-            "payload": {"repo": REPO, "review": request, "review_capability": capability, "dry_run": False}}, internal_review=True)
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": REPO, "review": request, "review_capability": capability, "dry_run": False}}, internal_review=True)
         with self.conn:
             self.conn.execute("INSERT INTO factory_independent_reviews (review_id,lineage_key,pass_number,source_attempt_id,source_job_id,job_id,repository,pr_url,head_sha,policy_digest,capability,state,created_at,updated_at) VALUES (?,?,1,?,?,?,?,?,?,?,?,'pending',?,?)",
                 (review_id, store.payload_hash({"repository": REPO, "pr_url": fixtures.PR}), self.attempt["attempt_id"], self.job["job_id"],

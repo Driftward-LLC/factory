@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import http.client
 import json
 import os
@@ -20,7 +23,7 @@ from test_support import connect_migrate
 
 
 ROOT = Path(__file__).resolve().parents[3]
-ACTOR = "operator@driftward.test"
+ACTOR = "operator@example.test"
 ORIGIN = "https://factory.example.ts.net:19881"
 
 
@@ -35,6 +38,7 @@ class IssueControlFixture(unittest.TestCase):
             conn.execute("CREATE TABLE ingress_events (event_id TEXT, source TEXT, subject TEXT, normalized_json TEXT, provider_updated_at_us INTEGER)")
             conn.execute("INSERT INTO ingress_events VALUES ('one','linear','ENG-8',?,1)", (json.dumps(observation(updatedAt="2026-10-01T01:00:00Z")),))
         env = patch.dict(os.environ, {
+            "FACTORY_ORGANIZATION_CONFIG": str(ROOT / "hatchet/workers/test-fixtures/organization.json"),
             "FACTORY_CONSOLE_OPERATOR_LOGINS": ACTOR,
             "FACTORY_CONSOLE_PUBLIC_ORIGIN": ORIGIN,
             "FACTORY_CONSOLE_ALLOW_UNAUTHENTICATED": "",
@@ -77,7 +81,7 @@ class ConsoleControlServiceTests(IssueControlFixture):
             history = store.get_factory_issue_control(conn, "ENG-8")["history"]
             self.assertEqual([item["action"] for item in history], ["return_control", "take_control"])
             job = store.get_job(conn, store.get_factory_attempt(conn, returned["attempt_id"])["job_id"])
-            self.assertEqual(job["payload"]["repo"], "Driftward-LLC/capykit")
+            self.assertEqual(job["payload"]["repo"], "example/widgets")
             self.assertNotIn("actor", job["payload"])
 
     def test_committed_command_recovers_after_expiry_restart_and_linear_churn(self):
@@ -92,7 +96,7 @@ class ConsoleControlServiceTests(IssueControlFixture):
         self.assertEqual(replay["attempt_id"], original["attempt_id"])
         self.assertEqual(len(replay["control"]["history"]), 2)
         with self.assertRaises(store.BridgeValidationError):
-            restarted.confirm("ENG-8", "other@driftward.test", command)
+            restarted.confirm("ENG-8", "other@factory.test", command)
         with self.assertRaises(store.BridgeValidationError):
             restarted.confirm("ENG-8", ACTOR, {**command, "reason": "Changed reason"})
 
@@ -144,7 +148,7 @@ class ConsoleControlServiceTests(IssueControlFixture):
         takeover = {**self.approval(), "request_id": "another-takeover"}
         self.service.confirm("ENG-8", ACTOR, takeover)
         with closing(store.connect_runtime(self.db)) as conn, conn:
-            conn.execute("UPDATE factory_attempts SET prior_pr_url=? WHERE attempt_id=?", ("https://github.com/Driftward-LLC/capykit/pull/20", first["attempt_id"]))
+            conn.execute("UPDATE factory_attempts SET prior_pr_url=? WHERE attempt_id=?", ("https://github.com/example/widgets/pull/20", first["attempt_id"]))
             prior = store.get_factory_attempt(conn, first["attempt_id"])
         with self.assertRaisesRegex(OperatorError, "inspection_pending"):
             self.approval("return")
@@ -232,7 +236,7 @@ class ConsoleControlHTTPTests(IssueControlFixture):
             with patch.dict(os.environ, env):
                 self.assertEqual(self.request()[0], 403)
                 self.assertFalse(self.request("", method="GET")[1]["actions_enabled"])
-        self.assertEqual(self.request(headers={"Tailscale-User-Login": "reader@driftward.test"})[0], 403)
+        self.assertEqual(self.request(headers={"Tailscale-User-Login": "reader@factory.test"})[0], 403)
         self.assertEqual(self.service.read("ENG-8")["revision"], 0)
 
     def test_foreign_missing_duplicate_headers_and_spoofed_actor_rejected(self):

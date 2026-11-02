@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,13 +32,13 @@ class FakeLinear:
 
 
 def config() -> Config:
-    return Config("http://bridge", "bridge-token", "http://ingress", "factory-token", "2000-01-01T00:00:00Z", frozenset({"Driftward-LLC/capykit"}))
+    return Config("http://bridge", "bridge-token", "http://ingress", "factory-token", "2000-01-01T00:00:00Z", frozenset({"example/widgets"}))
 
 
-def event(*, state="running", dry_run=False, issue_id=ISSUE_ID, pr_url=None, reason=None, created="2099-01-01T00:00:00Z", event_id=EVENT_ID, repo="Driftward-LLC/capykit", job_id="job-1"):
+def event(*, state="running", dry_run=False, issue_id=ISSUE_ID, pr_url=None, reason=None, created="2099-01-01T00:00:00Z", event_id=EVENT_ID, repo="example/widgets", job_id="job-1"):
     return {"eventId": event_id, "jobId": job_id, "idempotencyKey": f"key-{job_id}", "state": state, "prUrl": pr_url,
             "reasonCode": reason, "createdAt": created,
-            "payload": {"linear_issue_id": issue_id, "linear_issue": "ENG-52", "linear_issue_url": "https://linear.app/driftward/issue/ENG-52/test", "source_event_key": "linear:event:1", "source_delivery_id": "delivery-1", "repo": repo, "dry_run": dry_run}}
+            "payload": {"linear_issue_id": issue_id, "linear_issue": "ENG-52", "linear_issue_url": "https://linear.app/example/issue/ENG-52/test", "source_event_key": "linear:event:1", "source_delivery_id": "delivery-1", "repo": repo, "dry_run": dry_run}}
 
 
 class PagedWriter(LifecycleWriter):
@@ -180,37 +183,37 @@ class LifecycleWriterTest(unittest.TestCase):
 
     def test_draft_artifact_snapshot_never_generates_success_before_verified_ready(self):
         writer, outbox = self.make()
-        first = writer._bridge_candidate(event(state="completed", dry_run=True, pr_url="https://github.com/Driftward-LLC/capykit/pull/1")); outbox.record(first)
-        mutated = writer._bridge_candidate(event(state="completed", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/1")); outbox.record(mutated)
+        first = writer._bridge_candidate(event(state="completed", dry_run=True, pr_url="https://github.com/example/widgets/pull/1")); outbox.record(first)
+        mutated = writer._bridge_candidate(event(state="completed", dry_run=False, pr_url="https://github.com/example/widgets/pull/1")); outbox.record(mutated)
         self.assertEqual(outbox.status()["states"]["suppressed"], 1)
         self.assertEqual(writer.deliver()["delivered"], 0)
 
     def test_pending_is_visible_once_but_only_verified_ready_generates_success(self):
         writer, outbox = self.make()
         for state in ("effect_committed", "completed"):
-            candidate = writer._bridge_candidate(event(state=state, dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/1", job_id=f"job-{state}"))
+            candidate = writer._bridge_candidate(event(state=state, dry_run=False, pr_url="https://github.com/example/widgets/pull/1", job_id=f"job-{state}"))
             outbox.record(candidate)
             self.assertEqual(candidate["delivery_state"], "suppressed")
-        pending = writer._bridge_candidate(event(state="verification_pending", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/1", job_id="job-pending"))
-        duplicate_pending = writer._bridge_candidate(event(state="verification_pending", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/1", job_id="job-pending"))
+        pending = writer._bridge_candidate(event(state="verification_pending", dry_run=False, pr_url="https://github.com/example/widgets/pull/1", job_id="job-pending"))
+        duplicate_pending = writer._bridge_candidate(event(state="verification_pending", dry_run=False, pr_url="https://github.com/example/widgets/pull/1", job_id="job-pending"))
         outbox.record(pending); outbox.record(duplicate_pending)
         self.assertEqual(pending["phase"], "verification_pending")
         self.assertEqual(writer.deliver()["delivered"], 1)
         self.assertIn("Deterministic verification is pending", writer.linear.created[0][1])
-        ready = writer._bridge_candidate(event(state="ready_for_human_review", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/2", job_id="job-ready"))
+        ready = writer._bridge_candidate(event(state="ready_for_human_review", dry_run=False, pr_url="https://github.com/example/widgets/pull/2", job_id="job-ready"))
         outbox.record(ready)
         self.assertEqual(ready["phase"], "succeeded")
         self.assertEqual(writer.deliver()["delivered"], 1)
         self.assertIn("Factory deterministic draft-PR verification passed", writer.linear.created[1][1])
 
-        attempt_ready = event(state="verified_ready", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/2")
+        attempt_ready = event(state="verified_ready", dry_run=False, pr_url="https://github.com/example/widgets/pull/2")
         attempt_ready.update(sourceKind="factory_attempt", eventType="attempt_verified_ready", attemptId="attempt-1", generation=1)
         self.assertIsNone(writer._bridge_candidate(attempt_ready))
         self.assertEqual(writer.deliver()["delivered"], 0)
 
     def test_attempt_verified_ready_is_silent(self):
         writer, _ = self.make()
-        candidate = event(state="verified_ready", dry_run=False, pr_url="https://github.com/Driftward-LLC/capykit/pull/2")
+        candidate = event(state="verified_ready", dry_run=False, pr_url="https://github.com/example/widgets/pull/2")
         candidate.update(sourceKind="factory_attempt", eventType="attempt_verified_ready", attemptId="attempt-1", generation=1)
         self.assertIsNone(writer._bridge_candidate(candidate))
 
@@ -305,7 +308,7 @@ class LifecycleWriterTest(unittest.TestCase):
                         "LINEAR_FACTORY_ACCESS_TOKEN=from-file",
                         "HATCHET_HERMES_BRIDGE_TOKEN=bridge-token",
                         "FACTORY_LIFECYCLE_ACTIVATION_WATERMARK=2026-08-25T00:00:00Z",
-                        "FACTORY_LIFECYCLE_ALLOWED_REPOS=Driftward-LLC/factory",
+                        "FACTORY_LIFECYCLE_ALLOWED_REPOS=example/control-plane",
                     ]
                 )
                 + "\n",
@@ -315,6 +318,7 @@ class LifecycleWriterTest(unittest.TestCase):
                 "os.environ",
                 {
                     "FACTORY_LIFECYCLE_ENV_FILE": str(env_path),
+                    "FACTORY_ORGANIZATION_CONFIG": str(Path(__file__).resolve().parents[2] / "workers/test-fixtures/organization.json"),
                     "LINEAR_FACTORY_ACCESS_TOKEN": "stale-process-token",
                 },
                 clear=True,
@@ -323,7 +327,7 @@ class LifecycleWriterTest(unittest.TestCase):
 
         self.assertEqual(config.token, "from-file")
         self.assertEqual(config.bridge_token, "bridge-token")
-        self.assertEqual(config.allowed_repos, frozenset({"Driftward-LLC/factory"}))
+        self.assertEqual(config.allowed_repos, frozenset({"example/control-plane"}))
 
     def test_pre_activation_and_missing_source_time_suppress_or_dead_letter(self):
         writer, _ = self.make()
@@ -358,7 +362,7 @@ class LifecycleWriterTest(unittest.TestCase):
         retry_start = event(); retry_start.update({"sourceKind": "factory_attempt", "eventType": "attempt_started", "attemptId": "attempt-2", "generation": 2})
         self.assertIn("Factory retry attempt 2 started", writer._bridge_candidate(retry_start)["body"])
 
-        repair = event(pr_url="https://github.com/Driftward-LLC/capykit/pull/2")
+        repair = event(pr_url="https://github.com/example/widgets/pull/2")
         repair.update({"sourceKind": "factory_attempt", "eventType": "repair_requested", "attemptId": "attempt-3", "generation": 3})
         self.assertIn("Factory repair requested", writer._bridge_candidate(repair)["body"])
 
@@ -366,17 +370,17 @@ class LifecycleWriterTest(unittest.TestCase):
         writer, _ = self.make()
         for change in (
             {"repo": "outside/repo"},
-            {"linear_issue_url": "https://linear.app/driftward/issue/ENG-x/bad"},
-            {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/nope"},
+            {"linear_issue_url": "https://linear.app/example/issue/ENG-x/bad"},
+            {"pr_url": "https://github.com/example/widgets/pull/nope"},
         ):
-            candidate = event(state="ready_for_human_review", pr_url="https://github.com/Driftward-LLC/capykit/pull/1")
+            candidate = event(state="ready_for_human_review", pr_url="https://github.com/example/widgets/pull/1")
             candidate["payload"].update({key: value for key, value in change.items() if key in candidate["payload"]})
             if "pr_url" in change: candidate["prUrl"] = change["pr_url"]
             self.assertEqual(writer._bridge_candidate(candidate)["delivery_state"], "dead_letter")
-        for decorated in ("https://linear.app:443/driftward/issue/ENG-52/test", "https://user@linear.app/driftward/issue/ENG-52/test", "https://linear.app.evil/driftward/issue/ENG-52/test", "https://linear.app/driftward/issue/ENG-52/test?x=1"):
+        for decorated in ("https://linear.app:443/factory/issue/ENG-52/test", "https://user@linear.app/example/issue/ENG-52/test", "https://linear.app.evil/factory/issue/ENG-52/test", "https://linear.app/example/issue/ENG-52/test?x=1"):
             candidate = event(); candidate["payload"]["linear_issue_url"] = decorated
             self.assertEqual(writer._bridge_candidate(candidate)["delivery_state"], "dead_letter")
-        for decorated in ("https://github.com:443/Driftward-LLC/capykit/pull/1", "https://user@github.com/Driftward-LLC/capykit/pull/1", "https://github.com.evil/Driftward-LLC/capykit/pull/1", "https://github.com/Driftward-LLC/capykit/pull/1#x"):
+        for decorated in ("https://github.com:443/example/widgets/pull/1", "https://user@github.com/example/widgets/pull/1", "https://github.com.evil/example/widgets/pull/1", "https://github.com/example/widgets/pull/1#x"):
             candidate = event(state="ready_for_human_review", pr_url=decorated)
             self.assertEqual(writer._bridge_candidate(candidate)["delivery_state"], "dead_letter")
 
@@ -387,15 +391,20 @@ class LifecycleWriterTest(unittest.TestCase):
 
     def test_routing_disabled_project_is_ignored(self):
         writer, _ = self.make()
-        observation = {"eventId": EVENT_ID, "createdAt": "2099-01-01T00:00:00Z", "issueId": ISSUE_ID, "identifier": "ENG-52", "issueUrl": "https://linear.app/driftward/issue/ENG-52/test", "eventKey": "linear:event:2", "deliveryId": "d2", "reasonCode": "linear_issue_project_execution_disabled"}
+        observation = {"eventId": EVENT_ID, "createdAt": "2099-01-01T00:00:00Z", "issueId": ISSUE_ID, "identifier": "ENG-52", "issueUrl": "https://linear.app/example/issue/ENG-52/test", "eventKey": "linear:event:2", "deliveryId": "d2", "reasonCode": "linear_issue_project_execution_disabled"}
         self.assertIsNone(writer._routing_candidate(observation))
 
     def test_canary_is_outbox_only_and_requires_valid_issue(self):
-        writer, outbox = self.make(); writer.canary(issue_id=ISSUE_ID, identifier="ENG-52", issue_url="https://linear.app/driftward/issue/ENG-52/test")
+        writer, outbox = self.make(); writer.canary(issue_id=ISSUE_ID, identifier="ENG-52", issue_url="https://linear.app/example/issue/ENG-52/test")
         self.assertEqual(writer.deliver()["delivered"], 1); self.assertEqual(outbox.status()["states"]["delivered"], 1)
 
 
 class LinearClientTest(unittest.TestCase):
+    def test_configured_token_cannot_enable_disabled_linear_integration(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                LinearClient("fixture-token")
+
     def test_marker_lookup_continues_beyond_one_thousand_comments(self):
         class Client(LinearClient):
             def __init__(self): super().__init__("token"); self.page = 0
@@ -409,8 +418,8 @@ class LinearClientTest(unittest.TestCase):
         class Client(LinearClient):
             def _request(self, query, variables):
                 if "FactoryIdentity" in query:
-                    return {"viewer": {"id": "4945f724-8539-46c6-b024-e03b90257ac2", "name": "renamed", "organization": {"id": "aa6f0902-c91a-4aa3-a8cb-13f03df89bbf", "name": "elsewhere"}}, "teams": {"nodes": [{"id": "2e9999a3-4e98-4c3f-ba16-1de1406dfa89", "name": "x", "key": "x"}]}}
-                return {"issue": {"id": ISSUE_ID, "team": {"id": "2e9999a3-4e98-4c3f-ba16-1de1406dfa89"}}}
+                    return {"viewer": {"id": "33333333-3333-4333-8333-333333333333", "name": "renamed", "organization": {"id": "11111111-1111-4111-8111-111111111111", "name": "elsewhere"}}, "teams": {"nodes": [{"id": "22222222-2222-4222-8222-222222222222", "name": "x", "key": "x"}]}}
+                return {"issue": {"id": ISSUE_ID, "team": {"id": "22222222-2222-4222-8222-222222222222"}}}
         client = Client("token"); client.verify_scope(); client.verify_issue_team(ISSUE_ID)
 
 

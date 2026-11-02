@@ -1,4 +1,4 @@
-import { StatusBadge } from '@driftward/ui';
+import { StatusBadge } from '@factory/ui';
 
 export default {
   title: 'Components/StatusBadge', component: StatusBadge, tags: ['autodocs'],

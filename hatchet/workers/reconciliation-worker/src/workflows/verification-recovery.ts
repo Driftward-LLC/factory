@@ -1,4 +1,4 @@
-import type { BridgeClient, BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeClient, BridgeJob } from '@factory/hatchet-worker-shared';
 
 export type StaleFinding = { kind: string; jobId: string | null };
 

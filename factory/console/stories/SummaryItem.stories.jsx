@@ -1,4 +1,4 @@
-import { SummaryItem } from '@driftward/ui';
+import { SummaryItem } from '@factory/ui';
 
 export default {
   title: 'Components/SummaryItem', component: SummaryItem, tags: ['autodocs'],

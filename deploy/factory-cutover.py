@@ -38,10 +38,10 @@ ENV_CONSUMERS = {
 VOLUME_CONSUMERS = {
     "hatchet-postgres-data": ("postgres", "/var/lib/postgresql/data"),
     "hatchet-config-data": ("hatchet-lite", "/config"),
-    "bridge-data": ("bridge", "/var/lib/driftward-hatchet-bridge"),
-    "ingress-data": ("event-ingress", "/var/lib/driftward-hatchet-event-ingress"),
-    "lifecycle-data": ("factory-lifecycle-writer", "/var/lib/driftward-factory-lifecycle-writer"),
-    "linear-token-data": ("factory-linear-token-refresh", "/var/lib/driftward-factory-linear-token"),
+    "bridge-data": ("bridge", "/var/lib/factory-hatchet-bridge"),
+    "ingress-data": ("event-ingress", "/var/lib/factory-hatchet-event-ingress"),
+    "lifecycle-data": ("factory-lifecycle-writer", "/var/lib/factory-lifecycle-writer"),
+    "linear-token-data": ("factory-linear-token-refresh", "/var/lib/factory-linear-token"),
     "linear-published-token": ("factory-linear-token-refresh", "/var/run/factory-linear-token"),
 }
 
@@ -186,8 +186,8 @@ def inspect_source(project: str, env_dir: Path, keys: Path, *, allow_unlabelled:
     envs["hatchet-client.env"] = {"HATCHET_CLIENT_TOKEN": token}
     executor = environment(services["bridge-executor-worker"])
     if (envs["hatchet-workers.env"].get("HATCHET_INTAKE_DRY_RUN") != "false"
-            or executor.get("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED") != "1"
-            or executor.get("DRIFTWARD_HERMES_GRPC_TARGET") != "unix:///run/driftward-hermes-factory/hermes.sock"):
+            or executor.get("FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED") != "1"
+            or executor.get("FACTORY_HERMES_GRPC_TARGET") != "unix:///run/factory-hermes-factory/hermes.sock"):
         raise CutoverRefusal("source must use the reviewed same-host real-execution boundary")
     for name in clients:
         if any(key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_", "GH_", "LINEAR_", "FACTORY_LINEAR_", "BROWSERBASE_", "MCP_")) for key in environment(services[name])):
@@ -262,7 +262,9 @@ def target_unused(directory: Path, project: str) -> None:
 
 def prepare(source_project: str, env_dir: Path, keys: Path, directory: Path,
             project: str, snapshot: Path, *, port_offset: int = 0, apply: bool = False,
-            allow_unlabelled: bool = False) -> dict:
+            allow_unlabelled: bool = False, configuration: Path | None = None) -> dict:
+    if apply:
+        raise CutoverRefusal("source cutover is disabled for this naming generation; use a fresh portable installation or a separately reviewed migration (deploy/NAMING-MIGRATION.md)")
     env_dir, keys, directory, snapshot = map(state._path, (env_dir, keys, directory, snapshot))
     if project == source_project:
         raise CutoverRefusal("source and destination projects must differ")
@@ -271,12 +273,15 @@ def prepare(source_project: str, env_dir: Path, keys: Path, directory: Path,
     for left, right in ((directory, snapshot), (directory, env_dir), (directory, keys), (snapshot, env_dir), (snapshot, keys)):
         if left == right or left in right.parents or right in left.parents:
             raise CutoverRefusal("source, snapshot, and destination paths must not overlap")
+    supplied = bootstrap.configuration(configuration) if configuration is not None else None
     source = inspect_source(source_project, env_dir, keys, allow_unlabelled=allow_unlabelled)
 
     def revalidate_source() -> None:
         current = inspect_source(source_project, env_dir, keys, allow_unlabelled=allow_unlabelled)
         if current != source:
             raise CutoverRefusal("source configuration, keys, or container identity changed during preparation")
+        if configuration is not None and bootstrap.configuration(configuration) != supplied:
+            raise CutoverRefusal("supplied organization configuration changed during preparation")
         assert_cold(current)
 
     target_unused(directory, project)
@@ -290,18 +295,22 @@ def prepare(source_project: str, env_dir: Path, keys: Path, directory: Path,
     print(json.dumps(report, indent=2))
     if not apply:
         return report
+    if supplied is None:
+        raise CutoverRefusal("--configuration with reviewed organization and policy files is required for cutover")
     revalidate_source()
     snapshot.mkdir(mode=0o700)
-    for relative in ("config", "config/env", "config/keys", "config/keys/hatchet", "volumes"):
+    for relative in ("config", "config/env", "config/config", "config/keys", "config/keys/hatchet", "volumes"):
         (snapshot / relative).mkdir(mode=0o700)
     # All source operational identity is retained; generated values supply only
     # destination paths/ports. No bootstrap-generated credential is copied.
     generated.update(source["values"], FACTORY_PROJECT_NAME=source_project, COMPOSE_PROJECT_NAME=source_project)
     bootstrap._create_private(snapshot / "config/.env", bootstrap.env_text(generated))
     source_id = str(uuid.uuid4())
-    bootstrap._create_private(snapshot / "config" / bootstrap.MARKER, json.dumps({"format_version": 1, "installation_id": source_id, "project": source_project, "image": source["image"], "profile": "same-host-production"}))
+    bootstrap._create_private(snapshot / "config" / bootstrap.MARKER, json.dumps({"format_version": 1, "organization_config": 1, "installation_id": source_id, "project": source_project, "image": source["image"], "profile": "same-host-production"}))
     for name, values in source["envs"].items():
         bootstrap._create_private(snapshot / "config/env" / name, bootstrap.env_text(values))
+    for name, content in supplied.items():
+        bootstrap._create_private(snapshot / "config/config" / name, content)
     for name, content in source["keys"].items():
         bootstrap._create_private(snapshot / "config/keys/hatchet" / name, content)
     for suffix in state.VOLUMES:
@@ -337,6 +346,7 @@ def main() -> int:
     parser.add_argument("--source-project", required=True)
     parser.add_argument("--source-env-dir", required=True, type=Path)
     parser.add_argument("--source-keys", required=True, type=Path)
+    parser.add_argument("--configuration", type=Path, help="reviewed private directory containing four organization/policy JSON files; required for apply")
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--project", required=True)
     parser.add_argument("--snapshot", required=True, type=Path)
@@ -348,12 +358,8 @@ def main() -> int:
     try:
         kwargs = dict(source_project=args.source_project, env_dir=args.source_env_dir, keys=args.source_keys,
                       directory=args.directory, project=args.project, snapshot=args.snapshot, port_offset=args.port_offset,
-                      apply=args.apply, allow_unlabelled=args.allow_unlabelled_source_volumes)
-        if args.apply:
-            with portable.installation_lock(args.directory):
-                prepare(**kwargs)
-        else:
-            prepare(**kwargs)
+                      apply=args.apply, allow_unlabelled=args.allow_unlabelled_source_volumes, configuration=args.configuration)
+        prepare(**kwargs)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, sqlite3.Error) as exc:
         # No raw configuration, subprocess output, or token parsing error escapes.
         reason = str(exc) if isinstance(exc, CutoverRefusal) else type(exc).__name__

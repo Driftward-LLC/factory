@@ -15,9 +15,9 @@ import {
   CubeIcon,
   LockClosedIcon,
   ActivityLogIcon,
-} from '@driftward/ui/icons';
+} from '@factory/ui/icons';
 import { Button, Notice, StatusBadge, ExternalLink, Metric, SummaryItem, BrandMark,
-  FactoryTheme, Card, Heading, TextInput, EmptyState, Link } from '@driftward/ui';
+  FactoryTheme, Card, Heading, TextInput, EmptyState, Link } from '@factory/ui';
 import Analytics from './Analytics.jsx';
 import VerificationEvidence from './VerificationEvidence.jsx';
 import IssueControl from './IssueControl.jsx';
@@ -829,10 +829,8 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange, returnView }) 
         <div className="issue-links">
           <ExternalLink
             id="linear-link"
-            hidden={!valid}
-            href={
-              valid ? 'https://linear.app/driftward/issue/' + encodeURIComponent(issue) : undefined
-            }
+            hidden={!value?.issue_url}
+            href={value?.issue_url || undefined}
           >
             Linear <ArrowTopRightIcon aria-hidden="true" />
           </ExternalLink>
@@ -859,7 +857,7 @@ function IssueDetail({ issue, snapshot, onClose, onControlChange, returnView }) 
       </p>
       <Notice id="issue-notice">
         {!valid
-          ? 'Enter an Engineering issue such as ENG-119.'
+          ? 'Enter a Linear issue identifier such as ACME-119.'
           : error
             ? `Could not refresh ${issue}. ${error}`
             : ''}
@@ -999,11 +997,11 @@ function App() {
         Skip to work
       </a>
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="Driftward Factory home">
+        <a className="brand" href="/" aria-label="Factory home">
           <BrandMark />
           <span>
             <strong>Factory</strong>
-            <small>Driftward Engineering</small>
+            <small>Factory Engineering</small>
           </span>
         </a>
         <p className="nav-label">Workspace</p>

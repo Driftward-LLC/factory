@@ -1,4 +1,4 @@
-@import "@driftward/ui/styles.css";
+@import "@factory/ui/styles.css";
 
 .skip-link { position: fixed; top: -100px; z-index: 20; background: var(--surface); padding: 12px; }
 .skip-link:focus { top: 8px; left: 8px; }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { HATCHET_EVENTS, type BridgeJob, type ReconciliationCorrelations, type ReconciliationScanPage } from '@driftward/hatchet-worker-shared';
+import { HATCHET_EVENTS, type BridgeJob, type ReconciliationCorrelations, type ReconciliationScanPage } from '@factory/hatchet-worker-shared';
 import { inspectBridgeLedger } from './bridge-ledger-inspection';
 
 type Dependencies = Parameters<typeof inspectBridgeLedger>[1];
@@ -54,7 +54,7 @@ test('ingress events correlated outside the current bridge pages are not falsely
 });
 
 test('incomplete history cannot establish absent accepted or committed-effect events', async () => {
-  const fixture = harness([], [job({ state: 'failed', pr_url: 'https://github.com/Driftward-LLC/factory/pull/1', commit_sha: 'abc123' })]);
+  const fixture = harness([], [job({ state: 'failed', pr_url: 'https://github.com/example/control-plane/pull/1', commit_sha: 'abc123' })]);
   fixture.deps.bridge.listEvents = async () => ({ total: 101, events: [] });
   const result = await inspectBridgeLedger({}, fixture.deps);
   assert.deepEqual(result.findings.map((item) => item.kind), ['bridge_job_event_history_incomplete']);
@@ -62,7 +62,7 @@ test('incomplete history cannot establish absent accepted or committed-effect ev
 });
 
 test('full-ledger duplicate-reference evidence finds an owner outside the current page', async () => {
-  const fixture = harness([], [job({ branch: 'codex/duplicate', pr_url: 'https://github.com/Driftward-LLC/factory/pull/1', reconciliation_duplicate_refs: { branch_job_id: 'outside-branch-owner', pr_job_id: 'outside-pr-owner' } })]);
+  const fixture = harness([], [job({ branch: 'codex/duplicate', pr_url: 'https://github.com/example/control-plane/pull/1', reconciliation_duplicate_refs: { branch_job_id: 'outside-branch-owner', pr_job_id: 'outside-pr-owner' } })]);
   const result = await inspectBridgeLedger({}, fixture.deps);
   assert.deepEqual(result.findings.map((item) => item.kind), ['duplicate_bridge_branch', 'duplicate_bridge_pr_url']);
   assert.equal(result.findings[0].observed.otherJobId, 'outside-branch-owner');
@@ -71,7 +71,7 @@ test('full-ledger duplicate-reference evidence finds an owner outside the curren
 
 for (const failure of ['listEvents', 'correlations', 'findingWrites', 'recovery', 'eventPush'] as const) {
   test(`${failure} failure retains scan pages without acknowledging progress`, async () => {
-    const fixture = harness([job({ state: 'verification_pending', requested_action: 'create_draft_pr', payload: { dry_run: false }, pr_url: 'https://github.com/Driftward-LLC/factory/pull/1', hermes_session_id: 'session' })]);
+    const fixture = harness([job({ state: 'verification_pending', requested_action: 'create_draft_pr', payload: { dry_run: false }, pr_url: 'https://github.com/example/control-plane/pull/1', hermes_session_id: 'session' })]);
     const fail = async (): Promise<never> => { throw new Error('forced failure'); };
     if (failure === 'listEvents') fixture.deps.bridge.listEvents = fail;
     if (failure === 'correlations') {
@@ -122,7 +122,7 @@ test('a retained page republishes already-persisted findings after an event deli
 });
 
 test('recovery is queued before progress advances without publishing a direct accepted event', async () => {
-  const fixture = harness([job({ state: 'verification_pending', requested_action: 'create_draft_pr', payload: { dry_run: false }, pr_url: 'https://github.com/Driftward-LLC/factory/pull/1', hermes_session_id: 'session' })]);
+  const fixture = harness([job({ state: 'verification_pending', requested_action: 'create_draft_pr', payload: { dry_run: false }, pr_url: 'https://github.com/example/control-plane/pull/1', hermes_session_id: 'session' })]);
   fixture.deps.bridge.enqueueVerificationResume = async (ref, staleAfterMinutes) => {
     assert.equal(ref, 'sample');
     assert.equal(staleAfterMinutes, 45);

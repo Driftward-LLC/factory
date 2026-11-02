@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import factory_organization as organization
+
 import ast
 import copy
 import hashlib
@@ -23,8 +25,8 @@ from .legacy_artifacts import (
 from .runtime import acquire_shared, migration_capability, release
 from . import work_evidence
 
-DEFAULT_DB_PATH = "/var/lib/driftward-hatchet-bridge/bridge.db"
-DOCKER_VERIFIER_POLICY_PATH = "/app/hatchet/workers/verifier-policy.json"
+DEFAULT_DB_PATH = "/var/lib/factory-hatchet-bridge/bridge.db"
+DOCKER_VERIFIER_POLICY_PATH = "/etc/factory/config/verifier-policy.json"
 SCHEMA_VERSION = 10
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
@@ -249,6 +251,11 @@ def _connection(path: str, *, check_same_thread: bool, migration: bool = False) 
     fd = migration_capability() if migration else acquire_shared()
     try:
         conn = sqlite3.connect(path, check_same_thread=check_same_thread, factory=BridgeConnection)
+        try:
+            _guard_naming_generation(conn, initialize=migration)
+        except Exception:
+            conn.close()
+            raise
         conn._maintenance_fd=fd
         return conn
     except Exception: release(fd); raise
@@ -275,6 +282,7 @@ def connect_migrate(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def _require_runtime_schema(conn: sqlite3.Connection) -> None:
+    _guard_naming_generation(conn)
     required = {
         "bridge_schema_meta", "bridge_jobs", "bridge_events", "factory_attempts",
         "factory_attempt_events", "factory_attempt_outbox", "factory_execution_leases",
@@ -308,6 +316,8 @@ def connect_runtime(db_path: str = DEFAULT_DB_PATH, *, check_same_thread: bool =
         _require_runtime_schema(conn)
         return conn
     except RuntimeError as exc:
+        if conn is not None:
+            conn.close()
         raise BridgeValidationError(str(exc)) from exc
     except (sqlite3.Error, BridgeValidationError) as exc:
         if conn is not None:
@@ -330,11 +340,29 @@ def connect_readonly(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         _require_runtime_schema(conn)
         return conn
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, RuntimeError) as exc:
+        if "conn" in locals():
+            conn.close()
         raise BridgeValidationError("bridge predeploy is required before read-only operator access") from exc
 
 
+def _guard_naming_generation(conn: sqlite3.Connection, *, initialize: bool = False) -> None:
+    """Never reinterpret persisted identities from a prior naming generation."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    if not tables and initialize:
+        conn.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+        conn.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
+        conn.commit()
+        return
+    if "factory_naming_generation" in tables:
+        rows = conn.execute("SELECT generation FROM factory_naming_generation").fetchall()
+        if len(rows) == 1 and rows[0][0] == "factory-neutral-v1":
+            return
+    raise RuntimeError("Prior or unknown naming generation; preserve state and use the original release pending reviewed offline migration")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
+    _guard_naming_generation(conn, initialize=True)
     _validate_migration_failpoint()
     schema_sql = """
         CREATE TABLE IF NOT EXISTS bridge_jobs (
@@ -752,7 +780,7 @@ def _backfill_factory_attempts(conn: sqlite3.Connection) -> None:
         attempt_id = "legacy-" + source["job_id"]
         conn.execute("INSERT INTO factory_attempts (attempt_id,work_item_key,action,mode,generation,request_id,idempotency_key,branch,status,job_id,prior_pr_url,actor,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (attempt_id, decision.work_item_key, "create_draft_pr", decision.mode, 1, "legacy:" + source["job_id"], source["idempotency_key"], decision.branch, "legacy_" + source["state"], source["job_id"], decision.prior_pr_url, "legacy-import", now, now))
         _append_factory_attempt_event(conn, attempt_id, "legacy_imported", {"job_id": source["job_id"], "artifact_present": bool(decision.prior_pr_url)})
-        if decision.prior_pr_url:
+        if decision.prior_pr_url and organization.load()["github"]["enabled"]:
             _queue_pr_inspection(conn, decision.work_item_key, decision.prior_pr_url, attempt_id)
 
 
@@ -887,7 +915,7 @@ def _resolver_contract_digest(*, source_overrides: Mapping[str, str] | None = No
 
 
 def _release_version_for_audit() -> str:
-    value = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_VERSION", "migration-unversioned")
+    value = os.environ.get("FACTORY_BRIDGE_RELEASE_VERSION", "migration-unversioned")
     # Unit tests and one-off forensic copies have no immutable release.  The
     # production installer always supplies an exact SHA; it remains audit data
     # and is intentionally excluded from the attestation identity.
@@ -1400,7 +1428,7 @@ def _insert_work_evidence(
     serialized = work_evidence.canonical(document)
     if len(serialized) > 16384 or sanitize_detail(document) != document:
         raise BridgeValidationError("work evidence contains disallowed material")
-    evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"driftward.work-evidence:v1:{attempt_id}:{kind}"))
+    evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory.work-evidence:v1:{attempt_id}:{kind}"))
     existing = conn.execute(f"SELECT * FROM {table} WHERE {identity}=?", (evidence_id,)).fetchone()
     if existing:
         if existing["document_json"] != serialized or existing[reference_column] != manifest_id:
@@ -1479,7 +1507,7 @@ def _append_factory_attempt_event_once(
     """Append a payload-free event once for one trusted decision key."""
     event_id = str(uuid.uuid5(
         uuid.NAMESPACE_URL,
-        f"driftward.factory.attempt-event:{attempt_id}:{event_type}:{occurrence_key}",
+        f"factory.attempt-event:{attempt_id}:{event_type}:{occurrence_key}",
     ))
     existing = conn.execute(
         "SELECT attempt_id,event_type,details_json FROM factory_attempt_events WHERE event_id=?",
@@ -1589,6 +1617,13 @@ def _validate_submit(request: dict[str, Any], *, internal_inspection: bool = Fal
         raise BridgeValidationError(f"requested_action must be one of {sorted(ALLOWED_ACTIONS)}")
     if not isinstance(payload, dict):
         raise BridgeValidationError("payload must be a JSON object")
+    if payload.get("dry_run") is not True:
+        if not organization.load()["github"]["enabled"]:
+            raise BridgeValidationError("Factory GitHub integration is disabled")
+        if action in DRAFT_PR_EFFECT_ACTIONS | {"read_only_review"} and not organization.matches_binding(payload.get("organization_binding")):
+            raise BridgeValidationError("organization_binding_mismatch")
+        if action in DRAFT_PR_EFFECT_ACTIONS and payload.get("linear_issue") and not organization.matches_issue(payload["linear_issue"]):
+            raise BridgeValidationError("Linear issue does not match the configured organization")
     if action == "read_only_review":
         if not internal_review:
             raise BridgeValidationError("review jobs are created only by the policy-controlled review ledger")
@@ -2439,6 +2474,8 @@ def _queue_pr_inspection(
 
 
 def _backfill_factory_inspections(conn: sqlite3.Connection) -> None:
+    if not organization.load()["github"]["enabled"]:
+        return
     rows = conn.execute(
         """
         SELECT a.attempt_id,a.work_item_key,a.job_id,a.prior_pr_url
@@ -3610,6 +3647,7 @@ def _factory_intake_job_matches(job: dict[str, Any], *, work_item_key: str, mode
         and job_payload.get("repo") == payload.get("repo")
         and job_payload.get("linear_issue") == work_item_key
         and job_payload.get("dry_run") is (mode == "dry-run")
+        and (mode != "real" or (organization.matches_binding(job_payload.get("organization_binding")) and organization.matches_binding(payload.get("organization_binding"))))
     )
 
 
@@ -3645,6 +3683,9 @@ def claim_factory_execution(conn: sqlite3.Connection, job_id: str, *, owner: str
     with conn:
         conn.execute("BEGIN IMMEDIATE")
         attempt = get_factory_attempt_for_job(conn, job_id)
+        job = get_job(conn, job_id)
+        if job["requested_action"] in DRAFT_PR_EFFECT_ACTIONS and job["payload"].get("dry_run") is not True and (not organization.load()["github"]["enabled"] or not organization.matches_binding(job["payload"].get("organization_binding"))):
+            return {"claimed": False, "reason": "organization_binding_mismatch", "attempt": attempt}
         if _issue_control_held(conn, attempt["work_item_key"] if attempt else _job_work_item(get_job(conn, job_id))):
             return {"claimed": False, "reason": "factory_issue_manual_control", "attempt": attempt}
         if not attempt:
@@ -3711,7 +3752,9 @@ def heartbeat_factory_execution(conn: sqlite3.Connection, job_id: str, claim: di
 
 
 def execution_may_effect(conn: sqlite3.Connection, job_id: str, claim: dict[str, Any]) -> bool:
-    return not _issue_control_held(conn, _job_work_item(get_job(conn, job_id))) and _current_execution_lease(conn, job_id, claim) is not None
+    job = get_job(conn, job_id)
+    return (not _issue_control_held(conn, _job_work_item(job)) and _current_execution_lease(conn, job_id, claim) is not None
+            and (job["payload"].get("dry_run") is True or (organization.load()["github"]["enabled"] and organization.matches_binding(job["payload"].get("organization_binding")))))
 
 
 def _execution_route_details(details: Any) -> dict[str, Any]:
@@ -4277,6 +4320,8 @@ def authorize_factory_effect(conn: sqlite3.Connection, job_id: str, claim: dict[
         attempt = get_factory_attempt(conn, row["attempt_id"])
         if _issue_control_held(conn, attempt["work_item_key"]):
             return False
+        if job["payload"].get("dry_run") is not True and (not organization.load()["github"]["enabled"] or not organization.matches_issue(attempt["work_item_key"]) or not organization.matches_binding(job["payload"].get("organization_binding"))):
+            return False
         from . import independent_review
         if not independent_review.repair_authorized(conn, job, attempt["attempt_id"]):
             return False
@@ -4559,6 +4604,8 @@ def list_factory_inspection_outbox(conn: sqlite3.Connection, limit: int = 50) ->
 
 
 def claim_factory_inspection_outbox(conn: sqlite3.Connection, outbox_key: str) -> dict[str, Any] | None:
+    if not organization.load()["github"]["enabled"]:
+        return None
     with conn:
         row = conn.execute("SELECT * FROM factory_inspection_outbox WHERE outbox_key=? AND acknowledged_at IS NULL", (outbox_key,)).fetchone()
         if not row: return None
@@ -4975,7 +5022,7 @@ def _validate_verification_receipt(value: Any, job: dict[str, Any]) -> tuple[dic
     if not isinstance(checks, dict) or set(checks) != {"status", "total_count"} or checks.get("status") != "SUCCESS" or not isinstance(checks.get("total_count"), int) or checks["total_count"] < 1 or checks["total_count"] > 512:
         raise BridgeValidationError("verification receipt GitHub check status is not successful")
     pr_identity, files, local, secret = (value[field] for field in ("pr_identity", "file_policy", "local_policy", "secret_policy"))
-    expected_author = os.environ.get("DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN", "factory-hermes[bot]")
+    expected_author = os.environ.get("FACTORY_HERMES_EXPECTED_GITHUB_LOGIN", "factory-hermes[bot]")
     allowed_authors = _github_app_author_aliases(expected_author)
     expected_identity = {"base": policy["expected_base"], "draft": True, "author": pr_identity.get("author") if isinstance(pr_identity, dict) else None, "linear_reference": f"Refs Linear {job['payload'].get('linear_issue')}"}
     if not isinstance(pr_identity, dict) or pr_identity != expected_identity or pr_identity.get("author") not in allowed_authors:

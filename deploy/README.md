@@ -6,11 +6,12 @@ private per-installation configuration and namespaced state. The installer and
 cutover procedure below document the legacy managed-host migration and external
 execution integration. They are not the default installation or upgrade path.
 
-To prepare a move from that existing Compose app to a new installation, follow
-[same-host cutover preparation](CUTOVER.md). The new helper previews first and
-can only copy an already stopped, quiescent source; it does not start the
-candidate or switch production routing. The legacy host-to-Docker gate below
-is a different migration and should not be used to rename the live deployment.
+Existing installations require a separately reviewed naming migration before
+using this release. Historical source/systemd installers are disabled, and
+same-host cutover supports read-only preview only. See
+[naming migration boundaries](NAMING-MIGRATION.md). The legacy procedures below
+are retained as historical operational context; their installer commands cannot
+publish files or change services with this bundle.
 
 Factory should deploy as a Docker Compose application owned by this repository.
 The host keeps Docker, the Compose wrapper, systemd supervision, and protected
@@ -22,23 +23,23 @@ manifests, and checked-in runtime code.
 
 - Scope: one Factory installation.
 - Source: `<source-checkout>`.
-- Runtime root: `/docker/driftward/factory`.
-- Compose file: `/docker/driftward/factory/docker-compose.yml`.
-- Systemd wrapper: `driftward-factory.service`, ordered after
-  `driftward-hermes.service` and `driftward-hermes-factory-gateway.service`.
-- Hermes gateway: `driftward-hermes-factory-gateway.service`, listening on
-  `unix:///run/driftward-hermes-factory/hermes.sock`.
+- Runtime root: `/docker/factory/factory`.
+- Compose file: `/docker/factory/factory/docker-compose.yml`.
+- Systemd wrapper: `factory.service`, ordered after
+  `factory-hermes.service` and `factory-hermes-factory-gateway.service`.
+- Hermes gateway: `factory-hermes-factory-gateway.service`, listening on
+  `unix:///run/factory-hermes-factory/hermes.sock`.
 - Durable data lives in Docker named volumes:
-  - `driftward-factory-hatchet-postgres-data`
-  - `driftward-factory-hatchet-config-data`
-  - `driftward-factory-bridge-data`
-  - `driftward-factory-ingress-data`
-  - `driftward-factory-lifecycle-data`
-  - `driftward-factory-linear-token-data`
-- Hatchet key material: `/docker/driftward/factory/keys/hatchet`
-- Local operator socket: `/run/driftward-factory-operator/operator.sock`.
+  - `factory-hatchet-postgres-data`
+  - `factory-hatchet-config-data`
+  - `factory-bridge-data`
+  - `factory-ingress-data`
+  - `factory-lifecycle-data`
+  - `factory-linear-token-data`
+- Hatchet key material: `/docker/factory/factory/keys/hatchet`
+- Local operator socket: `/run/factory-operator/operator.sock`.
 - Local Factory Console: `http://127.0.0.1:19881/`.
-- Local Hermes gateway socket: `/run/driftward-hermes-factory/hermes.sock`.
+- Local Hermes gateway socket: `/run/factory-hermes-factory/hermes.sock`.
 
 ## Boundaries
 
@@ -49,7 +50,7 @@ Real agent execution still belongs to Hermes. The host systemd unit
 orders Factory after Hermes, but Dockerized Factory records and fences work
 through the bridge, then reaches Hermes only through an explicit approved
 gRPC gateway. The Factory Compose app mounts only
-`/run/driftward-hermes-factory`; it must not mount the Docker socket, Hermes
+`/run/factory-hermes-factory`; it must not mount the Docker socket, Hermes
 data, provider credentials, browser state, or host root filesystem.
 The retry operator also mounts Factory ingress state read-only so it can fence
 manual retry eligibility against the latest trusted Linear observation.
@@ -59,40 +60,40 @@ when protected env files are absent:
 
 ```text
 HATCHET_INTAKE_DRY_RUN defaults to true
-DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED defaults to disabled
+FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED defaults to disabled
 ```
 
 Real Docker effects use the host-local Hermes Factory gateway. The installer
-seeds `DRIFTWARD_HERMES_GRPC_TARGET` in
-`/etc/driftward/hatchet-worker-bridge-executor.env` when absent:
+seeds `FACTORY_HERMES_GRPC_TARGET` in
+`/etc/factory/hatchet-worker-bridge-executor.env` when absent:
 
 ```text
-DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock
-DRIFTWARD_HERMES_AUTH_MODE=unknown
+FACTORY_HERMES_GRPC_TARGET=unix:///run/factory-hermes-factory/hermes.sock
+FACTORY_HERMES_AUTH_MODE=unknown
 ```
 
-The gateway may bind TCP later by setting `DRIFTWARD_HERMES_GRPC_TARGET` or
-`DRIFTWARD_HERMES_GRPC_BIND_TARGET` plus `DRIFTWARD_HERMES_GRPC_ALLOW_TCP=1`
-and TLS plus `DRIFTWARD_HERMES_GRPC_AUTH_TOKEN`, or TLS with enforced client
-certificates (`DRIFTWARD_HERMES_GRPC_CA_PATH`). Server-only TLS does not
+The gateway may bind TCP later by setting `FACTORY_HERMES_GRPC_TARGET` or
+`FACTORY_HERMES_GRPC_BIND_TARGET` plus `FACTORY_HERMES_GRPC_ALLOW_TCP=1`
+and TLS plus `FACTORY_HERMES_GRPC_AUTH_TOKEN`, or TLS with enforced client
+certificates (`FACTORY_HERMES_GRPC_CA_PATH`). Server-only TLS does not
 authenticate callers. Explicit insecure development TCP is limited to literal
 loopback addresses and still requires a token. Do not solve Factory to
 Hermes access by copying Hermes credentials or session state into Factory.
 The gateway is bundled during install and requires a host Node.js 18+ binary;
-override the default `/usr/bin/node` with `DRIFTWARD_FACTORY_NODE_BIN` if the
+override the default `/usr/bin/node` with `FACTORY_NODE_BIN` if the
 host keeps Node elsewhere.
 
-Set the non-secret `DRIFTWARD_HERMES_AUTH_MODE` deployment label to
+Set the non-secret `FACTORY_HERMES_AUTH_MODE` deployment label to
 `chatgpt_codex_oauth` or `api_key` only when that route is explicitly
 configured. It defaults to `unknown`; the label supports analytics and never
 copies provider credentials into Factory.
 
-Set optional `DRIFTWARD_HERMES_VERSION` from reviewed deployment configuration
+Set optional `FACTORY_HERMES_VERSION` from reviewed deployment configuration
 when known. Do not configure provider/model labels in Factory: the executor
 reads Hermes's native configuration and pins the selected model/provider on
 the invocation. It reports only those bounded identifiers to the worker, not
-credentials or session state. The retired `DRIFTWARD_HERMES_MODEL` and
-`DRIFTWARD_HERMES_PROVIDER` variables are ignored and removed by the installers.
+credentials or session state. The retired `FACTORY_HERMES_MODEL` and
+`FACTORY_HERMES_PROVIDER` variables are ignored and removed by the installers.
 The current worker always records the truthful
 route `factory-default-v1` / `hermes` / `static`. It deliberately ignores
 experiment-label environment variables: a future comparison must first add a
@@ -100,29 +101,29 @@ real, reviewed router with stable assignment and lineage stickiness.
 
 ## Required Env Files
 
-The Compose app reads existing protected env files under `/etc/driftward`:
+The Compose app reads existing protected env files under `/etc/factory`:
 
 ```text
-/etc/driftward/hatchet-workers.env
-/etc/driftward/hatchet.env
-/etc/driftward/hatchet-bridge.env
-/etc/driftward/hatchet-verifier.env
-/etc/driftward/hatchet-worker-bridge-executor.env
-/etc/driftward/hatchet-worker-reconciliation.env
-/etc/driftward/hatchet-event-ingress.env
-/etc/driftward/factory-operator.env
-/etc/driftward/factory-lifecycle-writer.env
-/etc/driftward/factory-linear-token.env
+/etc/factory/hatchet-workers.env
+/etc/factory/hatchet.env
+/etc/factory/hatchet-bridge.env
+/etc/factory/hatchet-verifier.env
+/etc/factory/hatchet-worker-bridge-executor.env
+/etc/factory/hatchet-worker-reconciliation.env
+/etc/factory/hatchet-event-ingress.env
+/etc/factory/factory-operator.env
+/etc/factory/factory-lifecycle-writer.env
+/etc/factory/factory-linear-token.env
 ```
 
 Keep those files mode `0600`. Do not commit them or paste their values.
-`/etc/driftward/factory-linear-token.env` should contain the Factory-owned
+`/etc/factory/factory-linear-token.env` should contain the Factory-owned
 Linear OAuth client values as `FACTORY_LINEAR_CLIENT_ID` and
 `FACTORY_LINEAR_CLIENT_SECRET`. Do not mount root's `/root/.config/linear`
 credential directory into Factory containers.
 
 The Compose app also needs migrated Hatchet key material under
-`/docker/driftward/factory/keys/hatchet`. The private and master keys are
+`/docker/factory/factory/keys/hatchet`. The private and master keys are
 runtime secrets and must not be checked into this repository.
 
 ## Cutover Gate
@@ -132,26 +133,26 @@ Factory runtime, migrate existing Hatchet state into Docker named volumes and
 key material into the runtime root:
 
 ```text
-driftward-factory-hatchet-postgres-data
-driftward-factory-hatchet-config-data
-driftward-factory-bridge-data
-driftward-factory-ingress-data
-driftward-factory-lifecycle-data
-driftward-factory-linear-token-data
-/docker/driftward/factory/keys/hatchet
+factory-hatchet-postgres-data
+factory-hatchet-config-data
+factory-bridge-data
+factory-ingress-data
+factory-lifecycle-data
+factory-linear-token-data
+/docker/factory/factory/keys/hatchet
 ```
 
-Legacy host-bind state under `/docker/driftward/factory/data/*`, if present,
+Legacy host-bind state under `/docker/factory/factory/data/*`, if present,
 is a migration source or archive only. It is not the live Docker runtime store.
 
 Then stop the legacy host-managed Hatchet unit:
 
 ```bash
-systemctl disable --now driftward-hatchet.service
+systemctl disable --now factory-hatchet.service
 ```
 
 `deploy/install-docker.sh --start` fails closed while
-`driftward-hatchet.service` is active or the migrated Hatchet DB/key material is
+`factory-hatchet.service` is active or the migrated Hatchet DB/key material is
 missing. If legacy bridge, ingress, or lifecycle SQLite files exist under the
 old host-bind path, start also fails until matching files exist inside the
 Docker volumes. That prevents accidentally starting an empty Factory control
@@ -164,11 +165,14 @@ and upgrades. See the [release runbook](../docs/factory-release-runbook.md) and
 [portable guide](PORTABLE.md). Optional [deployment automation](../docs/automatic-deployment.md)
 pulls the same published image after verifying its provenance and compatibility.
 
-The source-building `install-docker.sh` helper below is retained for migration
-and recovery of the legacy managed-host layout. It is not the release consumer
-path and must not be used to bypass a managed installation's compatibility gates.
+The source-building `install-docker.sh` helper below refuses all invocations
+before mutation. Use the portable guide for fresh installations and the
+original deployment bundle to maintain an existing installation until a naming
+migration is reviewed.
 
-## Legacy host installer
+## Legacy host installer (disabled)
+
+The following commands are historical examples and refuse with this release.
 
 Install the Compose wrapper without starting it:
 
@@ -182,7 +186,7 @@ Install and start the current checkout in one step:
 bash deploy/install-docker.sh --start
 ```
 
-By default this pins and builds `driftward/factory:local`. Use
+By default this pins and builds `factory/factory:local`. Use
 `--image-tag TAG` for a named Factory image tag or `--image IMAGE` for a full
 image reference.
 
@@ -259,20 +263,20 @@ recovers the committed result even after token expiry or a server restart, witho
 duplicating execution. Ownership audit history retains actor, time, and reason.
 
 ```bash
-systemctl status driftward-factory.service --no-pager
-systemctl status driftward-hermes-factory-gateway.service --no-pager
-journalctl -u driftward-factory.service -n 100 --no-pager
-journalctl -u driftward-hermes-factory-gateway.service -n 100 --no-pager
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100
-systemctl reload driftward-factory.service
-systemctl restart driftward-hermes-factory-gateway.service
+systemctl status factory.service --no-pager
+systemctl status factory-hermes-factory-gateway.service --no-pager
+journalctl -u factory.service -n 100 --no-pager
+journalctl -u factory-hermes-factory-gateway.service -n 100 --no-pager
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory ps
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory logs --tail=100
+systemctl reload factory.service
+systemctl restart factory-hermes-factory-gateway.service
 factory-docker-smoke
 ```
 
-Rollback to the previous release by checking out the prior tag and running
-`bash deploy/install-docker.sh --image-tag <tag> --start`. Preserve the
-`driftward-factory-*` Docker volumes and `/docker/driftward/factory/keys/*`
+For an existing deployment, use its original reviewed bundle and rollback
+procedure. The current `install-docker.sh` refuses rollback invocations. Preserve the
+`factory-*` Docker volumes and `/docker/factory/factory/keys/*`
 unless there is a separately approved record migration or restore plan.
 
 `factory status` treats container OOM state, unexpected restarts, failed Docker

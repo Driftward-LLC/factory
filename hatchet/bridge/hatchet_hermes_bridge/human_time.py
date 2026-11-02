@@ -36,7 +36,7 @@ def record_human_time(
     details = {"schema_version": 1, "request_id": request_id, "duration_ms": duration_ms,
                "category": category, "actor": actor}
     event_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
-        f"driftward.factory.attempt-event:{attempt_id}:{EVENT}:{request_id}"))
+        f"factory.attempt-event:{attempt_id}:{EVENT}:{request_id}"))
     with nullcontext() if conn.in_transaction else conn:
         if not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")

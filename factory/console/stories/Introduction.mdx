@@ -2,7 +2,7 @@ import { Meta } from '@storybook/addon-docs/blocks';
 
 <Meta title="Foundations/Start here" />
 
-# Driftward UI
+# Factory UI
 
 The shared React components, theme, and icons used by Factory. Every component
 example renders the implementation imported by the real console. All values in
@@ -11,9 +11,9 @@ this catalog are fictional; stories do not call Factory or Hermes APIs.
 ## Use the library
 
 ```jsx
-import { FactoryTheme, Button, StatusBadge } from '@driftward/ui';
-import { ReloadIcon } from '@driftward/ui/icons';
-import '@driftward/ui/styles.css';
+import { FactoryTheme, Button, StatusBadge } from '@factory/ui';
+import { ReloadIcon } from '@factory/ui/icons';
+import '@factory/ui/styles.css';
 
 <FactoryTheme>
   <Button onClick={refresh}><ReloadIcon aria-hidden="true" />Refresh</Button>
@@ -24,7 +24,7 @@ import '@driftward/ui/styles.css';
 The stylesheet bundles Astryx 0.7.0's static component styles, the neutral dark
 theme and Factory's global base element styles; import it once. Use `FactoryTheme`
 to apply the shared theme. Factory exposes Astryx surfaces, headings, metadata,
-links, empty states and loading indicators through `@driftward/ui`. `TextInput`
+links, empty states and loading indicators through `@factory/ui`. `TextInput`
 also types Factory's native validation attributes; `isRequired` communicates ARIA
 semantics while native `required` enables browser validation. Native selects,
 details and tables keep their browser contracts. Factory page layouts,

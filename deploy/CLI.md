@@ -115,12 +115,13 @@ health. Failure stops that executor and retains the failed receipt for review.
 `factory execution status --json` is read-only. These commands do not migrate
 state or change execution, repair, merge, or authentication policies.
 
-The legacy `install-docker.sh` CLI assumes `/docker/driftward/factory`. For a
+The historical `install-docker.sh` installer is disabled for this naming
+generation; see [the migration boundary](NAMING-MIGRATION.md). For a
 source-free production installation, publish `deploy/factory-cli.py` as the
 canonical `factory` command after reviewing its explicit binding. This is a
 host tooling installation, not an automatic deployment step.
 
-Create `/etc/driftward/factory-cli.json` as a root-owned regular file, mode
+Create `/etc/factory/factory-cli.json` as a root-owned regular file, mode
 `0600`, using the active installation's saved installation ID and its reviewed
 production operations bundle:
 
@@ -129,8 +130,8 @@ production operations bundle:
   "installation": "/srv/factory-candidate",
   "installation_id": "COPY THE installation_id FROM THE INSTALLATION MARKER",
   "production_bundle": "/srv/factory-bundles/REVIEWED-BUNDLE/deploy",
-  "hermes_wrapper": "/usr/local/bin/driftward-hermes",
-  "profile_runtime": "/usr/local/share/driftward-factory/profile-runtime/deploy/factory-profile-runtime.py",
+  "hermes_wrapper": "/usr/local/bin/factory-hermes",
+  "profile_runtime": "/usr/local/share/factory/profile-runtime/deploy/factory-profile-runtime.py",
   "console_url": "https://YOUR-FACTORY-CONSOLE"
 }
 ```
@@ -215,12 +216,12 @@ previous bytes for exact rollback.
 The bundle also includes `engineering/review-code.md` and `engineering/verify-app.md`
 from the pinned engineering archive. Activation verifies their fixed release
 digests, refreshes only the existing private reviewer skill snapshots under
-`/etc/driftward/factory-reviewer`, and updates both provisioning digests in the
+`/etc/factory/factory-reviewer`, and updates both provisioning digests in the
 same guarded cutover. Rollback restores their exact bytes and modes. Generic
 reviewer plugins remain disabled.
 
 ```bash
-factory profiles configure --plugin-source /path/to/reviewed/driftward-engineering
+factory profiles configure --plugin-source /path/to/reviewed/factory-engineering
 factory profiles status
 factory profiles activate
 factory profiles canary executor
@@ -401,8 +402,8 @@ Configure is an initial cutover operation; changing an already activated role
 requires a separately reviewed upgrade.
 
 Activate supports the fixed shared-runtime host paths documented here: the
-gateway service `driftward-hermes-factory-gateway.service` and private reviewer
-provisioning `/etc/driftward/factory-reviewer.json`. It requires no active or
+gateway service `factory-hermes-factory-gateway.service` and private reviewer
+provisioning `/etc/factory/factory-reviewer.json`. It requires no active or
 unresolved Factory attempts/jobs/leases, pauses previously running execution
 writers, stops the gateway, and checks native processes before moving the
 existing dedicated review sign-in from `/opt/data/factory-reviewer-auth/auth.json`

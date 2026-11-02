@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import json
 import hashlib
 import hmac
@@ -106,7 +109,7 @@ class IngressServerTransportTest(unittest.TestCase):
                 "/events/github/check_suite",
                 {
                     "action": "completed",
-                    "repository": {"full_name": "Driftward-LLC/factory"},
+                    "repository": {"full_name": "example/control-plane"},
                     "check_suite": {
                         "id": 901,
                         "head_sha": "abc123",
@@ -117,16 +120,16 @@ class IngressServerTransportTest(unittest.TestCase):
                         "pull_requests": [{"number": 28}],
                     },
                 },
-                "driftward.github.checks.completed",
+                "factory.github.checks.completed",
             ),
             (
                 "/events/github/pull_request_review",
                 {
                     "action": "submitted",
-                    "repository": {"full_name": "Driftward-LLC/factory"},
+                    "repository": {"full_name": "example/control-plane"},
                     "pull_request": {
                         "number": 28,
-                        "html_url": "https://github.com/Driftward-LLC/factory/pull/28",
+                        "html_url": "https://github.com/example/control-plane/pull/28",
                         "title": "ENG-40: Factory analytics",
                         "body": "Refs ENG-40",
                         "state": "open",
@@ -142,7 +145,7 @@ class IngressServerTransportTest(unittest.TestCase):
                     },
                     "sender": {"type": "User", "login": "not-persisted-in-normalized-event"},
                 },
-                "driftward.github.review.submitted",
+                "factory.github.review.submitted",
             ),
         )
 
@@ -197,10 +200,10 @@ class IngressServerTransportTest(unittest.TestCase):
     def test_signed_reopened_pull_request_is_published_as_open_unmerged(self) -> None:
         payload = {
             "action": "reopened",
-            "repository": {"full_name": "Driftward-LLC/factory"},
+            "repository": {"full_name": "example/control-plane"},
             "pull_request": {
                 "number": 28,
-                "html_url": "https://github.com/Driftward-LLC/factory/pull/28",
+                "html_url": "https://github.com/example/control-plane/pull/28",
                 "title": "ENG-40: Factory analytics",
                 "body": "Refs ENG-40",
                 "state": "open",
@@ -246,7 +249,7 @@ class IngressServerTransportTest(unittest.TestCase):
 
         self.assertEqual(result.get("status"), 201)
         event = result["body"]["event"]
-        self.assertEqual(event["hatchet_event_name"], "driftward.github.pr.reopened")
+        self.assertEqual(event["hatchet_event_name"], "factory.github.pr.reopened")
         self.assertEqual(event["normalized"]["action"], "reopened")
         self.assertEqual(event["normalized"]["state"], "open")
         self.assertFalse(event["normalized"]["merged"])
@@ -259,7 +262,7 @@ class IngressServerTransportTest(unittest.TestCase):
     def test_signed_github_body_replay_with_new_delivery_header_is_duplicate(self) -> None:
         payload = {
             "action": "completed",
-            "repository": {"full_name": "Driftward-LLC/factory"},
+            "repository": {"full_name": "example/control-plane"},
             "check_suite": {
                 "id": 903,
                 "head_sha": "abc123",

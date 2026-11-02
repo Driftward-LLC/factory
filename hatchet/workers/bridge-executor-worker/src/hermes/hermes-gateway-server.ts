@@ -1,11 +1,11 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
-import { executionRuntimeBinding, sameExecutionRuntime, withExecutionSpan } from '@driftward/hatchet-worker-shared';
+import { matchesOrganizationBinding, requireGithubOrganization, loadFactoryOrganization, executionRuntimeBinding, sameExecutionRuntime, withExecutionSpan } from '@factory/hatchet-worker-shared';
 import { SpanKind } from '@opentelemetry/api';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { gatewayReasonCode, processSignal, transportStatus } from './bounded-evidence';
 import {
   assertHermesIdentityViaCommand,
@@ -68,14 +68,21 @@ type GatewayService = grpc.ServiceClientConstructor & { service: grpc.ServiceDef
 type UnaryCall<T> = grpc.ServerUnaryCall<T, unknown>;
 type SendUnary<T> = grpc.sendUnaryData<T>;
 
+function assertInvocationOrganization(job: BridgeJob): void {
+  requireGithubOrganization();
+  if (!matchesOrganizationBinding(job.payload.organization_binding)) {
+    throw new NonRetryableBridgeExecutionError('organization_binding_mismatch', 'Invocation organization binding is missing or differs from current configuration');
+  }
+}
+
 export function createServer(target: string, runDraftPr = runHermesCreateDraftPrViaCommand): grpc.Server {
-  const reviewer = new IndependentReviewer(process.env.DRIFTWARD_FACTORY_REVIEW_DIRECTORY || '/var/lib/driftward-hermes-factory/reviews');
+  const reviewer = new IndependentReviewer(process.env.FACTORY_REVIEW_DIRECTORY || '/var/lib/factory-hermes-factory/reviews');
   // Open lazily so read-only identity/inspection remains available during a storage fault.
   let journal: InvocationJournal | undefined;
-  const invocations = () => journal ||= new InvocationJournal(process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY ||
-    (process.env.DRIFTWARD_HERMES_RUNTIME_MODE === 'local-executor'
+  const invocations = () => journal ||= new InvocationJournal(process.env.FACTORY_HERMES_INVOCATION_DIRECTORY ||
+    (process.env.FACTORY_HERMES_RUNTIME_MODE === 'local-executor'
       ? path.join(process.env.HERMES_HOME || '/opt/data', 'factory-invocations')
-      : '/var/lib/driftward-hermes-factory/invocations'));
+      : '/var/lib/factory-hermes-factory/invocations'));
   const selections = new Map<string, ModelSelectionObserver>();
   const inspectInvocation = async (request: CreateDraftPullRequestRequest, cancel: boolean) => {
     const job = parseBridgeJob(request);
@@ -83,7 +90,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
     if ((snapshot.runtime || request.executionRuntimeJson) && !sameExecutionRuntime(snapshot.runtime, JSON.parse(request.executionRuntimeJson || 'null'))) {
       throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Invocation runtime differs from the control-plane binding');
     }
-    const strict = process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1';
+    const strict = process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1';
     const status = cancel && (strict || request.executionLeaseJson)
       ? await invocations().cancel(job, invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json'))))
       : invocations().status(job, cancel);
@@ -106,6 +113,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
     }),
     prepareInvocation: unary(target, async (request: CreateDraftPullRequestRequest) => {
       const job = parseBridgeJob(request);
+      assertInvocationOrganization(job);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const runtime = await invocations().prepare(job, lease, (invocation) =>
         withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined,
@@ -114,6 +122,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
     }),
     createDraftPullRequest: unary(target, async (request: CreateDraftPullRequestRequest, call) => {
       const job = parseBridgeJob(request);
+      assertInvocationOrganization(job);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
       const runtime = executionRuntimeBinding(JSON.parse(requiredString(request.executionRuntimeJson, 'execution_runtime_json')));
       // Preparation pauses before model selection. Install its observer before
@@ -197,11 +206,12 @@ function loadGatewayService(): GatewayService {
     oneofs: true
   });
   const loaded = grpc.loadPackageDefinition(packageDefinition) as Record<string, unknown>;
-  const service = (((loaded.driftward as Record<string, unknown>).factory as Record<string, unknown>).hermes as Record<string, unknown>).v1 as Record<string, unknown>;
+  const service = ((loaded.factory as Record<string, unknown>).hermes as Record<string, unknown>).v1 as Record<string, unknown>;
   return service.HermesFactoryGateway as GatewayService;
 }
 
 async function main(): Promise<void> {
+  loadFactoryOrganization();
   const target = parseTarget(process.argv.slice(2));
   validateServerTarget(target);
   const socketPath = unixSocketPathFromTarget(target);
@@ -223,7 +233,7 @@ async function main(): Promise<void> {
 }
 
 function parseTarget(args: string[]): string {
-  let target = process.env.DRIFTWARD_HERMES_GRPC_BIND_TARGET || process.env.DRIFTWARD_HERMES_GRPC_TARGET || DEFAULT_HERMES_GRPC_TARGET;
+  let target = process.env.FACTORY_HERMES_GRPC_BIND_TARGET || process.env.FACTORY_HERMES_GRPC_TARGET || DEFAULT_HERMES_GRPC_TARGET;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === '--target') {
@@ -253,16 +263,16 @@ function bindAsync(server: grpc.Server, target: string, credentials: grpc.Server
 }
 
 function serverCredentials(target: string): grpc.ServerCredentials {
-  if (process.env.DRIFTWARD_HERMES_GRPC_TLS === '1') {
-    const privateKey = requiredFile(process.env.DRIFTWARD_HERMES_GRPC_SERVER_KEY_PATH, 'DRIFTWARD_HERMES_GRPC_SERVER_KEY_PATH');
-    const certChain = requiredFile(process.env.DRIFTWARD_HERMES_GRPC_SERVER_CERT_PATH, 'DRIFTWARD_HERMES_GRPC_SERVER_CERT_PATH');
-    const rootCert = optionalFile(process.env.DRIFTWARD_HERMES_GRPC_CA_PATH);
+  if (process.env.FACTORY_HERMES_GRPC_TLS === '1') {
+    const privateKey = requiredFile(process.env.FACTORY_HERMES_GRPC_SERVER_KEY_PATH, 'FACTORY_HERMES_GRPC_SERVER_KEY_PATH');
+    const certChain = requiredFile(process.env.FACTORY_HERMES_GRPC_SERVER_CERT_PATH, 'FACTORY_HERMES_GRPC_SERVER_CERT_PATH');
+    const rootCert = optionalFile(process.env.FACTORY_HERMES_GRPC_CA_PATH);
     return grpc.ServerCredentials.createSsl(rootCert, [{ private_key: privateKey, cert_chain: certChain }], Boolean(rootCert));
   }
-  if (!isHermesGrpcUnixTarget(target) && process.env.DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP !== '1') {
+  if (!isHermesGrpcUnixTarget(target) && process.env.FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP !== '1') {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_tls_required',
-      'TCP Hermes gRPC gateway binds require TLS or DRIFTWARD_HERMES_GRPC_ALLOW_INSECURE_TCP=1'
+      'TCP Hermes gRPC gateway binds require TLS or FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP=1'
     );
   }
   return grpc.ServerCredentials.createInsecure();
@@ -271,9 +281,9 @@ function serverCredentials(target: string): grpc.ServerCredentials {
 function validateServerTarget(target: string): void {
   validateHermesGrpcTransport(target);
   if (isHermesGrpcUnixTarget(target)) return;
-  const mutualTls = process.env.DRIFTWARD_HERMES_GRPC_TLS === '1'
-    && process.env.DRIFTWARD_HERMES_GRPC_CA_PATH?.trim();
-  if (!(process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim() && !mutualTls) {
+  const mutualTls = process.env.FACTORY_HERMES_GRPC_TLS === '1'
+    && process.env.FACTORY_HERMES_GRPC_CA_PATH?.trim();
+  if (!(process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN || '').trim() && !mutualTls) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_grpc_tcp_auth_required',
       'TCP Hermes gRPC gateway binds require an auth token or a CA that enforces TLS client certificates'
@@ -282,10 +292,10 @@ function validateServerTarget(target: string): void {
 }
 
 function authorize(metadata: grpc.Metadata, target: string): void {
-  const expected = (process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN || '').trim();
+  const expected = (process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN || '').trim();
   if (!expected) {
     if (isHermesGrpcUnixTarget(target)) return;
-    if (process.env.DRIFTWARD_HERMES_GRPC_TLS === '1' && process.env.DRIFTWARD_HERMES_GRPC_CA_PATH?.trim()) return;
+    if (process.env.FACTORY_HERMES_GRPC_TLS === '1' && process.env.FACTORY_HERMES_GRPC_CA_PATH?.trim()) return;
     throw serviceError(grpc.status.UNAUTHENTICATED, 'hermes_grpc_auth_required', 'Hermes gRPC TCP gateway requires an auth token');
   }
   const observed = metadata.get('authorization');
@@ -444,7 +454,7 @@ function unixSocketPathFromTarget(target: string): string | null {
 }
 
 function socketMode(): number {
-  const raw = process.env.DRIFTWARD_HERMES_GRPC_SOCKET_MODE || '660';
+  const raw = process.env.FACTORY_HERMES_GRPC_SOCKET_MODE || '660';
   return /^[0-7]{3,4}$/.test(raw) ? Number.parseInt(raw, 8) : 0o660;
 }
 
@@ -455,7 +465,7 @@ function optionalFile(rawPath: string | undefined): Buffer | null {
 
 function requiredFile(rawPath: string | undefined, envName: string): Buffer {
   const filePath = rawPath?.trim();
-  if (!filePath) throw new NonRetryableBridgeExecutionError('hermes_grpc_tls_config_invalid', `${envName} is required when DRIFTWARD_HERMES_GRPC_TLS=1`);
+  if (!filePath) throw new NonRetryableBridgeExecutionError('hermes_grpc_tls_config_invalid', `${envName} is required when FACTORY_HERMES_GRPC_TLS=1`);
   return readFileSync(filePath);
 }
 

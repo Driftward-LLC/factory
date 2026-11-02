@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-CONFIG = Path('/etc/driftward/factory-cli.json')
+CONFIG = Path('/etc/factory/factory-cli.json')
 OPERATOR_COMMANDS = {'analytics', 'retry', 'lifecycle', 'attempts', 'review-recovery', 'review-repair'}
 PROFILES = {
     'factory-executor': 'Factory executor; provisioned separately from execution routing.',
@@ -319,10 +319,10 @@ def operator(install):
     labels = row['Config']['Labels']
     if (labels.get('com.docker.compose.project') != install.project
             or labels.get('com.docker.compose.service') != 'factory-operator'
-            or labels.get('io.driftward.factory.installation') != install.metadata['installation_id']
+            or labels.get('io.factory.installation') != install.metadata['installation_id']
             or row['Image'] != install.values['FACTORY_IMAGE'] or not row['State']['Running']):
         raise ValueError('operator identity differs from the bound installation')
-    mounts = [item for item in row['Mounts'] if item['Destination'] == '/run/driftward-factory-operator'
+    mounts = [item for item in row['Mounts'] if item['Destination'] == '/run/factory-operator'
               and item.get('Name') == install.project + '-operator-socket' and item['Type'] == 'volume']
     if len(mounts) != 1:
         raise ValueError('operator socket volume differs')
@@ -453,7 +453,7 @@ def dispatch_bound(config, args):
             credentials.write_text('HATCHET_FACTORY_OPERATOR_TOKEN=' + token + '\n')
             credentials.chmod(0o600)
             env = {key: value for key, value in os.environ.items()
-                   if not key.startswith(('FACTORY_', 'DRIFTWARD_', 'HATCHET_', 'COMPOSE_'))}
+                   if not key.startswith(('FACTORY_', 'FACTORY_', 'HATCHET_', 'COMPOSE_'))}
             env.update(FACTORY_OPERATOR_ENV=str(credentials), FACTORY_OPERATOR_SOCKET=str(socket))
             return subprocess.run(['bash', str(cli), *args], env=env).returncode
     elif command in ('help', '-h', '--help'):

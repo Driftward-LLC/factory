@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import sqlite3
@@ -18,12 +21,12 @@ class WorkEvidenceTests(unittest.TestCase):
         self.path = str(Path(self.tmp.name) / "bridge.db")
         self.conn = connect_migrate(self.path)
         self.addCleanup(self.conn.close)
-        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/verifier-policy.json")})
+        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/test-fixtures/verifier-policy.json")})
         env.start()
         self.addCleanup(env.stop)
 
     def reserve(self, issue="ENG-801", **overrides):
-        request = dict(work_item_key=issue, mode="real", request_id=f"intake:{issue}", reason="test", actor="intake-worker", payload={**verifier_payload("Driftward-LLC/capykit"), "implementation_prompt": "Implement the requested behavior"})
+        request = dict(work_item_key=issue, mode="real", request_id=f"intake:{issue}", reason="test", actor="intake-worker", payload={**verifier_payload("example/widgets"), "implementation_prompt": "Implement the requested behavior"})
         request.update(overrides)
         return store.reserve_factory_intake(self.conn, **request)
 
@@ -46,7 +49,7 @@ class WorkEvidenceTests(unittest.TestCase):
         lease = store.claim_factory_execution(self.conn, job["job_id"], owner="executor")["lease"]
         self.assertTrue(store.authorize_factory_effect(self.conn, job["job_id"], lease))
         return store.commit_factory_execution(self.conn, job["job_id"], lease, {
-            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/801",
+            "pr_url": "https://github.com/example/widgets/pull/801",
             "commit_sha": "a" * 40, "branch": job["branch"],
         })
 
@@ -58,7 +61,7 @@ class WorkEvidenceTests(unittest.TestCase):
         return pending
 
     def test_admission_is_private_immutable_and_stable_under_redelivery(self):
-        payload = {**verifier_payload("Driftward-LLC/capykit"), "implementation_prompt": "private prompt with sk-proj-fixture-only", "source_event_key": "first", "arbitrary_transcript": "do not export"}
+        payload = {**verifier_payload("example/widgets"), "implementation_prompt": "private prompt with sk-proj-fixture-only", "source_event_key": "first", "arbitrary_transcript": "do not export"}
         attempt, job, _ = self.reserve(payload=payload)
         before = self.evidence(attempt)
         document = before["manifests"][0]["document"]
@@ -173,7 +176,7 @@ class WorkEvidenceTests(unittest.TestCase):
         store.transition_job(self.conn, job["job_id"], state="running")
         lease = store.claim_factory_execution(self.conn, job["job_id"], owner="executor")["lease"]
         store.authorize_factory_effect(self.conn, job["job_id"], lease)
-        details = {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/801", "commit_sha": "a" * 40, "branch": job["branch"]}
+        details = {"pr_url": "https://github.com/example/widgets/pull/801", "commit_sha": "a" * 40, "branch": job["branch"]}
         with self.assertRaises(store.BridgeConflict):
             store.commit_factory_execution(self.conn, job["job_id"], {**lease, "epoch": lease["epoch"] + 1}, details)
         with self.assertRaises(store.BridgeValidationError):
@@ -181,7 +184,7 @@ class WorkEvidenceTests(unittest.TestCase):
         self.assertEqual(len(self.evidence(attempt)["checkpoints"]), 1)
 
     def test_dry_run_has_only_admission_evidence(self):
-        attempt, job, _ = self.reserve(mode="dry-run", payload={"repo": "Driftward-LLC/capykit"})
+        attempt, job, _ = self.reserve(mode="dry-run", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets"})
         store.transition_job(self.conn, job["job_id"], state="running")
         store.transition_job(self.conn, job["job_id"], state="completed")
         evidence = self.evidence(attempt)

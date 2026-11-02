@@ -4,17 +4,18 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import test from 'node:test';
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { InvocationJournal } from './invocation-journal';
 import { createServer } from './hermes-gateway-server';
 import { inspectHermesInvocation, prepareHermesInvocation, resolveHermesGatewayProtoPath, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
 
 const job = { job_id: '00000000-0000-4000-8000-000000000010', idempotency_key: 'test:intent:1',
   requested_action: 'create_draft_pr', branch: 'codex/test-receipt', state: 'running',
-  payload: { repo: 'example/project', dry_run: false, implementation_prompt: 'PRIVATE_TEST_PROMPT' },
+  payload: { organization_binding: { workspace_id: '11111111-1111-4111-8111-111111111111', team_id: '22222222-2222-4222-8222-222222222222', team_key: 'ENG' }, repo: 'example/project', dry_run: false, implementation_prompt: 'PRIVATE_TEST_PROMPT' },
 } as unknown as BridgeJob;
 const lease = { lease_id: '00000000-0000-4000-8000-000000000011', owner: 'test-executor', epoch: 1, fence_token: 'test-original-fence' };
 const receipt = { status: 'created' as const, prUrl: 'https://github.com/example/project/pull/1', prNumber: 1,
@@ -73,13 +74,13 @@ test('native context derives from reserved intent and stale cancel claims cannot
 test('native gateway authenticates before reservation and connected recovery uses an exact lease snapshot', async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-native-gateway-'));
   const target = `unix://${path.join(directory, 'gateway.sock')}`;
-  const keys = ['DRIFTWARD_HERMES_GRPC_TARGET', 'DRIFTWARD_HERMES_INVOCATION_DIRECTORY', 'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN', 'DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER'];
+  const keys = ['FACTORY_HERMES_GRPC_TARGET', 'FACTORY_HERMES_INVOCATION_DIRECTORY', 'FACTORY_HERMES_GRPC_AUTH_TOKEN', 'FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER'];
   const previous = keys.map((key) => process.env[key]);
   const token = 'disposable-gateway-native-token';
-  process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-  process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
-  process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN = token;
-  process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER = '1';
+  process.env.FACTORY_HERMES_GRPC_TARGET = target;
+  process.env.FACTORY_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
+  process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN = token;
+  process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER = '1';
   let start!: () => void;
   const started = new Promise<void>((resolve) => { start = resolve; });
   let finish!: () => void;
@@ -102,7 +103,7 @@ test('native gateway authenticates before reservation and connected recovery use
   await new Promise<void>((resolve, reject) => server.bindAsync(target, grpc.ServerCredentials.createInsecure(), (error) => error ? reject(error) : resolve()));
   const definition = protoLoader.loadSync(resolveHermesGatewayProtoPath(), { keepCase: false, longs: Number, enums: String, defaults: true, oneofs: true });
   const loaded = grpc.loadPackageDefinition(definition) as any;
-  const client = new loaded.driftward.factory.hermes.v1.HermesFactoryGateway(target, grpc.credentials.createInsecure());
+  const client = new loaded.factory.hermes.v1.HermesFactoryGateway(target, grpc.credentials.createInsecure());
   t.after(() => {
     finish(); client.close(); server.forceShutdown();
     keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
@@ -116,7 +117,24 @@ test('native gateway authenticates before reservation and connected recovery use
     (error: grpc.ServiceError | null, value: unknown) => error ? reject(error) : resolve(value))), (error: grpc.ServiceError) => error.code === grpc.status.UNAUTHENTICATED);
   assert.equal(calls, 0);
   assert.equal(existsSync(path.join(directory, 'journal', job.job_id)), false);
+  for (const binding of [undefined, { ...job.payload.organization_binding as object, team_id: '55555555-5555-4555-8555-555555555555' }]) {
+    const unbound = { ...job, payload: { ...job.payload, organization_binding: binding } } as unknown as BridgeJob;
+    await assert.rejects(prepareHermesInvocation(unbound, lease), (error: any) => error.reasonCode === 'organization_binding_mismatch');
+    assert.equal(calls, 0);
+    assert.equal(existsSync(path.join(directory, 'journal', job.job_id)), false);
+  }
   assert.deepEqual(await prepareHermesInvocation(job, lease), runtime);
+  const organizationPath = process.env.FACTORY_ORGANIZATION_CONFIG!;
+  const changedOrganization = JSON.parse(readFileSync(organizationPath, 'utf8'));
+  changedOrganization.linear.workspace_id = '44444444-4444-4444-8444-444444444444';
+  const changedPath = path.join(directory, 'changed-organization.json');
+  writeFileSync(changedPath, JSON.stringify(changedOrganization));
+  process.env.FACTORY_ORGANIZATION_CONFIG = changedPath;
+  try {
+    await assert.rejects(runHermesCreateDraftPrViaGrpc(boundJob(job), 1000, lease), (error: any) => error.reasonCode === 'organization_binding_mismatch');
+    assert.equal((await inspectHermesInvocation(boundJob(job))).state, 'running');
+  } finally { process.env.FACTORY_ORGANIZATION_CONFIG = organizationPath; }
+
   const execution = runHermesCreateDraftPrViaGrpc(boundJob(job), 10_000, lease);
   await started;
   await assert.rejects(inspectHermesInvocation(boundJob(job), true, { ...lease, epoch: 2 }));
@@ -196,38 +214,41 @@ test('correlation exclusions are top-level only and every other intent field rem
 });
 
 test('legacy reservations remain strict and read-only; unknown versions fail closed', async (t) => {
+  const { organization_binding: _binding, ...legacyPayload } = job.payload;
+  const legacyJob = { ...job, payload: legacyPayload };
   // Independent version-one fixture, using the original sorted JSON bytes.
-  const fingerprint = createHash('sha256').update(JSON.stringify({ branch: job.branch, idempotency_key: job.idempotency_key,
-    job_id: job.job_id, payload: { dry_run: false, implementation_prompt: 'PRIVATE_TEST_PROMPT', repo: 'example/project' },
-    requested_action: job.requested_action })).digest('hex');
+  const fingerprint = createHash('sha256').update(JSON.stringify({ branch: legacyJob.branch, idempotency_key: legacyJob.idempotency_key,
+    job_id: legacyJob.job_id, payload: { dry_run: false, implementation_prompt: 'PRIVATE_TEST_PROMPT', repo: 'example/project' },
+    requested_action: legacyJob.requested_action })).digest('hex');
   for (const completed of [false, true]) {
     const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-invocation-legacy-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
-    const reserved = path.join(directory, job.job_id);
+    new InvocationJournal(directory); // Synthetic old reservation format within this naming generation.
+    const reserved = path.join(directory, legacyJob.job_id);
     mkdirSync(reserved, { mode: 0o700 });
     const intentPath = path.join(reserved, 'intent.json');
     const original = JSON.stringify({ fingerprint, lease });
     writeFileSync(intentPath, original, { mode: 0o600 });
     if (completed) writeFileSync(path.join(reserved, 'result.json'), JSON.stringify(receipt), { mode: 0o600 });
     const journal = new InvocationJournal(directory);
-    assert.equal(journal.status(job).state, completed ? 'completed' : 'outcome_unknown');
+    assert.equal(journal.status(legacyJob).state, completed ? 'completed' : 'outcome_unknown');
     assert.throws(() => journal.status(updatedJob, true), /intent differs/);
-    assert.equal(journal.status(job).cancellationRequested, false);
+    assert.equal(journal.status(legacyJob).cancellationRequested, false);
     if (completed) {
-      assert.deepEqual(await journal.execute(job, lease, async () => assert.fail('must not execute')), receipt);
-      await assert.rejects(journal.execute(job, { ...lease, fence_token: 'another-fence' }, async () => receipt), /fence differs/);
-    } else await assert.rejects(journal.execute(job, lease, async () => assert.fail('must not execute')), /already reserved/);
+      assert.deepEqual(await journal.execute(legacyJob, lease, async () => assert.fail('must not execute')), receipt);
+      await assert.rejects(journal.execute(legacyJob, { ...lease, fence_token: 'another-fence' }, async () => receipt), /fence differs/);
+    } else await assert.rejects(journal.execute(legacyJob, lease, async () => assert.fail('must not execute')), /already reserved/);
     assert.equal(readFileSync(intentPath, 'utf8'), original);
     for (const fingerprint_version of [null, 0, 3, '2']) {
       writeFileSync(intentPath, JSON.stringify({ fingerprint, lease, fingerprint_version }));
-      assert.throws(() => journal.status(job, true), /fingerprint version/);
-      await assert.rejects(journal.execute(job, lease, async () => assert.fail('must not execute')), /fingerprint version/);
+      assert.throws(() => journal.status(legacyJob, true), /fingerprint version/);
+      await assert.rejects(journal.execute(legacyJob, lease, async () => assert.fail('must not execute')), /fingerprint version/);
     }
     // Even without correlation fields, a legacy hash cannot pass as version two.
     writeFileSync(intentPath, JSON.stringify({ fingerprint, lease, fingerprint_version: 2 }));
-    assert.throws(() => journal.status(job, true), /intent differs/);
+    assert.throws(() => journal.status(legacyJob, true), /intent differs/);
     writeFileSync(intentPath, original);
-    assert.equal(journal.status(job).cancellationRequested, false);
+    assert.equal(journal.status(legacyJob).cancellationRequested, false);
   }
 });
 
@@ -282,11 +303,11 @@ test('process death preserves completed receipts and fences interrupted executio
 test('lost gRPC response is recovered after gateway restart without executing again', async (t) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-gateway-receipt-'));
   const target = `unix://${path.join(directory, 'gateway.sock')}`;
-  const previous = { target: process.env.DRIFTWARD_HERMES_GRPC_TARGET, journal: process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY,
-    token: process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN };
-  process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-  process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
-  delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
+  const previous = { target: process.env.FACTORY_HERMES_GRPC_TARGET, journal: process.env.FACTORY_HERMES_INVOCATION_DIRECTORY,
+    token: process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN };
+  process.env.FACTORY_HERMES_GRPC_TARGET = target;
+  process.env.FACTORY_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
+  delete process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN;
   let server: grpc.Server;
   const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' } as const;
   const observed: unknown[] = [];
@@ -305,7 +326,7 @@ test('lost gRPC response is recovered after gateway restart without executing ag
   let calls = 0;
   t.after(() => {
     server?.forceShutdown();
-    for (const [key, value] of [['DRIFTWARD_HERMES_GRPC_TARGET', previous.target], ['DRIFTWARD_HERMES_INVOCATION_DIRECTORY', previous.journal], ['DRIFTWARD_HERMES_GRPC_AUTH_TOKEN', previous.token]]) {
+    for (const [key, value] of [['FACTORY_HERMES_GRPC_TARGET', previous.target], ['FACTORY_HERMES_INVOCATION_DIRECTORY', previous.journal], ['FACTORY_HERMES_GRPC_AUTH_TOKEN', previous.token]]) {
       if (value === undefined) delete process.env[key!]; else process.env[key!] = value;
     }
     rmSync(directory, { recursive: true, force: true });
@@ -422,4 +443,15 @@ test('legacy reservations cannot acquire a runtime identity during recovery', as
   await assert.rejects(journal.prepare(job, lease, async () => assert.fail('legacy replay')), /cannot be prepared/);
   await assert.rejects(journal.start(job, lease, runtime), /runtime or fence differs/);
   assert.equal(journal.status(job).runtime, undefined);
+});
+
+test('prior naming generation journal is refused without rewriting its receipts', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-prior-journal-'));
+  try {
+    const file = path.join(directory, 'historical.json');
+    writeFileSync(file, '{"historical":true}');
+    assert.throws(() => new InvocationJournal(directory), /Prior naming generation/);
+    assert.equal(readFileSync(file, 'utf8'), '{"historical":true}');
+    assert.equal(existsSync(path.join(directory, 'naming-generation')), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -12,9 +12,9 @@ import sys
 import tempfile
 import time
 
-from source_token_broker import validate_response
+from source_token_broker import load_organization, load_repositories, validate_response
 
-ROOT = Path('/etc/driftward/factory-reviewer')
+ROOT = Path('/etc/factory/factory-reviewer')
 
 
 def private(location: Path, directory: bool = False) -> None:
@@ -44,9 +44,13 @@ def replace(location: Path, content: bytes) -> None:
 
 
 def broker() -> dict:
-    code = Path(__file__).with_name('source_token_broker.py').read_text()
+    organization = load_organization()
+    repositories = load_repositories()
+    code = Path(__file__).with_name('source_token_broker.py').read_text().split("if __name__ == '__main__':", 1)[0]
+    code += "\nos.environ.clear(); os.environ.update(PATH='/usr/bin:/bin', LANG='C.UTF-8')\n"
+    code += 'print(json.dumps(mint(repositories=' + repr(repositories) + ', organization=' + repr(organization) + '), separators=(",", ":")))\n'
     result = subprocess.run(['/usr/bin/docker', '--host', 'unix:///var/run/docker.sock', 'exec',
-        '--workdir', '/opt/hermes', 'hermes-driftward-hermes-1', '/opt/hermes/.venv/bin/python', '-c', code],
+        '--workdir', '/opt/hermes', 'hermes-factory-hermes-1', '/opt/hermes/.venv/bin/python', '-c', code],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=40, check=True,
         env={'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'})
     if len(result.stdout) > 128 * 1024:
@@ -55,6 +59,8 @@ def broker() -> dict:
 
 
 def renew(directory: Path = ROOT, issue=broker) -> dict:
+    organization = load_organization()
+    repositories = load_repositories()
     private(directory, True)
     token, metadata, lock = directory / 'source-token', directory / 'source-token-metadata.json', directory / 'source-token.lock'
     for location in [token, metadata, lock]:
@@ -66,9 +72,13 @@ def renew(directory: Path = ROOT, issue=broker) -> dict:
         if token.exists() and metadata.exists():
             current = json.loads(metadata.read_text())
             if (time.time() + 1800 < current.get('expires_at_epoch', 0) <= time.time() + 3900
-                    and current.get('token_sha256') == hashlib.sha256(token.read_bytes()).hexdigest()):
+                    and current.get('token_sha256') == hashlib.sha256(token.read_bytes()).hexdigest()
+                    and current.get('repositories') == list(repositories)
+                    and current.get('permissions', {}).get('contents') == 'read'
+                    and not set(current.get('permissions', {})) - {'contents', 'metadata'}
+                    and current.get('permissions', {}).get('metadata', 'read') == 'read'):
                 return {'status': 'current', 'expires_at': current['expires_at']}
-        value = validate_response(issue())
+        value = validate_response(issue(), repositories=repositories, organization=organization)
         content = value.pop('token').encode()
         value['token_sha256'] = hashlib.sha256(content).hexdigest()
         # A failed issuance/validation cannot alter the previous credential. The token rename is atomic.

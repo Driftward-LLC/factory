@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RUNTIME_GUARD, pinnedRuntimeArgs, resolveComposeRuntime, withPinnedRuntime } from './execution-runtime';
-import { executionRuntimeBinding } from '@driftward/hatchet-worker-shared';
+import { executionRuntimeBinding } from '@factory/hatchet-worker-shared';
 import type { InvocationExecutionContext } from './invocation-journal';
 
 test('in-container guard refuses a different incarnation before executing the command', () => {

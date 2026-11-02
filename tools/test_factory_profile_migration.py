@@ -1,6 +1,7 @@
 """Migration refusal boundaries and unified production behavior, with synthetic state."""
 import argparse
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -82,7 +83,7 @@ class MigrationTests(unittest.TestCase):
         install = production.Production(self.directory)
         snapshot = Path(self.temp.name) / "unified-snapshot"
         snapshot.mkdir(mode=0o700)
-        for folder in ("config", "config/env", "config/keys", "config/keys/hatchet", "volumes"):
+        for folder in ("config", "config/env", "config/config", "config/keys", "config/keys/hatchet", "volumes"):
             (snapshot / folder).mkdir(mode=0o700)
         for name in production.state.config_files(production.state.PRODUCTION, metadata):
             production.bootstrap._create_private(snapshot / "config" / name, production.bootstrap._read_private(self.directory / name))
@@ -127,6 +128,37 @@ class MigrationTests(unittest.TestCase):
                 self.install.start(core=False, apply=True, paused=True, approve_effects=True)
             compose.assert_not_called()
 
+    def test_migration_preserves_crlf_configuration_bytes_and_receipt_hashes(self):
+        supplied = self.directory / "config"
+        original = {}
+        for name in production.bootstrap.ORGANIZATION_DEFAULTS:
+            path = supplied / name
+            original[name] = path.read_bytes().replace(b"\n", b"\r\n")
+            path.write_bytes(original[name])
+        hashes = {name: hashlib.sha256(content).hexdigest() for name, content in original.items()}
+        plan = {"hermes": {"volume": "factory-dedicated-data"}, "previous_images": {"postgres": self.image},
+                "configuration_sha256": hashes, "image": "sha256:" + "d" * 64,
+                "snapshot_sha256": "e" * 64, "commit": "f" * 40}
+        args = argparse.Namespace(approve_digest=migration.digest(plan), destination=Path(self.temp.name) / "destination",
+                                  source=self.directory, configuration=supplied, snapshot=Path(self.temp.name) / "snapshot",
+                                  image=plan["image"], project="factory-new")
+        def archive(image, volume, work, name, **kwargs):
+            production.bootstrap._create_private(work / name, "synthetic archive")
+        runtime = Mock(SERVICES=())
+        with patch.object(migration, "production_module", return_value=runtime), patch.object(migration, "source_stopped"), \
+                patch.object(migration, "hermes_stopped"), patch.object(migration, "source_check"), \
+                patch.object(migration.state, "_no_writers"), patch.object(migration.state, "_tar", side_effect=archive), \
+                patch.object(migration.state, "_archive_check"), patch.object(migration.state, "VOLUMES", ()), \
+                patch.object(migration.state, "DURABLE_VOLUMES", ()), patch.object(migration.pg, "migrate", return_value={"rows": 0}):
+            migration.apply(args, plan, self.metadata, self.values, self.provenance, set())
+        for name, content in original.items():
+            self.assertEqual((args.destination / "config" / name).read_bytes(), content)
+        receipt = json.loads((args.destination / production.state.PROVENANCE).read_text())["profile_migration"]
+        self.assertEqual(receipt["configuration_sha256"], hashes)
+        self.assertEqual(receipt["preview_sha256"], migration.digest(plan))
+        self.assertEqual(receipt["previous_deployment_sha256"], self.provenance["deployment_sha256"])
+        self.assertEqual({name: text.encode("utf-8") for name, text in production.bootstrap.configuration(args.destination / "config").items()}, original)
+
     def test_apply_rejects_stale_digest_before_mutation(self):
         args = argparse.Namespace(approve_digest="stale")
         with patch.object(migration, "source_stopped") as stopped, patch.object(migration, "create_volume") as volume:
@@ -138,7 +170,7 @@ class MigrationTests(unittest.TestCase):
     def test_personal_or_shared_hermes_is_refused_before_copying(self):
         row = {"Id": "container", "Image": "image", "Config": {"Labels": {"com.docker.compose.project": "personal-hermes", "com.docker.compose.service": "hermes"}},
                "Mounts": [{"Destination": "/opt/data", "Type": "volume", "Name": "personal-hermes-data"}]}
-        for project in ("personal-hermes", "driftward-hermes"):
+        for project in ("personal-hermes", "factory-hermes"):
             row["Config"]["Labels"]["com.docker.compose.project"] = project
             with patch.object(migration.state, "_docker", return_value=json.dumps([row])), self.assertRaisesRegex(ValueError, "dedicated Factory"):
                 migration.hermes_source(project)

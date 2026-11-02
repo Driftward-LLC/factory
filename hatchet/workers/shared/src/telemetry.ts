@@ -20,7 +20,7 @@ export function executionTraceId(job: BridgeJob): string | undefined {
     : uuid.test(job.job_id) ? `job:${job.job_id}` : undefined;
   if (!id) return undefined;
   const hash = createHash('sha1').update(Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex'))
-    .update(`driftward-hermes:trace:${id}`).digest().subarray(0, 16);
+    .update(`factory-hermes:trace:${id}`).digest().subarray(0, 16);
   hash[6] = (hash[6] & 0x0f) | 0x50;
   hash[8] = (hash[8] & 0x3f) | 0x80;
   return hash.toString('hex');
@@ -65,7 +65,7 @@ function tracer(service: string) {
       });
     } catch { provider = undefined; }
   }
-  return provider?.getTracer('driftward.factory.execution', '1');
+  return provider?.getTracer('factory.execution', '1');
 }
 
 export function withExecutionSpan<T>(name: string, run: () => T, options: {

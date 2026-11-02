@@ -12,7 +12,7 @@ Linear webhook
   -> Factory ingress and Hatchet workflow
   -> bridge executor (route, policy, lease, and effect fence)
   -> host-local Hermes gRPC gateway over a Unix socket
-  -> driftward-hermes command in the Hermes runtime
+  -> factory-hermes command in the Hermes runtime
   -> Hermes OpenAI Codex provider and its ChatGPT OAuth session
   -> model/tool execution
   -> bounded PR receipt

@@ -30,8 +30,8 @@ fi
 if (( supersede )) && ! python3 "$script_dir/barrier_evidence_exec.py" check; then
   exec python3 "$script_dir/barrier_evidence_exec.py" exec bash "$script_dir/recover-safe-down.sh" "${original_args[@]}"
 fi
-state_dir=/var/lib/driftward-hatchet-bridge
-[[ "${BRIDGE_TEST_MODE:-}" == 1 ]] && state_dir="$BRIDGE_TEST_ROOT/var/lib/driftward-hatchet-bridge"
+state_dir=/var/lib/factory-hatchet-bridge
+[[ "${BRIDGE_TEST_MODE:-}" == 1 ]] && state_dir="$BRIDGE_TEST_ROOT/var/lib/factory-hatchet-bridge"
 source "$script_dir/installer-barrier.sh"
 mapfile -t writer_units < <(PYTHONPATH="$script_dir" python3 "$script_dir/writer-inventory.py" --kind all)
 lock_acquired=1

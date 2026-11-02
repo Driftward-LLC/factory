@@ -1,5 +1,5 @@
 {
-  "name": "@driftward/hatchet-reconciliation-worker",
+  "name": "@factory/hatchet-reconciliation-worker",
   "version": "0.1.0",
   "private": true,
   "main": "dist/worker.js",
@@ -13,7 +13,7 @@
     "test": "npm run build && node --test dist/*.test.js dist/workflows/*.test.js"
   },
   "dependencies": {
-    "@driftward/hatchet-worker-shared": "0.1.0",
+    "@factory/hatchet-worker-shared": "0.1.0",
     "@hatchet-dev/typescript-sdk": "1.26.1"
   },
   "devDependencies": {

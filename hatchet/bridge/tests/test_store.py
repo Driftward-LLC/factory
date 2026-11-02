@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import tempfile
 import unittest
 import hashlib
@@ -44,19 +47,19 @@ from hatchet_hermes_bridge.store import (
 from test_support import connect_migrate as connect
 
 
-def canonical_verifier_policy(repository="Driftward-LLC/driftward-host"):
-    catalog = json.loads((Path(__file__).resolve().parents[2] / "workers" / "verifier-policy.json").read_text())
+def canonical_verifier_policy(repository="example/platform"):
+    catalog = json.loads((Path(__file__).resolve().parents[2] / "workers" / "test-fixtures" / "verifier-policy.json").read_text())
     policy = next(item for item in catalog["policies"] if item["repo"] == repository)
     return {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}
 
 
-def verifier_payload(repository="Driftward-LLC/driftward-host"):
+def verifier_payload(repository="example/platform"):
     canonical = canonical_verifier_policy(repository)
     policy = canonical
-    return {"repo": policy["repo"], "dry_run": False, "verification_policy": canonical, "expected_base": policy["expected_base"], "allowed_changed_paths": policy["allowed_changed_paths"], "forbidden_changed_paths": policy["forbidden_changed_paths"], "required_local_commands": policy["required_local_commands"], "secret_check_command": policy["secret_check_command"]}
+    return {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": policy["repo"], "dry_run": False, "verification_policy": canonical, "expected_base": policy["expected_base"], "allowed_changed_paths": policy["allowed_changed_paths"], "forbidden_changed_paths": policy["forbidden_changed_paths"], "required_local_commands": policy["required_local_commands"], "secret_check_command": policy["secret_check_command"]}
 
 
-def legacy_verifier_payload(repository="Driftward-LLC/driftward-host"):
+def legacy_verifier_payload(repository="example/platform"):
     payload = verifier_payload(repository)
     legacy_checks = ["legacy-check", "repo-specific-check"]
     policy = {key: payload["verification_policy"][key] for key in ("id", "repo", "expected_base", "allowed_changed_paths", "forbidden_changed_paths", "required_local_commands", "secret_check_command")}
@@ -66,7 +69,7 @@ def legacy_verifier_payload(repository="Driftward-LLC/driftward-host"):
 
 
 def verification_receipt(job, commit_sha):
-    changed_file = "src/example.ts" if job["payload"]["repo"] == "Driftward-LLC/capykit" else "hatchet/bridge/tests/test_store.py"
+    changed_file = "src/example.ts" if job["payload"]["repo"] == "example/widgets" else "hatchet/bridge/tests/test_store.py"
     policy = canonical_verifier_policy(job["payload"]["repo"])
     return {
         "version": "draft-pr-verification-v1", "verifier_version": "bridge-executor-v2", "verified_at": "2026-08-16T00:00:00Z",
@@ -89,7 +92,7 @@ def original_context(job):
 
 class BridgeStoreTests(unittest.TestCase):
     def setUp(self):
-        os.environ["HATCHET_VERIFIER_POLICY_PATH"] = str(Path(__file__).resolve().parents[2] / "workers" / "verifier-policy.json")
+        os.environ["HATCHET_VERIFIER_POLICY_PATH"] = str(Path(__file__).resolve().parents[2] / "workers" / "test-fixtures" / "verifier-policy.json")
         self.tmp = tempfile.NamedTemporaryFile()
         self.conn = connect(self.tmp.name)
 
@@ -115,7 +118,7 @@ class BridgeStoreTests(unittest.TestCase):
         request = {
             "idempotency_key": "hatchet:run-1:create-pr",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host", "linear_issue": "ENG-35"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "linear_issue": "ENG-35"},
         }
 
         first, first_created = submit_job(self.conn, request)
@@ -180,9 +183,9 @@ class BridgeStoreTests(unittest.TestCase):
         old_policy = os.environ.get("HATCHET_VERIFIER_POLICY_PATH")
         try:
             os.environ["HATCHET_FACTORY_RUNTIME"] = "docker"
-            os.environ["HATCHET_VERIFIER_POLICY_PATH"] = "/etc/driftward/hatchet-verifier-policy.json"
-            with self.assertRaisesRegex(BridgeValidationError, "must be /app/hatchet/workers/verifier-policy.json"):
-                _canonical_verifier_policy("Driftward-LLC/capykit")
+            os.environ["HATCHET_VERIFIER_POLICY_PATH"] = "/etc/factory/hatchet-verifier-policy.json"
+            with self.assertRaisesRegex(BridgeValidationError, "must be /etc/factory/config/verifier-policy.json"):
+                _canonical_verifier_policy("example/widgets")
         finally:
             if old_runtime is None:
                 os.environ.pop("HATCHET_FACTORY_RUNTIME", None)
@@ -197,7 +200,7 @@ class BridgeStoreTests(unittest.TestCase):
         request = {
             "idempotency_key": "hatchet:run-1:create-pr",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         }
         submit_job(self.conn, request)
 
@@ -207,7 +210,7 @@ class BridgeStoreTests(unittest.TestCase):
                 {
                     "idempotency_key": "hatchet:run-1:create-pr",
                     "requested_action": "create_draft_pr",
-                    "payload": {"repo": "Driftward-LLC/other"},
+                    "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "ExampleOrg/other"},
                 },
             )
 
@@ -230,12 +233,12 @@ class BridgeStoreTests(unittest.TestCase):
             state="effect_committed",
             details={
                 "commit_sha": "abc123",
-                "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/95",
+                "pr_url": "https://github.com/example/platform/pull/95",
             },
         )
         self.assertEqual(committed["state"], "effect_committed")
         self.assertEqual(committed["commit_sha"], "abc123")
-        self.assertEqual(committed["pr_url"], "https://github.com/Driftward-LLC/driftward-host/pull/95")
+        self.assertEqual(committed["pr_url"], "https://github.com/example/platform/pull/95")
 
         pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verified-attempt")["acquired"])
@@ -272,7 +275,7 @@ class BridgeStoreTests(unittest.TestCase):
             state="effect_committed",
             details={
                 "commit_sha": "abc123",
-                "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/96",
+                "pr_url": "https://github.com/example/platform/pull/96",
             },
         )
         pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
@@ -308,7 +311,7 @@ class BridgeStoreTests(unittest.TestCase):
             state="effect_committed",
             details={
                 "commit_sha": "abc123",
-                "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/97",
+                "pr_url": "https://github.com/example/platform/pull/97",
             },
         )
         pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
@@ -330,10 +333,10 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:verified-ready:validation",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         transition_job(self.conn, job["job_id"], state="running")
-        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/96"})
+        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/96"})
         transition_job(self.conn, job["job_id"], state="verification_pending")
         with self.assertRaises(BridgeValidationError):
             transition_job(self.conn, job["job_id"], state="ready_for_human_review")
@@ -344,7 +347,7 @@ class BridgeStoreTests(unittest.TestCase):
             "payload": verifier_payload(),
         })
         transition_job(self.conn, job["job_id"], state="running")
-        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/97"})
+        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/97"})
         pending = transition_job(self.conn, job["job_id"], state="verification_pending")
         receipt = verification_receipt(pending, "abc123")
         receipt["pr_identity"] = {"passed": False}
@@ -356,13 +359,13 @@ class BridgeStoreTests(unittest.TestCase):
 
     def test_real_jobs_cannot_take_legacy_completed_transition(self):
         job, _ = submit_job(self.conn, {
-            "idempotency_key": "hatchet:real:completed", "requested_action": "create_draft_pr", "payload": {"repo": "Driftward-LLC/driftward-host", "dry_run": False},
+            "idempotency_key": "hatchet:real:completed", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "dry_run": False},
         })
         transition_job(self.conn, job["job_id"], state="running")
         with self.assertRaises(BridgeValidationError):
             transition_job(self.conn, job["job_id"], state="completed")
         dry, _ = submit_job(self.conn, {
-            "idempotency_key": "hatchet:dry:completed", "requested_action": "create_draft_pr", "payload": {"repo": "Driftward-LLC/driftward-host", "dry_run": True},
+            "idempotency_key": "hatchet:dry:completed", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "dry_run": True},
         })
         transition_job(self.conn, dry["job_id"], state="running")
         self.assertEqual(transition_job(self.conn, dry["job_id"], state="completed")["state"], "completed")
@@ -370,7 +373,7 @@ class BridgeStoreTests(unittest.TestCase):
     def test_verification_lease_collapses_redelivery_expires_and_closes_terminal_work(self):
         job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:lease:test", "requested_action": "create_draft_pr", "payload": verifier_payload()})
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/98"})
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/98"})
         pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         # Separate connections model concurrent worker/reconciler processes.
         second_conn = connect(self.tmp.name)
@@ -393,7 +396,7 @@ class BridgeStoreTests(unittest.TestCase):
     def test_failed_verification_closes_the_active_lease_in_its_transition_transaction(self):
         job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:lease:failure", "requested_action": "create_draft_pr", "payload": verifier_payload()})
         transition_job(self.conn, job["job_id"], state="running")
-        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/99"})
+        transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/99"})
         pending = transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="crashed-worker")["acquired"])
         self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="crashed-worker"))
@@ -411,10 +414,10 @@ class BridgeStoreTests(unittest.TestCase):
                 attempt, job, _ = reserve_factory_intake(
                     self.conn, work_item_key=f"ENG-{120 + index}", mode="real", request_id="docs-canary",
                     reason="Documentation-only canary", actor="intake-worker",
-                    payload={**verifier_payload("Driftward-LLC/capykit"), "implementation_prompt": "Documentation-only: update README.md; do not change dependencies."},
+                    payload={**verifier_payload("example/widgets"), "implementation_prompt": "Documentation-only: update README.md; do not change dependencies."},
                 )
                 transition_job(self.conn, job["job_id"], state="running")
-                pr_url = f"https://github.com/Driftward-LLC/capykit/pull/{120 + index}"
+                pr_url = f"https://github.com/example/widgets/pull/{120 + index}"
                 transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": pr_url}, _factory_execution_commit=True)
                 transition_job(self.conn, job["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
                 acquire_verification_lease(self.conn, job["job_id"], attempt_id="docs-verifier")
@@ -438,10 +441,10 @@ class BridgeStoreTests(unittest.TestCase):
         attempt, job, _ = reserve_factory_intake(
             self.conn, work_item_key="ENG-11", mode="real", request_id="linear:issue:ENG-11:update:first",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-11"},
+            payload={**verifier_payload("example/widgets"), "linear_issue": "ENG-11"},
         )
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/111"}, _factory_execution_commit=True)
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/widgets/pull/111"}, _factory_execution_commit=True)
         pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-repair")["acquired"])
         self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-repair"))
@@ -462,7 +465,7 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertEqual(repair["generation"], 2)
         self.assertEqual(repair["status"], "accepted")
         self.assertEqual(repair["prior_attempt_id"], attempt["attempt_id"])
-        self.assertEqual(repair["prior_pr_url"], "https://github.com/Driftward-LLC/capykit/pull/111")
+        self.assertEqual(repair["prior_pr_url"], "https://github.com/example/widgets/pull/111")
         self.assertEqual(repair_job["requested_action"], "repair_draft_pr")
         self.assertEqual(repair_job["branch"], failed["branch"])
         self.assertEqual(repair_job["payload"]["factory_repair"]["pr_url"], failed["pr_url"])
@@ -476,10 +479,10 @@ class BridgeStoreTests(unittest.TestCase):
         attempt, job, _ = reserve_factory_intake(
             self.conn, work_item_key="ENG-12", mode="real", request_id="linear:issue:ENG-12:update:first",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-12"},
+            payload={**verifier_payload("example/widgets"), "linear_issue": "ENG-12"},
         )
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/capykit/pull/112"}, _factory_execution_commit=True)
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/widgets/pull/112"}, _factory_execution_commit=True)
         pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-unsafe")["acquired"])
         self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="verifier-unsafe"))
@@ -498,7 +501,7 @@ class BridgeStoreTests(unittest.TestCase):
     def test_legacy_context_receipt_rows_remain_readable_without_allowing_new_legacy_completion(self):
         job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:legacy:receipt", "requested_action": "create_draft_pr", "payload": verifier_payload()})
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/100"})
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/100"})
         pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="legacy-owner")["acquired"])
         self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="legacy-owner"))
@@ -512,7 +515,7 @@ class BridgeStoreTests(unittest.TestCase):
     def test_completion_rejects_lease_bypass_non_owner_expiry_and_forged_evidence(self):
         job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:claimed:receipt", "requested_action": "create_draft_pr", "payload": verifier_payload()})
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/101"})
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/101"})
         pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         good = verification_receipt(pending, "abc123")
         for attempt in (None, "wrong-owner"):
@@ -546,7 +549,7 @@ class BridgeStoreTests(unittest.TestCase):
     def test_verification_context_is_write_once_on_effect_to_pending_only(self):
         job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:context:immutable", "requested_action": "create_draft_pr", "payload": verifier_payload()})
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/102"})
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": "https://github.com/example/platform/pull/102"})
         pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         replacement = {"local_commands": [], "secret_check": {"command": "wrong", "exit_code": 1}}
         with self.assertRaises(BridgeConflict):
@@ -560,7 +563,7 @@ class BridgeStoreTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 job, _ = submit_job(self.conn, {"idempotency_key": f"hatchet:terminal:{reason}", "requested_action": "create_draft_pr", "payload": verifier_payload()})
                 transition_job(self.conn, job["job_id"], state="running")
-                committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": f"https://github.com/Driftward-LLC/driftward-host/pull/{reason}"})
+                committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc123", "pr_url": f"https://github.com/example/platform/pull/{reason}"})
                 pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
                 self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id=reason)["acquired"])
                 self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id=reason))
@@ -571,7 +574,7 @@ class BridgeStoreTests(unittest.TestCase):
     def test_lifecycle_event_cursor_exposes_sanitized_history_in_order(self):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:lifecycle:cursor", "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/capykit", "linear_issue_id": "11111111-2222-4333-8444-555555555555", "linear_issue": "ENG-52", "linear_issue_url": "https://linear.app/driftward/issue/ENG-52/test", "dry_run": False},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue_id": "11111111-2222-4333-8444-555555555555", "linear_issue": "ENG-52", "linear_issue_url": "https://linear.app/example/issue/ENG-52/test", "dry_run": False},
         })
         transition_job(self.conn, job["job_id"], state="running")
         first = list_lifecycle_events(self.conn, after_created_at=None, after_event_id=None, limit=1)
@@ -595,7 +598,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:test",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         finding = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:test",
@@ -623,7 +626,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:scope",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         finding = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:scope",
@@ -648,7 +651,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:validation",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         base = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:validation",
@@ -677,7 +680,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:strict-schema",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         base = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:strict",
@@ -707,7 +710,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:reconciliation:atomic",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         good = {
             "finding_key": "reconciliation:v1:github_pr_branch_mismatch:atomic-good",
@@ -727,7 +730,7 @@ class BridgeStoreTests(unittest.TestCase):
         base = {
             "idempotency_key": "hatchet:correlation:ENG-39",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host", "linear_issue": "ENG-39", "source_event_key": "linear:issue:ENG-39:update:first", "source_delivery_id": "first"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "linear_issue": "ENG-39", "source_event_key": "linear:issue:ENG-39:update:first", "source_delivery_id": "first"},
         }
         first, created = submit_job(self.conn, base)
         self.assertTrue(created)
@@ -741,7 +744,7 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:correlation:changed-payload",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host", "linear_issue": "ENG-39", "implementation_prompt": "first", "source_event_key": "linear:issue:ENG-39:update:first"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "linear_issue": "ENG-39", "implementation_prompt": "first", "source_event_key": "linear:issue:ENG-39:update:first"},
         })
         correlated = record_job_correlation(self.conn, job["idempotency_key"], {
             "source_event_key": "linear:issue:ENG-39:update:second", "source_delivery_id": "second",
@@ -755,13 +758,13 @@ class BridgeStoreTests(unittest.TestCase):
         job, _ = submit_job(self.conn, {
             "idempotency_key": "hatchet:event-limit",
             "requested_action": "create_draft_pr",
-            "payload": {"repo": "Driftward-LLC/driftward-host"},
+            "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
         })
         for _ in range(3):
             submit_job(self.conn, {
                 "idempotency_key": "hatchet:event-limit",
                 "requested_action": "create_draft_pr",
-                "payload": {"repo": "Driftward-LLC/driftward-host"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
             })
         self.assertEqual(len(list_events(self.conn, job["job_id"], 2)), 2)
         self.assertEqual(count_events(self.conn, job["job_id"]), 4)
@@ -798,7 +801,7 @@ class BridgeStoreTests(unittest.TestCase):
         dry_attempt, dry_job, created = reserve_factory_intake(
             self.conn, work_item_key="ENG-9", mode="dry-run", request_id="linear:issue:ENG-9:update:dry",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-9:update:dry"},
+            payload={**verifier_payload("example/widgets"), "source_event_key": "linear:issue:ENG-9:update:dry"},
             hatchet_workflow_run_id="wf-dry", hatchet_step_run_id="step-dry",
         )
         self.assertTrue(created)
@@ -814,7 +817,7 @@ class BridgeStoreTests(unittest.TestCase):
         real_attempt, real_job, real_created = reserve_factory_intake(
             self.conn, work_item_key="ENG-9", mode="real", request_id="linear:issue:ENG-9:update:real",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-9:update:real"},
+            payload={**verifier_payload("example/widgets"), "source_event_key": "linear:issue:ENG-9:update:real"},
             hatchet_workflow_run_id="wf-real", hatchet_step_run_id="step-real",
         )
         self.assertTrue(real_created)
@@ -829,7 +832,7 @@ class BridgeStoreTests(unittest.TestCase):
             "idempotency_key": "hatchet:work-item:linear:ENG-9:create_draft_pr:real:active",
             "requested_action": "create_draft_pr",
             "payload": {
-                **verifier_payload("Driftward-LLC/capykit"),
+                **verifier_payload("example/widgets"),
                 "linear_issue": "ENG-9",
                 "dry_run": False,
                 "source_event_key": "linear:issue:ENG-9:update:old",
@@ -845,7 +848,7 @@ class BridgeStoreTests(unittest.TestCase):
             self.conn, work_item_key="ENG-9", mode="real", request_id="linear:issue:ENG-9:update:new",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
             payload={
-                **verifier_payload("Driftward-LLC/capykit"),
+                **verifier_payload("example/widgets"),
                 "source_event_key": "linear:issue:ENG-9:update:new",
                 "linear_issue": "ENG-9",
             },
@@ -861,13 +864,13 @@ class BridgeStoreTests(unittest.TestCase):
         first_attempt, first_job, created = reserve_factory_intake(
             self.conn, work_item_key="ENG-10", mode="real", request_id="linear:issue:ENG-10:update:first",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-10:update:first"},
+            payload={**verifier_payload("example/widgets"), "source_event_key": "linear:issue:ENG-10:update:first"},
         )
         self.assertTrue(created)
         second_attempt, second_job, second_created = reserve_factory_intake(
             self.conn, work_item_key="ENG-10", mode="real", request_id="linear:issue:ENG-10:update:second",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-10:update:second"},
+            payload={**verifier_payload("example/widgets"), "source_event_key": "linear:issue:ENG-10:update:second"},
         )
         self.assertFalse(second_created)
         self.assertEqual(second_attempt["attempt_id"], first_attempt["attempt_id"])
@@ -877,7 +880,7 @@ class BridgeStoreTests(unittest.TestCase):
         _replayed_attempt, _replayed_job, replayed_created = reserve_factory_intake(
             self.conn, work_item_key="ENG-10", mode="real", request_id="linear:issue:ENG-10:update:second",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-10:update:second"},
+            payload={**verifier_payload("example/widgets"), "source_event_key": "linear:issue:ENG-10:update:second"},
         )
         self.assertFalse(replayed_created)
         reuse_events = [
@@ -892,7 +895,7 @@ class BridgeStoreTests(unittest.TestCase):
             "work_item_key": "ENG-11", "mode": "real",
             "request_id": "linear:issue:ENG-11:update:first",
             "reason": "Linear Ready intake reserved a factory attempt", "actor": "intake-worker",
-            "payload": {**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-11:update:first"},
+            "payload": {**verifier_payload("example/widgets"), "source_event_key": "linear:issue:ENG-11:update:first"},
         }
         attempt, _job, created = reserve_factory_intake(self.conn, **request)
         self.assertTrue(created)
@@ -910,7 +913,7 @@ class BridgeStoreTests(unittest.TestCase):
             self.conn, work_item_key="ENG-40", mode="real", request_id="linear:issue:ENG-40:update:first",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
             payload={
-                **verifier_payload("Driftward-LLC/capykit"),
+                **verifier_payload("example/widgets"),
                 "source_event_key": "linear:issue:ENG-40:update:first",
                 "routing": {"registry_version": 2},
             },
@@ -960,7 +963,7 @@ class BridgeStoreTests(unittest.TestCase):
         _other_attempt, other_job, _ = reserve_factory_intake(
             self.conn, work_item_key="ENG-41", mode="real", request_id="linear:issue:ENG-41:update:first",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "source_event_key": "linear:issue:ENG-41:update:first"},
+            payload={**verifier_payload("example/widgets"), "source_event_key": "linear:issue:ENG-41:update:first"},
         )
         with self.assertRaises(BridgeValidationError):
             record_factory_execution_route(
@@ -985,7 +988,7 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertTrue(authorize_factory_effect(self.conn, job["job_id"], execution["lease"]))
         receipt = {
             "commit_sha": "abcdef1",
-            "pr_url": "https://github.com/Driftward-LLC/capykit/pull/40",
+            "pr_url": "https://github.com/example/widgets/pull/40",
             "branch": job["branch"],
         }
         for forbidden in (
@@ -1036,7 +1039,7 @@ class BridgeStoreTests(unittest.TestCase):
         attempt, job, _ = reserve_factory_intake(
             self.conn, work_item_key="ENG-21", mode="real", request_id="linear:issue:ENG-21:update:first",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-21", "implementation_prompt": "keep this out of lifecycle summaries"},
+            payload={**verifier_payload("example/widgets"), "linear_issue": "ENG-21", "implementation_prompt": "keep this out of lifecycle summaries"},
         )
         transition_job(self.conn, job["job_id"], state="running")
         claim_factory_execution(self.conn, job["job_id"], owner="executor-secret-owner")
@@ -1047,7 +1050,7 @@ class BridgeStoreTests(unittest.TestCase):
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0]["attempt"]["attempt_id"], attempt["attempt_id"])
         self.assertEqual(active[0]["job"]["job_id"], job["job_id"])
-        self.assertEqual(active[0]["job"]["payload"]["repo"], "Driftward-LLC/capykit")
+        self.assertEqual(active[0]["job"]["payload"]["repo"], "example/widgets")
         self.assertEqual(active[0]["job"]["payload"]["linear_issue"], "ENG-21")
         self.assertNotIn("implementation_prompt", active[0]["job"]["payload"])
         self.assertEqual(active[0]["execution_lease"]["status"], "active")
@@ -1062,7 +1065,7 @@ class BridgeStoreTests(unittest.TestCase):
         attempt, job, _ = reserve_factory_intake(
             self.conn, work_item_key="ENG-22", mode="real", request_id="linear:issue:ENG-22:update:first",
             reason="Linear Ready intake reserved a factory attempt", actor="intake-worker",
-            payload={**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-22"},
+            payload={**verifier_payload("example/widgets"), "linear_issue": "ENG-22"},
         )
         transition_job(self.conn, job["job_id"], state="running")
         claim_factory_execution(self.conn, job["job_id"], owner="executor")
@@ -1090,19 +1093,19 @@ class BridgeStoreTests(unittest.TestCase):
             get_factory_lifecycle(self.conn, "ENG-22", limit=0)
 
     def test_legacy_real_import_cannot_claim_new_verified_ready_path(self):
-        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:work-item:linear:ENG-91:create_draft_pr:real:active", "requested_action": "create_draft_pr", "payload": {**verifier_payload("Driftward-LLC/capykit"), "linear_issue": "ENG-91"}})
+        job, _ = submit_job(self.conn, {"idempotency_key": "hatchet:work-item:linear:ENG-91:create_draft_pr:real:active", "requested_action": "create_draft_pr", "payload": {**verifier_payload("example/widgets"), "linear_issue": "ENG-91"}})
         # Reopen migrations after a complete legacy artifact exists, then prove
         # the imported generation-one lineage cannot use the fresh verifier path.
         self.conn.execute("DELETE FROM factory_attempts"); self.conn.commit()
         self.conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
-        self.conn.execute("UPDATE bridge_jobs SET state='completed',pr_url=? WHERE job_id=?", ("https://github.com/Driftward-LLC/capykit/pull/91", job["job_id"]))
-        self.conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('legacy-eng91',?,'effect_committed','effect_committed',?,'2026-08-17T00:00:00Z')", (job["job_id"], json.dumps({"pr_url":"https://github.com/Driftward-LLC/capykit/pull/91", "head_branch":job["branch"]})))
+        self.conn.execute("UPDATE bridge_jobs SET state='completed',pr_url=? WHERE job_id=?", ("https://github.com/example/widgets/pull/91", job["job_id"]))
+        self.conn.execute("INSERT INTO bridge_events (event_id,job_id,event_type,state,details_json,created_at) VALUES ('legacy-eng91',?,'effect_committed','effect_committed',?,'2026-08-17T00:00:00Z')", (job["job_id"], json.dumps({"pr_url":"https://github.com/example/widgets/pull/91", "head_branch":job["branch"]})))
         self.conn.commit()
         from hatchet_hermes_bridge.store import init_db
         init_db(self.conn)
         self.conn.execute("UPDATE bridge_jobs SET state='accepted',pr_url=NULL WHERE job_id=?", (job["job_id"],)); self.conn.commit()
         transition_job(self.conn, job["job_id"], state="running")
-        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha":"abc", "pr_url":"https://github.com/Driftward-LLC/driftward-host/pull/91"})
+        committed = transition_job(self.conn, job["job_id"], state="effect_committed", details={"commit_sha":"abc", "pr_url":"https://github.com/example/platform/pull/91"})
         pending = transition_job(self.conn, committed["job_id"], state="verification_pending", details={"verification_context": original_context(job)})
         self.assertTrue(acquire_verification_lease(self.conn, pending["job_id"], attempt_id="legacy") ["acquired"])
         self.assertTrue(claim_verification_lease(self.conn, pending["job_id"], attempt_id="legacy"))

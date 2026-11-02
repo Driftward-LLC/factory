@@ -80,8 +80,8 @@ RUN apt-get update \
   && ln -sf /usr/local/bin/node /usr/bin/node
 
 COPY hatchet/bridge/requirements.txt /tmp/factory-requirements.txt
-RUN /usr/bin/python3 -m venv /opt/driftward-factory \
-  && /opt/driftward-factory/bin/pip install --no-cache-dir --requirement /tmp/factory-requirements.txt \
+RUN /usr/bin/python3 -m venv /opt/factory \
+  && /opt/factory/bin/pip install --no-cache-dir --requirement /tmp/factory-requirements.txt \
   && rm /tmp/factory-requirements.txt
 
 # Reset upstream image defaults, including its VOLUME /opt/data. Only the
@@ -105,7 +105,7 @@ RUN printf '{"commit":"%s","version":"%s"}\n' "$FACTORY_RELEASE_COMMIT" "$FACTOR
   > /app/hatchet/bridge/RELEASE_METADATA.json
 
 ENV NODE_ENV=production \
-    PATH=/opt/driftward-factory/bin:/usr/lib/postgresql/15/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PATH=/opt/factory/bin:/usr/lib/postgresql/15/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FACTORY_RELEASE_COMMIT=$FACTORY_RELEASE_COMMIT \
@@ -114,5 +114,5 @@ ENV NODE_ENV=production \
     FACTORY_HATCHET_DOCTOR_SCRIPT=/app/tools/factory-hatchet-doctor.py \
     FACTORY_HATCHET_DESIRED_STATE=/app/hatchet/desired-state/factory-hatchet.json
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "/app/deploy/configuration-entrypoint.sh"]
 CMD ["/app/factory/factory", "status"]

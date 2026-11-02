@@ -15,7 +15,7 @@ chat interface operators must use. Interactive development sessions support
 deeper investigation. Attempt links may open PostHog diagnostics, but telemetry
 never grants execution authority or confirms safe manual takeover.
 
-Shared components, theme tokens, and icons live in the `@driftward/ui` workspace
+Shared components, theme tokens, and icons live in the `@factory/ui` workspace
 at `factory/console/ui/`. Storybook renders the same implementations as the
 console. See [the design system guide](docs/design-system.md) for the catalog,
 agent access, and contribution checks. Edit Factory layout styles in

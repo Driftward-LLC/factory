@@ -44,7 +44,7 @@ Hermes
 ```
 
 Workers should call the bridge for external effects. The only worker that may
-invoke `driftward-hermes` is `bridge-executor-worker`, and only for allowlisted
+invoke `factory-hermes` is `bridge-executor-worker`, and only for allowlisted
 bridge actions after a job row exists and a deterministic branch has been
 reserved.
 
@@ -143,7 +143,7 @@ creation, checks, reviews, idempotency, and reconciliation are proven.
 ## Event Names
 
 Use stable readable event IDs in code and analytics. Hatchet still routes on
-the `driftward.*` wire names listed below. The canonical contract is
+the `factory.*` wire names listed below. The canonical contract is
 `hatchet/contracts/events.json`; after editing it, run:
 
 ```bash
@@ -153,25 +153,25 @@ python3 tools/hatchet-contracts.py check
 
 | Event | Producer | Consumer | Purpose |
 | --- | --- | --- | --- |
-| `driftward.hermes.job.accepted` | Bridge | Hatchet workflows | Job row exists and retries are fenced. |
-| `driftward.hermes.job.effect_committed` | Bridge executor | Hatchet workflows | External artifact exists, such as branch or PR. |
-| `driftward.hermes.job.verification_pending` | Bridge executor | Operators | Draft PR exists but has not passed deterministic verification. |
-| `driftward.hermes.job.verification_failed` | Bridge executor | Operators | Draft PR evidence failed closed with a stable reason code. |
-| `driftward.hermes.job.ready_for_human_review` | Bridge executor | Operators | Deterministic draft-PR verification passed; human review is next. |
-| `driftward.hermes.job.completed` | Bridge executor | Hatchet workflows | Dry-run-only executor completion; never a real implementation-success state. |
-| `driftward.hermes.job.failed` | Bridge executor | Hatchet workflows | Terminal failure with reason code. |
-| `driftward.github.pr.creation_simulated` | Bridge executor | Analytics or operators | Dry-run PR creation path completed without a real GitHub side effect. |
-| `driftward.github.pr.created` | GitHub webhook or bridge executor | `pr-event-worker` | A real PR exists and should be inspected. |
-| `driftward.github.pr.synchronized` | GitHub webhook | `pr-event-worker` | PR head changed and evidence may be stale. |
-| `driftward.github.pr.reopened` | GitHub webhook | `pr-event-worker` | A closed PR became active again and needs fresh verification. |
-| `driftward.github.pr.closed_unmerged` | Event ingress | `pr-event-worker` | A PR was closed without merge; record observation and do not dispatch Hermes. |
-| `driftward.github.pr.closed_merged` | Event ingress | `pr-event-worker` | A PR was merged; record observation and do not dispatch Hermes. |
-| `driftward.github.checks.completed` | GitHub webhook | `verification-worker` | CI/check state changed. |
-| `driftward.github.review.submitted` | GitHub webhook | `review-worker` | Review state changed. |
-| `driftward.linear.issue.observed` | Event ingress | Operators or later intake workflows | A Linear issue changed but is not eligible for implementation dispatch. |
-| `driftward.linear.issue.ready_for_implementation` | Event ingress | `intake-worker` | A Linear Engineering issue passed implementation-readiness gates. |
-| `driftward.work_item.intake.received` | `intake-worker` | Operators or later triage workflows | A ready Linear issue was converted into a bridge-backed work item. |
-| `driftward.reconciliation.detected` | `reconciliation-worker` | Operators or later repair workflows | Stale or inconsistent control-plane state was observed. |
+| `factory.hermes.job.accepted` | Bridge | Hatchet workflows | Job row exists and retries are fenced. |
+| `factory.hermes.job.effect_committed` | Bridge executor | Hatchet workflows | External artifact exists, such as branch or PR. |
+| `factory.hermes.job.verification_pending` | Bridge executor | Operators | Draft PR exists but has not passed deterministic verification. |
+| `factory.hermes.job.verification_failed` | Bridge executor | Operators | Draft PR evidence failed closed with a stable reason code. |
+| `factory.hermes.job.ready_for_human_review` | Bridge executor | Operators | Deterministic draft-PR verification passed; human review is next. |
+| `factory.hermes.job.completed` | Bridge executor | Hatchet workflows | Dry-run-only executor completion; never a real implementation-success state. |
+| `factory.hermes.job.failed` | Bridge executor | Hatchet workflows | Terminal failure with reason code. |
+| `factory.github.pr.creation_simulated` | Bridge executor | Analytics or operators | Dry-run PR creation path completed without a real GitHub side effect. |
+| `factory.github.pr.created` | GitHub webhook or bridge executor | `pr-event-worker` | A real PR exists and should be inspected. |
+| `factory.github.pr.synchronized` | GitHub webhook | `pr-event-worker` | PR head changed and evidence may be stale. |
+| `factory.github.pr.reopened` | GitHub webhook | `pr-event-worker` | A closed PR became active again and needs fresh verification. |
+| `factory.github.pr.closed_unmerged` | Event ingress | `pr-event-worker` | A PR was closed without merge; record observation and do not dispatch Hermes. |
+| `factory.github.pr.closed_merged` | Event ingress | `pr-event-worker` | A PR was merged; record observation and do not dispatch Hermes. |
+| `factory.github.checks.completed` | GitHub webhook | `verification-worker` | CI/check state changed. |
+| `factory.github.review.submitted` | GitHub webhook | `review-worker` | Review state changed. |
+| `factory.linear.issue.observed` | Event ingress | Operators or later intake workflows | A Linear issue changed but is not eligible for implementation dispatch. |
+| `factory.linear.issue.ready_for_implementation` | Event ingress | `intake-worker` | A Linear Engineering issue passed implementation-readiness gates. |
+| `factory.work_item.intake.received` | `intake-worker` | Operators or later triage workflows | A ready Linear issue was converted into a bridge-backed work item. |
+| `factory.reconciliation.detected` | `reconciliation-worker` | Operators or later repair workflows | Stale or inconsistent control-plane state was observed. |
 
 ## Event Ingress Gates
 
@@ -192,12 +192,12 @@ team = Engineering
 status = Ready
 no active blockedBy relation
 status is not Done, Canceled, In Review, Needs Operator, or Blocked
-delegate is not Driftward Factory
+delegate is not Factory
 project execution policy is enabled for the immutable project ID
 ```
 
 Legacy factory metadata is not a trigger. In particular, the retired
-`Driftward Factory` delegate and old factory-era labels must not cause workflow
+`Factory` delegate and old factory-era labels must not cause workflow
 dispatch. Linear workflow status is the source of truth; labels such as
 `Feature`, `Bug`, `Improvement`, `ready-to-implement`, and `has-active-pr` are
 metadata only.
@@ -218,12 +218,12 @@ submission. Example:
 ```text
 Linear issue changed
   -> record an ingress event
-  -> emit driftward.linear.issue.observed or driftward.linear.issue.ready_for_implementation
+  -> emit factory.linear.issue.observed or factory.linear.issue.ready_for_implementation
   -> do not dispatch Hermes from ingress
 
 GitHub PR closed unmerged
   -> find linked Linear issue
-  -> record an ingress event and emit driftward.github.pr.closed_unmerged
+  -> record an ingress event and emit factory.github.pr.closed_unmerged
   -> do not dispatch Hermes
 ```
 
@@ -283,17 +283,17 @@ Forbidden:
 
 Real PR creation requires:
 
-- `DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=1`
-- `DRIFTWARD_HERMES_ALLOWED_REPOS`, explicitly set to the installation's
+- `FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED=1`
+- `FACTORY_HERMES_ALLOWED_REPOS`, explicitly set to the installation's
   reviewed repository allowlist; legacy defaults are installation-specific
-- `DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN`
-- `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME`
-- `DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL`
+- `FACTORY_HERMES_EXPECTED_GITHUB_LOGIN`
+- `FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME`
+- `FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL`
 - A bridge payload with `repo`, plus `implementation_prompt`, `instructions`,
   or `linear_issue`
 
-Configure `DRIFTWARD_HERMES_FORBIDDEN_GITHUB_LOGINS` and
-`DRIFTWARD_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS` to reject human operator identities;
+Configure `FACTORY_HERMES_FORBIDDEN_GITHUB_LOGINS` and
+`FACTORY_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS` to reject human operator identities;
 the legacy fallback values are installation-specific. Hermes needs its own
 GitHub credential and Git author identity before real execution is enabled.
 The expected identity must match the installation's GitHub App bot signature.
@@ -379,22 +379,22 @@ The installer builds the npm workspace, seeds root-only env files from the
 `prod` Hatchet profile when available, installs systemd units, and enables:
 
 ```text
-driftward-hatchet-hermes-gateway.service
-driftward-hatchet-worker-execution-dispatch.service
-driftward-hatchet-worker-intake.service
-driftward-hatchet-worker-bridge-executor.service
-driftward-hatchet-worker-pr-event.service
-driftward-hatchet-worker-reconciliation.service
+factory-hatchet-hermes-gateway.service
+factory-hatchet-worker-execution-dispatch.service
+factory-hatchet-worker-intake.service
+factory-hatchet-worker-bridge-executor.service
+factory-hatchet-worker-pr-event.service
+factory-hatchet-worker-reconciliation.service
 ```
 
 Runtime env files:
 
 ```text
-/etc/driftward/hatchet-workers.env
+/etc/factory/hatchet-workers.env
   Hatchet client token, API URL, gRPC host/port, TLS strategy, bridge URL,
   intake repo allowlist
 
-/etc/driftward/hatchet-worker-bridge-executor.env
+/etc/factory/hatchet-worker-bridge-executor.env
   Explicit real-PR gate, Hermes gRPC target, Hermes command fallback,
   allowed repos, expected factory-hermes GitHub App identity
 ```
@@ -414,9 +414,9 @@ The direct worker units are retired migration artifacts. Debug the current
 Compose services after `factory status` or the smoke test points at one:
 
 ```bash
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory ps
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory logs --tail=100 <service>
-docker compose --env-file /etc/driftward/hatchet.env --project-directory /docker/driftward/factory up -d --no-deps <service>
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory ps
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory logs --tail=100 <service>
+docker compose --env-file /etc/factory/hatchet.env --project-directory /docker/factory/factory up -d --no-deps <service>
 ```
 
 Run the full Hatchet smoke, including a managed worker dry-run job:

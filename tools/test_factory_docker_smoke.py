@@ -40,7 +40,7 @@ class FactoryDockerSmokeTests(unittest.TestCase):
         self.root = Path(self.work.name)
         self.runtime = self.root / "runtime"
         self.runtime.mkdir()
-        (self.runtime / "docker-compose.yml").write_text("name: driftward-factory\n", encoding="utf-8")
+        (self.runtime / "docker-compose.yml").write_text("name: factory\n", encoding="utf-8")
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
         self.hatchet_env = self.root / "hatchet.env"
@@ -82,19 +82,19 @@ if [[ "${{1:-}}" == "inspect" ]]; then
     exit 0
   fi
   case "$cid" in
-    cid-postgres) printf 'volume\\tdriftward-factory-hatchet-postgres-data\\t/var/lib/postgresql/data\\n' ;;
-    cid-hatchet-lite) printf 'volume\\tdriftward-factory-hatchet-config-data\\t/config\\n' ;;
-    cid-bridge) printf '%s\\t%s\\t/var/lib/driftward-hatchet-bridge\\n' "${{FAKE_BRIDGE_MOUNT_TYPE:-volume}}" "${{FAKE_BRIDGE_VOLUME_NAME:-driftward-factory-bridge-data}}" ;;
-    cid-event-ingress) printf 'volume\\tdriftward-factory-ingress-data\\t/var/lib/driftward-hatchet-event-ingress\\n' ;;
-    cid-factory-lifecycle-writer) printf 'volume\\tdriftward-factory-lifecycle-data\\t/var/lib/driftward-factory-lifecycle-writer\\nvolume\\tdriftward-factory-linear-published-token\\t/var/run/factory-linear-token\\n' ;;
-    cid-factory-linear-token-refresh) printf 'volume\\tdriftward-factory-linear-token-data\\t/var/lib/driftward-factory-linear-token\\nvolume\\tdriftward-factory-linear-published-token\\t/var/run/factory-linear-token\\n' ;;
+    cid-postgres) printf 'volume\\tfactory-hatchet-postgres-data\\t/var/lib/postgresql/data\\n' ;;
+    cid-hatchet-lite) printf 'volume\\tfactory-hatchet-config-data\\t/config\\n' ;;
+    cid-bridge) printf '%s\\t%s\\t/var/lib/factory-hatchet-bridge\\n' "${{FAKE_BRIDGE_MOUNT_TYPE:-volume}}" "${{FAKE_BRIDGE_VOLUME_NAME:-factory-bridge-data}}" ;;
+    cid-event-ingress) printf 'volume\\tfactory-ingress-data\\t/var/lib/factory-hatchet-event-ingress\\n' ;;
+    cid-factory-lifecycle-writer) printf 'volume\\tfactory-lifecycle-data\\t/var/lib/factory-lifecycle-writer\\nvolume\\tfactory-linear-published-token\\t/var/run/factory-linear-token\\n' ;;
+    cid-factory-linear-token-refresh) printf 'volume\\tfactory-linear-token-data\\t/var/lib/factory-linear-token\\nvolume\\tfactory-linear-published-token\\t/var/run/factory-linear-token\\n' ;;
     cid-factory-operator)
-      printf 'volume\\tdriftward-factory-bridge-data\\t/var/lib/driftward-hatchet-bridge\\n'
-      printf 'volume\\tdriftward-factory-ingress-data\\t/var/lib/driftward-hatchet-event-ingress\\n'
+      printf 'volume\\tfactory-bridge-data\\t/var/lib/factory-hatchet-bridge\\n'
+      printf 'volume\\tfactory-ingress-data\\t/var/lib/factory-hatchet-event-ingress\\n'
       ;;
     cid-outbox-dispatcher)
-      printf 'volume\\tdriftward-factory-bridge-data\\t/var/lib/driftward-hatchet-bridge\\n'
-      printf 'volume\\tdriftward-factory-ingress-data\\t/var/lib/driftward-hatchet-event-ingress\\n'
+      printf 'volume\\tfactory-bridge-data\\t/var/lib/factory-hatchet-bridge\\n'
+      printf 'volume\\tfactory-ingress-data\\t/var/lib/factory-hatchet-event-ingress\\n'
       ;;
     *) exit 1 ;;
   esac
@@ -123,10 +123,11 @@ case "${{1:-}}" in
     if [[ "$service" =~ ^(bridge|intake-worker|bridge-executor-worker|factory-operator)$ && "${{1:-}}" == "printenv" ]]; then
       case "${{2:-}}" in
         HATCHET_FACTORY_RUNTIME) printf 'docker\\n'; exit 0 ;;
-        HATCHET_VERIFIER_POLICY_PATH) printf '/app/hatchet/workers/verifier-policy.json\\n'; exit 0 ;;
+        HATCHET_VERIFIER_POLICY_PATH) printf '/etc/factory/config/verifier-policy.json\\n'; exit 0 ;;
       esac
       exit 0
     fi
+    if [[ "$service" == "factory-operator" && "${{1:-}}" == "python3" ]]; then printf 'OPS\\n'; fi
     exit 0
     ;;
   *) exit 2 ;;
@@ -163,7 +164,7 @@ exit 0
         return {
             **os.environ,
             "PATH": f"{self.fake_bin}:{os.environ['PATH']}",
-            "DRIFTWARD_HATCHET_ENV_FILE": str(self.hatchet_env),
+            "FACTORY_HATCHET_ENV_FILE": str(self.hatchet_env),
             "FACTORY_HATCHET_BRIDGE_ENV": str(self.bridge_env),
             "FACTORY_OPERATOR_ENV": str(self.operator_env),
             "FACTORY_OPERATOR_SOCKET": str(self.socket_path),
@@ -204,7 +205,7 @@ exit 0
         )
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("unexpected mount for /var/lib/driftward-hatchet-bridge", result.stderr)
+        self.assertIn("unexpected mount for /var/lib/factory-hatchet-bridge", result.stderr)
 
     def test_rejects_oom_killed_container_even_when_docker_health_is_green(self) -> None:
         result = subprocess.run(

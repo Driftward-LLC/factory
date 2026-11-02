@@ -37,7 +37,7 @@ def observations(bound):
                   'factory.experimental': True, 'hermes.session_id': 'factory-' + 'a' * 32,
                   'hermes.task_id': 'factory-' + 'b' * 32, 'factory.runtime_incarnation': str(uuid.uuid4()),
                   '$process_person_profile': False}
-    return [{'event': 'factory.experimental_owner', 'distinct_id': 'driftward-hermes',
+    return [{'event': 'factory.experimental_owner', 'distinct_id': 'factory-hermes',
              'properties': {**properties, 'factory.stop.stage': stage}} for stage in ('registered', 'stopping', 'unknown')]
 
 
@@ -301,7 +301,7 @@ class NativeCanaryTests(unittest.TestCase):
             result = runtime.native_canary_export(payload)
         self.assertEqual(result['events_queued'], 3)
         self.assertEqual(len(delivered), 3)
-        self.assertEqual(result['trace_id'], str(uuid.uuid5(uuid.NAMESPACE_URL, 'driftward-hermes:trace:attempt:' + attempt)))
+        self.assertEqual(result['trace_id'], str(uuid.uuid5(uuid.NAMESPACE_URL, 'factory-hermes:trace:attempt:' + attempt)))
         self.assertTrue(all(event['properties']['factory.validation_kind'] == 'isolated_native_owner_relay' for event in delivered))
         self.assertNotIn('must-not-leak', json.dumps(delivered))
         for key, value in (('prompt', 'must-not-leak'), ('factory.stop.stage', 'arbitrary')):

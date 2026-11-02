@@ -1,7 +1,7 @@
 {
-  "name": "@driftward/ui",
+  "name": "@factory/ui",
   "version": "0.2.0",
-  "description": "Shared Driftward React components, theme, and icons",
+  "description": "Shared Factory React components, theme, and icons",
   "type": "module",
   "private": true,
   "exports": {

@@ -1,4 +1,4 @@
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 
 type RecoveryBridge = {
   acquireVerificationLease(ref: string, attemptId: string): Promise<{ acquired?: boolean }>;

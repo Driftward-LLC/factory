@@ -1,5 +1,5 @@
 {
-  "schema": "driftward.factory.hatchet.desired-state.v1",
+  "schema": "factory.hatchet.desired-state.v1",
   "linear_issue": "ENG-97",
   "last_reviewed": "2026-09-09",
   "status": "standalone_factory_compose",
@@ -86,7 +86,7 @@
       ],
       "event_triggers": [
         {
-          "event": "driftward.linear.issue.ready_for_implementation",
+          "event": "factory.linear.issue.ready_for_implementation",
           "owner": "hatchet/event-ingress"
         }
       ],
@@ -116,7 +116,7 @@
       ],
       "event_triggers": [
         {
-          "event": "driftward.hermes.job.accepted",
+          "event": "factory.hermes.job.accepted",
           "owner": "hatchet/bridge"
         }
       ],
@@ -132,31 +132,31 @@
       ],
       "event_triggers": [
         {
-          "event": "driftward.github.pr.created",
+          "event": "factory.github.pr.created",
           "owner": "hatchet/event-ingress"
         },
         {
-          "event": "driftward.github.pr.synchronized",
+          "event": "factory.github.pr.synchronized",
           "owner": "hatchet/event-ingress"
         },
         {
-          "event": "driftward.github.pr.reopened",
+          "event": "factory.github.pr.reopened",
           "owner": "hatchet/event-ingress"
         },
         {
-          "event": "driftward.github.pr.closed_unmerged",
+          "event": "factory.github.pr.closed_unmerged",
           "owner": "hatchet/event-ingress"
         },
         {
-          "event": "driftward.github.pr.closed_merged",
+          "event": "factory.github.pr.closed_merged",
           "owner": "hatchet/event-ingress"
         },
         {
-          "event": "driftward.github.checks.completed",
+          "event": "factory.github.checks.completed",
           "owner": "future-provider-ingress"
         },
         {
-          "event": "driftward.github.review.submitted",
+          "event": "factory.github.review.submitted",
           "owner": "future-provider-ingress"
         }
       ],
@@ -185,7 +185,7 @@
       "source": "temporary smoke project outside this repository",
       "reason": "ENG-97 evidence: stale PR-created trigger generated no-worker inspect-pr-event task runs.",
       "event_triggers": [
-        "driftward.github.pr.created"
+        "factory.github.pr.created"
       ],
       "audit_history": "Preserve Hatchet run and event history; do not re-register unless migrated into the Factory repo."
     },
@@ -236,12 +236,12 @@
       },
       {
         "name": "Hatchet Hermes bridge SQLite ledger",
-        "path": "/var/lib/driftward-hatchet-bridge/bridge.db",
+        "path": "/var/lib/factory-hatchet-bridge/bridge.db",
         "owner": "Factory app after extraction"
       },
       {
         "name": "event ingress SQLite ledger",
-        "path": "/var/lib/driftward-hatchet-event-ingress/ingress.db",
+        "path": "/var/lib/factory-hatchet-event-ingress/ingress.db",
         "owner": "Factory app after extraction"
       }
     ],

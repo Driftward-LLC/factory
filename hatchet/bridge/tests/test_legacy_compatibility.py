@@ -1,4 +1,9 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
+import os
+from unittest.mock import patch
 import sqlite3
 import subprocess
 import tempfile
@@ -13,12 +18,12 @@ from hatchet_hermes_bridge.store import init_db
 
 ROOT = Path(__file__).resolve().parents[3]
 CHECK = ROOT / "hatchet/bridge/predeploy-check.py"
-ROUTES = ROOT / "hatchet/workers/routing-registry.json"
-POLICY = ROOT / "hatchet/workers/verifier-policy.json"
-CAPYKIT = "Driftward-LLC/capykit"
-HOST = "Driftward-LLC/driftward-host"
-CAPYKIT_PROJECT = "d779c532-620d-458c-8abd-05e37f5ca4c1"
-HOST_PROJECT = "c670f223-bcaf-4e48-9209-6cca65da4568"
+ROUTES = ROOT / "hatchet/workers/test-fixtures/routing-registry.json"
+POLICY = ROOT / "hatchet/workers/test-fixtures/verifier-policy.json"
+CAPYKIT = "example/widgets"
+HOST = "example/platform"
+CAPYKIT_PROJECT = "11111111-1111-4111-8111-111111111111"
+HOST_PROJECT = "22222222-2222-4222-8222-222222222222"
 NOW = "2026-08-17T00:00:00Z"
 SENTINEL = "dry-run://github/pr/01234567-89ab-4cde-8fab-0123456789ab"
 
@@ -90,6 +95,44 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.routed, self.enabled = routing_repositories(ROUTES.read_text())
 
+    def disabled_github(self):
+        value = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
+        value["github"]["enabled"] = False
+        path = Path(self.work.name) / "disabled-organization.json"
+        path.write_text(json.dumps(value))
+        return patch.dict(os.environ, {"FACTORY_ORGANIZATION_CONFIG": str(path)})
+
+    def test_schema_seven_real_pr_import_retains_history_with_disabled_github(self):
+        row = legacy_row(pr_url=f"https://github.com/{CAPYKIT}/pull/20")
+        self.insert(row)
+        with self.disabled_github():
+            init_db(self.conn)
+        attempt = self.conn.execute("SELECT * FROM factory_attempts WHERE job_id=?", (row["job_id"],)).fetchone()
+        self.assertEqual((attempt["status"], attempt["prior_pr_url"]), ("legacy_completed", row["pr_url"]))
+        source = self.conn.execute("SELECT * FROM bridge_jobs WHERE job_id=?", (row["job_id"],)).fetchone()
+        self.assertEqual(source["payload_json"], row["payload_json"])
+        self.assertNotIn("organization_binding", json.loads(source["payload_json"]))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM bridge_jobs").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_inspection_requests").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_inspection_outbox").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 10)
+
+    def test_disabled_upgrade_preserves_existing_pending_inspection_without_claiming(self):
+        from hatchet_hermes_bridge import store
+        row = legacy_row(pr_url=f"https://github.com/{CAPYKIT}/pull/20")
+        self.insert(row)
+        init_db(self.conn)
+        tables = ("bridge_jobs", "factory_inspection_requests", "factory_inspection_outbox")
+        before = {table: [tuple(item) for item in self.conn.execute(f"SELECT * FROM {table} ORDER BY rowid")] for table in tables}
+        outbox_key = self.conn.execute("SELECT outbox_key FROM factory_inspection_outbox").fetchone()[0]
+        with self.conn:
+            self.conn.execute("UPDATE bridge_schema_meta SET schema_version=7")
+        with self.disabled_github():
+            init_db(self.conn)
+            self.assertIsNone(store.claim_factory_inspection_outbox(self.conn, outbox_key))
+        after = {table: [tuple(item) for item in self.conn.execute(f"SELECT * FROM {table} ORDER BY rowid")] for table in tables}
+        self.assertEqual(after, before)
+
     def decision(self, row, *, sources=None, attempts=(), conflicts=(), leases=(), events=(), outbox=()):
         return reconcile_legacy_active_row(
             row,
@@ -155,12 +198,12 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.assertEqual(self.predeploy().returncode, 0)
         self.assertIn(HOST, self.routed)
         self.assertNotIn(HOST, self.enabled)
-        self.assertEqual(_load_route(HOST_PROJECT, str(ROUTES))[0], "Driftward-LLC/factory")
+        self.assertEqual(_load_route(HOST_PROJECT, str(ROUTES))[0], "example/control-plane")
 
     def test_retired_repositories_are_validated_and_never_enable_execution(self):
         registry = json.loads(ROUTES.read_text())
         routed, enabled = routing_repositories(registry)
-        self.assertIn("Driftward-LLC/factory", enabled)
+        self.assertIn("example/control-plane", enabled)
         self.assertIn(HOST, routed)
         self.assertNotIn(HOST, enabled)
         for retired in [HOST, [HOST, HOST], [CAPYKIT], ["not-canonical"]]:
@@ -205,13 +248,13 @@ class LegacyCompatibilityTests(unittest.TestCase):
         row = legacy_row(pr_url=pr_url)
         base = legacy_attempt(row)
         forged = {
-            "unknown-repository": ({**row, "payload_json": json.dumps({"linear_issue": "ENG-8", "repo": "Unknown/repo", "dry_run": False})}, base),
+            "unknown-repository": ({**row, "payload_json": json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": "ENG-8", "repo": "Unknown/repo", "dry_run": False})}, base),
             "cross-repository": (row, legacy_attempt(row, prior_pr_url=f"https://github.com/{HOST}/pull/20")),
             "missing-artifact": ({**row, "pr_url": None}, legacy_attempt({**row, "pr_url": None})),
             "prior-mismatch": (row, legacy_attempt(row, prior_pr_url=f"https://github.com/{CAPYKIT}/pull/21")),
             "non-legacy-actor": (row, legacy_attempt(row, actor="operator")),
             "arbitrary-status": (row, legacy_attempt(row, status="legacy_permitted")),
-            "malformed-source-url": ({**row, "pr_url": "https://github.com/Driftward-LLC/capykit/pull/not-a-number"}, base),
+            "malformed-source-url": ({**row, "pr_url": "https://github.com/example/widgets/pull/not-a-number"}, base),
             "malformed-source-branch": ({**row, "branch": "codex/not-deterministic"}, base),
         }
         for name, (source, attempt) in forged.items():

@@ -1,4 +1,4 @@
-import { Metric, Notice, Card, Heading, EmptyState } from '@driftward/ui';
+import { Metric, Notice, Card, Heading, EmptyState } from '@factory/ui';
 import { count, duration, label, time } from './model.js';
 import AnalyticsTrend from './AnalyticsTrend.jsx';
 

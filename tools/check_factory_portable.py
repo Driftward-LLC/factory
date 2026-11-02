@@ -73,8 +73,10 @@ def console_boundary(port: int) -> None:
 SAFETY_CHECK = """
 import os
 assert os.environ.get('HATCHET_INTAKE_DRY_RUN') == 'true'
-assert os.environ.get('DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED') == '0'
-assert not os.environ.get('DRIFTWARD_HERMES_GRPC_TARGET')
+assert os.environ.get('FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED') == '0'
+assert not os.environ.get('FACTORY_HERMES_GRPC_TARGET')
+import factory_organization
+assert factory_organization.load()['github']['enabled'] is False
 print('dry-run-only')
 """
 
@@ -85,17 +87,19 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 assert os.environ.get('HATCHET_INTAKE_DRY_RUN') == 'true'
 issue = sys.argv[1]
+identity = json.load(open(os.environ["FACTORY_ORGANIZATION_CONFIG"]))["linear"]
 now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 payload = {
     'action': 'update', 'type': 'Issue', 'createdAt': now,
-    'url': 'https://linear.app/driftward/issue/' + issue + '/portable-acceptance',
+    'url': 'https://linear.app/' + identity['workspace_slug'] + '/issue/' + issue + '/portable-acceptance',
+    'organizationId': identity['workspace_id'],
     'webhookTimestamp': int(time.time() * 1000),
     'data': {
         'id': 'portable-acceptance-' + issue, 'identifier': issue,
         'title': 'Disposable portable dry-run acceptance',
         'description': 'Synthetic test only. Never perform real execution.',
-        'updatedAt': now, 'team': {'name': 'Engineering', 'key': 'ENG'},
-        'project': {'id': 'd779c532-620d-458c-8abd-05e37f5ca4c1', 'name': 'Capykit'},
+        'updatedAt': now, 'team': {'id': identity['team_id'], 'name': 'Operations', 'key': identity['team_key']},
+        'project': {'id': '44444444-4444-4444-8444-444444444444', 'name': 'Synthetic project'},
         'state': {'name': 'Ready', 'type': 'unstarted'},
         'labels': [], 'relations': {'blockedBy': []},
     },
@@ -122,9 +126,27 @@ assert first['event']['hatchet_published'] and first['event']['hatchet_event_id'
 print(json.dumps({'event_key': first['event']['event_key']}))
 """
 
+DISABLED_DELIVERY = """
+import hashlib, hmac, os
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+for provider, endpoint in [('LINEAR', '/events/linear/issue'), ('GITHUB', '/events/github/pull-request')]:
+    raw = b'{}'
+    secret = os.environ['HATCHET_EVENT_INGRESS_' + provider + '_WEBHOOK_SECRET'].encode()
+    digest = hmac.new(secret, raw, hashlib.sha256).hexdigest()
+    headers = {'Content-Type': 'application/json'}
+    headers['Linear-Signature' if provider == 'LINEAR' else 'X-Hub-Signature-256'] = digest if provider == 'LINEAR' else 'sha256=' + digest
+    try:
+        urlopen(Request('http://127.0.0.1:19878' + endpoint, data=raw, headers=headers), timeout=20).close()
+        raise AssertionError('disabled integration accepted delivery')
+    except HTTPError as error:
+        assert error.code == 503, error.code
+print('disabled integrations reject signed delivery')
+"""
+
 BRIDGE_SNAPSHOT = """
 import json, sqlite3, sys
-connection = sqlite3.connect('file:/var/lib/driftward-hatchet-bridge/bridge.db?mode=ro', uri=True)
+connection = sqlite3.connect('file:/var/lib/factory-hatchet-bridge/bridge.db?mode=ro', uri=True)
 connection.row_factory = sqlite3.Row
 rows = connection.execute('SELECT * FROM bridge_jobs').fetchall()
 assert len(rows) <= 1, 'duplicate bridge jobs'
@@ -134,7 +156,7 @@ else:
     row = rows[0]
     payload = json.loads(row['payload_json'])
     assert payload.get('dry_run') is True
-    assert payload.get('repo') == 'Driftward-LLC/capykit'
+    assert payload.get('repo') == 'ExampleOrg/widget'
     assert payload.get('work_item_id') == sys.argv[1] or payload.get('linear_issue') == sys.argv[1]
     assert row['hatchet_workflow_run_id'] and row['hatchet_step_run_id']
     if row['state'] == 'completed':
@@ -147,7 +169,7 @@ else:
 
 INGRESS_SNAPSHOT = """
 import json, sqlite3, sys
-connection = sqlite3.connect('file:/var/lib/driftward-hatchet-event-ingress/ingress.db?mode=ro', uri=True)
+connection = sqlite3.connect('file:/var/lib/factory-hatchet-event-ingress/ingress.db?mode=ro', uri=True)
 row = connection.execute('SELECT event_key,hatchet_event_id,hatchet_published FROM ingress_events WHERE subject=?', (sys.argv[1],)).fetchall()
 assert len(row) == 1 and row[0][1] and row[0][2] == 1
 receipts = connection.execute('SELECT signature_verified,disposition FROM ingress_receipts WHERE event_key=? ORDER BY disposition', (row[0][0],)).fetchall()
@@ -163,7 +185,7 @@ def main() -> int:
     parser.add_argument("--telemetry", action="store_true", help="also test optional Collector packaging with synthetic credentials and exporters paused")
     args = parser.parse_args()
     project = "factory-acceptance-" + uuid.uuid4().hex[:16]
-    issue = "ENG-" + str(int(uuid.uuid4().hex[:10], 16))
+    issue = "OPS-" + str(1 + int(uuid.uuid4().hex[:10], 16) % 999999999)
     env = {key: value for key, value in os.environ.items() if not key.startswith(("FACTORY_", "HATCHET_", "COMPOSE_"))}
     compose: list[str] | None = None
     print(f"Creating disposable project {project}; its containers and volumes will be deleted on exit.", flush=True)
@@ -233,6 +255,29 @@ def main() -> int:
                 execute("bridge-executor-worker", SAFETY_CHECK)
                 console_boundary(int(config["FACTORY_CONSOLE_PORT"]))
                 credentials = credential_snapshot(directory)
+                print("Checking disabled integrations with correctly signed synthetic delivery.", flush=True)
+                execute("event-ingress", DISABLED_DELIVERY)
+                run([*wrapper, "stop"], env=env, label="stop before reviewed synthetic configuration")
+                organization = {
+                    "schema": "factory-organization-v1", "github": {"enabled": False},
+                    "linear": {"workspace_id": "11111111-1111-4111-8111-111111111111",
+                               "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "OPS",
+                               "workspace_slug": "example-workspace", "actor_id": "33333333-3333-4333-8333-333333333333",
+                               "delegate_name": "Example Factory"}}
+                (directory / "config/organization.json").write_text(json.dumps(organization))
+                (directory / "config/routing-registry.json").write_text(json.dumps({"version": 2, "routes": [
+                    {"project_id": "44444444-4444-4444-8444-444444444444", "repo": "ExampleOrg/widget", "execution_enabled": True}]}))
+                (directory / "config/verifier-policy.json").write_text(json.dumps({"version": 1, "policies": [{
+                    "id": "portable-acceptance", "repo": "ExampleOrg/widget", "expected_base": "integration",
+                    "allowed_changed_paths": ["README.md"], "forbidden_changed_paths": [".env"],
+                    "required_local_commands": ["git diff --check"], "secret_check_command": "test ! -f .env"}]}))
+                workers_path = directory / "env/hatchet-workers.env"
+                workers = bootstrap.read_env(workers_path)
+                workers["HATCHET_INTAKE_ALLOWED_REPOS"] = "ExampleOrg/widget"
+                workers_path.write_text(bootstrap.env_text(workers))
+                supplied_workers = workers_path.read_bytes()
+                run([*wrapper, "up"], env=env, label="synthetic configured dry-run startup")
+                supplied_configuration = bootstrap.configuration(directory / "config")
                 print("Checking signed ingress, duplicate suppression, and Hatchet dry-run completion.", flush=True)
                 execute("event-ingress", SIGNED_DELIVERY)
                 deadline = time.monotonic() + 180
@@ -268,6 +313,10 @@ def main() -> int:
                 run([*restored_wrapper, "restore", str(snapshot), "--project", restored_project,
                      "--port-offset", str(args.port_offset + 1000), "--apply"], env=env, label="cold restore")
                 restored_metadata, restored_config = bootstrap.validate_directory(restored_directory)
+                if bootstrap.configuration(restored_directory / "config") != supplied_configuration:
+                    raise RuntimeError("restore changed supplied organization or policy files")
+                if (restored_directory / "env/hatchet-workers.env").read_bytes() != supplied_workers:
+                    raise RuntimeError("restore changed supplied intake allowlist or worker credentials")
                 if restored_config["FACTORY_PROJECT_NAME"] != restored_project:
                     raise RuntimeError("unexpected restored test project identity")
                 restored_env = {**env, **restored_config, "FACTORY_INSTALLATION_ID": restored_metadata["installation_id"]}

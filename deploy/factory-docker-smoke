@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-runtime_root="${1:-${DRIFTWARD_FACTORY_RUNTIME_ROOT:-/docker/driftward/factory}}"
-hatchet_env_file="${DRIFTWARD_HATCHET_ENV_FILE:-/etc/driftward/hatchet.env}"
-bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"
-operator_env_file="${FACTORY_OPERATOR_ENV:-/etc/driftward/factory-operator.env}"
-operator_socket="${FACTORY_OPERATOR_SOCKET:-/run/driftward-factory-operator/operator.sock}"
-operator_preview_smoke_issue="${FACTORY_OPERATOR_PREVIEW_SMOKE_ISSUE:-ENG-999999999}"
-expected_policy_path="/app/hatchet/workers/verifier-policy.json"
-hatchet_postgres_volume=driftward-factory-hatchet-postgres-data
-hatchet_config_volume=driftward-factory-hatchet-config-data
-bridge_volume=driftward-factory-bridge-data
-ingress_volume=driftward-factory-ingress-data
-lifecycle_volume=driftward-factory-lifecycle-data
-linear_token_volume=driftward-factory-linear-token-data
+runtime_root="${1:-${FACTORY_RUNTIME_ROOT:-/docker/factory/factory}}"
+hatchet_env_file="${FACTORY_HATCHET_ENV_FILE:-/etc/factory/hatchet.env}"
+bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/factory/hatchet-bridge.env}"
+operator_env_file="${FACTORY_OPERATOR_ENV:-/etc/factory/factory-operator.env}"
+operator_socket="${FACTORY_OPERATOR_SOCKET:-/run/factory-operator/operator.sock}"
+operator_preview_smoke_issue="${FACTORY_OPERATOR_PREVIEW_SMOKE_ISSUE:-}"
+expected_policy_path="/etc/factory/config/verifier-policy.json"
+hatchet_postgres_volume=factory-hatchet-postgres-data
+hatchet_config_volume=factory-hatchet-config-data
+bridge_volume=factory-bridge-data
+ingress_volume=factory-ingress-data
+lifecycle_volume=factory-lifecycle-data
+linear_token_volume=factory-linear-token-data
 
 env_file_value() {
   local file="$1"
@@ -105,16 +105,16 @@ require_named_volume_mount() {
 
 require_named_volume_mount postgres /var/lib/postgresql/data "$hatchet_postgres_volume"
 require_named_volume_mount hatchet-lite /config "$hatchet_config_volume"
-require_named_volume_mount bridge /var/lib/driftward-hatchet-bridge "$bridge_volume"
-require_named_volume_mount event-ingress /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
-require_named_volume_mount factory-lifecycle-writer /var/lib/driftward-factory-lifecycle-writer "$lifecycle_volume"
-require_named_volume_mount factory-linear-token-refresh /var/lib/driftward-factory-linear-token "$linear_token_volume"
-require_named_volume_mount factory-linear-token-refresh /var/run/factory-linear-token driftward-factory-linear-published-token
-require_named_volume_mount factory-lifecycle-writer /var/run/factory-linear-token driftward-factory-linear-published-token
-require_named_volume_mount factory-operator /var/lib/driftward-hatchet-bridge "$bridge_volume"
-require_named_volume_mount factory-operator /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
-require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-bridge "$bridge_volume"
-require_named_volume_mount outbox-dispatcher /var/lib/driftward-hatchet-event-ingress "$ingress_volume"
+require_named_volume_mount bridge /var/lib/factory-hatchet-bridge "$bridge_volume"
+require_named_volume_mount event-ingress /var/lib/factory-hatchet-event-ingress "$ingress_volume"
+require_named_volume_mount factory-lifecycle-writer /var/lib/factory-lifecycle-writer "$lifecycle_volume"
+require_named_volume_mount factory-linear-token-refresh /var/lib/factory-linear-token "$linear_token_volume"
+require_named_volume_mount factory-linear-token-refresh /var/run/factory-linear-token factory-linear-published-token
+require_named_volume_mount factory-lifecycle-writer /var/run/factory-linear-token factory-linear-published-token
+require_named_volume_mount factory-operator /var/lib/factory-hatchet-bridge "$bridge_volume"
+require_named_volume_mount factory-operator /var/lib/factory-hatchet-event-ingress "$ingress_volume"
+require_named_volume_mount outbox-dispatcher /var/lib/factory-hatchet-bridge "$bridge_volume"
+require_named_volume_mount outbox-dispatcher /var/lib/factory-hatchet-event-ingress "$ingress_volume"
 
 for service in bridge intake-worker bridge-executor-worker factory-operator; do
   runtime="$(docker compose "${compose_args[@]}" exec -T "$service" printenv HATCHET_FACTORY_RUNTIME || true)"
@@ -139,10 +139,18 @@ if [[ -r "$bridge_env_file" ]]; then
 fi
 
 operator_preview_smoke() {
-  local token response status payload error
+  local token response status payload error team
 
-  if [[ ! "$operator_preview_smoke_issue" =~ ^ENG-[1-9][0-9]*$ ]]; then
-    echo "Factory operator preview smoke issue must be an ENG identifier" >&2
+  if [[ -z "$operator_preview_smoke_issue" ]]; then
+    team="$(docker compose "${compose_args[@]}" exec -T factory-operator python3 -c 'import factory_organization; print((factory_organization.load()["linear"] or {}).get("team_key", ""))')"
+    if [[ -z "$team" ]]; then
+      echo "Factory operator retry preview skipped: Linear integration is disabled"
+      return
+    fi
+    operator_preview_smoke_issue="$team-999999999"
+  fi
+  if [[ ! "$operator_preview_smoke_issue" =~ ^[A-Z][A-Z0-9]{0,15}-[1-9][0-9]{0,8}$ ]]; then
+    echo "Factory operator preview smoke issue must be a configured team identifier" >&2
     exit 1
   fi
   if [[ ! -r "$operator_env_file" ]]; then

@@ -1,6 +1,6 @@
 """Credential-free installed SDK probe; never calls a provider or creates a live profile.
 
-Run: python3 tools/probe_factory_native_reviewer.py hermes-driftward-hermes-1
+Run: python3 tools/probe_factory_native_reviewer.py hermes-factory-hermes-1
 """
 from __future__ import annotations
 
@@ -188,7 +188,7 @@ def inside(script: str, observer_code: str) -> None:
                         assert len(exported) == 5, "assessment emitted before exporter flush"
                     return super().write(text)
             metadata = {"role": "reviewer", "review_id": "synthetic-review", "head_sha": "b" * 40,
-                        "pass_number": 1, "repository": "Driftward-LLC/factory"}
+                        "pass_number": 1, "repository": "ExampleOrg/widget"}
             outgoing = Sink()
             replies = io.StringIO(json.dumps({"content": content}) + "\n" + json.dumps({"content": image}) + "\n")
             with patch.object(socket.socket, "connect", side_effect=AssertionError("probe must not use network")), \

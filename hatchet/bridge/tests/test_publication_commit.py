@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import importlib.util
 import json
 import os
@@ -15,8 +18,8 @@ class PublicationCommitTests(unittest.TestCase):
     self.tmp=tempfile.TemporaryDirectory(); root=Path(self.tmp.name); uid=os.getuid(); gid=os.getgid()
     self.etc=root/"etc"; self.systemd=root/"systemd"; self.release=root/"release"
     for p in (self.etc,self.systemd,self.release): p.mkdir(); p.chmod(0o750 if p==self.etc else 0o755)
-    self.stage=root/"stage"; (self.stage/"etc/driftward").mkdir(parents=True); (self.stage/"units").mkdir(); (self.stage/"release").mkdir()
-    (self.stage/"etc/driftward/hatchet-routing-registry.json").write_text('{"v":1}')
+    self.stage=root/"stage"; (self.stage/"etc/factory").mkdir(parents=True); (self.stage/"units").mkdir(); (self.stage/"release").mkdir()
+    (self.stage/"etc/factory/hatchet-routing-registry.json").write_text('{"v":1}')
     (self.stage/"units/test.service").write_text("[Service]\n")
     self.p=pubmod.Publication(etc=self.etc,systemd=self.systemd,release=self.release,targets=(str(self.etc/"hatchet-routing-registry.json"),str(self.systemd/"test.service"),str(self.release/"current")),directories=(str(self.etc),str(self.systemd),str(self.release)),transients=(str(self.release/".current.new"),),uid=uid,gid=gid,state=root/"state")
     self.old=pubmod.INVENTORY; pubmod.INVENTORY={"units":["test.service"]}

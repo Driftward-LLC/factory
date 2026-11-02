@@ -452,7 +452,7 @@ class AuditedDeploymentTests(unittest.TestCase):
                 manual.execution_run(auto, self.binding, args, self.installed, Mock())
         self.install.compose.assert_not_called()
 
-    def configuration_fixture(self, flag=b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n"):
+    def configuration_fixture(self, flag=b"FACTORY_REVIEWER_ENABLED='0'\n"):
         self.save(self.work / 'status.json', {'phase': 'complete'})
         directory = self.installation / 'env'; directory.mkdir(mode=0o700)
         self.reviewer_env = directory / 'hatchet-worker-bridge-executor.env'
@@ -469,7 +469,7 @@ class AuditedDeploymentTests(unittest.TestCase):
                 return json.dumps(self.unresolved)
             values = self.prod.portable.bootstrap.read_env(self.reviewer_env)
             return json.dumps({'services': {'bridge-executor-worker': {'environment': {
-                'DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED': '1', **values}}}})
+                'FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED': '1', **values}}}})
         self.install.compose = Mock(side_effect=compose)
         snap = {'installation': str(self.installation), 'paused_execution': ['bridge-executor-worker']}
         item = patch.object(manual, 'execution_snapshot', return_value=snap)
@@ -483,7 +483,7 @@ class AuditedDeploymentTests(unittest.TestCase):
         return manual.execution_run(auto, self.binding, args, self.installed, Mock())
 
     def test_configure_preview_apply_preserves_private_bytes_and_never_starts(self):
-        for flag in (b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n", b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='false'\r\n", b''):
+        for flag in (b"FACTORY_REVIEWER_ENABLED='0'\n", b"FACTORY_REVIEWER_ENABLED='false'\r\n", b''):
             with self.subTest(flag=flag):
                 # Each subcase gets its own existing installation and audit state.
                 if hasattr(self, 'reviewer_env'):
@@ -501,7 +501,7 @@ class AuditedDeploymentTests(unittest.TestCase):
                 result = self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
                 self.assertEqual(result['phase'], 'complete')
                 after = self.reviewer_env.read_bytes()
-                expected = before.replace(flag, flag.replace(b"'0'", b"'1'").replace(b"'false'", b"'1'")) if flag else before + b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='1'\n"
+                expected = before.replace(flag, flag.replace(b"'0'", b"'1'").replace(b"'false'", b"'1'")) if flag else before + b"FACTORY_REVIEWER_ENABLED='1'\n"
                 self.assertEqual(after, expected)
                 self.assertEqual(self.reviewer_env.stat().st_mode & 0o777, 0o600)
                 self.assertEqual((self.reviewer_env.stat().st_uid, self.reviewer_env.stat().st_gid), (owner.st_uid, owner.st_gid))
@@ -548,13 +548,13 @@ class AuditedDeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(manual.Refusal, 'stale_or_consent'):
             self.configure('apply', snapshot_digest=view['snapshot_digest'], reason='reviewed', yes=True)
         self.assertFalse((self.work / 'operator-execution-configure').exists())
-        self.reviewer_env.write_bytes(before + b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n")
+        self.reviewer_env.write_bytes(before + b"FACTORY_REVIEWER_ENABLED='0'\n")
         with self.assertRaises(ValueError): self.configure('preview')
         self.reviewer_env.write_bytes(before)
-        self.unresolved['services']['bridge-executor-worker']['environment']['DRIFTWARD_FACTORY_REVIEWER_ENABLED'] = '0'
+        self.unresolved['services']['bridge-executor-worker']['environment']['FACTORY_REVIEWER_ENABLED'] = '0'
         with self.assertRaisesRegex(manual.Refusal, 'overridden'): self.configure('preview')
         self.unresolved['services']['bridge-executor-worker']['environment'].clear()
-        self.other_env.write_bytes(b"DRIFTWARD_FACTORY_REVIEWER_ENABLED='0'\n")
+        self.other_env.write_bytes(b"FACTORY_REVIEWER_ENABLED='0'\n")
         with self.assertRaisesRegex(manual.Refusal, 'overridden'): self.configure('preview')
 
     def test_configure_atomic_failure_latches_configure_resume_and_deploy(self):

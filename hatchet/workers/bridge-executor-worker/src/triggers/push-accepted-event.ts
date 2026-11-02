@@ -1,4 +1,4 @@
-import { HATCHET_EVENTS } from '@driftward/hatchet-worker-shared';
+import { HATCHET_EVENTS } from '@factory/hatchet-worker-shared';
 import { hatchet } from '../hatchet-client';
 
 async function main() {

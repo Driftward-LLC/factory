@@ -2,6 +2,7 @@
 """Exercise the migration CLI with synthetic state; no live installation or network."""
 import argparse
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,7 +24,7 @@ import portable_state as state
 import bootstrap
 import telemetry
 
-LABEL = "io.driftward.factory.profile-migration-test"
+LABEL = "io.factory.profile-migration-test"
 
 
 def main():
@@ -40,6 +41,7 @@ def main():
     source, destination, snapshot = (root / n for n in ("source", "target", "snapshot"))
     bundle = root / "old-bundle"
     shutil.copytree(ROOT / "deploy", bundle, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(ROOT / "hatchet/bridge/factory_organization.py", bundle / "factory_organization.py")
     source_id = str(uuid.uuid4())
     containers, volumes = [], []
     try:
@@ -132,17 +134,26 @@ def main():
         state._tar(args.image, hermes_name, root, "hermes.tar", restore=True)
         source_install = fixtures.production.Production(source)
         state.backup(source_install, snapshot, apply=True)
+        configuration = root / "reviewed-configuration"
+        shutil.copytree(source / "config", configuration)
+        for path in configuration.iterdir():
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
         command = [sys.executable, str(ROOT / "deploy/profile_migration.py"), "--source-bundle", str(bundle), "--source", str(source),
                    "--snapshot", str(snapshot), "--destination", str(destination), "--project", target, "--image", args.image,
-                   "--hermes-container", project + "-hermes"]
+                   "--configuration", str(configuration), "--hermes-container", project + "-hermes"]
         preview = json.loads(pg.run(command))
         assert not destination.exists()
+        assert preview["plan"]["configuration_sha256"] == {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in configuration.iterdir()}
         rejected = subprocess.run([*command, "--apply", "--approve-digest", "0" * 64], capture_output=True)
         assert rejected.returncode != 0 and not destination.exists()
         pg.run([*command, "--apply", "--approve-digest", preview["preview_sha256"]])
         candidate = fixtures.production.Production(destination)
         candidate.preflight()
         assert not candidate.service_rows()
+        assert bootstrap.configuration(candidate.directory / "config") == bootstrap.configuration(configuration)
+        for path in configuration.iterdir():
+            assert (candidate.directory / "config" / path.name).read_bytes() == path.read_bytes()
+        assert candidate.provenance["profile_migration"]["configuration_sha256"] == preview["plan"]["configuration_sha256"]
         assert candidate.provenance["source_images"] == provenance["source_images"]
         assert len(candidate.durable_volumes) == 8
         assert set(candidate.images.values()) == {args.image}

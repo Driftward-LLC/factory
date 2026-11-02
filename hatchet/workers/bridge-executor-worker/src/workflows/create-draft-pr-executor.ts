@@ -5,7 +5,7 @@ import {
   HATCHET_EVENTS,
   type BridgeJob,
   type JsonObject
-} from '@driftward/hatchet-worker-shared';
+} from '@factory/hatchet-worker-shared';
 import {
   NonRetryableBridgeExecutionError,
   boundedHermesDraftPrReceipt,
@@ -200,7 +200,7 @@ const executeCreateDraftPrTask = bridgeExecutorCreateDraftPr.task({
     if (!realCreateDraftPrEnabled()) {
       const failed = await failBeforeExternalEffect(bridge, job, {
         reasonCode: 'real_create_draft_pr_disabled',
-        error: 'Set DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED=1 to enable real PR creation',
+        error: 'Set FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED=1 to enable real PR creation',
         failureDomain: 'factory',
         failureStage: 'preflight',
         operatorInterventionRequired: true,

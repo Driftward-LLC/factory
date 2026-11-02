@@ -36,8 +36,8 @@ any worker is allowed to dispatch Hermes.
 Linear Issue create/update/remove
   -> normalize issue snapshot
   -> record in SQLite with a stable event key
-  -> publish driftward.linear.issue.observed
-  -> publish driftward.linear.issue.ready_for_implementation only if gates pass
+  -> publish factory.linear.issue.observed
+  -> publish factory.linear.issue.ready_for_implementation only if gates pass
   -> do not dispatch Hermes from ingress
 ```
 
@@ -48,7 +48,7 @@ team = Engineering
 status = Ready
 no active blockedBy relation
 status is not Done, Canceled, In Review, Needs Operator, or Blocked
-delegate is not Driftward Factory
+delegate is not Factory
 project execution policy is enabled for the immutable project ID
 ```
 
@@ -59,8 +59,8 @@ repository.
 
 Ingress reads the same non-secret `HATCHET_INTAKE_ROUTING_REGISTRY_PATH` used
 by intake. A disabled project, or a missing or malformed policy, remains a
-persisted `driftward.linear.issue.observed` event with `dispatchEligible=false`;
-it never emits `driftward.linear.issue.ready_for_implementation`. Intake repeats
+persisted `factory.linear.issue.observed` event with `dispatchEligible=false`;
+it never emits `factory.linear.issue.ready_for_implementation`. Intake repeats
 the policy check before bridge lookup as defense in depth.
 
 ### GitHub PR Ingress
@@ -71,37 +71,37 @@ and `closed`:
 
 ```text
 GitHub pull_request.opened
-  -> normalize as driftward.github.pr.created
+  -> normalize as factory.github.pr.created
   -> record in SQLite with a stable event key
   -> publish the Hatchet observation event once
   -> do not dispatch Hermes
 
 GitHub pull_request.synchronize
-  -> normalize as driftward.github.pr.synchronized
+  -> normalize as factory.github.pr.synchronized
   -> record in SQLite with a stable event key
   -> publish the Hatchet observation event once
   -> do not dispatch Hermes
 
 GitHub pull_request.reopened
-  -> normalize as driftward.github.pr.reopened with state=open and merged=false
+  -> normalize as factory.github.pr.reopened with state=open and merged=false
   -> record in SQLite with a stable event key
   -> publish the Hatchet observation event once
   -> require fresh verification; do not dispatch Hermes
 
 GitHub pull_request.closed
-  -> normalize as driftward.github.pr.closed_unmerged or
-     driftward.github.pr.closed_merged
+  -> normalize as factory.github.pr.closed_unmerged or
+     factory.github.pr.closed_merged
   -> record in SQLite with a stable event key
   -> publish the Hatchet observation event once
   -> do not dispatch Hermes
 
 GitHub check_suite.completed
-  -> normalize as driftward.github.checks.completed
+  -> normalize as factory.github.checks.completed
   -> retain suite ID, head SHA, status/conclusion, and PR numbers when supplied
   -> publish an observation once; never claim aggregate first-pass CI
 
 GitHub pull_request_review.submitted
-  -> normalize as driftward.github.review.submitted
+  -> normalize as factory.github.review.submitted
   -> retain review state, commit SHA, timestamp, and actor kind
   -> omit reviewer identity and review body from the normalized event
   -> publish an observation once; do not dispatch Hermes
@@ -125,10 +125,10 @@ review activity.
 
 - Compose service: `event-ingress`
 - Local API: `http://127.0.0.1:19878`
-- Database: `/var/lib/driftward-hatchet-event-ingress/ingress.db`
+- Database: `/var/lib/factory-hatchet-event-ingress/ingress.db`
 - Durable schema contract: `ingress_schema_meta.schema_version = 3`
-- Optional env: `/etc/driftward/hatchet-event-ingress.env`
-- Hatchet token: inherited from `/etc/driftward/hatchet-workers.env`
+- Optional env: `/etc/factory/hatchet-event-ingress.env`
+- Hatchet token: inherited from `/etc/factory/hatchet-workers.env`
 - Public proxy Compose service: `linear-webhook-proxy`
 - Public Linear webhook URL: `https://your-webhook.example.com/events/linear/issue`
 
@@ -168,7 +168,7 @@ without creating a dependency cycle with the dispatcher that drains it.
 Focused manual replay:
 
 ```bash
-python3 -m hatchet_event_ingress.cli --db /var/lib/driftward-hatchet-event-ingress/ingress.db dispatch-pending --limit 50
+python3 -m hatchet_event_ingress.cli --db /var/lib/factory-hatchet-event-ingress/ingress.db dispatch-pending --limit 50
 ```
 
 Public Linear webhook proxy readiness:
@@ -235,7 +235,7 @@ does not emit a `500` or stack trace.
 
 ## GitHub Signature
 
-Set this in `/etc/driftward/hatchet-event-ingress.env` to require
+Set this in `/etc/factory/hatchet-event-ingress.env` to require
 `X-Hub-Signature-256`:
 
 ```text
@@ -253,7 +253,7 @@ covered by the body HMAC and is never part of canonical event identity.
 ## Optional Linear Signature
 
 Linear signs webhook payloads with a hex HMAC-SHA256 in `Linear-Signature`.
-Set this in `/etc/driftward/hatchet-event-ingress.env` before enabling the
+Set this in `/etc/factory/hatchet-event-ingress.env` before enabling the
 Linear webhook. The public proxy refuses webhook payloads until this key is
 present, and the private ingress service uses it for signature and timestamp
 verification:

@@ -138,8 +138,12 @@ def conversation(owner, request):
     if config.get("tools", {}).get("tool_search", {}).get("enabled") != "off":
         raise Refused("explicit direct native tool dispatch required")
     from agent.skill_commands import build_preloaded_skills_prompt
-    required_skills = ['driftward-engineering:implement-change', 'driftward-engineering:verify-app',
-                       'driftward-engineering:prepare-pr']
+    namespace = os.environ.get('FACTORY_HERMES_SKILL_NAMESPACE') or config.get('factory_skill_namespace')
+    if not isinstance(namespace, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,99}', namespace):
+        raise Refused('explicit valid Factory skill namespace required')
+    if config.get('factory_skill_namespace', namespace) != namespace:
+        raise Refused('Factory skill namespace configuration differs')
+    required_skills = [namespace + ':' + name for name in ('implement-change', 'verify-app', 'prepare-pr')]
     skills_prompt, loaded, missing = build_preloaded_skills_prompt(required_skills, task_id=owner.session)
     if missing or set(loaded) != set(required_skills) or not skills_prompt:
         raise Refused("mandatory Factory engineering skills unavailable")

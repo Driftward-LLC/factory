@@ -375,7 +375,7 @@ class LauncherOutputTests(unittest.TestCase):
                 "hermes_cli/__init__.py": "",
                 "hermes_cli/config.py": '''
                     def load_config_readonly():
-                        return {"platform_toolsets": {"cli": ["terminal"]}, "tools": {"tool_search": {"enabled": "off"}}}
+                        return {"factory_skill_namespace": "external-engineering", "platform_toolsets": {"cli": ["terminal"]}, "tools": {"tool_search": {"enabled": "off"}}}
                 ''',
                 "agent/__init__.py": "",
                 "agent/skill_commands.py": '''
@@ -413,7 +413,7 @@ class LauncherOutputTests(unittest.TestCase):
                                      "--experimental-local-terminal", "--journal", str(root / "journal")],
                                     input=json.dumps(launch) + "\n" + json.dumps({"cancel": bound}) + "\n",
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
-                                    env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(source), "HERMES_HOME": str(home)}, cwd=root)
+                                    env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(source), "HERMES_HOME": str(home), "FACTORY_HERMES_SKILL_NAMESPACE": "external-engineering"}, cwd=root)
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stderr, "")
             self.assertNotIn("SENSITIVE", result.stdout)
@@ -476,11 +476,11 @@ class RealNativeCleanupTests(unittest.TestCase):
             root = Path(temporary)
             home = root / "profile"
             home.mkdir(mode=0o700)
-            (home / "config.yaml").write_text("model:\n  default: local-test\n  provider: custom\n  base_url: http://127.0.0.1:1/v1\nplatform_toolsets:\n  cli: [terminal]\nterminal:\n  backend: local\ntools:\n  tool_search:\n    enabled: 'off'\n")
+            (home / "config.yaml").write_text("factory_skill_namespace: external-engineering\nmodel:\n  default: local-test\n  provider: custom\n  base_url: http://127.0.0.1:1/v1\nplatform_toolsets:\n  cli: [terminal]\nterminal:\n  backend: local\ntools:\n  tool_search:\n    enabled: 'off'\n")
             for name in ('implement-change', 'verify-app', 'prepare-pr'):
-                directory = home / 'skills' / ('driftward-engineering:' + name)
+                directory = home / 'skills' / ('external-engineering:' + name)
                 directory.mkdir(parents=True)
-                (directory / 'SKILL.md').write_text('---\nname: "driftward-engineering:' + name + '"\ndescription: Disposable native preload proof\n---\nFIXED_FACTORY_SKILL_' + name + '\n')
+                (directory / 'SKILL.md').write_text('---\nname: "external-engineering:' + name + '"\ndescription: Disposable native preload proof\n---\nFIXED_FACTORY_SKILL_' + name + '\n')
             bound = request()
             process = subprocess.Popen([os.environ["FACTORY_TEST_HERMES_PYTHON"], "-u",
                                         str(Path(__file__).parent / "fixtures/hermes-real-agent-transport.py"),
@@ -526,7 +526,7 @@ class RealNativeCleanupTests(unittest.TestCase):
                 missing_home.mkdir(mode=0o700)
                 (missing_home / 'config.yaml').write_bytes((home / 'config.yaml').read_bytes())
                 shutil.copytree(home / 'skills', missing_home / 'skills')
-                (missing_home / 'skills/driftward-engineering:verify-app/SKILL.md').unlink()
+                (missing_home / 'skills/external-engineering:verify-app/SKILL.md').unlink()
                 refused = subprocess.run([os.environ['FACTORY_TEST_HERMES_PYTHON'], '-u',
                                           str(Path(__file__).parent / 'fixtures/hermes-real-agent-transport.py'),
                                           str(ADAPTER / 'main.py'), '--experimental-local-terminal', '--controlled', '--journal', str(root / 'missing-skill')],

@@ -1,9 +1,11 @@
-import { HATCHET_EVENTS } from '@driftward/hatchet-worker-shared';
+import { HATCHET_EVENTS } from '@factory/hatchet-worker-shared';
 import { hatchet } from '../hatchet-client';
 
 async function main() {
+  const repo = process.env.PR_REPO;
+  if (!repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error('PR_REPO must name a repository');
   const event = await hatchet.events.push(HATCHET_EVENTS.GITHUB_PR_CREATED, {
-    repo: process.env.PR_REPO || 'Driftward-LLC/factory',
+    repo,
     prNumber: Number(process.env.PR_NUMBER || 0),
     prUrl: process.env.PR_URL || 'dry-run://github/pr/synthetic',
     title: process.env.PR_TITLE || 'Synthetic PR event',

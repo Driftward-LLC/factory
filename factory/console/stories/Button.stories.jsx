@@ -1,5 +1,5 @@
-import { Button } from '@driftward/ui';
-import { ReloadIcon } from '@driftward/ui/icons';
+import { Button } from '@factory/ui';
+import { ReloadIcon } from '@factory/ui/icons';
 import { useState } from 'react';
 
 function EvidenceLabel() {

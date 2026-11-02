@@ -25,7 +25,7 @@ async function main() {
     proxy = createServer({ key: await readFile(join(temp, 'key.pem')), cert: await readFile(join(temp, 'cert.pem')) }, (req, res) => {
       // This loopback-only test proxy is the trusted identity boundary, like Tailscale Serve.
       const upstream = request({ hostname: '127.0.0.1', port: upstreamPort, path: req.url, method: req.method,
-        headers: { ...req.headers, host: '127.0.0.1:' + upstreamPort, 'tailscale-user-login': 'operator@driftward.test' } }, (reply) => {
+        headers: { ...req.headers, host: '127.0.0.1:' + upstreamPort, 'tailscale-user-login': 'operator@example.test' } }, (reply) => {
         res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
       });
       upstream.on('error', () => { res.statusCode = 502; res.end('Test upstream unavailable'); });
@@ -44,7 +44,7 @@ async function main() {
       new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('Fixture response timed out')), 20000); timer.unref(); }),
     ]);
     const ready = await nextLine(); upstreamPort = ready.port;
-    assert.equal(ready.actor, 'operator@driftward.test');
+    assert.equal(ready.actor, 'operator@example.test');
     browser = await chromium.launch({ headless: true, executablePath: process.env.FACTORY_CONSOLE_CHROMIUM });
     const page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 960 } });
     const errors = []; page.on('pageerror', (error) => errors.push(error.message));
@@ -55,7 +55,7 @@ async function main() {
     await panel.getByRole('button', { name: 'Preview control change' }).click();
     await panel.getByRole('button', { name: 'Confirm manual takeover' }).click();
     await panel.getByText(/Manual control—safe to edit/).waitFor();
-    assert.match(await panel.textContent(), /operator@driftward.test/);
+    assert.match(await panel.textContent(), /operator@example.test/);
     await panel.getByLabel('Reason for this handoff').fill('Disposable real-backend authorized handback');
     await panel.getByRole('button', { name: 'Preview control change' }).click();
     await panel.getByText(/does not continue or verify manual edits/).first().waitFor();

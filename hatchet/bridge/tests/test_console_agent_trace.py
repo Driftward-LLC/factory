@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import copy
 import os
 import sqlite3
@@ -23,7 +26,7 @@ class AgentTraceTests(unittest.TestCase):
         for host in ('us', 'eu', 'app'):
             with patch.dict(os.environ, {'FACTORY_CONSOLE_POSTHOG_PROJECT_URL': f'https://{host}.posthog.com/project/12345/'}):
                 trace = _with_agent_trace(self.record, self.conn)['agent_trace']
-            self.assertEqual(trace['url'], f'https://{host}.posthog.com/project/12345/ai-observability/traces/fb9fa7e1-4065-5818-af72-3e41a35fe39a?timestamp=2026-09-30T05%3A53%3A34.202Z')
+            self.assertEqual(trace['url'], f'https://{host}.posthog.com/project/12345/ai-observability/traces/dc0ccc7a-e755-586d-93a9-0ead02f78cc7?timestamp=2026-09-30T05%3A53%3A34.202Z')
             self.assertEqual(trace['status'], 'unverified')
         self.assertEqual(self.record, before)
 

@@ -25,7 +25,7 @@ CONFIG_FILES = {".env", bootstrap.MARKER, "env/hatchet-client.env",
                 *("env/" + name for name in bootstrap.ENV_FILES),
                 *("keys/hatchet/" + name for name in ("master.key", "private_ec256.key", "public_ec256.key", "public_handle_unencrypted_ec256.key"))}
 DEPLOYMENT_FILES = ("docker-compose.yml", "compose.portable.yml")
-IDENTITY_LABEL = "io.driftward.factory.installation"
+IDENTITY_LABEL = "io.factory.installation"
 PRODUCTION = "same-host-production"
 PROVENANCE = ".factory-cutover.json"
 UNIFIED = "unified-v1"
@@ -49,6 +49,8 @@ def deployment_files(profile: str, metadata: dict | None = None) -> tuple[str, .
 def config_files(profile: str, metadata: dict | None = None) -> set[str]:
     deployment_files(profile, metadata)  # Reject unknown profiles before selecting files.
     files = CONFIG_FILES | ({PROVENANCE} if profile == PRODUCTION else set())
+    if metadata and metadata.get("organization_config") == 1:
+        files = files | {"config/" + name for name in bootstrap.ORGANIZATION_DEFAULTS}
     if metadata and metadata.get("telemetry") is not None:
         import telemetry
         files = files | {telemetry.ENV_FILE}
@@ -160,7 +162,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     files = {".env", bootstrap.MARKER}
     if profile == PRODUCTION:
         files.add(PROVENANCE)
-    for relative in ("env", "keys"):
+    for relative in (("env", "keys", "config") if metadata.get("organization_config") == 1 else ("env", "keys")):
         files.update(relative + "/" + name for name in _private_files(source / relative))
     if files != expected_config:
         raise ValueError("backup requires complete keys/client credentials and only known configuration files")
@@ -183,7 +185,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     installation.compose("stop")
     _no_writers([f"{installation.project}-{suffix}" for suffix in volumes], installation.env)
     snapshot.mkdir(mode=0o700)
-    for name in ("config", "config/env", "config/keys", "config/keys/hatchet", "volumes"):
+    for name in ("config", "config/env", "config/config", "config/keys", "config/keys/hatchet", "volumes"):
         (snapshot / name).mkdir(mode=0o700)
     for relative in sorted(files):
         bootstrap._create_private(snapshot / "config" / relative, bootstrap._read_private(source / relative))
@@ -214,6 +216,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     if (profile == PRODUCTION) != production:
         raise ValueError("snapshot profile requires its matching operations wrapper")
     marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
+    bootstrap.validate_naming_generation(marker)
     expected_config = config_files(profile, marker)
     if manifest.get("deployment_sha256") != {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile, marker)}:
         raise ValueError("restore requires the same deployment bundle; cross-version restore is unsupported")
@@ -283,11 +286,11 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         if actual != image_id:
             raise ValueError("restore requires the exact saved images; cross-version restore is unsupported")
     directory.mkdir(mode=0o700)
-    for relative in ("env", "keys", "keys/hatchet", "run", "run/operator"):
+    for relative in ("env", "config", "keys", "keys/hatchet", "run", "run/operator"):
         (directory / relative).mkdir(mode=0o700)
     for name in sorted(expected_config - {".env", bootstrap.MARKER, PROVENANCE}):
         bootstrap._create_private(directory / name, bootstrap._read_private(snapshot / "config" / name))
-    relocated = ["FACTORY_PROJECT_NAME", "COMPOSE_PROJECT_NAME", "FACTORY_INSTALL_DIR", "FACTORY_ENV_DIR", "FACTORY_OPERATOR_RUN_DIR", *bootstrap.PORTS]
+    relocated = ["FACTORY_PROJECT_NAME", "COMPOSE_PROJECT_NAME", "FACTORY_INSTALL_DIR", "FACTORY_ENV_DIR", "FACTORY_CONFIG_DIR", "FACTORY_OPERATOR_RUN_DIR", *bootstrap.PORTS]
     # Production keeps its public URL; routing to the new loopback listener is
     # a separately reviewed operation. Dry-run copies get their own local URL.
     if not production:

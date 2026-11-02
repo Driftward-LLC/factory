@@ -1,4 +1,4 @@
-import { BridgeClient } from '@driftward/hatchet-worker-shared';
+import { BridgeClient } from '@factory/hatchet-worker-shared';
 import { ConcurrencyLimitStrategy } from '@hatchet-dev/typescript-sdk/v1';
 import { hatchet } from '../hatchet-client';
 import { IngressObservationClient } from '../ingress-observation-client';

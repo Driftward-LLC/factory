@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { TextInput, Button } from '@driftward/ui';
-import { MagnifyingGlassIcon } from '@driftward/ui/icons';
+import { TextInput, Button } from '@factory/ui';
+import { MagnifyingGlassIcon } from '@factory/ui/icons';
 
 function ControlledInput(args) {
   const [value, setValue] = useState(args.value || '');
@@ -18,7 +18,7 @@ export default {
     onChange: { action: 'changed', description: 'Called with the new string value and the native change event.' },
   },
   render: ControlledInput,
-  parameters: { docs: { description: { component: 'Astryx controlled field: onChange receives the new string value. containerClassName styles the complete field and controlClassName styles the control box. Native required, maxLength, pattern and spellCheck are retained by the Driftward adapter for browser validation. Use isDisabled for native disabled behavior. Avoid width/style props in the strict-CSP console.' } } },
+  parameters: { docs: { description: { component: 'Astryx controlled field: onChange receives the new string value. containerClassName styles the complete field and controlClassName styles the control box. Native required, maxLength, pattern and spellCheck are retained by the Factory adapter for browser validation. Use isDisabled for native disabled behavior. Avoid width/style props in the strict-CSP console.' } } },
 };
 export const Search = { args: { startIcon: <MagnifyingGlassIcon aria-hidden="true" /> } };
 export const RequiredReason = {

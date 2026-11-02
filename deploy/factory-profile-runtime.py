@@ -25,26 +25,26 @@ COMMIT = 'db14524356cfebd132833ed06a7c8a097ef5c11c'
 ROLES = {'executor': 'factory-executor', 'reviewer': 'factory-independent-reviewer'}
 LIMIT = 8 * 1024 * 1024
 CAPABILITIES = ('mcp_servers', 'browser', 'terminal', 'tools', 'toolsets', 'enabled_toolsets', 'disabled_toolsets')
-PROVISION = Path('/etc/driftward/factory-reviewer.json')
-DROPIN = Path('/etc/systemd/system/driftward-hermes-factory-gateway.service.d/factory-profile.conf')
-SERVICE = 'driftward-hermes-factory-gateway.service'
-PROFILE_DROPIN = (b'[Service]\nEnvironment=DRIFTWARD_HERMES_PROFILE=factory-executor\n'
-                  b'RuntimeDirectory=driftward-hermes-factory\nRuntimeDirectoryPreserve=yes\n')
+PROVISION = Path('/etc/factory/factory-reviewer.json')
+DROPIN = Path('/etc/systemd/system/factory-hermes-factory-gateway.service.d/factory-profile.conf')
+SERVICE = 'factory-hermes-factory-gateway.service'
+PROFILE_DROPIN = (b'[Service]\nEnvironment=FACTORY_HERMES_PROFILE=factory-executor\n'
+                  b'RuntimeDirectory=factory-hermes-factory\nRuntimeDirectoryPreserve=yes\n')
 CUTOVER_STAGES = {'not_started', 'unknown', 'quiescence', 'workers_stop', 'gateway_stop', 'native_idle',
                   'public_backup', 'public_publish', 'auth_move', 'routing_publish', 'daemon_reload',
                   'gateway_restart', 'gateway_health', 'workers_restore', 'complete', 'workers_restop',
                   'routing_restore', 'auth_restore', 'public_restore'}
 TERMINAL = ('completed', 'failed', 'verified_ready', 'canceled', 'canceled_after_effect', 'superseded', 'legacy_completed')
-INVOCATION_DIRECTORY = Path('/var/lib/driftward-hermes-factory/invocations')
+INVOCATION_DIRECTORY = Path('/var/lib/factory-hermes-factory/invocations')
 REVIEW_SKILL_DIGESTS = {
     'engineering/review-code.md': ('review_skill_digest', '913ab9cd76bfa6403357dd5f8f423a663986eb1b6a9663f425a7ac1a873c660b'),
     'engineering/verify-app.md': ('verify_skill_digest', '43455f2cb5b5d810c58569e3a02be8e140291a44b3198f4bd1291693ac2dfd84'),
 }
 PUBLIC_ASSETS = {
-    'gateway/hermes-gateway-server.js': Path('/usr/local/share/driftward-factory/hermes-gateway/hermes-gateway-server.js'),
-    **{'independent-reviewer/' + name: Path('/usr/local/share/driftward-factory/independent-reviewer/deploy/independent-reviewer') / name
+    'gateway/hermes-gateway-server.js': Path('/usr/local/share/factory/hermes-gateway/hermes-gateway-server.js'),
+    **{'independent-reviewer/' + name: Path('/usr/local/share/factory/independent-reviewer/deploy/independent-reviewer') / name
        for name in ('native_agent.py', 'runner.py', 'review_observer.py')},
-    **{name: Path('/etc/driftward/factory-reviewer') / Path(name).name for name in REVIEW_SKILL_DIGESTS},
+    **{name: Path('/etc/factory/factory-reviewer') / Path(name).name for name in REVIEW_SKILL_DIGESTS},
 }
 HERMES_SOURCE_ROOT = Path('/opt/hermes')
 HERMES_SOURCE_FILES = (
@@ -166,11 +166,22 @@ def archive_files(archive: bytes):
             if not member.isfile() or member.name in files:
                 raise ValueError('plugin archive must contain unique regular files')
             files[member.name] = stream.extractfile(member).read()
+    plugin_namespace(files)
+    return files
+
+
+def plugin_namespace(files):
+    """Use the identity shipped by the verified external release, without rewriting it."""
+    identities = []
     for name in ('plugin.json', 'plugin.yaml', '.codex-plugin/plugin.json'):
         manifest = json.loads(files[name])
-        if manifest.get('name') != 'driftward-engineering' or manifest.get('version') != '0.1.0-rc.6':
+        identity = manifest.get('name')
+        if not isinstance(identity, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,99}', identity) or manifest.get('version') != '0.1.0-rc.6':
             raise ValueError('plugin release identity differs')
-    return files
+        identities.append(identity)
+    if len(set(identities)) != 1:
+        raise ValueError('plugin release manifests disagree')
+    return identities[0]
 
 
 def tree_digest(files):
@@ -258,6 +269,7 @@ def configure(payload):
     from hermes_cli.config import read_user_config_raw, atomic_config_write
     capabilities = default_capabilities()
     files = archive_files(base64.b64decode(payload['engineering'], validate=True))
+    namespace = plugin_namespace(files)
     observer = {name: base64.b64decode(data, validate=True) for name, data in payload['observer'].items()}
     if set(observer) != {'__init__.py', 'plugin.yaml'}:
         raise ValueError('observer package differs')
@@ -267,11 +279,11 @@ def configure(payload):
                 for role, name in ROLES.items()}
     executor = profiles['executor']
     releases = executor / 'factory-managed' / 'releases'
-    engineering = immutable_release(releases / 'driftward-engineering', COMMIT, files)
+    engineering = immutable_release(releases / 'factory-engineering', COMMIT, files)
     observability = immutable_release(releases / 'factory-posthog', tree_digest(observer), observer)
     no_symlinks(executor / 'plugins' / 'observability')
     (executor / 'plugins' / 'observability').mkdir(parents=True, exist_ok=True)
-    link_release(executor / 'plugins' / 'driftward-engineering', engineering)
+    link_release(executor / 'plugins' / 'factory-engineering', engineering)
     link_release(executor / 'plugins' / 'observability' / 'posthog', observability)
     for role, profile in profiles.items():
         path = checked(profile / 'config.yaml')
@@ -282,16 +294,18 @@ def configure(payload):
             config['model'] = {}
         config['model'].update({'default': 'gpt-6.1-sol' if role == 'executor' else 'gpt-6-astra', 'provider': 'openai-codex'})
         plugins = config.setdefault('plugins', {})
-        desired = ['driftward-engineering', 'observability/posthog'] if role == 'executor' else []
+        desired = [namespace, 'observability/posthog'] if role == 'executor' else []
         if set(desired).intersection(plugins.get('disabled', [])):
             raise ValueError('required executor plugin is explicitly disabled')
         plugins['enabled'] = desired
+        if role == 'executor':
+            config['factory_skill_namespace'] = namespace
         if role == 'reviewer':
             config.setdefault('auth', {})['adopt_external_logins'] = False
             for name in ('tool_search', 'connectors'):
                 config.setdefault('tools', {}).setdefault(name, {})['enabled'] = 'off' if name == 'tool_search' else False
         atomic_config_write(path, config)
-    return {'configured': True, 'plugin_commit': COMMIT, 'observer_digest': tree_digest(observer),
+    return {'configured': True, 'plugin_commit': COMMIT, 'skill_namespace': namespace, 'observer_digest': tree_digest(observer),
             'credentials_copied': False, 'routing_changed': False,
             'executor_capability_keys': sorted(capabilities)}
 
@@ -314,7 +328,10 @@ def inventory():
         checked(profile, directory=True, owner=owner)
         config = read_user_config_raw(checked(profile / 'config.yaml'))
         enabled = config.get('plugins', {}).get('enabled', [])
-        result[role] = {'profile': name, 'engineering_enabled': 'driftward-engineering' in enabled,
+        namespace = config.get('factory_skill_namespace')
+        valid_namespace = isinstance(namespace, str) and re.fullmatch(r'[a-z][a-z0-9-]{0,99}', namespace) is not None
+        result[role] = {'profile': name, 'engineering_enabled': bool(valid_namespace and namespace in enabled),
+                        'skill_namespace': namespace if valid_namespace else None,
                         'posthog_plugin_enabled': 'observability/posthog' in enabled,
                         'auth_present': (profile / 'auth.json').is_file()}
         if role == 'executor':
@@ -507,7 +524,7 @@ def canary(payload):
         module = ModuleType('factory_canary_review_observer')
         exec(base64.b64decode(payload['review_observer'], validate=True), module.__dict__)
         metadata = {'role': 'reviewer', 'review_id': 'profile-canary-' + identifier,
-                    'head_sha': COMMIT, 'pass_number': 1, 'repository': 'Driftward-LLC/driftward-engineering'}
+                    'head_sha': COMMIT, 'pass_number': 1, 'repository': 'ExampleOrg/widget'}
         observer = module.attach_observer(metadata, session, set(), telemetry)
         if not observer or not observer.enabled:
             raise ValueError('reviewer PostHog observer unavailable')
@@ -530,7 +547,7 @@ def canary(payload):
                 observer.close()
             if scratch:
                 scratch.cleanup()
-    trace = (str(uuid.uuid5(uuid.NAMESPACE_URL, 'driftward-hermes:trace:session:' + session))
+    trace = (str(uuid.uuid5(uuid.NAMESPACE_URL, 'factory-hermes:trace:session:' + session))
              if role == 'executor' else module.trace_id(metadata))
     return {'role': role, 'profile': ROLES[role], 'session_id': session, 'trace_id': trace,
             'model_run_completed': True, 'posthog_delivery': 'requires_server_verification'}
@@ -562,7 +579,7 @@ def observer_snapshot():
                 protected[str(path)] = None
     executor = ROOT / 'profiles' / ROLES['executor']
     links = {}
-    for name, parent in (('driftward-engineering', executor / 'plugins'),
+    for name, parent in (('factory-engineering', executor / 'plugins'),
                          ('posthog', executor / 'plugins' / 'observability')):
         checked(parent, directory=True)
         path = parent / name
@@ -570,7 +587,7 @@ def observer_snapshot():
             raise ValueError('managed plugin link required')
         release = path.resolve(strict=True)
         expected = executor / 'factory-managed' / 'releases' / ('factory-posthog' if name == 'posthog' else name)
-        if release.parent != expected or (name == 'driftward-engineering' and release.name != COMMIT):
+        if release.parent != expected or (name == 'factory-engineering' and release.name != COMMIT):
             raise ValueError('managed plugin release identity differs')
         checked(release, directory=True)
         files = {}
@@ -617,7 +634,7 @@ def upgrade_observer(payload):
         if temporary.is_symlink():
             temporary.unlink()
     after = observer_snapshot()
-    if after['protected'] != before['protected'] or after['links']['driftward-engineering'] != before['links']['driftward-engineering']:
+    if after['protected'] != before['protected'] or after['links']['factory-engineering'] != before['links']['factory-engineering']:
         raise ValueError('protected role state changed')
     return after
 
@@ -701,7 +718,7 @@ def native_canary_export(payload):
     observer._enqueue = captured.append
     first = None
     for stage, event in zip(('registered', 'stopping', 'unknown'), payload['observations']):
-        if set(event) != {'event', 'distinct_id', 'properties'} or event['event'] != 'factory.experimental_owner' or event['distinct_id'] != 'driftward-hermes':
+        if set(event) != {'event', 'distinct_id', 'properties'} or event['event'] != 'factory.experimental_owner' or event['distinct_id'] != 'factory-hermes':
             raise ValueError('invalid canary owner envelope')
         p = event['properties']
         if (p.get('factory.invocation_id') != payload['binding']['invocation_id'] or p.get('factory.stop.stage') != stage
@@ -1070,7 +1087,7 @@ def gateway_status(*, timeout=15):
 
 
 def gateway_socket_listening(*, timeout=0.5):
-    path = Path('/run/driftward-hermes-factory/hermes.sock')
+    path = Path('/run/factory-hermes-factory/hermes.sock')
     try:
         no_symlinks(path)
         if not stat.S_ISSOCK(path.stat().st_mode):
@@ -1133,7 +1150,7 @@ def activate(install, wrapper):
             if hashlib.sha256(content).hexdigest() != REVIEW_SKILL_DIGESTS[relative][1]:
                 raise ValueError('reviewer skill snapshot differs from pinned engineering release')
         else:
-            marker = (b'DRIFTWARD_HERMES_PROFILE' if relative.startswith('gateway/')
+            marker = (b'FACTORY_HERMES_PROFILE' if relative.startswith('gateway/')
                       else b'auth_root' if relative.endswith('runner.py') else b'factory-independent-reviewer')
             if marker not in content:
                 raise ValueError('public role artifact lacks named-profile support')
@@ -1850,7 +1867,7 @@ def dispatch(install, config, wrapper, args):
         result['reviewer_routed'] = provisioning.get('auth_root') == str(ROOT / 'profiles' / ROLES['reviewer'])
         environment = subprocess.run(['systemctl', 'show', '--property=Environment', '--value', SERVICE],
                                      capture_output=True, text=True, check=True, timeout=15).stdout
-        result['gateway_executor_profile_selected'] = 'DRIFTWARD_HERMES_PROFILE=factory-executor' in environment.split()
+        result['gateway_executor_profile_selected'] = 'FACTORY_HERMES_PROFILE=factory-executor' in environment.split()
         result['gateway_service'] = gateway_status()
         result['gateway_socket_listening'] = gateway_socket_listening()
         result['cutover'] = cutover_status(install)

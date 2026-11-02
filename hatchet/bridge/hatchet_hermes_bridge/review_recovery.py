@@ -74,7 +74,8 @@ def _target(conn, issue, review_id, source_attempt_id):
         "pass_number": row["pass_number"], "policy_digest": row["policy_digest"],
         "expected_base": source["payload"]["expected_base"], "requirements": requirements,
         "requirements_digest": reviews.requirements_digest(requirements)}
-    if (old["payload"] != {"repo": row["repository"], "review": expected, "review_capability": row["capability"], "dry_run": False}
+    old_payload = {"repo": row["repository"], "review": expected, "review_capability": row["capability"], "dry_run": False}
+    if (old["payload"] not in (old_payload, {**old_payload, "organization_binding": source["payload"].get("organization_binding")})
             or not requirements["description"] or source["commit_sha"] != row["head_sha"]
             or row["lineage_key"] != store.payload_hash({"repository": row["repository"], "pr_url": row["pr_url"]})):
         raise store.BridgeConflict("review recovery does not match the legacy missing-session preflight")
@@ -106,12 +107,12 @@ def _preview(conn, *, ingress_db, registry_path, policy_path, actor, intent):
             raise store.BridgeConflict("review recovery policy or enrollment changed")
         request = {k: v for k, v in request.items() if k != "generator_session_id"} | {
             "generator_execution_id": f"factory-execution:{attempt['attempt_id']}:{source['job_id']}"}
-        reviews.validate_request({"repo": row["repository"], "review": request, "review_capability": row["capability"], "dry_run": False})
+        reviews.validate_request({"repo": row["repository"], "review": request, "review_capability": row["capability"], "dry_run": False, "organization_binding": source["payload"]["organization_binding"]})
         evidence = {"review": dict(row), "job": old,
             "events": [dict(r) for r in conn.execute("SELECT * FROM bridge_events WHERE job_id=? ORDER BY event_id", (old["job_id"],))],
             "outbox": [dict(r) for r in conn.execute("SELECT * FROM factory_inspection_outbox WHERE job_id=? ORDER BY outbox_key", (old["job_id"],))]}
         context = {"intent": intent, "principal": principal, "artifact_digest": artifact["snapshot_digest"],
-                   "review_policy": current, "old_evidence_digest": store.payload_hash(evidence), "request": request}
+                   "review_policy": current, "old_evidence_digest": store.payload_hash(evidence), "request": request, "organization_binding": source["payload"]["organization_binding"]}
         return {"eligible": True, "action": "recover_unstarted_review", "review_id": row["review_id"],
                 "pass_number": row["pass_number"], "passes_used": row["pass_number"], "max_passes": 2,
                 "snapshot_digest": store.payload_hash(context), "context": context}, evidence
@@ -146,7 +147,7 @@ def confirm(*, bridge_db, ingress_db, registry_path, policy_path, actor, request
                 raise store.BridgeConflict("review recovery snapshot changed; preview again")
             row = evidence["review"]
             job, _ = store.submit_job(conn, {"idempotency_key": f"factory:review-recovery:{row['review_id']}", "requested_action": "read_only_review",
-                "payload": {"repo": row["repository"], "review": current["context"]["request"], "review_capability": row["capability"], "dry_run": False}}, internal_review=True)
+                "payload": {"repo": row["repository"], "review": current["context"]["request"], "review_capability": row["capability"], "dry_run": False, "organization_binding": current["context"]["organization_binding"]}}, internal_review=True)
             now = store.utc_now()
             conn.execute("INSERT INTO factory_independent_review_deliveries (review_id,job_id,request_id,approval_json,evidence_json,actor,created_at) VALUES (?,?,?,?,?,?,?)",
                 (row["review_id"], job["job_id"], request_id, store.canonical_json(approval), store.canonical_json(evidence), actor, now))

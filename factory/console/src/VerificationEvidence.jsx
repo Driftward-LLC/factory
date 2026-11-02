@@ -1,5 +1,5 @@
-import { StatusBadge, SummaryItem, Card, Heading, MetadataList, MetadataListItem } from '@driftward/ui';
-import { CheckCircledIcon } from '@driftward/ui/icons';
+import { StatusBadge, SummaryItem, Card, Heading, MetadataList, MetadataListItem } from '@factory/ui';
+import { CheckCircledIcon } from '@factory/ui/icons';
 import { time } from './model.js';
 import IndependentReview from './IndependentReview.jsx';
 

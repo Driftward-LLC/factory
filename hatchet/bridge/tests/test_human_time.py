@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import http.client
 import json
 import os
@@ -28,7 +31,7 @@ class HumanTimeTests(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.attempt, self.job, _ = store.reserve_factory_retry(
             self.conn, work_item_key="ENG-600", mode="real", request_id="fixture", reason="fixture", actor="test",
-            payload=verifier_payload("Driftward-LLC/capykit"))
+            payload=verifier_payload("example/widgets"))
         self.aid = self.attempt["attempt_id"]
 
     def record(self, **changes):
@@ -147,8 +150,12 @@ class HumanTimeTests(unittest.TestCase):
             client.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             client.sock.settimeout(5); client.sock.connect(socket_path)
             try:
-                client.request("POST", path, body=json.dumps(value) if raw is None else raw,
-                               headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                try:
+                    client.request("POST", path, body=json.dumps(value) if raw is None else raw,
+                                   headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                except BrokenPipeError:
+                    # Authentication/size rejection may precede the body send; still require its HTTP response.
+                    pass
                 response = client.getresponse()
                 return response.status, json.loads(response.read())
             finally:
@@ -200,7 +207,7 @@ class HumanTimeTests(unittest.TestCase):
             "HATCHET_FACTORY_OPERATOR_INGRESS_DB": str(root / "absent-ingress.db"),
             "HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB": str(root / "absent-lifecycle.db"),
             "HATCHET_FACTORY_OPERATOR_RUNTIME": "systemd",
-            "HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/verifier-policy.json"),
+            "HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/test-fixtures/verifier-policy.json"),
         }
         if os.geteuid() != 0:
             bin_dir = root / "bin"; bin_dir.mkdir()

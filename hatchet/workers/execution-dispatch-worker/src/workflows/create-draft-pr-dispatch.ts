@@ -3,7 +3,7 @@ import {
   HATCHET_EVENTS,
   buildIdempotencyKey,
   type BridgeJob
-} from '@driftward/hatchet-worker-shared';
+} from '@factory/hatchet-worker-shared';
 import { hatchet } from '../hatchet-client';
 
 export type CreateDraftPrDispatchInput = {

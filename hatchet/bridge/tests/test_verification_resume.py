@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import tempfile
@@ -21,7 +24,7 @@ class VerificationResumeTests(unittest.TestCase):
         self.path = str(Path(self.tmp.name) / "bridge.db")
         self.conn = connect_migrate(self.path)
         self.addCleanup(lambda: self.conn.close())
-        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/verifier-policy.json")})
+        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/test-fixtures/verifier-policy.json")})
         env.start()
         self.addCleanup(env.stop)
         self.sequence = 800
@@ -31,7 +34,7 @@ class VerificationResumeTests(unittest.TestCase):
         issue = f"ENG-{self.sequence}"
         attempt, job, _ = store.reserve_factory_intake(
             self.conn, work_item_key=issue, mode="real", request_id=f"intake:{issue}", reason="test",
-            actor="intake-worker", payload=verifier_payload("Driftward-LLC/capykit"),
+            actor="intake-worker", payload=verifier_payload("example/widgets"),
         )
         self.commit(job)
         if state == "verification_pending":
@@ -48,7 +51,7 @@ class VerificationResumeTests(unittest.TestCase):
         lease = store.claim_factory_execution(self.conn, job["job_id"], owner="executor")["lease"]
         self.assertTrue(store.authorize_factory_effect(self.conn, job["job_id"], lease))
         return store.commit_factory_execution(self.conn, job["job_id"], lease, {
-            "pr_url": job["payload"].get("factory_repair", {}).get("pr_url") or f"https://github.com/Driftward-LLC/capykit/pull/{self.sequence}",
+            "pr_url": job["payload"].get("factory_repair", {}).get("pr_url") or f"https://github.com/example/widgets/pull/{self.sequence}",
             "commit_sha": "a" * 40, "branch": job["branch"],
         })
 
@@ -212,7 +215,7 @@ class VerificationResumeTests(unittest.TestCase):
                 with self.conn:
                     self.conn.execute("UPDATE factory_attempts SET status=? WHERE attempt_id=?", ("superseded" if status == "noncurrent" else status, attempt["attempt_id"]))
                 if status == "noncurrent":
-                    store.reserve_factory_retry(self.conn, work_item_key=attempt["work_item_key"], mode="real", request_id="new-generation", reason="test", actor="test", payload=verifier_payload("Driftward-LLC/capykit"))
+                    store.reserve_factory_retry(self.conn, work_item_key=attempt["work_item_key"], mode="real", request_id="new-generation", reason="test", actor="test", payload=verifier_payload("example/widgets"))
                     with self.conn:
                         self.conn.execute("UPDATE factory_attempts SET status='verification_pending' WHERE attempt_id=?", (attempt["attempt_id"],))
                 self.assertEqual(self.enqueue(job)["reason"], "not_eligible")
@@ -273,9 +276,9 @@ class VerificationResumeTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_attempt_outbox WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()[0], 1)
 
     def test_legacy_manual_verification_is_retained_but_automatic_wake_is_skipped(self):
-        job, _ = store.submit_job(self.conn, {"idempotency_key": "legacy-test", "requested_action": "create_draft_pr", "payload": verifier_payload("Driftward-LLC/capykit")})
+        job, _ = store.submit_job(self.conn, {"idempotency_key": "legacy-test", "requested_action": "create_draft_pr", "payload": verifier_payload("example/widgets")})
         store.transition_job(self.conn, job["job_id"], state="running")
-        job = store.transition_job(self.conn, job["job_id"], state="effect_committed", details={"pr_url": "https://github.com/Driftward-LLC/capykit/pull/1", "commit_sha": "abc123"})
+        job = store.transition_job(self.conn, job["job_id"], state="effect_committed", details={"pr_url": "https://github.com/example/widgets/pull/1", "commit_sha": "abc123"})
         self.assertEqual(self.enqueue(job)["reason"], "legacy_job")
         self.assertTrue(self.acquire(job)["acquired"])
         self.assertTrue(self.claim(job))
@@ -309,7 +312,7 @@ class VerificationResumeTests(unittest.TestCase):
         store.cancel_factory_attempt(self.conn, previous["attempt_id"], reason="supersede", actor="test")
         current, job, _ = store.reserve_factory_retry(
             self.conn, work_item_key=previous["work_item_key"], mode="real", request_id="new-create",
-            reason="test", actor="test", payload=verifier_payload("Driftward-LLC/capykit"),
+            reason="test", actor="test", payload=verifier_payload("example/widgets"),
             prior_attempt_id=previous["attempt_id"], supersede_pr_url=prior_job["pr_url"],
         )
         self.sequence += 1

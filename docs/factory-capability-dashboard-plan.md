@@ -18,7 +18,7 @@ attribution as explicit qualification cases when evaluating integrations.
 
 ## Additional reference: Factory.ai
 
-Reviewed 2026-09-14. Factory.ai is a separate vendor; use "Driftward Factory"
+Reviewed 2026-09-14. Factory.ai is a separate vendor; use "Factory"
 for this repository's product in comparisons and operator-facing descriptions.
 This naming distinction does not propose a repository or CLI rename.
 

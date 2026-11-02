@@ -1,7 +1,7 @@
 # Factory UI and Storybook
 
 Storybook is the catalog for Factory's shared React components, theme, and
-icons. Factory consumes the same `@driftward/ui` workspace that the stories
+icons. Factory consumes the same `@factory/ui` workspace that the stories
 render. There is no separate demo implementation and no runtime API connection.
 
 ## Run the catalog
@@ -45,7 +45,7 @@ The running development server exposes a Streamable HTTP MCP endpoint:
 http://127.0.0.1:6006/mcp
 ```
 
-Register it as `driftward-ui` in the agent client's MCP configuration. Clients
+Register it as `factory-ui` in the agent client's MCP configuration. Clients
 must run on this host or use a tunnel: `127.0.0.1` always refers to the client's
 machine. The endpoint is local and unauthenticated; keep it on loopback.
 
@@ -53,7 +53,7 @@ machine. The endpoint is local and unauthenticated; keep it on loopback.
 2. Call `docs-show` for the component's returned ID to read its properties,
    import path, evidence rules, and usage examples.
 3. Use `docs-show-story` for additional states and `stories-preview` for previews.
-4. Import existing components and icons from `@driftward/ui`; use the shared CSS
+4. Import existing components and icons from `@factory/ui`; use the shared CSS
    variables. Add a story when adding a component or meaningful state.
 5. Run the checks below before handoff.
 
@@ -87,11 +87,11 @@ workspaces. To use the same version in another React application:
 ```bash
 npm run pack:ui --prefix factory/console
 # In the consuming application:
-npm install /tmp/driftward-ui-0.2.0.tgz
+npm install /tmp/factory-ui-0.2.0.tgz
 ```
 
 The package exports TypeScript/JSX source for a React-capable bundler and expects
-React 19. Import `@driftward/ui/styles.css` once and wrap the application in
+React 19. Import `@factory/ui/styles.css` once and wrap the application in
 `FactoryTheme`. TypeScript consumers use `moduleResolution: "bundler"`:
 Astryx 0.7.0's declarations use extensionless imports and do not support NodeNext
 resolution. The stylesheet includes compiled Astryx styles, the neutral dark
@@ -141,7 +141,7 @@ dependencies, and bundled icons/static Astryx styles without accessing
 production data. It does not rely on the source workspace's dependency tree.
 
 CI builds the catalog, runs these checks, and uploads the static site as the
-`driftward-ui-storybook` artifact. The static site in
+`factory-ui-storybook` artifact. The static site in
 `factory/console/storybook-static/` can be served by an ordinary static web
 server; it includes manifests but **does not run the MCP endpoint**. Persistent
 hosting and client registration are separate from this repository setup.

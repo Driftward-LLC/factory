@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import tempfile
 import unittest
 import os
@@ -21,7 +24,7 @@ class BridgeServerTests(unittest.TestCase):
             from hatchet_hermes_bridge.store import reserve_factory_retry
             attempt, job, _ = reserve_factory_retry(
                 conn, work_item_key="ENG-40", mode="real", request_id="route-http",
-                reason="test", actor="uid:0", payload={"repo": "Driftward-LLC/capykit"},
+                reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets"},
             )
             details = {
                 "analytics_schema_version": 1,
@@ -57,7 +60,7 @@ class BridgeServerTests(unittest.TestCase):
             from hatchet_hermes_bridge.store import reserve_factory_retry, claim_factory_execution, authorize_factory_effect
             attempt, job, _ = reserve_factory_retry(
                 conn, work_item_key="ENG-40", mode="real", request_id="analytics-http",
-                reason="test", actor="uid:0", payload={"repo": "Driftward-LLC/capykit"},
+                reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets"},
             )
             transition_job(conn, job["job_id"], state="running")
             lease = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
@@ -115,7 +118,7 @@ class BridgeServerTests(unittest.TestCase):
                     "operator_intervention_required": True,
                     "effect_outcome": "observed",
                     "elapsed_ms": 110,
-                    "observed_pr_url": "https://github.com/Driftward-LLC/capykit/pull/40",
+                    "observed_pr_url": "https://github.com/example/widgets/pull/40",
                     "observed_commit_sha": None,
                     "observed_branch": job["branch"],
                     "observed_hermes_session_id": None,
@@ -142,7 +145,7 @@ class BridgeServerTests(unittest.TestCase):
                 "reason": "Linear Ready intake reserved a factory attempt",
                 "hatchet_workflow_run_id": "workflow-1",
                 "hatchet_step_run_id": "step-1",
-                "payload": {"repo": "Driftward-LLC/capykit", "linear_issue": "ENG-9", "dry_run": False, "source_event_key": "linear:issue:ENG-9:update:delivery"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue": "ENG-9", "dry_run": False, "source_event_key": "linear:issue:ENG-9:update:delivery"},
             }
             handler = _PostHandler(conn, body, "/factory/intake/reserve")
             handler.do_POST()
@@ -159,7 +162,7 @@ class BridgeServerTests(unittest.TestCase):
                 "mode": "dry-run",
                 "request_id": "linear:issue:ENG-10:update:delivery",
                 "reason": "Linear Ready intake reserved a factory attempt",
-                "payload": {"repo": "Driftward-LLC/capykit", "linear_issue": "ENG-10", "dry_run": True, "source_event_key": "linear:issue:ENG-10:update:delivery"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/widgets", "linear_issue": "ENG-10", "dry_run": True, "source_event_key": "linear:issue:ENG-10:update:delivery"},
             }
             reserved = _PostHandler(conn, body, "/factory/intake/reserve")
             reserved.do_POST()
@@ -187,11 +190,11 @@ class BridgeServerTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
             from hatchet_hermes_bridge.store import reserve_factory_retry, claim_factory_execution, authorize_factory_effect, commit_factory_execution, get_factory_attempt
-            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-post-commit", reason="test", actor="uid:0", payload={"repo":"Driftward-LLC/capykit"})
+            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-post-commit", reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo":"example/widgets"})
             transition_job(conn, job["job_id"], state="running", details={})
             claim = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
             self.assertTrue(authorize_factory_effect(conn, job["job_id"], claim))
-            commit_factory_execution(conn, job["job_id"], claim, {"commit_sha":"abcdef1", "pr_url":"https://github.com/Driftward-LLC/capykit/pull/99", "branch":job["branch"]})
+            commit_factory_execution(conn, job["job_id"], claim, {"commit_sha":"abcdef1", "pr_url":"https://github.com/example/widgets/pull/99", "branch":job["branch"]})
             server = HTTPServer(("127.0.0.1", 0), BridgeHandler); server.conn = conn
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(timeout=2)))
@@ -207,7 +210,7 @@ class BridgeServerTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
             from hatchet_hermes_bridge.store import reserve_factory_retry, claim_factory_execution, authorize_factory_effect
-            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-race", reason="test", actor="uid:0", payload={"repo":"Driftward-LLC/capykit"})
+            attempt, job, _ = reserve_factory_retry(conn, work_item_key="ENG-62", mode="real", request_id="http-race", reason="test", actor="uid:0", payload={"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo":"example/widgets"})
             transition_job(conn, job["job_id"], state="running", details={})
             lease = claim_factory_execution(conn, job["job_id"], owner="executor-a")["lease"]
             failed = _PostHandler(conn, {"state":"failed", "details":{"reason_code":"forged"}}, f"/jobs/{job['job_id']}/transitions")
@@ -223,13 +226,13 @@ class BridgeServerTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
             from hatchet_hermes_bridge.store import _queue_pr_inspection
-            _queue_pr_inspection(conn, "ENG-8", "https://github.com/Driftward-LLC/capykit/pull/20", "http-a"); conn.commit()
+            _queue_pr_inspection(conn, "ENG-8", "https://github.com/example/widgets/pull/20", "http-a"); conn.commit()
             request = conn.execute("SELECT * FROM factory_inspection_requests").fetchone()
             server = HTTPServer(("127.0.0.1", 0), BridgeHandler); server.conn = conn
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(timeout=2)))
             url = f"http://127.0.0.1:{server.server_port}/jobs/{request['job_id']}/inspection-result"
-            result = {"repository":"Driftward-LLC/capykit","number":20,"url":"https://github.com/Driftward-LLC/capykit/pull/20","state":"closed","merged":False,"draft":True,"head_branch":"codex/hatchet-hermes-abc","head_sha":"abcdef1","base_ref":"main","reason":"ok"}
+            result = {"repository":"example/widgets","number":20,"url":"https://github.com/example/widgets/pull/20","state":"closed","merged":False,"draft":True,"head_branch":"codex/hatchet-hermes-abc","head_sha":"abcdef1","base_ref":"main","reason":"ok"}
             body = json.dumps({"inspection_request_key":request["request_key"], "inspection_capability":request["capability"], "result":result}).encode()
             with self.assertRaises(HTTPError) as denied:
                 urlopen(Request(url, data=body, headers={"Authorization":"Bearer general"}), timeout=2)
@@ -243,10 +246,10 @@ class BridgeServerTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
             from hatchet_hermes_bridge.store import _queue_pr_inspection, get_job
-            _queue_pr_inspection(conn, "ENG-8", "https://github.com/Driftward-LLC/capykit/pull/20", "legacy-a")
+            _queue_pr_inspection(conn, "ENG-8", "https://github.com/example/widgets/pull/20", "legacy-a")
             conn.commit()
             request = conn.execute("SELECT * FROM factory_inspection_requests").fetchone()
-            result = {"repository":"Driftward-LLC/capykit","number":20,"url":"https://github.com/Driftward-LLC/capykit/pull/20","state":"closed","merged":False,"draft":True,"head_branch":"codex/hatchet-hermes-abcdef","head_sha":"abcdef1","base_ref":"main","reason":"ok"}
+            result = {"repository":"example/widgets","number":20,"url":"https://github.com/example/widgets/pull/20","state":"closed","merged":False,"draft":True,"head_branch":"codex/hatchet-hermes-abcdef","head_sha":"abcdef1","base_ref":"main","reason":"ok"}
             path = f"/jobs/{request['job_id']}/inspection-result"
             denied = _PostHandler(conn, {"inspection_request_key":request["request_key"], "inspection_capability":request["capability"], "result":result}, path, {"Authorization":"Bearer general"}); denied.do_POST()
             self.assertEqual(denied.response[0], 403)
@@ -284,17 +287,17 @@ class BridgeServerTests(unittest.TestCase):
         self.addCleanup(lambda: os.environ.pop("HATCHET_HERMES_VERIFIER_TOKEN", None) if old_token is None else os.environ.__setitem__("HATCHET_HERMES_VERIFIER_TOKEN", old_token))
         self.addCleanup(lambda: os.environ.pop("HATCHET_VERIFIER_POLICY_PATH", None) if old_policy is None else os.environ.__setitem__("HATCHET_VERIFIER_POLICY_PATH", old_policy))
         os.environ["HATCHET_HERMES_VERIFIER_TOKEN"] = "verifier-test-only"
-        os.environ["HATCHET_VERIFIER_POLICY_PATH"] = str(Path(__file__).resolve().parents[2] / "workers" / "verifier-policy.json")
+        os.environ["HATCHET_VERIFIER_POLICY_PATH"] = str(Path(__file__).resolve().parents[2] / "workers" / "test-fixtures" / "verifier-policy.json")
         catalog = json.loads(Path(os.environ["HATCHET_VERIFIER_POLICY_PATH"]).read_text())
-        policy = next(item for item in catalog["policies"] if item["repo"] == "Driftward-LLC/driftward-host")
-        payload = {"repo": policy["repo"], "dry_run": False, "verification_policy": {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}}
+        policy = next(item for item in catalog["policies"] if item["repo"] == "example/platform")
+        payload = {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": policy["repo"], "dry_run": False, "verification_policy": {"catalog_version": catalog["version"], "digest": hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), **policy}}
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name)
             self.addCleanup(conn.close)
             job, _ = submit_job(conn, {"idempotency_key": "hatchet:server:receipt", "requested_action": "create_draft_pr", "payload": payload})
             from hatchet_hermes_bridge.store import transition_job
             transition_job(conn, job["job_id"], state="running")
-            transition_job(conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/1"})
+            transition_job(conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc", "pr_url": "https://github.com/example/platform/pull/1"})
             transition_job(conn, job["job_id"], state="verification_pending")
             handler = _PostHandler(conn, {"state": "ready_for_human_review", "details": {"reason_code": "draft_pr_verified"}}, f"/jobs/{job['job_id']}/transitions", {"X-Hatchet-Verifier-Token": "verifier-test-only"})
             handler.do_POST()
@@ -307,9 +310,9 @@ class BridgeServerTests(unittest.TestCase):
         os.environ["HATCHET_HERMES_VERIFIER_TOKEN"] = "verifier-test-only"
         with tempfile.NamedTemporaryFile() as database:
             conn = connect(database.name); self.addCleanup(conn.close)
-            job, _ = submit_job(conn, {"idempotency_key": "hatchet:server:terminal-failure", "requested_action": "create_draft_pr", "payload": {"repo": "Driftward-LLC/driftward-host", "dry_run": False}})
+            job, _ = submit_job(conn, {"idempotency_key": "hatchet:server:terminal-failure", "requested_action": "create_draft_pr", "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform", "dry_run": False}})
             transition_job(conn, job["job_id"], state="running")
-            transition_job(conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc", "pr_url": "https://github.com/Driftward-LLC/driftward-host/pull/2"})
+            transition_job(conn, job["job_id"], state="effect_committed", details={"commit_sha": "abc", "pr_url": "https://github.com/example/platform/pull/2"})
             pending = transition_job(conn, job["job_id"], state="verification_pending", details={"verification_context": {"local_commands": [{"command": "x", "exit_code": 0}], "secret_check": {"command": "y", "exit_code": 0}}})
             replacement = {"local_commands": [{"command": "replace", "exit_code": 0}], "secret_check": {"command": "replace", "exit_code": 0}}
             replay = _PostHandler(conn, {"state": "verification_pending", "details": {"verification_context": replacement}}, f"/jobs/{job['job_id']}/transitions"); replay.do_POST()
@@ -354,7 +357,7 @@ class BridgeServerTests(unittest.TestCase):
             job, _ = submit_job(conn, {
                 "idempotency_key": "hatchet:server:severity-validation",
                 "requested_action": "create_draft_pr",
-                "payload": {"repo": "Driftward-LLC/driftward-host"},
+                "payload": {"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "repo": "example/platform"},
             })
 
             for severity in ([], {}, None, 0, 1.5):

@@ -1,7 +1,9 @@
+import { loadFactoryOrganization } from '@factory/hatchet-worker-shared';
 import { hatchet } from './hatchet-client';
 import { bridgeExecutorCreateDraftPr } from './workflows/create-draft-pr-executor';
 
 async function main() {
+  loadFactoryOrganization();
   const worker = await hatchet.worker('bridge-executor-worker', {
     workflows: [bridgeExecutorCreateDraftPr]
   });

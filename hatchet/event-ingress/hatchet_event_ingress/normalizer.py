@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import factory_organization as organization
+
 import re
 from datetime import datetime
 from typing import Any
@@ -9,7 +11,7 @@ from .routing_policy import LinearProjectExecutionPolicyError, resolve_linear_pr
 from .store import payload_hash
 
 
-ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]{0,15}-[1-9][0-9]{0,8}\b")
 INELIGIBLE_STATUSES = {"done", "canceled", "cancelled", "duplicate", "in review", "needs operator", "blocked"}
 
 
@@ -266,6 +268,9 @@ def normalize_linear_issue(
         raise IngressValidationError("Linear createdAt or updatedAt is required")
 
     team_name = _name_from(data.get("team"))
+    team_id = _optional_string(_object(data, "team", required=False), "id") or _optional_string(data, "teamId")
+    workspace_id = _optional_string(payload, "organizationId")
+    actor_id = _optional_string(_object(payload, "actor", required=False), "id")
     team_key = _optional_string(_object(data, "team", required=False), "key")
     project_id, project_name = _linear_project(data)
     status = _name_from(data.get("state")) or _optional_string(data, "status") or ""
@@ -281,6 +286,10 @@ def normalize_linear_issue(
     gates = _linear_issue_gates(
         action=action,
         team_name=team_name,
+        team_id=team_id,
+        workspace_id=workspace_id,
+        identifier=identifier,
+        actor_id=actor_id,
         team_key=team_key,
         status=status,
         blocked_by=blocked_by,
@@ -322,6 +331,8 @@ def normalize_linear_issue(
         "description": description,
         "team": team_name,
         "teamKey": team_key,
+        "teamId": team_id,
+        "workspaceId": workspace_id,
         "projectId": project_id,
         "projectName": project_name,
         "status": status,
@@ -361,6 +372,10 @@ def _linear_issue_gates(
     *,
     action: str,
     team_name: str | None,
+    team_id: str | None,
+    workspace_id: str | None,
+    identifier: str,
+    actor_id: str | None,
     team_key: str | None,
     status: str,
     blocked_by: list[dict[str, Any]],
@@ -370,11 +385,13 @@ def _linear_issue_gates(
 ) -> list[dict[str, Any]]:
     normalized_status = _normalize_name(status)
     normalized_delegate = _normalize_name(delegate or "")
-    engineering_team = _normalize_name(team_name or "") == "engineering" or _normalize_name(team_key or "") == "eng"
+    identity = organization.load()["linear"]
+    engineering_team = bool(identity and team_id == identity["team_id"] and workspace_id == identity["workspace_id"]
+                            and team_key == identity["team_key"] and organization.matches_issue(identifier))
 
     return [
         _gate(action in {"create", "update"}, "linear_issue_create_or_update", REASON_CODES["LINEAR_ISSUE_REMOVED"]),
-        _gate(_normalize_name(actor_name or "") != "shipwright", "linear_actor_not_factory_lifecycle_writer", REASON_CODES["LINEAR_ISSUE_FACTORY_LIFECYCLE_ACTOR"]),
+        _gate(not identity or actor_id != identity["actor_id"], "linear_actor_not_factory_lifecycle_writer", REASON_CODES["LINEAR_ISSUE_FACTORY_LIFECYCLE_ACTOR"]),
         _gate(not comment_only, "linear_issue_not_comment_only", REASON_CODES["LINEAR_ISSUE_COMMENT_ONLY_UPDATE"]),
         _gate(engineering_team, "linear_team_engineering", REASON_CODES["LINEAR_ISSUE_WRONG_TEAM"]),
         _gate(normalized_status == "ready", "linear_status_ready", REASON_CODES["LINEAR_ISSUE_STATUS_NOT_READY"]),
@@ -385,7 +402,7 @@ def _linear_issue_gates(
             REASON_CODES["LINEAR_ISSUE_TERMINAL_OR_OPERATOR_STATE"],
         ),
         _gate(
-            normalized_delegate != "driftward factory",
+            not identity or normalized_delegate != _normalize_name(identity["delegate_name"]),
             "linear_delegate_not_retired_factory",
             REASON_CODES["LINEAR_ISSUE_RETIRED_FACTORY_DELEGATE"],
         ),

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
+
 import copy
 import json
 import sqlite3
@@ -48,7 +51,7 @@ class IngressStoreTest(unittest.TestCase):
         payload = _payload()
         current = normalize_github_pull_request(payload, delivery_id="current-delivery")
         legacy = copy.deepcopy(current)
-        legacy["eventKey"] = "github:Driftward-LLC/capykit:pr:11:closed:legacy-delivery"
+        legacy["eventKey"] = "github:example/widgets:pr:11:closed:legacy-delivery"
         legacy["deliveryId"] = "legacy-delivery"
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -90,6 +93,8 @@ class IngressStoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ingress.db"
             future = sqlite3.connect(path)
+            future.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+            future.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
             try:
                 future.execute(
                     """
@@ -126,7 +131,7 @@ class IngressStoreTest(unittest.TestCase):
             finally:
                 verification.close()
 
-        self.assertEqual(tables, [("ingress_schema_meta",)])
+        self.assertEqual(tables, [("factory_naming_generation",), ("ingress_schema_meta",)])
         self.assertEqual(version, (4, "future"))
         self.assertEqual(journal_mode, "delete")
 
@@ -235,7 +240,7 @@ class IngressStoreTest(unittest.TestCase):
 
         self.assertTrue(created)
         self.assertEqual(event["subject"], "ENG-40")
-        self.assertEqual(event["hatchet_event_name"], "driftward.linear.issue.ready_for_implementation")
+        self.assertEqual(event["hatchet_event_name"], "factory.linear.issue.ready_for_implementation")
 
     def test_latest_observation_is_sanitized(self) -> None:
         payload = _linear_payload()
@@ -359,6 +364,8 @@ class IngressStoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = f"{tmp}/ingress.db"
             legacy = sqlite3.connect(path)
+            legacy.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+            legacy.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
             try:
                 legacy.execute(
                     """
@@ -380,7 +387,7 @@ class IngressStoreTest(unittest.TestCase):
                     (
                         "legacy-event", "linear:issue:ENG-40:update:legacy", "linear", "Issue", "update",
                         "legacy", "ENG-40", "hash", "{}", json.dumps({"updatedAt": "2026-08-12T12:00:00+02:00"}),
-                        "driftward.linear.issue.observed", None, 0, "observe", "not_ready",
+                        "factory.linear.issue.observed", None, 0, "observe", "not_ready",
                         "2026-08-12T10:01:00Z", "2026-08-12T10:01:00Z",
                     ),
                 )
@@ -407,10 +414,10 @@ class IngressStoreTest(unittest.TestCase):
 def _payload() -> dict:
     return {
         "action": "closed",
-        "repository": {"full_name": "Driftward-LLC/capykit"},
+        "repository": {"full_name": "example/widgets"},
         "pull_request": {
             "number": 11,
-            "html_url": "https://github.com/Driftward-LLC/capykit/pull/11",
+            "html_url": "https://github.com/example/widgets/pull/11",
             "title": "ENG-7: implement Capykit discovery CLI commands",
             "body": "Refs ENG-7",
             "state": "closed",
@@ -426,17 +433,18 @@ def _linear_payload() -> dict:
     return {
         "action": "update",
         "type": "Issue",
+            "organizationId": "11111111-1111-4111-8111-111111111111",
         "createdAt": "2026-08-11T17:00:00.000Z",
-        "url": "https://linear.app/driftward/issue/ENG-40/example",
+        "url": "https://linear.app/example/issue/ENG-40/example",
         "webhookTimestamp": 1797008400000,
         "data": {
             "id": "issue-uuid",
             "identifier": "ENG-40",
             "title": "Build a narrow Linear ingress test",
             "updatedAt": "2026-08-11T17:00:00.000Z",
-            "team": {"name": "Engineering", "key": "ENG"},
+            "team": {"name": "Engineering", "key": "ENG", "id": "22222222-2222-4222-8222-222222222222"},
             "project": {
-                "id": "d779c532-620d-458c-8abd-05e37f5ca4c1",
+                "id": "11111111-1111-4111-8111-111111111111",
                 "name": "Capykit",
             },
             "state": {"name": "Ready", "type": "unstarted"},
@@ -448,3 +456,14 @@ def _linear_payload() -> dict:
 
 if __name__ == "__main__":
     unittest.main()
+
+class NamingGenerationTests(unittest.TestCase):
+    def test_prior_database_is_refused_without_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'events.db'
+            with sqlite3.connect(path) as conn:
+                conn.execute('CREATE TABLE historical_evidence (value TEXT)')
+            before = path.read_bytes()
+            with self.assertRaisesRegex(RuntimeError, 'naming generation'):
+                connect(str(path))
+            self.assertEqual(path.read_bytes(), before)

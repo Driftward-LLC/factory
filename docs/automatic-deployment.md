@@ -65,7 +65,7 @@ passed to Factory containers or used to authenticate the public image pull.
 ## Existing installation transition
 
 The historical filename `factory-auto-deploy.py` and private configuration path
-`/etc/driftward/factory-auto-deploy.json` are retained for installed-system
+`/etc/factory/factory-auto-deploy.json` are retained for installed-system
 compatibility. The public repository no longer contains `Factory Deploy` or
 requires a deployment SSH key. There is no replacement scheduler.
 

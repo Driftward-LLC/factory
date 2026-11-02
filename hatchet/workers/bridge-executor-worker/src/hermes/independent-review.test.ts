@@ -4,21 +4,22 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import test from 'node:test';
-import type { BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { boundedIndependentReview, inconclusiveReview, IndependentReviewer, reviewIntent, runIndependentReviewRelay, readableReviewSnapshot, type ReviewIntent } from './independent-review';
 
 const requirements = { description: 'The counter must increase once per click.', title: 'Fix counter' };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-const legacyIntent: ReviewIntent = { review_id: 'review-1', repository: 'Driftward-LLC/demo',
-  pr_url: 'https://github.com/Driftward-LLC/demo/pull/7', branch: 'codex/demo', head_sha: 'a'.repeat(40),
+const legacyIntent: ReviewIntent = { review_id: 'review-1', repository: 'example/demo',
+  pr_url: 'https://github.com/example/demo/pull/7', branch: 'codex/demo', head_sha: 'a'.repeat(40),
   expected_base: 'main', requirements, requirements_digest: digest(JSON.stringify(requirements)),
   generator_session_id: 'generator-1', pass_number: 1, policy_digest: 'b'.repeat(64) };
 const { generator_session_id: _legacySession, ...commonIntent } = legacyIntent;
 const intent: ReviewIntent = { ...commonIntent,
   generator_execution_id: 'factory-execution:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' };
 const job = (r: ReviewIntent = intent) => ({ requested_action: 'read_only_review', branch: r.branch,
-  payload: { repo: r.repository, review: r, dry_run: false } }) as unknown as BridgeJob;
+  payload: { organization_binding: { workspace_id: '11111111-1111-4111-8111-111111111111', team_id: '22222222-2222-4222-8222-222222222222', team_key: 'ENG' }, repo: r.repository, review: r, dry_run: false } }) as unknown as BridgeJob;
 
 test('immutable source export is readable under gateway umask while journal stays private', () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-source-umask-'));
@@ -107,8 +108,8 @@ test('receipts cannot relabel model, head, isolation or pass malformed findings'
 
 test('default-off gate retains unavailable receipt and ambiguous reservations never call backend', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-journal-'));
-  const before = process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
-  delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
+  const before = process.env.FACTORY_REVIEWER_ENABLED;
+  delete process.env.FACTORY_REVIEWER_ENABLED;
   try {
     let calls = 0;
     const adapter = new IndependentReviewer(directory, '/nonexistent', async () => { calls++; return ''; }, undefined, async () => true);
@@ -125,16 +126,16 @@ test('default-off gate retains unavailable receipt and ambiguous reservations ne
     assert.equal((await adapter.run(job({ ...intent, review_id: 'ambiguous' }))).reason, 'review_inconclusive');
     assert.equal(calls, 0);
   } finally {
-    if (before === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
-    else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = before;
+    if (before === undefined) delete process.env.FACTORY_REVIEWER_ENABLED;
+    else process.env.FACTORY_REVIEWER_ENABLED = before;
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
 test('unreserved review cannot invoke backend despite a valid-looking review intent', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-unreserved-'));
-  const before = process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
-  process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = '1';
+  const before = process.env.FACTORY_REVIEWER_ENABLED;
+  process.env.FACTORY_REVIEWER_ENABLED = '1';
   try {
     let calls = 0;
     const adapter = new IndependentReviewer(directory, '/nonexistent', async () => { calls++; return ''; }, undefined, async () => false);
@@ -142,16 +143,16 @@ test('unreserved review cannot invoke backend despite a valid-looking review int
     assert.equal((await adapter.run(job())).reason, 'review_policy_changed');
     assert.equal(calls, 0);
   } finally {
-    if (before === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
-    else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = before;
+    if (before === undefined) delete process.env.FACTORY_REVIEWER_ENABLED;
+    else process.env.FACTORY_REVIEWER_ENABLED = before;
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
 test('long review retains its receipt after launch inspection expires but still fences controls and changed heads', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-isolation-'));
-  const before = process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
-  process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = '1';
+  const before = process.env.FACTORY_REVIEWER_ENABLED;
+  process.env.FACTORY_REVIEWER_ENABLED = '1';
   try {
     const provision = path.join(directory, 'provision');
     const repositories = path.join(directory, 'repositories');
@@ -189,7 +190,7 @@ test('long review retains its receipt after launch inspection expires but still 
           : headChanged && inspectionAgeSeconds > 0 ? 'f'.repeat(40) : intent.head_sha;
       }
       if (args[0] === 'network' && args[1] === 'inspect') return '[{"Internal":true,"EnableIPv6":false,"Options":{"com.docker.network.bridge.gateway_mode_ipv4":"isolated"}}]';
-      if (args[0] === 'image') return '[{"Config":{"Labels":{"io.driftward.factory.independent-reviewer":"1"}}}]';
+      if (args[0] === 'image') return '[{"Config":{"Labels":{"io.factory.independent-reviewer":"1"}}}]';
       if (args[0] === 'inspect') return JSON.stringify([{ Image: `sha256:${'9'.repeat(64)}`, State: { Running: true } }]);
       if (args[0] === 'run') {
         const mount = args.find((a) => a.includes('dst=/run/mcp-token'))!;
@@ -218,7 +219,7 @@ test('long review retains its receipt after launch inspection expires but still 
     assert.match(source, /source\.bundle/);
     assert.doesNotMatch(source, /auth\.json|source-token|factory-reviewer-egress|docker\.sock/);
     assert.match(agent, /runner\.py/);
-    assert.match(agent, /hermes-driftward-hermes-1/);
+    assert.match(agent, /hermes-factory-hermes-1/);
     assert.equal(receipt.backend, 'isolated_hermes');
     assert.doesNotMatch(agent, /auth\.json|source-token|CODEX_HOME|factory-reviewer-egress/);
     assert.doesNotMatch(agent, /source\.bundle|repositories|docker\.sock/);
@@ -246,8 +247,48 @@ test('long review retains its receipt after launch inspection expires but still 
     assert.equal(changed.verdict, 'inconclusive');
     assert.equal(changed.reason, 'review_head_changed');
   } finally {
-    if (before === undefined) delete process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED;
-    else process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED = before;
+    if (before === undefined) delete process.env.FACTORY_REVIEWER_ENABLED;
+    else process.env.FACTORY_REVIEWER_ENABLED = before;
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('disabled GitHub refuses independent reviewer execution with an enabled reviewer flag', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-github-disabled-'));
+  const previous = process.env.FACTORY_ORGANIZATION_CONFIG;
+  const previousEnabled = process.env.FACTORY_REVIEWER_ENABLED;
+  try {
+    const configuration = path.join(directory, 'organization.json');
+    writeFileSync(configuration, JSON.stringify({ schema: 'factory-organization-v1', linear: null, github: { enabled: false } }));
+    process.env.FACTORY_ORGANIZATION_CONFIG = configuration;
+    process.env.FACTORY_REVIEWER_ENABLED = '1';
+    let calls = 0;
+    const adapter = new IndependentReviewer(path.join(directory, 'journal'), '/nonexistent', async () => { calls++; return ''; }, undefined, async () => true);
+    assert.equal((await adapter.run(job())).reason, 'review_isolation_unavailable');
+    assert.equal(calls, 0);
+  } finally {
+    if (previous === undefined) delete process.env.FACTORY_ORGANIZATION_CONFIG; else process.env.FACTORY_ORGANIZATION_CONFIG = previous;
+    if (previousEnabled === undefined) delete process.env.FACTORY_REVIEWER_ENABLED; else process.env.FACTORY_REVIEWER_ENABLED = previousEnabled;
+    rmSync(directory, { recursive: true });
+  }
+});
+
+test('independent reviewer rejects unbound and stale same-prefix organization jobs before backend', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-review-organization-'));
+  const before = process.env.FACTORY_REVIEWER_ENABLED;
+  process.env.FACTORY_REVIEWER_ENABLED = '1';
+  try {
+    let calls = 0;
+    const adapter = new IndependentReviewer(path.join(directory, 'journal'), '/nonexistent', async () => { calls++; return ''; }, undefined, async () => true);
+    for (const [index, binding] of [undefined, { workspace_id: '44444444-4444-4444-8444-444444444444',
+      team_id: '55555555-5555-4555-8555-555555555555', team_key: 'ENG' }].entries()) {
+      const old = job({ ...intent, review_id: `old-organization-${index}` });
+      if (binding) old.payload.organization_binding = binding; else delete old.payload.organization_binding;
+      assert.equal((await adapter.run(old)).reason, 'review_policy_changed');
+    }
+    assert.equal(calls, 0);
+  } finally {
+    if (before === undefined) delete process.env.FACTORY_REVIEWER_ENABLED; else process.env.FACTORY_REVIEWER_ENABLED = before;
+    rmSync(directory, { recursive: true });
   }
 });

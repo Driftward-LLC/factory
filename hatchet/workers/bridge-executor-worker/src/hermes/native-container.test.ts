@@ -12,15 +12,15 @@ const script = `#!${process.execPath}
 const fs=require('node:fs'),path=require('node:path');
 const args=process.argv.slice(2),root=process.env.NATIVE_CONTAINER_TEST_ROOT,mode=process.env.NATIVE_CONTAINER_TEST_MODE;
 const emit=v=>process.stdout.write(JSON.stringify(v));
-const file=path.join(root,'state'),save=v=>fs.writeFileSync(file,JSON.stringify(v)),read=()=>JSON.parse(fs.readFileSync(file));
+const file=path.join(root,'state'),save=v=>{const temporary=file+'.'+process.pid;fs.writeFileSync(temporary,JSON.stringify(v));fs.renameSync(temporary,file);},read=()=>JSON.parse(fs.readFileSync(file));
 fs.appendFileSync(path.join(root,'calls'),JSON.stringify(args)+'\\n');
-if(args[0]==='volume')emit([{Name:process.env.DRIFTWARD_HERMES_NATIVE_SEED,Driver:'local',Labels:{'com.driftward.factory.role':'native-executor-seed','com.driftward.factory.fresh-credentials':'true'}}]);
-else if(args[0]==='image')emit([{Id:process.env.DRIFTWARD_HERMES_NATIVE_IMAGE,Config:{}}]);
+if(args[0]==='volume')emit([{Name:process.env.FACTORY_HERMES_NATIVE_SEED,Driver:'local',Labels:{'com.factory.role':'native-executor-seed','com.factory.fresh-credentials':'true'}}]);
+else if(args[0]==='image')emit([{Id:process.env.FACTORY_HERMES_NATIVE_IMAGE,Config:{}}]);
 else if(args[0]==='create'){
  const nonce=args[args.indexOf('--label')+1].split('=')[1],id='c'.repeat(64),persistent=args[1]==='-i';
- save({Id:id,Image:process.env.DRIFTWARD_HERMES_NATIVE_IMAGE,Config:{User:'10000:10000',Labels:{'com.driftward.factory.native-owner':nonce}},
+ save({Id:id,Image:process.env.FACTORY_HERMES_NATIVE_IMAGE,Config:{User:'10000:10000',Labels:{'com.factory.native-owner':nonce}},
  HostConfig:{PidMode:'',Init:false,Privileged:false,ReadonlyRootfs:true,RestartPolicy:{Name:'no'},CapDrop:['ALL'],SecurityOpt:['no-new-privileges:true']},
- Mounts:[{Type:'volume',Name:process.env.DRIFTWARD_HERMES_NATIVE_SEED,Destination:'/run/factory-native-seed',RW:false},...(persistent?[{Type:'volume',Name:'private',Destination:'/tmp',RW:true}]:[])],State:{Running:false,Status:'created',ExitCode:0}});
+ Mounts:[{Type:'volume',Name:process.env.FACTORY_HERMES_NATIVE_SEED,Destination:'/run/factory-native-seed',RW:false},...(persistent?[{Type:'volume',Name:'private',Destination:'/tmp',RW:true}]:[])],State:{Running:false,Status:'created',ExitCode:0}});
  process.stdout.write(mode==='lost-create'?'unavailable':id);
 }else if(args[0]==='inspect'){const row=read();if(mode==='mismatch')row.Image='sha256:'+'b'.repeat(64);if(args.includes('{{json .Id}} {{json .Image}}'))process.stdout.write(JSON.stringify(row.Id)+' '+JSON.stringify(row.Image));else emit([row]);}
 else if(args[0]==='start'){
@@ -39,10 +39,10 @@ else process.exit(1);
 test('container reservation survives startup ambiguity, journal faults and cancellation without shared-runtime fallback', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-container-test-'));
   const env = { PATH: directory + path.delimiter + process.env.PATH,
-    DRIFTWARD_HERMES_PROFILE: 'factory-native-executor', DRIFTWARD_HERMES_NATIVE_IMAGE: 'sha256:' + 'a'.repeat(64),
-    DRIFTWARD_HERMES_NATIVE_SEED: 'factory-native-executor-seed-' + 'a'.repeat(32),
-    DRIFTWARD_HERMES_INVOCATION_DIRECTORY: directory + '/journal', NATIVE_CONTAINER_TEST_ROOT: directory,
-    NATIVE_CONTAINER_TEST_MODE: '', DRIFTWARD_HERMES_RUNTIME_MODE: '' };
+    FACTORY_HERMES_PROFILE: 'factory-native-executor', FACTORY_HERMES_NATIVE_IMAGE: 'sha256:' + 'a'.repeat(64),
+    FACTORY_HERMES_NATIVE_SEED: 'factory-native-executor-seed-' + 'a'.repeat(32),
+    FACTORY_HERMES_INVOCATION_DIRECTORY: directory + '/journal', NATIVE_CONTAINER_TEST_ROOT: directory,
+    NATIVE_CONTAINER_TEST_MODE: '', FACTORY_HERMES_RUNTIME_MODE: '' };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
   writeFileSync(path.join(directory, 'docker'), script, { mode: 0o700 });
@@ -87,12 +87,12 @@ test('container reservation survives startup ambiguity, journal faults and cance
     }
     process.env.NATIVE_CONTAINER_TEST_MODE = 'success';
     assert.equal((await execNativeRead(['python3', '-c', 'print(42)'], 1000, 4096)).stdout, '42');
-    const reads = readdirSync(env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY).filter((name) => name.startsWith('read-'));
+    const reads = readdirSync(env.FACTORY_HERMES_INVOCATION_DIRECTORY).filter((name) => name.startsWith('read-'));
     assert.equal(reads.length, 1);
-    const read = JSON.parse(readFileSync(path.join(env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY, reads[0]), 'utf8'));
+    const read = JSON.parse(readFileSync(path.join(env.FACTORY_HERMES_INVOCATION_DIRECTORY, reads[0]), 'utf8'));
     assert.equal(read.state, 'removed');
     assert.equal(read.containerId, 'c'.repeat(64));
-    process.env.DRIFTWARD_HERMES_RUNTIME_MODE = 'local-executor';
+    process.env.FACTORY_HERMES_RUNTIME_MODE = 'local-executor';
     await assert.rejects(execNativeRead(['true'], 1000, 4096));
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

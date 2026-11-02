@@ -28,6 +28,21 @@ def canonical_timestamp(value: object) -> str | None:
     return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _guard_naming_generation(conn: sqlite3.Connection, *, initialize: bool = False) -> None:
+    """Never reinterpret persisted identities from a prior naming generation."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    if not tables and initialize:
+        conn.execute("CREATE TABLE factory_naming_generation (generation TEXT NOT NULL)")
+        conn.execute("INSERT INTO factory_naming_generation VALUES ('factory-neutral-v1')")
+        conn.commit()
+        return
+    if "factory_naming_generation" in tables:
+        rows = conn.execute("SELECT generation FROM factory_naming_generation").fetchall()
+        if len(rows) == 1 and rows[0][0] == "factory-neutral-v1":
+            return
+    raise RuntimeError("Prior or unknown naming generation; preserve state and use the original release pending reviewed offline migration")
+
+
 class Outbox:
     def __init__(self, path: str, *, readonly: bool = False):
         if readonly:
@@ -40,6 +55,11 @@ class Outbox:
         self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
+        try:
+            _guard_naming_generation(self.conn, initialize=True)
+        except Exception:
+            self.conn.close()
+            raise
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.conn.executescript("""

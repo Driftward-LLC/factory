@@ -369,10 +369,10 @@ with open(a[a.index("--output")+1], "w") as output:
         source = (ROOT / "factory/factory").read_text(encoding="utf-8")
 
         self.assertIn("retired_timer_status()", source)
-        self.assertIn('"Retired bridge reconciler" driftward-hatchet-bridge-reconciler.timer driftward-hatchet-bridge-reconciler.service', source)
+        self.assertIn('"Retired bridge reconciler" factory-hatchet-bridge-reconciler.timer factory-hatchet-bridge-reconciler.service', source)
         self.assertIn('timer_active=${active:-unknown} timer_enabled=${enabled:-unknown}', source)
         self.assertIn('service_active=${service_active:-unknown}', source)
-        self.assertNotIn('"Hatchet bridge reconciler timer" driftward-hatchet-bridge-reconciler.timer advisory', source)
+        self.assertNotIn('"Hatchet bridge reconciler timer" factory-hatchet-bridge-reconciler.timer advisory', source)
 
     def test_cli_prefers_docker_runtime_when_active(self) -> None:
         source = (ROOT / "factory/factory").read_text(encoding="utf-8")
@@ -415,10 +415,10 @@ with open(a[a.index("--output")+1], "w") as output:
                 "for arg in \"$@\"; do unit=\"$arg\"; done\n"
                 "case \"$1\" in\n"
                 "  is-active)\n"
-                "    case \"$unit\" in driftward-factory.service|driftward-hermes-factory-gateway.service|driftward-hermes.service) echo active ;; *) echo inactive ;; esac\n"
+                "    case \"$unit\" in factory.service|factory-hermes-factory-gateway.service|factory-hermes.service) echo active ;; *) echo inactive ;; esac\n"
                 "    ;;\n"
                 "  is-enabled)\n"
-                "    case \"$unit\" in driftward-factory.service|driftward-hermes-factory-gateway.service|driftward-hermes.service) echo enabled ;; *) echo disabled ;; esac\n"
+                "    case \"$unit\" in factory.service|factory-hermes-factory-gateway.service|factory-hermes.service) echo enabled ;; *) echo disabled ;; esac\n"
                 "    ;;\n"
                 "  list-timers) ;;\n"
                 "esac\n",
@@ -428,7 +428,7 @@ with open(a[a.index("--output")+1], "w") as output:
                 "#!/usr/bin/env sh\n"
                 "case \" $* \" in\n"
                 "  *' inspect '*'org.opencontainers.image.version'*) printf 'test|0123456789012345678901234567890123456789\\n' ;;\n"
-                "  *' inspect '*) printf 'running|false|0|healthy|driftward/factory:test\\n' ;;\n"
+                "  *' inspect '*) printf 'running|false|0|healthy|factory/factory:test\\n' ;;\n"
                 "  *' ps -q '*) printf 'cid-test\\n' ;;\n"
                 "  *' ps '*|*' ps')\n"
                 "    printf '%s\\n' \\\n"
@@ -471,7 +471,7 @@ with open(a[a.index("--output")+1], "w") as output:
                 "  exit 1\n"
                 "fi\n",
             )
-            self._write_executable(fake_bin / "driftward-hermes", "#!/usr/bin/env sh\nexit 0\n")
+            self._write_executable(fake_bin / "factory-hermes", "#!/usr/bin/env sh\nexit 0\n")
             self._write_executable(
                 fake_bin / "hatchet",
                 "#!/usr/bin/env sh\n"
@@ -485,7 +485,7 @@ with open(a[a.index("--output")+1], "w") as output:
             env = os.environ.copy()
             env.update(
                 {
-                    "DRIFTWARD_FACTORY_RUNTIME_ROOT": str(runtime_root),
+                    "FACTORY_RUNTIME_ROOT": str(runtime_root),
                     "FACTORY_HATCHET_BRIDGE_ENV": str(bridge_env),
                     "FACTORY_HATCHET_WORKERS_ENV": str(worker_env),
                     "FACTORY_TEST_CURL_ARGS": str(curl_args),
@@ -512,23 +512,23 @@ with open(a[a.index("--output")+1], "w") as output:
     def test_compose_honors_protected_worker_mode_env(self) -> None:
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
 
-        self.assertIn("- path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-workers.env", compose)
-        self.assertIn("- path: ${FACTORY_ENV_DIR:-/etc/driftward}/hatchet-worker-bridge-executor.env", compose)
-        self.assertIn("/run/driftward-hermes-factory:/run/driftward-hermes-factory", compose)
+        self.assertIn("- path: ${FACTORY_ENV_DIR:-/etc/factory}/hatchet-workers.env", compose)
+        self.assertIn("- path: ${FACTORY_ENV_DIR:-/etc/factory}/hatchet-worker-bridge-executor.env", compose)
+        self.assertIn("/run/factory-hermes-factory:/run/factory-hermes-factory", compose)
         self.assertIn("HATCHET_FACTORY_OPERATOR_RUNTIME: docker", compose)
-        self.assertIn("HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/driftward-hatchet-event-ingress/ingress.db", compose)
-        self.assertIn("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB: /var/lib/driftward-factory-lifecycle-writer/outbox.db", compose)
-        self.assertIn("factory-bridge-data:/var/lib/driftward-hatchet-bridge", compose)
-        self.assertIn("factory-ingress-data:/var/lib/driftward-hatchet-event-ingress:ro", compose)
-        self.assertIn("factory-lifecycle-data:/var/lib/driftward-factory-lifecycle-writer", compose)
-        self.assertIn("name: ${FACTORY_PROJECT_NAME:-driftward-factory}-bridge-data", compose)
-        self.assertIn("name: ${FACTORY_PROJECT_NAME:-driftward-factory}-ingress-data", compose)
-        self.assertNotIn("./data/bridge:/var/lib/driftward-hatchet-bridge", compose)
-        self.assertNotIn("./data/ingress:/var/lib/driftward-hatchet-event-ingress", compose)
+        self.assertIn("HATCHET_FACTORY_OPERATOR_INGRESS_DB: /var/lib/factory-hatchet-event-ingress/ingress.db", compose)
+        self.assertIn("HATCHET_FACTORY_OPERATOR_LIFECYCLE_DB: /var/lib/factory-lifecycle-writer/outbox.db", compose)
+        self.assertIn("factory-bridge-data:/var/lib/factory-hatchet-bridge", compose)
+        self.assertIn("factory-ingress-data:/var/lib/factory-hatchet-event-ingress:ro", compose)
+        self.assertIn("factory-lifecycle-data:/var/lib/factory-lifecycle-writer", compose)
+        self.assertIn("name: ${FACTORY_PROJECT_NAME:-factory}-bridge-data", compose)
+        self.assertIn("name: ${FACTORY_PROJECT_NAME:-factory}-ingress-data", compose)
+        self.assertNotIn("./data/bridge:/var/lib/factory-hatchet-bridge", compose)
+        self.assertNotIn("./data/ingress:/var/lib/factory-hatchet-event-ingress", compose)
         self.assertNotIn("/var/run/docker.sock", compose)
         self.assertNotIn("/run/docker.sock", compose)
         self.assertNotIn("HATCHET_INTAKE_DRY_RUN: ${HATCHET_INTAKE_DRY_RUN", compose)
-        self.assertNotIn("DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED: ${DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED", compose)
+        self.assertNotIn("FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED: ${FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED", compose)
 
     def test_factory_console_is_read_only_loopback_and_tailscale_authenticated(self) -> None:
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
@@ -555,13 +555,13 @@ with open(a[a.index("--output")+1], "w") as output:
 
     def test_compose_accepts_pinned_factory_image_env(self) -> None:
         compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
-        service = (ROOT / "deploy/systemd/driftward-factory.service").read_text(encoding="utf-8")
+        service = (ROOT / "deploy/systemd/factory.service").read_text(encoding="utf-8")
 
-        self.assertIn("image: ${FACTORY_IMAGE:-driftward/factory:${FACTORY_IMAGE_TAG:-local}}", compose)
+        self.assertIn("image: ${FACTORY_IMAGE:-factory/factory:${FACTORY_IMAGE_TAG:-local}}", compose)
         self.assertIn("build:", compose)
-        self.assertIn("Environment=COMPOSE_PROJECT_NAME=driftward-factory", service)
+        self.assertIn("Environment=COMPOSE_PROJECT_NAME=factory", service)
         self.assertIn("Environment=FACTORY_SOURCE_ROOT=__SOURCE_ROOT__", service)
-        self.assertIn("driftward-hermes-factory-gateway.service", service)
+        self.assertIn("factory-hermes-factory-gateway.service", service)
         self.assertIn("Type=oneshot", service)
         self.assertIn("RemainAfterExit=yes", service)
         self.assertIn("ExecReload=/usr/bin/docker compose", service)
@@ -579,7 +579,7 @@ with open(a[a.index("--output")+1], "w") as output:
         self.assertIn("DATABASE_MAX_CONNS: ${HATCHET_DATABASE_MAX_CONNS:-20}", compose)
         self.assertIn('http://127.0.0.1:8733/ready', compose)
         self.assertIn("dispatch-pending --limit 50", compose)
-        self.assertIn("factory-ingress-data:/var/lib/driftward-hatchet-event-ingress", compose)
+        self.assertIn("factory-ingress-data:/var/lib/factory-hatchet-event-ingress", compose)
         self.assertNotIn("dispatch-factory-outbox --limit 50 || true", compose)
 
     def test_release_image_embeds_oci_and_bridge_provenance(self) -> None:
@@ -589,134 +589,21 @@ with open(a[a.index("--output")+1], "w") as output:
         self.assertIn("FACTORY_RELEASE_COMMIT", dockerfile)
         self.assertIn("/app/hatchet/bridge/RELEASE_METADATA.json", dockerfile)
         self.assertIn("COPY hatchet/bridge/requirements.txt /tmp/factory-requirements.txt", dockerfile)
-        self.assertIn("/opt/driftward-factory/bin", dockerfile)
+        self.assertIn("/opt/factory/bin", dockerfile)
 
-    def test_install_docker_persists_factory_image_selection(self) -> None:
-        source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
-
-        self.assertIn("--image-tag TAG", source)
-        self.assertIn("--image IMAGE", source)
-        self.assertIn('factory_image_dropin_dir="${service_unit}.d"', source)
-        self.assertIn('factory_image_override="${FACTORY_IMAGE:-}"', source)
-        self.assertIn("Environment=FACTORY_IMAGE_TAG=%s", source)
-        self.assertIn("Environment=FACTORY_IMAGE=%s", source)
-        self.assertIn("env -u FACTORY_IMAGE -u FACTORY_IMAGE_TAG", source)
-        self.assertIn('--build-arg "FACTORY_RELEASE_COMMIT=$factory_release_commit"', source)
-        self.assertIn('-f "$repo_root/deploy/Dockerfile" -t "$factory_image" "$repo_root"', source)
-        self.assertIn('systemctl reload "$service_name"', source)
-        self.assertIn("rollback_factory_runtime()", source)
-        self.assertIn('systemctl disable --now "$legacy_unit"', source)
-        self.assertIn('DRIFTWARD_FACTORY_SMOKE_TIMEOUT:-90', source)
-        self.assertIn('DRIFTWARD_FACTORY_SMOKE_INTERVAL:-5', source)
-        self.assertIn("wait_for_factory_smoke()", source)
-        self.assertIn("Factory Docker smoke is not ready; retrying", source)
-        self.assertIn("hermes_gateway_bundle_target=", source)
-        self.assertIn("hermes-gateway-server.ts", source)
-        self.assertIn('node_bin="${DRIFTWARD_FACTORY_NODE_BIN:-/usr/bin/node}"', source)
-        self.assertIn("Hermes Factory gateway requires Node.js 18 or newer", source)
-        self.assertIn("DRIFTWARD_HERMES_GRPC_TARGET", source)
-        self.assertIn("driftward-hermes-factory-gateway.service", source)
-        self.assertIn('factory_operator_env_file="${DRIFTWARD_FACTORY_OPERATOR_ENV_FILE:-/etc/driftward/factory-operator.env}"', source)
-        self.assertIn('bridge_env_file="${FACTORY_HATCHET_BRIDGE_ENV:-/etc/driftward/hatchet-bridge.env}"', source)
-        self.assertIn('reconciliation_env_file="${DRIFTWARD_HATCHET_WORKER_RECONCILIATION_ENV_FILE:-/etc/driftward/hatchet-worker-reconciliation.env}"', source)
-        self.assertIn('hatchet_workers_env_file="${FACTORY_HATCHET_WORKERS_ENV:-/etc/driftward/hatchet-workers.env}"', source)
-        self.assertIn("hatchet_postgres_volume=driftward-factory-hatchet-postgres-data", source)
-        self.assertIn("compose_service_file_exists()", source)
-        self.assertIn("require_compose_volume_file postgres /var/lib/postgresql/data/PG_VERSION", source)
-        self.assertIn("require_legacy_file_migrated bridge /var/lib/driftward-hatchet-bridge/bridge.db", source)
-        self.assertNotIn('"$runtime_root/data/bridge" \\', source)
-        self.assertNotIn('Hatchet Postgres data is missing under $runtime_root/data/hatchet/postgres', source)
-        self.assertIn('operator_dry_run="$(awk -F= ', source)
-        self.assertIn('upsert_env "$factory_operator_env_file" HATCHET_INTAKE_DRY_RUN "$operator_dry_run"', source)
-        self.assertIn('ensure_env_secret "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN', source)
-        self.assertIn('ensure_env_secret "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN', source)
-        self.assertIn('upsert_env "$bridge_executor_env_file" HATCHET_HERMES_INSPECTION_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_INSPECTION_TOKEN)"', source)
-        self.assertIn('upsert_env "$reconciliation_env_file" HATCHET_HERMES_RECOVERY_TOKEN "$(env_file_value "$bridge_env_file" HATCHET_HERMES_RECOVERY_TOKEN)"', source)
 
     def test_hermes_gateway_systemd_unit_is_local_socket_boundary(self) -> None:
-        unit = (ROOT / "deploy/systemd/driftward-hermes-factory-gateway.service").read_text(encoding="utf-8")
+        unit = (ROOT / "deploy/systemd/factory-hermes-factory-gateway.service").read_text(encoding="utf-8")
 
-        self.assertIn("DRIFTWARD_HERMES_GRPC_TARGET=unix:///run/driftward-hermes-factory/hermes.sock", unit)
+        self.assertIn("FACTORY_HERMES_GRPC_TARGET=unix:///run/factory-hermes-factory/hermes.sock", unit)
         self.assertIn("ExecStart=__NODE_BIN__ __FACTORY_SHARE_DIR__/hermes-gateway/hermes-gateway-server.js", unit)
-        self.assertIn("ReadWritePaths=/run/driftward-hermes-factory /var/lib/driftward-hermes-factory /var/lib/driftward-factory-reviewer /run/docker.sock /var/run/docker.sock", unit)
+        self.assertIn("ReadWritePaths=/run/factory-hermes-factory /var/lib/factory-hermes-factory /var/lib/factory-reviewer /run/docker.sock /var/run/docker.sock", unit)
         self.assertIn("StateDirectoryMode=0700", unit)
         self.assertNotIn("OPENAI_API_KEY", unit)
         self.assertNotIn("ANTHROPIC_API_KEY", unit)
 
-    def test_installers_neutralize_secret_shaped_execution_labels(self) -> None:
-        for relative in ("deploy/install-docker.sh", "hatchet/workers/install.sh"):
-            with self.subTest(installer=relative):
-                source = (ROOT / relative).read_text(encoding="utf-8")
-                self.assertIn("analytics_label_secret_shaped()", source)
-                self.assertIn("normalize_analytics_label()", source)
-                self.assertIn("sk-", source)
-                self.assertIn("github_pat_", source)
-                self.assertIn("upsert_env \"$file\" \"$key\" unknown", source)
-                self.assertIn("remove_env \"$file\" \"$key\"", source)
-                for key in (
-                    "DRIFTWARD_HERMES_AUTH_MODE",
-                    "DRIFTWARD_HERMES_VERSION",
-                ):
-                    self.assertIn(f'normalize_analytics_label "$bridge_executor_env', source)
-                    self.assertIn(key, source)
-                for key in ("DRIFTWARD_HERMES_MODEL", "DRIFTWARD_HERMES_PROVIDER"):
-                    self.assertRegex(source, rf'remove_env "\$bridge_executor_env(?:_file)?" {key}')
 
-                # Exercise the real shell helpers with a harmless install
-                # shim. A valid first definition followed by a secret-shaped
-                # duplicate must collapse to one canonical value; otherwise
-                # systemd/Compose would use the unsafe last definition.
-                with tempfile.TemporaryDirectory() as tmp:
-                    target = Path(tmp) / "executor.env"
-                    target.write_text(
-                        "DRIFTWARD_HERMES_MODEL=gpt-5.5\n"
-                        "DRIFTWARD_HERMES_MODEL=sk-proj-FAKE_DUPLICATE\n"
-                        "DRIFTWARD_HERMES_VERSION=1.2.3\n"
-                        "DRIFTWARD_HERMES_VERSION=eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE\n"
-                        "KEEP=this\n",
-                        encoding="utf-8",
-                    )
-                    subprocess.run(
-                        [
-                            "bash",
-                            "-c",
-                            r'''
-set -euo pipefail
-install() {
-  local args=("$@")
-  local count="${#args[@]}"
-  cp -- "${args[$((count - 2))]}" "${args[$((count - 1))]}"
-}
-eval "$(awk '/^upsert_env\(\)/ { capture=1 } /^ensure_env_secret\(\)/ { capture=0 } capture { print }' "$INSTALLER")"
-remove_env "$TARGET" DRIFTWARD_HERMES_MODEL
-normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
-''',
-                        ],
-                        check=True,
-                        env={
-                            **os.environ,
-                            "INSTALLER": str(ROOT / relative),
-                            "TARGET": str(target),
-                        },
-                        text=True,
-                        capture_output=True,
-                    )
-                    lines = target.read_text(encoding="utf-8").splitlines()
-                    self.assertEqual(
-                        [line for line in lines if line.startswith("DRIFTWARD_HERMES_MODEL=")],
-                        [],
-                    )
-                    self.assertIn("KEEP=this", lines)
-                    self.assertFalse(any("sk-proj-" in line for line in lines))
-                    self.assertEqual(
-                        [line for line in lines if line.startswith("DRIFTWARD_HERMES_VERSION=")],
-                        ["DRIFTWARD_HERMES_VERSION=1.2.3"],
-                    )
-                    self.assertFalse(any("eyJ" in line for line in lines))
-        docker = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
-        self.assertIn('remove_env "$bridge_executor_env_file" FACTORY_RELEASE_VERSION', docker)
-
-    def test_docker_installer_rejects_secret_shaped_image_labels_before_use(self) -> None:
+    def test_retired_docker_installer_refuses_secret_shaped_image_labels_without_echo(self) -> None:
         source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
         validation_prefix = source.split('factory_release_commit="', 1)[0]
         for secret in (
@@ -726,7 +613,7 @@ normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
         ):
             for arguments in (
                 ("--image-tag", secret),
-                ("--image", f"registry.example/driftward/factory:{secret}"),
+                ("--image", f"registry.example/factory/factory:{secret}"),
             ):
                 with self.subTest(arguments=arguments), tempfile.NamedTemporaryFile(mode="w", suffix=".sh") as script:
                     # The installer resolves its location through BASH_SOURCE.
@@ -741,19 +628,9 @@ normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
                     )
                     self.assertEqual(result.returncode, 64)
                     output = result.stdout + result.stderr
-                    self.assertIn("credential-like material", output)
+                    self.assertIn("Source installation is disabled", output)
                     self.assertNotIn(secret, output)
 
-    def test_release_image_tags_require_matching_clean_checkout(self) -> None:
-        source = (ROOT / "deploy/install-docker.sh").read_text(encoding="utf-8")
-
-        self.assertIn("require_clean_release_checkout()", source)
-        self.assertIn('image_basename="${factory_image_override##*/}"', source)
-        self.assertIn('release_tag="${image_basename##*:}"', source)
-        self.assertIn('[[ "$release_tag" =~ ^v[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,2}($|[.-]) ]]', source)
-        self.assertIn('"refs/tags/$release_tag^{commit}"', source)
-        self.assertIn('git -C "$repo_root" diff-index --quiet HEAD --', source)
-        self.assertIn('git -C "$repo_root" ls-files --others --exclude-standard', source)
 
     def test_factory_release_workflow_is_manual_validated_and_host_deploy_only(self) -> None:
         workflow = (ROOT / ".github/workflows/factory-release.yml").read_text(encoding="utf-8")
@@ -773,7 +650,7 @@ normalize_analytics_label "$TARGET" DRIFTWARD_HERMES_VERSION version ""
         self.assertIn('FACTORY_RELEASE_COMMIT=${{ github.sha }}', workflow)
         self.assertIn('FACTORY_RELEASE_VERSION=${{ inputs.release_tag }}', workflow)
         self.assertIn('file: deploy/Dockerfile', workflow)
-        self.assertIn('tags: driftward/factory:ci', workflow)
+        self.assertIn('tags: factory/factory:ci', workflow)
         self.assertIn('load: true', workflow)
         self.assertIn('push: false', workflow)
         self.assertIn("Ensure checkout remains clean", workflow)

@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import os
 import subprocess
 import unittest
@@ -66,15 +69,15 @@ class InstallerFailpointHarnessTests(unittest.TestCase):
         self.assertIn("unknown bridge installer failpoint: not-a-stage", result.stderr)
         self.assertNotIn("enter:", result.stdout)
 
-    def test_production_installer_rejects_unknown_failpoint_before_setup(self):
+    def test_retired_installer_refuses_before_failpoint_setup(self):
         result = subprocess.run(
             ["bash", str(ROOT / "bridge" / "install.sh")],
             text=True,
             capture_output=True,
             env={**os.environ, "HATCHET_BRIDGE_INSTALL_FAIL_AT": "not-a-stage"},
         )
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("unknown bridge installer failpoint: not-a-stage", result.stderr)
+        self.assertEqual(result.returncode, 64, result.stdout + result.stderr)
+        self.assertIn("Source installation is disabled", result.stderr)
 
     def test_signal_runs_exit_cleanup_without_changing_failpoint_semantics(self):
         result = self.run_harness(HATCHET_BRIDGE_HARNESS_SIGNAL_AT="predeploy")

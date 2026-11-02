@@ -4,7 +4,7 @@ import {
   type BridgeJob,
   type FactoryAttempt,
   type JsonValue
-} from '@driftward/hatchet-worker-shared';
+} from '@factory/hatchet-worker-shared';
 import { hatchet } from '../hatchet-client';
 import { reserveFactoryIntake } from './linear-ready-factory-intake';
 import {
@@ -24,6 +24,8 @@ export type LinearReadyIssueInput = LinearReadyIssuePayloadInput & {
   issueId?: string;
   team?: string;
   teamKey?: string;
+  teamId?: string;
+  workspaceId?: string;
   labels?: string[];
   blockedBy?: JsonValue[];
   dispatchEligible?: boolean;

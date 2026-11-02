@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import factory_organization as organization
+
 import json
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -443,7 +445,7 @@ def _bounded_limit(query: dict[str, list[str]], *, default: int, label: str, key
 
 def _release_commit() -> str:
     """Return non-secret immutable release provenance for health validation."""
-    configured = os.environ.get("DRIFTWARD_BRIDGE_RELEASE_VERSION")
+    configured = os.environ.get("FACTORY_BRIDGE_RELEASE_VERSION")
     metadata = Path(__file__).resolve().parents[1] / "RELEASE_METADATA.json"
     try:
         value = json.loads(metadata.read_text()).get("commit")
@@ -482,6 +484,7 @@ def _error_response(exc: Exception) -> tuple[int, dict[str, str]]:
 
 
 def serve(db_path: str, host: str, port: int) -> None:
+    organization.validate_startup()
     conn = connect_runtime(db_path, check_same_thread=False)
     httpd = HTTPServer((host, port), BridgeHandler)
     httpd.conn = conn

@@ -5,10 +5,11 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
 import * as grpc from '@grpc/grpc-js';
 import { test } from 'node:test';
 import { BridgeClient, executionTraceId, executionTraceparent, flushExecutionTelemetry, parseTraceparent,
-  telemetryEndpoint, withExecutionSpan, type BridgeJob } from '@driftward/hatchet-worker-shared';
+  telemetryEndpoint, withExecutionSpan, type BridgeJob } from '@factory/hatchet-worker-shared';
 import { selectedReceiptEnvironment } from './create-draft-pr';
 import { createServer as createGateway } from './hermes-gateway-server';
 import { prepareHermesInvocation, runHermesCreateDraftPrViaGrpc } from './hermes-gateway-client';
@@ -18,7 +19,7 @@ const job = { job_id: '11111111-1111-4111-8111-111111111111', payload: {
 } } as unknown as BridgeJob;
 
 test('canonical trace identity matches deployed observer canary; malformed context is ignored', () => {
-  assert.equal(executionTraceId(job), 'fb9fa7e140655818af723e41a35fe39a');
+  assert.equal(executionTraceId(job), 'dc0ccc7ae755586d93a90ead02f78cc7');
   assert.notEqual(executionTraceId({ ...job, payload: {} }), executionTraceId(job));
   for (const parent of ['', '00-' + '0'.repeat(32) + '-123456789abcdef0-01', '00-' + '1'.repeat(32) + '-' + '0'.repeat(16) + '-01', 'garbage\nsecret']) {
     assert.equal(parseTraceparent(parent), undefined);
@@ -57,7 +58,7 @@ test('actual receipt setup failure marks its outer span and exits even if OTLP n
         HATCHET_HERMES_BRIDGE_URL: base,
         HATCHET_FACTORY_EXECUTION_LEASE: JSON.stringify({ lease_id: 'test', owner: 'test', epoch: 1, fence_token: 'SECRET_FENCE' }),
         FACTORY_OTEL_TRACES_ENDPOINT: `${base}/v1/traces`,
-        FACTORY_TRACEPARENT: '00-fb9fa7e140655818af723e41a35fe39a-123456789abcdef0-01',
+        FACTORY_TRACEPARENT: '00-dc0ccc7ae755586d93a90ead02f78cc7-123456789abcdef0-01',
       }, stdio: 'ignore',
     });
     // The fake bridge cannot authorize execution; no provider/Hatchet credentials
@@ -99,7 +100,7 @@ test('SDK exports bounded metadata across process and HTTP boundaries; concurren
       await new BridgeClient({ baseUrl: `http://127.0.0.1:${(bridge.address() as any).port}`, token: 'SECRET_TOKEN' }).getJob('SECRET_PATH');
       assert.equal(parseTraceparent(httpParent)?.traceId, executionTraceId(job));
       // A separate process, using the same allowlisted context carrier as the real runner.
-      const child = spawn(process.execPath, ['-e', `const t=require('@driftward/hatchet-worker-shared'); t.withExecutionSpan('factory.execution.receipt',()=>{}, {parent:process.env.FACTORY_TRACEPARENT,service:'factory-receipt-runner'});t.flushExecutionTelemetry();`], {
+      const child = spawn(process.execPath, ['-e', `const t=require('@factory/hatchet-worker-shared'); t.withExecutionSpan('factory.execution.receipt',()=>{}, {parent:process.env.FACTORY_TRACEPARENT,service:'factory-receipt-runner'});t.flushExecutionTelemetry();`], {
         cwd: __dirname, env: { PATH: process.env.PATH, FACTORY_TRACEPARENT: value, FACTORY_OTEL_TRACES_ENDPOINT: process.env.FACTORY_OTEL_TRACES_ENDPOINT }, stdio: 'pipe',
       });
       const [code] = await once(child, 'exit'); assert.equal(code, 0);
@@ -108,11 +109,11 @@ test('SDK exports bounded metadata across process and HTTP boundaries; concurren
     const second = { ...job, payload: { factory_retry: { attempt_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } } } as BridgeJob;
     const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-otel-gateway-'));
     const target = `unix://${path.join(directory, 'gateway.sock')}`;
-    const previous = { target: process.env.DRIFTWARD_HERMES_GRPC_TARGET, journal: process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY };
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = target;
-    process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
+    const previous = { target: process.env.FACTORY_HERMES_GRPC_TARGET, journal: process.env.FACTORY_HERMES_INVOCATION_DIRECTORY };
+    process.env.FACTORY_HERMES_GRPC_TARGET = target;
+    process.env.FACTORY_HERMES_INVOCATION_DIRECTORY = path.join(directory, 'journal');
     const gatewayJob = { ...job, idempotency_key: 'test:otel', requested_action: 'create_draft_pr', branch: 'codex/otel-test', state: 'running',
-      payload: { ...job.payload, repo: 'example/project', dry_run: false } } as BridgeJob;
+      payload: { ...job.payload, organization_binding: { workspace_id: '11111111-1111-4111-8111-111111111111', team_id: '22222222-2222-4222-8222-222222222222', team_key: 'ENG' }, repo: 'example/project', dry_run: false } } as BridgeJob;
     let invocations = 0;
     const runtime = { schema: 1 as const, backend: 'hermes', kind: 'docker' as const, instance_id: 'a'.repeat(64), image_digest: 'sha256:' + 'b'.repeat(64), incarnation: 'sha256:' + 'c'.repeat(64) };
     const gateway = createGateway(target, async (_job, _command, _timeout, _buffer, _selection, context) => {
@@ -132,8 +133,8 @@ test('SDK exports bounded metadata across process and HTTP boundaries; concurren
       assert.equal(invocations, 1, 'tracing must not change journal deduplication');
     } finally {
       gateway.forceShutdown();
-      if (previous.target === undefined) delete process.env.DRIFTWARD_HERMES_GRPC_TARGET; else process.env.DRIFTWARD_HERMES_GRPC_TARGET = previous.target;
-      if (previous.journal === undefined) delete process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY; else process.env.DRIFTWARD_HERMES_INVOCATION_DIRECTORY = previous.journal;
+      if (previous.target === undefined) delete process.env.FACTORY_HERMES_GRPC_TARGET; else process.env.FACTORY_HERMES_GRPC_TARGET = previous.target;
+      if (previous.journal === undefined) delete process.env.FACTORY_HERMES_INVOCATION_DIRECTORY; else process.env.FACTORY_HERMES_INVOCATION_DIRECTORY = previous.journal;
       rmSync(directory, { recursive: true, force: true });
     }
     await Promise.all([job, second].map(item => withExecutionSpan('factory.concurrent', async () => {

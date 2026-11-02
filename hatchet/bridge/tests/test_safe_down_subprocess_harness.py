@@ -1,10 +1,14 @@
 """Non-root, capability-bound subprocess coverage for safe-down recovery.
 
-This deliberately drives the checked-in wrapper and installer.  It is not a
-mocked state machine: only systemd/network holder probes are fake, and only
-after the inherited FD 8 capability has validated a private temporary root.
+These cases exercise the retained safe-down recovery helpers directly.
+Historical source installer publication and rollback are retired; their refusal
+is tested separately. Systemd/network probes use an inherited FD 8 capability
+bound to a private temporary root.
 """
 from __future__ import annotations
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 
 import contextlib
 import hashlib
@@ -130,9 +134,9 @@ class SafeDownSubprocessFixture:
             clone = _bounded_run(["git", "clone", "--quiet", "--no-hardlinks", str(REPO_ROOT), str(self.repo)], timeout=SETUP_TIMEOUT_SECONDS)
             if clone.returncode: raise AssertionError(clone.stderr)
             shutil.copytree(ROOT / "bridge", self.repo / "hatchet/bridge", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            for policy in ("verifier-policy.json", "independent-review-policy.json"):
-                shutil.copy2(ROOT / "workers" / policy, self.repo / "hatchet/workers" / policy)
-            for command in (["git", "-C", str(self.repo), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(self.repo), "config", "user.name", "bridge test"], ["git", "-C", str(self.repo), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json"]):
+            for policy in ("verifier-policy.json", "independent-review-policy.json", "routing-registry.json"):
+                shutil.copy2(ROOT / "workers/test-fixtures" / policy, self.repo / "hatchet/workers" / policy)
+            for command in (["git", "-C", str(self.repo), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(self.repo), "config", "user.name", "bridge test"], ["git", "-C", str(self.repo), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json", "hatchet/workers/routing-registry.json"]):
                 result = _bounded_run(command, timeout=SETUP_TIMEOUT_SECONDS)
                 if result.returncode: raise AssertionError(result.stderr)
             _commit_if_staged(self.repo)
@@ -141,7 +145,7 @@ class SafeDownSubprocessFixture:
         version = _bounded_run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], timeout=SETUP_TIMEOUT_SECONDS)
         if version.returncode: raise AssertionError(version.stderr)
         self._release_version = version.stdout.strip()
-        for path in (self.root / "var/lib/driftward-hatchet-bridge", self.root / "root/driftward-backups/hatchet", self.root / "etc/systemd/system", self.root / "run/systemd/system", self.root / "run"):
+        for path in (self.root / "var/lib/factory-hatchet-bridge", self.root / "root/factory-backups/hatchet", self.root / "etc/systemd/system", self.root / "run/systemd/system", self.root / "run"):
             path.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.fake.mkdir(mode=0o700); self.audit.touch(); self.audit.chmod(0o600)
         self.prebuilt = self.root / "prebuilt/push-accepted-event.js"; self.prebuilt.parent.mkdir(mode=0o700)
@@ -185,9 +189,9 @@ class SafeDownSubprocessFixture:
         self._write(self.fake / "systemctl", f'''#!/bin/sh
 echo "$*" >> {log!s}
 [ "$1" = daemon-reload ] || [ "$1" = stop ] || [ "$1" = start ] || [ "$1" = mask ] || [ "$1" = unmask ] || [ "$1" = reset-failed ] && : > {mutated!s}
-[ "$1" = start ] && [ "${{2:-}}" = driftward-hatchet-bridge.service ] && : > {started!s}
+[ "$1" = start ] && [ "${{2:-}}" = factory-hatchet-bridge.service ] && : > {started!s}
 case "$1" in
-  show) case "$*" in *LoadState*) echo loaded;; *ActiveState*) echo inactive;; *UnitFileState*) echo disabled;; *DropInPaths*) find {dropins!s} -name 90-driftward-bridge-maintenance.conf -type f -print | tr '\\n' ' ';; esac;;
+  show) case "$*" in *LoadState*) echo loaded;; *ActiveState*) echo inactive;; *UnitFileState*) echo disabled;; *DropInPaths*) find {dropins!s} -name 90-factory-bridge-maintenance.conf -type f -print | tr '\\n' ' ';; esac;;
   is-active) exit 1;;
 esac
 exit 0
@@ -210,7 +214,7 @@ exit 22
         log.touch(mode=0o600); log.chmod(0o600)
 
     def _incident_fixture(self) -> None:
-        env = self.root / "etc/driftward"
+        env = self.root / "etc/factory"
         env.mkdir(mode=0o700, parents=True, exist_ok=True)
         for name, lines in {
             "hatchet.env": "HATCHET_POSTGRES_PASSWORD=fixture-password-123\nHATCHET_SERVER_AUTH_COOKIE_SECRETS=fixture-cookie-secret-123\nHATCHET_ADMIN_PASSWORD=fixture-admin-password-123\n",
@@ -221,7 +225,7 @@ exit 22
         }.items():
             path = env / name; path.write_text(lines); path.chmod(0o600)
             if os.geteuid() == 0: os.chown(path, self.uid, self.gid)
-        bridge = self.root / "var/lib/driftward-hatchet-bridge/bridge.db"
+        bridge = self.root / "var/lib/factory-hatchet-bridge/bridge.db"
         import sys
         sys.path.insert(0, str(ROOT / "bridge"))
         from hatchet_hermes_bridge.store import init_db
@@ -241,13 +245,13 @@ exit 22
         # Match the root-owned production bridge ledger before descriptor-safe
         # recovery opens it with O_NOFOLLOW.
         bridge.chmod(0o600)
-        self.backup = self.root / f"root/driftward-backups/hatchet/bridge-20260817T061607Z-before-{self.release_version}.sqlite"
+        self.backup = self.root / f"root/factory-backups/hatchet/bridge-20260817T061607Z-before-{self.release_version}.sqlite"
         shutil.copy2(bridge, self.backup); self.backup.chmod(0o600)
         self.checksum = hashlib.sha256(self.backup.read_bytes()).hexdigest()
         # Match production ``sha256sum "$backup"`` output: the canonical
         # absolute backup pathname, not merely its basename.
         self.sidecar = self.backup.with_suffix(".sqlite.sha256"); self.sidecar.write_text(f"{self.checksum}  {self.backup}\n"); self.sidecar.chmod(0o600)
-        self.marker = self.root / "var/lib/driftward-hatchet-bridge/recovery-blocked"
+        self.marker = self.root / "var/lib/factory-hatchet-bridge/recovery-blocked"
         self.marker.write_text("rollback recovery blocked: stop-writers restore-services\n"); self.marker.chmod(0o600)
         self.marker_sha = hashlib.sha256(self.marker.read_bytes()).hexdigest(); self.marker_mtime = str(int(self.marker.stat().st_mtime))
 
@@ -277,8 +281,8 @@ exit 22
             job_id = f"legacy-eng{index:02d}"
             key = f"hatchet:work-item:linear:{work_item}:create_draft_pr:real:active"
             branch = deterministic_branch(key)
-            pr_url = f"https://github.com/Driftward-LLC/capykit/pull/{20 + index}"
-            payload = json.dumps({"linear_issue": work_item, "repo": "Driftward-LLC/capykit", "dry_run": False}, sort_keys=True)
+            pr_url = f"https://github.com/example/widgets/pull/{20 + index}"
+            payload = json.dumps({"organization_binding": {"workspace_id": "11111111-1111-4111-8111-111111111111", "team_id": "22222222-2222-4222-8222-222222222222", "team_key": "ENG"}, "linear_issue": work_item, "repo": "example/widgets", "dry_run": False}, sort_keys=True)
             con.execute(
                 "INSERT INTO bridge_jobs (job_id,idempotency_key,state,requested_action,payload_json,payload_hash,branch,pr_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (job_id, key, "completed", "create_draft_pr", payload, f"fixture-{index:02d}", branch, pr_url, now, now),
@@ -306,7 +310,7 @@ exit 22
         return self._release_version
 
     def _write_capability(self) -> None:
-        value = {"mode": "driftward-hatchet-bridge-hermetic-test-v1", "root": str(self.root), "repository": str(self.repo), "fake_bin": str(self.fake), "audit": str(self.audit), "capability_path": str(self.capability), "prebuilt_trigger": str(self.prebuilt), "uid": self.uid, "gid": self.gid, "release_version": self.release_version, "nonce": "a" * 64}
+        value = {"mode": "factory-hatchet-bridge-hermetic-test-v1", "root": str(self.root), "repository": str(self.repo), "fake_bin": str(self.fake), "audit": str(self.audit), "capability_path": str(self.capability), "prebuilt_trigger": str(self.prebuilt), "uid": self.uid, "gid": self.gid, "release_version": self.release_version, "nonce": "a" * 64}
         if self.kill_at: value["kill_at"] = self.kill_at
         if self.signal_at: value["signal_at"] = self.signal_at
         canonical = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -416,11 +420,11 @@ exec /usr/bin/python3 "$@"
     def _install_existing_barrier(self) -> None:
         """Fixture setup only: model a pre-existing host safe-down barrier."""
         units = subprocess.check_output(["python3", str(self.repo / "hatchet/bridge/writer-inventory.py"), "--kind", "all"], text=True, env={**os.environ, "PYTHONPATH": str(self.repo / "hatchet/bridge")}).splitlines()
-        root = self.root / "run/driftward-hatchet-bridge"; active = root / "maintenance.active"
+        root = self.root / "run/factory-hatchet-bridge"; active = root / "maintenance.active"
         active.write_text(""); active.chmod(0o600)
         created = [active]
         for unit in units:
-            path = self.root / "run/systemd/system" / f"{unit}.d" / "90-driftward-bridge-maintenance.conf"
+            path = self.root / "run/systemd/system" / f"{unit}.d" / "90-factory-bridge-maintenance.conf"
             path.parent.mkdir(parents=True, exist_ok=True); path.parent.chmod(0o755)
             path.write_text(f"[Unit]\nConditionPathExists=!{active}\n"); path.chmod(0o644)
             created.extend((path.parent, path))
@@ -437,18 +441,18 @@ exec /usr/bin/python3 "$@"
 
     def remove_active_transition(self) -> None:
         """Fixture setup only: exercise the no-active-transition lineage path."""
-        transition = self.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json"
+        transition = self.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json"
         transition.unlink()
 
     def unbound_lineage_roots(self) -> list[Path]:
-        archive = self.root / "var/lib/driftward-hatchet-bridge/recovery-incidents"
+        archive = self.root / "var/lib/factory-hatchet-bridge/recovery-incidents"
         return sorted(archive.glob("unbound-marker-lineage-*"))
 
     def standalone_snapshot(self) -> dict[str, object]:
-        paths = [self.root / "run/driftward-hatchet-bridge/maintenance.active", self.root / "run/driftward-hatchet-bridge/maintenance.lock", *self.root.glob("run/systemd/system/**/*.conf")]
+        paths = [self.root / "run/factory-hatchet-bridge/maintenance.active", self.root / "run/factory-hatchet-bridge/maintenance.lock", *self.root.glob("run/systemd/system/**/*.conf")]
         units = subprocess.check_output(["python3", str(self.repo / "hatchet/bridge/writer-inventory.py"), "--kind", "all"], text=True, env={**os.environ, "PYTHONPATH": str(self.repo / "hatchet/bridge")}).splitlines()
         states = {}
-        for unit in (*units, "driftward-hatchet-bridge-reconciler.service", "driftward-hatchet-bridge-reconciler.timer"):
+        for unit in (*units, "factory-hatchet-bridge-reconciler.service", "factory-hatchet-bridge-reconciler.timer"):
             states[unit] = tuple(
                 subprocess.check_output([str(self.fake / "systemctl"), "show", unit, "-p", prop, "--value"], text=True).strip()
                 for prop in ("ActiveState", "UnitFileState", "DropInPaths")
@@ -462,7 +466,7 @@ exec /usr/bin/python3 "$@"
             "files": {str(path.relative_to(self.root)): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in paths if path.exists()},
             "masks": masks, "unit_states": states,
             "mutated": (self.root / "fake-system-mutated").exists(),
-            "marker": self.marker.read_bytes(), "db": (self.root / "var/lib/driftward-hatchet-bridge/bridge.db").read_bytes(),
+            "marker": self.marker.read_bytes(), "db": (self.root / "var/lib/factory-hatchet-bridge/bridge.db").read_bytes(),
         }
 
     def audit_rows(self) -> list[dict]:
@@ -481,6 +485,20 @@ def _run_matrix_case(method: str, point: str, template_repo: Path | None) -> Non
         case.tearDown()
 
 
+class RetiredInstallerRefusalTests(unittest.TestCase):
+    def test_refusal_runs_no_host_commands_and_creates_no_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = subprocess.run(
+                ["/bin/bash", str(ROOT / "bridge/install.sh"), "--recover-safe-down"],
+                env={**os.environ, "PATH": temporary}, cwd=root,
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 64, result.stderr)
+            self.assertIn("Source installation is disabled", result.stderr)
+            self.assertEqual(list(root.iterdir()), [])
+
+
 class SafeDownSubprocessHarnessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -489,9 +507,9 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         clone = _bounded_run(["git", "clone", "--quiet", "--no-hardlinks", str(REPO_ROOT), str(template)], timeout=SETUP_TIMEOUT_SECONDS)
         if clone.returncode: raise AssertionError(clone.stderr)
         shutil.copytree(ROOT / "bridge", template / "hatchet/bridge", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        for policy in ("verifier-policy.json", "independent-review-policy.json"):
-            shutil.copy2(ROOT / "workers" / policy, template / "hatchet/workers" / policy)
-        for command in (["git", "-C", str(template), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(template), "config", "user.name", "bridge test"], ["git", "-C", str(template), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json"]):
+        for policy in ("verifier-policy.json", "independent-review-policy.json", "routing-registry.json"):
+            shutil.copy2(ROOT / "workers/test-fixtures" / policy, template / "hatchet/workers" / policy)
+        for command in (["git", "-C", str(template), "config", "user.email", "bridge-test@invalid"], ["git", "-C", str(template), "config", "user.name", "bridge test"], ["git", "-C", str(template), "add", "hatchet/bridge", "hatchet/workers/verifier-policy.json", "hatchet/workers/independent-review-policy.json", "hatchet/workers/routing-registry.json"]):
             result = _bounded_run(command, timeout=SETUP_TIMEOUT_SECONDS)
             if result.returncode: raise AssertionError(result.stderr)
         _commit_if_staged(template)
@@ -521,162 +539,19 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
                 with self.subTest(point=point):
                     future.result()
 
-    def test_nonroot_actual_wrapper_exec_chain_retains_fd3_through_fd7(self):
-        fixture = self.make()
-        result = fixture.run_wrapper()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + fixture.audit.read_text())
-        rows = fixture.audit_rows(); events = [row["event"] for row in rows]
-        for event in ("maintenance-lock-exec", "recover-wrapper", "safe-down-archive", "safe-down-transition", "safe-down-prepare", "installer-adoption", "prepared-journal", "committed-journal"):
-            self.assertIn(event, events)
-        prepared = next(row for row in rows if row["event"] == "safe-down-prepare")["fds"]
-        adopted = next(row for row in rows if row["event"] == "installer-adoption")["fds"]
-        for fd in ("3", "4", "5", "6", "7"):
-            self.assertEqual(prepared[fd], adopted[fd], fd)
-        self.assertFalse(fixture.marker.exists()); self.assertFalse((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").exists())
-        self.assertTrue((fixture.root / f"docker/driftward/hatchet/releases/bridge/{fixture.release_version}").is_dir())
 
-    def test_actual_installer_keeps_the_staged_manifest_exact_with_bytecode_disabled(self):
-        fixture = self.make()
-        result = fixture.run_wrapper()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + fixture.audit.read_text())
-        release_root = fixture.root / "docker/driftward/hatchet/releases/bridge"
-        release = release_root / fixture.release_version
-        self.assertTrue((release_root / "current").is_symlink())
-        self.assertEqual((release_root / "current").resolve(), release)
-        self.assertFalse(any(path.suffix == ".pyc" or "__pycache__" in path.parts for path in release.rglob("*")))
-        self.assertEqual((release / "independent-review-policy.json").read_bytes(),
-                         (ROOT / "workers/independent-review-policy.json").read_bytes())
-        verified = _bounded_run(
-            ["python3", str(ROOT / "bridge/release_hygiene.py"), "verify", "--tree", str(release), "--commit", fixture.release_version, "--source-tree", fixture.release_version],
-            timeout=DIRECT_TIMEOUT_SECONDS,
-        )
-        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
 
-    def test_actual_installer_blocks_publication_when_staged_import_writes_bytecode(self):
-        fixture = self.make()
-        import_marker = fixture.force_staged_python_bytecode()
-        result = fixture.run_wrapper()
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr + fixture.audit.read_text())
-        self.assertTrue(import_marker.is_file())
-        self.assertRegex(import_marker.read_text(), r"/release/(?:hatchet_hermes_bridge/)?__pycache__/.*\.pyc\n")
-        self.assertIn("release-tree:denied-component:", result.stderr)
-        release_root = fixture.root / "docker/driftward/hatchet/releases/bridge"
-        self.assertFalse((release_root / "current").exists() or (release_root / "current").is_symlink())
-        self.assertFalse((release_root / fixture.release_version).exists())
 
-    def test_actual_wrapper_adopts_synthetic_descendant_v2_without_reconstruction(self):
-        """The normal wrapper must pass the reviewed v2 link, not rebuild v1."""
-        fixture = self.make(legacy_conflicts=38)
-        self.assertEqual(fixture.run_prepare().returncode, 0)
-        transition = fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json"
-        v1 = json.loads(transition.read_text())
-        fixture.rewrite_marker_in_place()
-        successor = fixture.commit_successor()
-        self.assertEqual(fixture.run_supersede(v1, successor, descendant=True).returncode, 0)
-        v2_body = transition.read_bytes(); v2 = json.loads(v2_body); v2_info = transition.stat()
-        result = fixture.run_wrapper()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + fixture.audit.read_text())
-        self.assertIn("safe-down-prepare-existing", [row["event"] for row in fixture.audit_rows()])
-        incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v2["incident"]
-        self.assertEqual((incident / v2["parent"]["archive"]).read_bytes(), (json.dumps(v1, sort_keys=True, separators=(",", ":")) + "\n").encode())
-        archived_v2 = incident / f"transition-v2-{v2['parent']['sha256']}.json"
-        self.assertEqual(archived_v2.read_bytes(), v2_body)
-        self.assertEqual((archived_v2.stat().st_dev, archived_v2.stat().st_ino), (v2_info.st_dev, v2_info.st_ino))
-        self.assertTrue((incident / "completion.json").is_file())
-        self.assertFalse(transition.exists()); self.assertFalse(fixture.marker.exists())
-        self.assertTrue((fixture.root / f"docker/driftward/hatchet/releases/bridge/{successor}").is_dir())
 
-    def test_v2_publication_journal_never_uses_v1_rollback_exception(self):
-        fixture = self.make()
-        self.assertEqual(fixture.run_prepare().returncode, 0)
-        transition = fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json"
-        v1 = json.loads(transition.read_text()); successor = fixture.commit_successor()
-        self.assertEqual(fixture.run_supersede(v1, successor).returncode, 0)
-        v2_body = transition.read_bytes()
-        journal = fixture.root / f"var/lib/driftward-hatchet-bridge/publication-{successor}.journal"
-        journal.write_text(json.dumps({"status": "prepared", "transaction": successor, "commit": successor, "snapshot": {}}, sort_keys=True, separators=(",", ":")) + "\n"); journal.chmod(0o600)
-        result = fixture.run_wrapper()
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(transition.read_bytes(), v2_body)
-        self.assertTrue(fixture.marker.exists())
-        self.assertNotIn("start driftward-hatchet-bridge.service", (fixture.root / "fake-system.log").read_text())
 
-    def test_sigkill_between_existing_transition_decision_and_exec_replays_without_downgrade(self):
-        fixture = self.make("prepare-existing")
-        self.assertEqual(fixture.run_prepare().returncode, 0)
-        transition = fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json"
-        v1 = json.loads(transition.read_text()); successor = fixture.commit_successor()
-        self.assertEqual(fixture.run_supersede(v1, successor).returncode, 0)
-        v2_body = transition.read_bytes()
-        killed = fixture.run_wrapper()
-        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-        self.assertEqual(transition.read_bytes(), v2_body)
-        fixture.kill_at = None; fixture._write_capability()
-        rerun = fixture.run_wrapper()
-        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-        self.assertFalse(transition.exists()); self.assertFalse(fixture.marker.exists())
 
-    def test_actual_installer_keeps_one_release_version_across_conflict_proofs(self):
-        """Both post-migration proof gates must classify migration's markers."""
-        fixture = self.make(legacy_conflicts=38)
-        seed = sqlite3.connect(fixture.root / "var/lib/driftward-hatchet-bridge/bridge.db")
-        tables = {row[0] for row in seed.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(seed.execute("PRAGMA user_version").fetchone()[0], 0)
-        self.assertNotIn("bridge_schema_meta", tables)
-        self.assertNotIn("factory_import_conflict_resolutions", tables)
-        self.assertEqual(seed.execute("SELECT COUNT(*) FROM factory_import_conflicts").fetchone()[0], 38)
-        self.assertEqual(seed.execute("SELECT COUNT(*) FROM factory_attempts WHERE generation=1 AND status='legacy_completed'").fetchone()[0], 38)
-        seed.close()
-        predeploy = _bounded_run(
-            ["python3", str(fixture.repo / "hatchet/bridge/predeploy-check.py"), "--db", str(fixture.root / "var/lib/driftward-hatchet-bridge/bridge.db"), "--routing-registry", str(fixture.repo / "hatchet/workers/routing-registry.json"), "--require-zero-legacy-ready", "--require-zero-import-conflicts", "--validate-legacy-import"],
-            timeout=DIRECT_TIMEOUT_SECONDS,
-            env={**os.environ, "PYTHONPATH": str(fixture.repo / "hatchet/bridge")},
-        )
-        self.assertEqual(predeploy.returncode, 0, predeploy.stdout + predeploy.stderr)
-        self.assertIn("legacy import conflicts: original=38 resolvable=38 unresolved=0", predeploy.stdout)
-        result = fixture.run_wrapper()
-        # This passes only when both disposable and post-publication proofs use
-        # the exact release version used to append migration markers.
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + fixture.audit.read_text())
-        db = fixture.root / "var/lib/driftward-hatchet-bridge/bridge.db"
-        postdeploy = _bounded_run(
-            ["python3", str(fixture.root / f"docker/driftward/hatchet/releases/bridge/{fixture.release_version}/predeploy-check.py"), "--db", str(db), "--routing-registry", str(fixture.root / "etc/driftward/hatchet-routing-registry.json"), "--require-zero-legacy-ready", "--require-zero-import-conflicts", "--validate-legacy-import"],
-            timeout=DIRECT_TIMEOUT_SECONDS,
-            env={**os.environ, "DRIFTWARD_BRIDGE_RELEASE_VERSION": fixture.release_version, "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": str(fixture.root / "etc/driftward/hatchet-routing-registry.json"), "PYTHONPATH": str(fixture.root / f"docker/driftward/hatchet/releases/bridge/{fixture.release_version}")},
-        )
-        self.assertEqual(postdeploy.returncode, 0, postdeploy.stdout + postdeploy.stderr)
-        self.assertIn("legacy import conflicts: original=38 resolvable=38 unresolved=0", postdeploy.stdout)
-        con = sqlite3.connect(db)
-        self.assertEqual(con.execute("SELECT schema_version FROM bridge_schema_meta WHERE singleton=1").fetchone()[0], 10)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflicts").fetchone()[0], 38)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflict_resolutions").fetchone()[0], 38)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflict_resolutions WHERE operator='migration'",).fetchone()[0], 38)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_import_conflict_attestations WHERE producing_release_sha=? AND operator='migration'", (fixture.release_version,)).fetchone()[0], 38)
-        self.assertEqual(fixture._legacy_immutable_hashes(con), fixture.legacy_immutable_hashes)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_attempts WHERE generation != 1 OR status != 'legacy_completed'").fetchone()[0], 0)
-        self.assertEqual(con.execute("SELECT COUNT(*) FROM factory_attempts WHERE generation=2").fetchone()[0], 0)
-        con.close()
 
-    def test_actual_sigkill_at_every_safe_down_boundary_reruns_to_full_new_state(self):
-        self.run_matrix("check_actual_sigkill_at_every_safe_down_boundary_reruns_to_full_new_state", POINTS)
 
-    def check_actual_sigkill_at_every_safe_down_boundary_reruns_to_full_new_state(self, point: str):
-        fixture = self.make(point)
-        killed = fixture.run_wrapper()
-        self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
-        self.assertIn("sigkill", [row["event"] for row in fixture.audit_rows()])
-        self.assertNotIn("start driftward-hatchet-bridge.service", (fixture.root / "fake-system.log").read_text())
-        fixture.kill_at = None; fixture._write_capability()
-        rerun = fixture.run_wrapper()
-        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-        self.assertFalse(fixture.marker.exists())
-        self.assertTrue((fixture.root / f"docker/driftward/hatchet/releases/bridge/{fixture.release_version}").is_dir())
-        fixture.close(); self.fixture = None
 
     def test_standalone_supersession_fails_closed_without_an_existing_barrier_and_never_mutates_system_state(self):
         fixture = self.make()
         self.assertEqual(fixture.run_prepare().returncode, 0)
-        v1 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v1 = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         successor = fixture.commit_successor()
         before = fixture.standalone_snapshot()
         result = fixture.run_supersede(v1, successor, existing_barrier=False)
@@ -684,14 +559,6 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         self.assertEqual(fixture.standalone_snapshot(), before)
         self.assertFalse((fixture.root / "fake-system-mutated").exists())
 
-    def test_archive_replay_is_append_only_and_signal_exit_keeps_safe_down_marker(self):
-        fixture = self.make("transition")
-        self.assertEqual(fixture.run_wrapper().returncode, -9)
-        archive = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents"
-        first = [path.name for path in archive.iterdir()]
-        fixture.kill_at = None; fixture._write_capability()
-        self.assertEqual(fixture.run_wrapper().returncode, 0)
-        self.assertEqual(first, [path.name for path in archive.iterdir()])
 
     def test_actual_sigkill_at_every_supersession_boundary_replays_without_leaving_safe_down(self):
         """Every v1->v2 boundary replays without mutable-host effects."""
@@ -701,7 +568,7 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         fixture = self.make(point)
         prepared = fixture.run_prepare()
         self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
-        active = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        active = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         successor = fixture.commit_successor()
         fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
         killed = fixture.run_supersede(active, successor)
@@ -711,7 +578,7 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         fixture.kill_at = None; fixture._write_capability()
         rerun = fixture.run_supersede(active, successor)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-        successor_record = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        successor_record = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         self.assertEqual(successor_record["version"], 2)
         self.assertEqual(successor_record["code_commit"], successor)
         self.assertTrue(fixture.marker.exists())
@@ -720,9 +587,9 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         fixture._install_existing_barrier(); v3_before = fixture.standalone_snapshot()
         rerun_v3 = fixture.run_supersede(v2, successor_v3)
         self.assertEqual(rerun_v3.returncode, 0, rerun_v3.stdout + rerun_v3.stderr)
-        v3 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v3 = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         self.assertEqual(v3["version"], 3); self.assertEqual(v3["parent"]["sha256"], hashlib.sha256((json.dumps(v2, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest())
-        incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v3["incident"]
+        incident = fixture.root / "var/lib/factory-hatchet-bridge/recovery-incidents" / v3["incident"]
         self.assertTrue((incident / "transition.json").is_file()); self.assertTrue((incident / v3["parent"]["archive"]).is_file())
         self.assertEqual(fixture.standalone_snapshot(), v3_before)
         fixture.close(); self.fixture = None
@@ -734,7 +601,7 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
     def check_descendant_attestation_sigkill_matrix_replays_without_host_mutation(self, point: str):
         fixture = self.make(point)
         self.assertEqual(fixture.run_prepare().returncode, 0)
-        v1 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v1 = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         fixture.rewrite_marker_in_place()
         successor = fixture.commit_successor()
         fixture._install_existing_barrier(); before = fixture.standalone_snapshot()
@@ -744,9 +611,9 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         fixture.kill_at = None; fixture._write_capability()
         rerun = fixture.run_supersede(v1, successor, descendant=True)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-        v2 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v2 = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         self.assertEqual(v2["version"], 2); self.assertIn("marker_descendant", v2)
-        incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v2["incident"]
+        incident = fixture.root / "var/lib/factory-hatchet-bridge/recovery-incidents" / v2["incident"]
         self.assertTrue((incident / v2["marker_descendant"]["path"]).is_file())
         self.assertEqual(fixture.standalone_snapshot(), before)
         fixture.close(); self.fixture = None
@@ -889,14 +756,14 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         fixture = self.make()
         prepared = fixture.run_prepare()
         self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
-        v1 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v1 = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         successor_v2 = fixture.commit_successor()
         made_v2 = fixture.run_supersede(v1, successor_v2)
         self.assertEqual(made_v2.returncode, 0, made_v2.stdout + made_v2.stderr)
-        v2 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v2 = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         v1_body = (json.dumps(v1, sort_keys=True, separators=(",", ":")) + "\n").encode()
         v2_body = (json.dumps(v2, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        v1_archive = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v2["incident"] / v2["parent"]["archive"]
+        v1_archive = fixture.root / "var/lib/factory-hatchet-bridge/recovery-incidents" / v2["incident"] / v2["parent"]["archive"]
         self.assertEqual(v2["parent"]["sha256"], hashlib.sha256(v1_body).hexdigest())
         v1_archive_before = v1_archive.read_bytes()
         successor_v3 = fixture.commit_successor()
@@ -909,23 +776,16 @@ class SafeDownSubprocessHarnessTests(unittest.TestCase):
         fixture.kill_at = None; fixture._write_capability()
         rerun = fixture.run_supersede(v2, successor_v3)
         self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-        v3 = json.loads((fixture.root / "var/lib/driftward-hatchet-bridge/safe-down-transition.json").read_text())
+        v3 = json.loads((fixture.root / "var/lib/factory-hatchet-bridge/safe-down-transition.json").read_text())
         self.assertEqual(v3["version"], 3)
         self.assertEqual(v3["parent"]["sha256"], hashlib.sha256(v2_body).hexdigest())
-        incident = fixture.root / "var/lib/driftward-hatchet-bridge/recovery-incidents" / v3["incident"]
+        incident = fixture.root / "var/lib/factory-hatchet-bridge/recovery-incidents" / v3["incident"]
         self.assertEqual((incident / v3["parent"]["archive"]).read_bytes(), v2_body)
         self.assertEqual(v1_archive.read_bytes(), v1_archive_before)
         self.assertTrue(fixture.marker.exists())
         self.assertEqual(fixture.standalone_snapshot(), before)
         fixture.close(); self.fixture = None
 
-    def test_actual_sigterm_runs_installer_exit_cleanup_and_keeps_safe_down(self):
-        fixture = self.make(signal_at="writer-quiesce")
-        result = fixture.run_wrapper()
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue(fixture.marker.exists())
-        self.assertIn("signal", [row["event"] for row in fixture.audit_rows()])
-        self.assertNotIn("start driftward-hatchet-bridge.service", (fixture.root / "fake-system.log").read_text())
 
     def test_forged_missing_and_wrong_test_capability_fd_cannot_enable_paths(self):
         fixture = self.make()

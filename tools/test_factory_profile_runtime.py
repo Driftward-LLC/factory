@@ -39,11 +39,11 @@ class ReceiptDirectory(type(Path())):
         return RootReceiptPath(path) if str(name).startswith(('observer-upgrade-', 'observer-recovery-')) else Path(path)
 
 
-def plugin_archive(extra=None):
+def plugin_archive(extra=None, namespace="external-engineering", conflicting=False):
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode='w') as archive:
         for name in ('plugin.json', 'plugin.yaml', '.codex-plugin/plugin.json'):
-            value = json.dumps({'name': 'driftward-engineering', 'version': '0.1.0-rc.6'}).encode()
+            value = json.dumps({'name': namespace if not conflicting or name != 'plugin.yaml' else 'other-engineering', 'version': '0.1.0-rc.6'}).encode()
             member = tarfile.TarInfo(name)
             member.size = len(value)
             archive.addfile(member, io.BytesIO(value))
@@ -53,6 +53,15 @@ def plugin_archive(extra=None):
 
 
 class ProfileRuntimeTests(unittest.TestCase):
+    def test_external_namespace_is_preserved_and_manifests_must_agree(self):
+        files = runtime.archive_files(plugin_archive())
+        self.assertEqual(runtime.plugin_namespace(files), 'external-engineering')
+        for namespace in ('../unsafe', '', 'space name', 'x' * 101):
+            with self.assertRaises(ValueError):
+                runtime.archive_files(plugin_archive(namespace=namespace))
+        with self.assertRaises(ValueError):
+            runtime.archive_files(plugin_archive(conflicting=True))
+
     def test_source_audit_reads_only_fixed_public_files_without_imports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -164,7 +173,7 @@ class ProfileRuntimeTests(unittest.TestCase):
             worker.start()
             started = time.monotonic()
             try:
-                with patch.object(runtime, 'Path', side_effect=lambda value: path if value == '/run/driftward-hermes-factory/hermes.sock' else Path(value)), \
+                with patch.object(runtime, 'Path', side_effect=lambda value: path if value == '/run/factory-hermes-factory/hermes.sock' else Path(value)), \
                      patch.object(runtime, 'observer_host_digest', return_value='host'), \
                      patch.object(runtime, 'gateway_status', return_value={'ActiveState': 'active'}):
                     runtime.wait_observer_health(install, expected, 'host', timeout=3)
@@ -435,7 +444,7 @@ class ProfileRuntimeTests(unittest.TestCase):
         old = 'a' * 64
         native = {'protected': 'protected-state', 'links': {
             'posthog': {'target': '/releases/' + old, 'digest': old},
-            'driftward-engineering': {'target': '/engineering/' + runtime.COMMIT, 'digest': 'engineering'}}}
+            'factory-engineering': {'target': '/engineering/' + runtime.COMMIT, 'digest': 'engineering'}}}
         target = runtime.tree_digest(runtime.observer_files(runtime.observer_payload()))
         snapshot = {'native': native, 'target_digest': target, 'host_inputs': 'host',
                     'services': [('bridge-executor-worker', 'exited'), ('execution-dispatch-worker', 'running')]}
@@ -604,7 +613,7 @@ class ProfileRuntimeTests(unittest.TestCase):
             self.assertEqual(json.loads(provision.read_text())['unrelated'], 'preserve')
             self.assertEqual(json.loads(provision.read_text())['auth_root'], '/opt/data/profiles/factory-independent-reviewer')
             self.assertEqual(calls, ['status', 'idle', 'move-auth'])
-            self.assertIn('DRIFTWARD_HERMES_PROFILE=factory-executor', dropin.read_text())
+            self.assertIn('FACTORY_HERMES_PROFILE=factory-executor', dropin.read_text())
             for call in install.compose.call_args_list:
                 self.assertNotIn('bridge-executor-worker', call.args)
             self.assertEqual(json.loads((root / 'profile-cutover.json').read_text())['phase'], 'complete')
@@ -664,7 +673,7 @@ class ProfileRuntimeTests(unittest.TestCase):
             receipt.write_text(json.dumps({'phase':'rolled_back','stage':'native_idle','secret':'never expose'}))
             receipt.chmod(0o600)
             before={p:p.read_bytes() for p in (provision,receipt)}
-            outputs=[SimpleNamespace(stdout='DRIFTWARD_HERMES_PROFILE=factory-executor'),
+            outputs=[SimpleNamespace(stdout='FACTORY_HERMES_PROFILE=factory-executor'),
                      SimpleNamespace(stdout='ActiveState=activating\nSubState=auto-restart\nResult=exit-code\nExecMainStatus=226\nSecret=never expose')]
             with patch.object(runtime, 'PROVISION', provision), patch.object(runtime, 'run_native', return_value={}), \
                  patch.object(runtime.subprocess, 'run', side_effect=outputs), patch.object(runtime, 'write_private') as write:
@@ -676,8 +685,8 @@ class ProfileRuntimeTests(unittest.TestCase):
             write.assert_not_called()
 
     def test_gateway_runtime_directory_is_created_before_service_namespace(self):
-        source=(ROOT/'deploy/systemd/driftward-hermes-factory-gateway.service').read_text()
-        for directive in ('RuntimeDirectory=driftward-hermes-factory','RuntimeDirectoryPreserve=yes'):
+        source=(ROOT/'deploy/systemd/factory-hermes-factory-gateway.service').read_text()
+        for directive in ('RuntimeDirectory=factory-hermes-factory','RuntimeDirectoryPreserve=yes'):
             self.assertIn(directive,source)
             self.assertIn(directive.encode(),runtime.PROFILE_DROPIN)
 
@@ -689,7 +698,7 @@ class ProfileRuntimeTests(unittest.TestCase):
                 helper = root / 'bundle/factory-profile-runtime.py'
                 source = helper.parent / 'gateway/hermes-gateway-server.js'
                 source.parent.mkdir(parents=True)
-                source.write_bytes(b'new public DRIFTWARD_HERMES_PROFILE support')
+                source.write_bytes(b'new public FACTORY_HERMES_PROFILE support')
                 skill_source = helper.parent / 'engineering/review-code.md'
                 skill_source.parent.mkdir()
                 skill_source.write_bytes(b'pinned reviewer skill bytes\n')
@@ -801,12 +810,14 @@ class ProfileRuntimeTests(unittest.TestCase):
             self.assertEqual(default.read_text(), default_config)
             executor = root / 'profiles' / 'factory-executor'
             config = json.loads((executor / 'config.yaml').read_text())
+            self.assertEqual(config['factory_skill_namespace'], 'external-engineering')
+            self.assertEqual(config['plugins']['enabled'], ['external-engineering', 'observability/posthog'])
             self.assertEqual(config['unrelated'], 'preserved')
             self.assertEqual(config['model']['base_url'], 'https://example.invalid')
             self.assertEqual(config['plugins']['unrelated'], 'preserve')
             self.assertEqual(config['mcp_servers'], {'example': {'command': 'example'}})
             self.assertNotIn('identity', config)
-            release = (executor / 'plugins/driftward-engineering').resolve()
+            release = (executor / 'plugins/factory-engineering').resolve()
             (release / 'plugin.json').chmod(0o600)
             (release / 'plugin.json').write_text('tampered')
             with patch.object(runtime, 'ROOT', root), patch.dict(sys.modules, {'hermes_cli.config': config_module}), self.assertRaises(ValueError):
@@ -901,7 +912,7 @@ class ProfileRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.run_native('/trusted/wrapper', 'idle', {}), {'idle': True})
         self.assertEqual(run.call_args.args[0], ['/trusted/wrapper', 'shell', '-c', 'exec python3 -'])
         self.assertTrue(run.call_args.kwargs['capture_output'])
-        self.assertNotIn('DRIFTWARD_HERMES_ROOT', run.call_args.kwargs['env'])
+        self.assertNotIn('FACTORY_HERMES_ROOT', run.call_args.kwargs['env'])
 
     def test_unsupported_role_cannot_trigger_canary(self):
         with self.assertRaises(ValueError):

@@ -19,7 +19,7 @@ import zipfile
 from auto_deploy_artifact import compatibility_entries, REGISTRY_IMAGE
 
 REPO = 'Driftward-LLC/factory'
-CONFIG = Path('/etc/driftward/factory-auto-deploy.json')
+CONFIG = Path('/etc/factory/factory-auto-deploy.json')
 SHA = r'[0-9a-f]{40}'
 DIGEST = r'[0-9a-f]{64}'
 MAX_ARCHIVE = 64 * 1024

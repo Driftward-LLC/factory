@@ -30,6 +30,17 @@ FILES = (
     "deploy/migration_postgres.py",
     "deploy/postgres-fingerprint.sql",
     "deploy/MIGRATE.md",
+    "deploy/ORGANIZATION.md",
+    "deploy/examples/organization.json",
+    "deploy/examples/routing-registry.json",
+    "deploy/examples/verifier-policy.json",
+    "deploy/examples/independent-review-policy.json",
+    "deploy/examples/organization.configured.example.json",
+    "deploy/examples/organization.schema.json",
+    "deploy/examples/routing-registry.schema.json",
+    "deploy/examples/verifier-policy.schema.json",
+    "deploy/examples/independent-review-policy.schema.json",
+
 )
 IMAGE = "ghcr.io/driftward-llc/factory@sha256:" + "a" * 64
 
@@ -41,7 +52,10 @@ class FactoryReleaseTests(unittest.TestCase):
         self.root = Path(self.directory.name) / "source"
         (self.root / "deploy").mkdir(parents=True)
         shutil.copyfile(ROOT / "deploy/package-release.sh", self.root / "deploy/package-release.sh")
+        (self.root / "hatchet/bridge").mkdir(parents=True)
+        (self.root / "hatchet/bridge/factory_organization.py").write_text("# public validator fixture\n")
         for name in FILES:
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_text(f"public fixture for {name}\n", encoding="utf-8")
         (self.root / "deploy/private.env").write_text("DO_NOT_PACKAGE=private\n", encoding="utf-8")
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
@@ -67,7 +81,7 @@ class FactoryReleaseTests(unittest.TestCase):
         with tarfile.open(archive) as bundle:
             self.assertEqual(
                 {member.name for member in bundle.getmembers() if member.isfile()},
-                {f"{self.bundle}/{name}" for name in (*FILES, "factory.env")},
+                {f"{self.bundle}/{name}" for name in (*FILES, "deploy/factory_organization.py", "factory.env")},
             )
             metadata = bundle.extractfile(f"{self.bundle}/factory.env").read().decode()
             self.assertIn(f"FACTORY_IMAGE={IMAGE}\n", metadata)
@@ -154,9 +168,9 @@ class FactoryReleaseTests(unittest.TestCase):
         self.assertIn("push: false", workflow)
         self.assertIn("packages: write", workflow)
         self.assertIn("--validation-only", workflow)
-        self.assertLess(workflow.index("python3 tools/check_factory_portable.py --image driftward/factory:ci"), workflow.index("docker push"))
+        self.assertLess(workflow.index("python3 tools/check_factory_portable.py --image factory/factory:ci"), workflow.index("docker push"))
         self.assertIn("refusing to overwrite: $image_tag", workflow)
-        self.assertIn("--image driftward/factory:ci --telemetry", workflow)
+        self.assertIn("--image factory/factory:ci --telemetry", workflow)
         self.assertNotIn("import telemetry; print(telemetry.IMAGE)", workflow)
         self.assertIn('"$RUNNER_TEMP/factory-release/SHA256SUMS"', workflow)
         self.assertNotIn("actions/upload-artifact", workflow)

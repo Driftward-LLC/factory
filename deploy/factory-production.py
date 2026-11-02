@@ -25,17 +25,17 @@ portable = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(portable)
 SERVICES = (*portable.CONTROL_PLANE_SERVICES, "linear-webhook-proxy", "factory-lifecycle-writer", "factory-linear-token-refresh")
 CORE = ("postgres", "hatchet-lite", "bridge")
-SOCKET = "/run/driftward-hermes-factory"
-TENANT_LABEL = "io.driftward.factory.tenant"
+SOCKET = "/run/factory-hermes-factory"
+TENANT_LABEL = "io.factory.tenant"
 MOUNTS = {
     "postgres": [("hatchet-postgres-data", "/var/lib/postgresql/data", False)],
     "hatchet-lite": [("hatchet-config-data", "/config", False)],
-    "bridge": [("bridge-data", "/var/lib/driftward-hatchet-bridge", False), ("maintenance", "/run/driftward-hatchet-bridge", False)],
-    "event-ingress": [("ingress-data", "/var/lib/driftward-hatchet-event-ingress", False)],
-    "factory-lifecycle-writer": [("lifecycle-data", "/var/lib/driftward-factory-lifecycle-writer", False), ("linear-published-token", "/var/run/factory-linear-token", True)],
-    "factory-linear-token-refresh": [("linear-token-data", "/var/lib/driftward-factory-linear-token", False), ("linear-published-token", "/var/run/factory-linear-token", False)],
-    "factory-operator": [("operator-socket", "/run/driftward-factory-operator", False), ("bridge-data", "/var/lib/driftward-hatchet-bridge", False), ("ingress-data", "/var/lib/driftward-hatchet-event-ingress", True), ("lifecycle-data", "/var/lib/driftward-factory-lifecycle-writer", False), ("maintenance", "/run/driftward-hatchet-bridge", False)],
-    "outbox-dispatcher": [("bridge-data", "/var/lib/driftward-hatchet-bridge", False), ("ingress-data", "/var/lib/driftward-hatchet-event-ingress", False), ("maintenance", "/run/driftward-hatchet-bridge", False)],
+    "bridge": [("bridge-data", "/var/lib/factory-hatchet-bridge", False), ("maintenance", "/run/factory-hatchet-bridge", False)],
+    "event-ingress": [("ingress-data", "/var/lib/factory-hatchet-event-ingress", False)],
+    "factory-lifecycle-writer": [("lifecycle-data", "/var/lib/factory-lifecycle-writer", False), ("linear-published-token", "/var/run/factory-linear-token", True)],
+    "factory-linear-token-refresh": [("linear-token-data", "/var/lib/factory-linear-token", False), ("linear-published-token", "/var/run/factory-linear-token", False)],
+    "factory-operator": [("operator-socket", "/run/factory-operator", False), ("bridge-data", "/var/lib/factory-hatchet-bridge", False), ("ingress-data", "/var/lib/factory-hatchet-event-ingress", True), ("lifecycle-data", "/var/lib/factory-lifecycle-writer", False), ("maintenance", "/run/factory-hatchet-bridge", False)],
+    "outbox-dispatcher": [("bridge-data", "/var/lib/factory-hatchet-bridge", False), ("ingress-data", "/var/lib/factory-hatchet-event-ingress", False), ("maintenance", "/run/factory-hatchet-bridge", False)],
 }
 
 
@@ -237,6 +237,11 @@ class Production(portable.Installation):
                     or any(service.get(key) for key in ("privileged", "network_mode", "pid", "ipc", "devices", "cap_add", "volumes_from", "secrets", "configs"))):
                 raise ProductionRefusal("Compose service isolation differs")
             expected = {("volume", "factory-" + suffix, target, readonly) for suffix, target, readonly in MOUNTS.get(name, [])}
+            if name in bootstrap.CONFIG_SERVICES:
+                expected.add(("bind", str(self.directory / "config"), "/etc/factory/config", True))
+                if (any(service.get("environment", {}).get(key) != value for key, value in bootstrap.CONFIG_ENV.items())
+                        or any(mount.get("bind", {}).get("create_host_path", False) for mount in service.get("volumes", []))):
+                    raise ProductionRefusal("organization configuration boundary differs")
             if name == "factory-hermes":
                 expected.add(("volume", "factory-hermes-data", "/opt/data", False))
                 if (service.get("command") != ["sleep", "infinity"]
@@ -257,7 +262,7 @@ class Production(portable.Installation):
                 expected.add(("bind", SOCKET, SOCKET, True))
                 if any(mount.get("bind", {}).get("create_host_path", False) for mount in service.get("volumes", [])):
                     raise ProductionRefusal("gateway socket directory must already exist")
-                if service.get("environment", {}).get("DRIFTWARD_HERMES_GRPC_TARGET") != "unix://" + SOCKET + "/hermes.sock":
+                if service.get("environment", {}).get("FACTORY_HERMES_GRPC_TARGET") != "unix://" + SOCKET + "/hermes.sock":
                     raise ProductionRefusal("executor gateway boundary differs")
             mounts = service.get("volumes", [])
             if len(mounts) != len(expected) or {(mount["type"], mount["source"], mount["target"], mount.get("read_only", False)) for mount in mounts} != expected:

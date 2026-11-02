@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema",
+    "enabled",
+    "automatic_repairs_allowed",
+    "max_passes",
+    "repositories"
+  ],
+  "properties": {
+    "schema": {
+      "const": "factory-independent-review-policy-v1"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "automatic_repairs_allowed": {
+      "type": "boolean"
+    },
+    "max_passes": {
+      "const": 2
+    },
+    "repositories": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+      }
+    }
+  },
+  "additionalProperties": false
+}

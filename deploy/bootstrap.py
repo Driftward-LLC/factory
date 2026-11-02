@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,7 @@ import uuid
 
 
 MARKER = ".factory-install.json"
+NAMING_GENERATION = "factory-neutral-v1"
 PROJECT_PATTERN = r"factory(?:-[a-z0-9][a-z0-9-]{0,48})?"
 ENV_FILES = (
     "hatchet-bridge.env", "hatchet-workers.env", "hatchet-event-ingress.env",
@@ -27,6 +29,47 @@ ENV_FILES = (
     "hatchet-verifier.env", "factory-operator.env", "factory-lifecycle-writer.env",
     "factory-linear-token.env",
 )
+# Identity and execution policy contain no credentials. Secrets stay in role-scoped env/ files.
+ORGANIZATION_DEFAULTS = {
+    "organization.json": {"schema": "factory-organization-v1", "linear": None, "github": {"enabled": False}},
+    "routing-registry.json": {"version": 2, "routes": []},
+    "verifier-policy.json": {"version": 1, "policies": []},
+    "independent-review-policy.json": {"schema": "factory-independent-review-policy-v1", "enabled": False,
+                                       "automatic_repairs_allowed": False, "max_passes": 2, "repositories": []},
+}
+CONFIG_ENV = {
+    "FACTORY_ORGANIZATION_CONFIG": "/etc/factory/config/organization.json",
+    "HATCHET_INTAKE_ROUTING_REGISTRY_PATH": "/etc/factory/config/routing-registry.json",
+    "HATCHET_VERIFIER_POLICY_PATH": "/etc/factory/config/verifier-policy.json",
+    "HATCHET_INDEPENDENT_REVIEW_POLICY_PATH": "/etc/factory/config/independent-review-policy.json",
+}
+CONFIG_SERVICES = {"bridge", "event-ingress", "linear-webhook-proxy", "intake-worker", "execution-dispatch-worker",
+                   "bridge-executor-worker", "pr-event-worker", "reconciliation-worker", "factory-lifecycle-writer",
+                   "factory-linear-token-refresh", "factory-operator", "outbox-dispatcher"}
+
+
+def configuration(directory: Path) -> dict[str, str]:
+    """Read supplied files without changing them; runtime also validates policy semantics."""
+    directory = checked_path(directory)
+    if not directory.is_dir() or directory.stat().st_mode & 0o077:
+        raise ValueError("organization configuration directory must be private")
+    if {item.name for item in directory.iterdir()} != set(ORGANIZATION_DEFAULTS):
+        raise ValueError("organization configuration requires exactly four JSON files")
+    contents = {name: _read_private(directory / name) for name in ORGANIZATION_DEFAULTS}
+    # The release bundle includes the same validator used by application processes.
+    validator = Path(__file__).with_name("factory_organization.py")
+    if not validator.exists():
+        validator = Path(__file__).resolve().parents[1] / "hatchet/bridge/factory_organization.py"
+    spec = importlib.util.spec_from_file_location("factory_configuration_validator", validator)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.load(str(directory / "organization.json"))
+    for name, kind in (("routing-registry.json", "routing"), ("verifier-policy.json", "verifier"),
+                       ("independent-review-policy.json", "review")):
+        module.validate_policy(json.loads(contents[name]), kind)
+    return contents
+
+
 PORTS = {
     "FACTORY_HATCHET_PORT": 8888,
     "FACTORY_HATCHET_GRPC_PORT": 7077,
@@ -51,7 +94,8 @@ def checked_path(path: str | Path) -> Path:
 def _read_private(path: Path) -> str:
     checked_path(path)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+    # Preserve accepted UTF-8 bytes, including CRLF, for snapshot copies and digests.
+    with os.fdopen(descriptor, "r", encoding="utf-8", newline="") as handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
             raise ValueError("configuration must be a private regular file")
@@ -60,7 +104,7 @@ def _read_private(path: Path) -> str:
 
 def _create_private(path: Path, content: str) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
@@ -91,6 +135,11 @@ def read_env(path: str | Path) -> dict[str, str]:
     return result
 
 
+def validate_naming_generation(metadata: dict) -> None:
+    if metadata.get("naming_generation") != NAMING_GENERATION:
+        raise ValueError("unsupported naming generation; existing state requires a separately reviewed migration (see deploy/NAMING-MIGRATION.md)")
+
+
 def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
     directory = checked_path(directory)
     if not directory.is_dir() or directory.stat().st_mode & 0o077:
@@ -99,10 +148,12 @@ def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
         metadata = json.loads(_read_private(directory / MARKER))
         if metadata.get("format_version") != 1:
             raise ValueError("unsupported installation format")
+        validate_naming_generation(metadata)
         uuid.UUID(metadata["installation_id"])
         config = read_env(directory / ".env")
         if (config["FACTORY_INSTALL_DIR"] != str(directory)
                 or config["FACTORY_ENV_DIR"] != str(directory / "env")
+                or (metadata.get("organization_config") == 1 and config.get("FACTORY_CONFIG_DIR") != str(directory / "config"))
                 or config["FACTORY_PROJECT_NAME"] != metadata["project"]
                 or config["COMPOSE_PROJECT_NAME"] != metadata["project"]
                 or config["FACTORY_IMAGE"] != metadata["image"]):
@@ -113,6 +164,10 @@ def validate_directory(directory: str | Path) -> tuple[dict, dict[str, str]]:
             child = checked_path(directory / relative)
             if not child.is_dir() or child.stat().st_mode & 0o077:
                 raise ValueError("installation contains a non-private directory")
+        if metadata.get("organization_config") == 1:
+            configuration(directory / "config")
+        elif metadata.get("organization_config") is not None:
+            raise ValueError("unsupported organization configuration format")
         return metadata, config
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError("installation is foreign or incomplete; nothing was overwritten") from exc
@@ -146,6 +201,7 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         "FACTORY_IMAGE": image,
         "FACTORY_INSTALL_DIR": str(directory),
         "FACTORY_ENV_DIR": str(directory / "env"),
+        "FACTORY_CONFIG_DIR": str(directory / "config"),
         "FACTORY_OPERATOR_RUN_DIR": str(directory / "run" / "operator"),
         "HATCHET_POSTGRES_USER": "hatchet",
         "HATCHET_POSTGRES_DB": "hatchet",
@@ -182,7 +238,7 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         },
         "hatchet-worker-bridge-executor.env": {
             "HATCHET_HERMES_INSPECTION_TOKEN": inspection_token,
-            "DRIFTWARD_HERMES_CREATE_DRAFT_PR_ENABLED": "0",
+            "FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED": "0",
         },
         "hatchet-worker-reconciliation.env": {"HATCHET_HERMES_RECOVERY_TOKEN": recovery_token},
         "hatchet-verifier.env": {"HATCHET_HERMES_VERIFIER_TOKEN": secrets.token_hex(32)},
@@ -194,15 +250,17 @@ def init_directory(directory: str | Path, image: str, project: str, *,
         "factory-linear-token.env": {},
     }
     directory.mkdir(mode=0o700)
-    for relative in ("env", "keys", "keys/hatchet", "run", "run/operator"):
+    for relative in ("env", "config", "keys", "keys/hatchet", "run", "run/operator"):
         (directory / relative).mkdir(mode=0o700)
     _create_private(directory / ".env", env_text(config))
     for name, values in env_files.items():
         _create_private(directory / "env" / name, env_text(values))
+    for name, value in ORGANIZATION_DEFAULTS.items():
+        _create_private(directory / "config" / name, json.dumps(value, indent=2) + "\n")
     # Last write is the completion marker. An interrupted creation is never
     # guessed to be safe to resume or silently populated with replacement keys.
     _create_private(directory / MARKER, json.dumps({
-        "format_version": 1, "installation_id": str(uuid.uuid4()),
+        "format_version": 1, "naming_generation": NAMING_GENERATION, "organization_config": 1, "installation_id": str(uuid.uuid4()),
         "project": project, "image": image,
     }, sort_keys=True) + "\n")
     return config

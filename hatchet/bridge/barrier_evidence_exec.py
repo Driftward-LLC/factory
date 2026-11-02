@@ -8,7 +8,7 @@ from barrier_unit_state import UnitStateError, systemctl_value, unit_is_absent
 import test_capability
 
 HERE = Path(__file__).resolve().parent
-ENV = "DRIFTWARD_SAFE_DOWN_BARRIER_EVIDENCE"
+ENV = "FACTORY_SAFE_DOWN_BARRIER_EVIDENCE"
 # Keep well above ordinary inherited descriptors and do not overwrite a later
 # captured drop-in while remapping the first descriptor.
 FIRST_FD = 100
@@ -21,7 +21,7 @@ class BarrierError(RuntimeError):
 def _settings() -> tuple[Path, Path, Path, int, int]:
     cap = test_capability.load()
     if cap is None:
-        return Path("/run/driftward-hatchet-bridge"), Path("/run/systemd/system"), Path("/var/lib/driftward-hatchet-bridge"), 0, 0
+        return Path("/run/factory-hatchet-bridge"), Path("/run/systemd/system"), Path("/var/lib/factory-hatchet-bridge"), 0, 0
     return cap.runtime, cap.root / "run/systemd/system", cap.state, cap.uid, cap.gid
 
 
@@ -65,7 +65,7 @@ def _quiescent(entries: list[dict[str, object]], runtime: Path) -> None:
         dropins = systemctl_value(unit, "DropInPaths", single_line=False)
         if active not in ("inactive", "failed") or str(entry["path"]) not in dropins:
             raise BarrierError("maintenance barrier is not quiescent")
-    for unit in ("driftward-hatchet-bridge-reconciler.service", "driftward-hatchet-bridge-reconciler.timer"):
+    for unit in ("factory-hatchet-bridge-reconciler.service", "factory-hatchet-bridge-reconciler.timer"):
         if systemctl_value(unit, "ActiveState") != "inactive":
             raise BarrierError("reconciler remains active")
     result = subprocess.run(["lsof", str(runtime / "bridge.db"), str(runtime / "bridge.db-wal"), str(runtime / "bridge.db-shm")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -81,7 +81,7 @@ def capture() -> tuple[list[int], dict[str, object]]:
         fd, sentinel = _open(active, mode=0o600, uid=uid, gid=gid, kind="sentinel"); fds.append(fd)
         entries = [sentinel]
         for unit in _units():
-            path = systemd / f"{unit}.d/90-driftward-bridge-maintenance.conf"
+            path = systemd / f"{unit}.d/90-factory-bridge-maintenance.conf"
             fd, entry = _open(path, mode=0o644, uid=uid, gid=gid, kind="dropin", unit=unit)
             os.lseek(fd, 0, os.SEEK_SET)
             if f"ConditionPathExists=!{active}".encode() not in os.read(fd, 1 << 20):

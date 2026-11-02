@@ -131,9 +131,9 @@ Source ownership and query paths are:
 
 | Source | Docker runtime path | Tables read | Query surface |
 | --- | --- | --- | --- |
-| Bridge ledger | `/var/lib/driftward-hatchet-bridge/bridge.db` | `factory_attempts`, `factory_attempt_events`, `bridge_jobs`, `bridge_events`, `reconciliation_findings` | Required source for every report |
-| Event-ingress ledger | `/var/lib/driftward-hatchet-event-ingress/ingress.db` | `ingress_events`, `ingress_receipts` | Optional intake, delivery, redelivery, check/review, and GitHub outcome projection |
-| Lifecycle ledger | `/var/lib/driftward-factory-lifecycle-writer/outbox.db` | `lifecycle_outbox` | Optional delivery/dead-letter projection |
+| Bridge ledger | `/var/lib/factory-hatchet-bridge/bridge.db` | `factory_attempts`, `factory_attempt_events`, `bridge_jobs`, `bridge_events`, `reconciliation_findings` | Required source for every report |
+| Event-ingress ledger | `/var/lib/factory-hatchet-event-ingress/ingress.db` | `ingress_events`, `ingress_receipts` | Optional intake, delivery, redelivery, check/review, and GitHub outcome projection |
+| Lifecycle ledger | `/var/lib/factory-lifecycle-writer/outbox.db` | `lifecycle_outbox` | Optional delivery/dead-letter projection |
 
 There is no analytics table, periodic ETL job, or historical backfill. Reports
 remain read-only; the time-recording command appends to the existing attempt
@@ -593,7 +593,7 @@ begins. The direct/Docker fallback passes the same allowlist as the child
 environment instead of inheriting the worker's complete environment.
 
 The receipt runner derives `configured_auth_mode` only from the bounded
-`DRIFTWARD_HERMES_AUTH_MODE` deployment label and defaults to `unknown`; it
+`FACTORY_HERMES_AUTH_MODE` deployment label and defaults to `unknown`; it
 does not inspect or copy a credential. `backend_version` similarly reflects an
 optional configured version label, not runtime fingerprinting.
 Backend-attribution coverage can therefore be complete while authentication

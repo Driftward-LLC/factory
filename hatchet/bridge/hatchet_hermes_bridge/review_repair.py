@@ -1,6 +1,8 @@
 """One root-approved repair of the exact independently reviewed draft head."""
 from __future__ import annotations
 
+import factory_organization as organization
+
 import copy
 import re
 from typing import Any
@@ -33,7 +35,7 @@ def _intent(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reauthorize_policy(source: Any, target: dict[str, Any], intent: dict[str, Any]) -> None:
-    """Only the reviewed Capykit ignore-file addition can cross a policy epoch."""
+    """Only an explicit, exact ignore-file addition can cross a policy epoch."""
     transition = intent.get("policy_reauthorization")
     if transition is None and source == target:
         return
@@ -42,7 +44,7 @@ def _reauthorize_policy(source: Any, target: dict[str, Any], intent: dict[str, A
     if ".gitleaksignore" in paths:
         paths.remove(".gitleaksignore")
     previous["digest"] = store.payload_hash({key: value for key, value in previous.items() if key not in {"digest", "catalog_version"}})
-    if (not transition or target["repo"] != "Driftward-LLC/capykit"
+    if (not transition or not store._canonical_enabled_repo(target["repo"])
             or ".gitleaksignore" not in target["allowed_changed_paths"] or source != previous
             or transition != {"source_digest": previous["digest"], "target_digest": target["digest"]}):
         raise store.BridgeConflict("review repair source artifact or policy changed; explicit compatible policy reauthorization required")
@@ -51,7 +53,8 @@ def _reauthorize_policy(source: Any, target: dict[str, Any], intent: dict[str, A
 def _source_record(conn, issue: str, attempt_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     attempt = store.get_factory_attempt(conn, attempt_id)
     job = store.get_job(conn, attempt["job_id"]) if attempt.get("job_id") else None
-    if (attempt["work_item_key"] != issue or attempt["mode"] != "real" or attempt["actor"] == "legacy-import"
+    if (not job or not organization.matches_binding(job["payload"].get("organization_binding"))
+            or attempt["work_item_key"] != issue or attempt["mode"] != "real" or attempt["actor"] == "legacy-import"
             or attempt["status"] not in {"verified_ready", "failed"} or not job
             or job["requested_action"] not in store.DRAFT_PR_EFFECT_ACTIONS
             or job["state"] not in {"ready_for_human_review", "failed"}
@@ -141,9 +144,9 @@ def _preview(conn, *, ingress_db: str, registry_path: str, policy_path: str, act
     # Review follows an existing artifact. In Review is intentional; fresh intake
     # still requires Ready, and neither terminal nor blocked work is eligible here.
     source = operator._latest_linear(ingress_db, issue)
-    if (not source or source.get("identifier") != issue or source.get("team") != "Engineering"
+    if (not source or source.get("identifier") != issue or not organization.matches_observation(source)
             or source.get("status") not in {"Ready", "In Review"}
-            or source.get("delegate") == "Driftward Factory" or source.get("blockedBy")):
+            or source.get("delegate") == organization.linear_identity()["delegate_name"] or source.get("blockedBy")):
         raise operator.OperatorError("trusted_review_repair_eligibility_failed")
     if not operator._services_healthy() or operator._mode() != "real":
         raise operator.OperatorError("review repair requires healthy real execution mode")
@@ -272,7 +275,7 @@ def reserve_policy_repair(conn, review: dict[str, Any], authorized_policy: dict[
         store._queue_pr_inspection(conn, intent["issue"], intent["pr_url"], intent["source_attempt_id"])
         return False
     authority = {"kind": "independent_review_policy_v1", "review_id": current["review_id"], "policy_digest": policy["digest"]}
-    previewed = _preview(conn, ingress_db=os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/driftward-hatchet-event-ingress/ingress.db"),
+    previewed = _preview(conn, ingress_db=os.environ.get("HATCHET_FACTORY_OPERATOR_INGRESS_DB", "/var/lib/factory-hatchet-event-ingress/ingress.db"),
         registry_path=os.environ.get("HATCHET_INTAKE_ROUTING_REGISTRY_PATH", str(independent_review.POLICY_PATH.parent / "routing-registry.json")),
         policy_path=os.environ.get("HATCHET_VERIFIER_POLICY_PATH", store.DOCKER_VERIFIER_POLICY_PATH),
         actor="independent-review-policy", intent=intent, policy_authority=authority)

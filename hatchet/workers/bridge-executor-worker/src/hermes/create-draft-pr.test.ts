@@ -2,18 +2,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 test('legacy and native routes cannot select each others reserved profile', () => {
-  const keys = ['DRIFTWARD_HERMES_PROFILE', 'DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER'];
+  const keys = ['FACTORY_HERMES_PROFILE', 'FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER', 'FACTORY_HERMES_SKILL_NAMESPACE'];
   const before = keys.map((key) => process.env[key]);
   try {
+    process.env.FACTORY_HERMES_SKILL_NAMESPACE = 'external-engineering';
     for (const flag of [undefined, '1']) {
-      if (flag) process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER = flag;
-      else delete process.env.DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER;
-      process.env.DRIFTWARD_HERMES_PROFILE = flag ? 'factory-executor' : 'factory-native-executor';
+      if (flag) process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER = flag;
+      else delete process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER;
+      process.env.FACTORY_HERMES_PROFILE = flag ? 'factory-executor' : 'factory-native-executor';
       assert.throws(hermesProfileArguments, /Factory executor profile/);
-      process.env.DRIFTWARD_HERMES_PROFILE = flag ? 'factory-native-executor' : 'factory-executor';
-      assert.equal(hermesProfileArguments()[1], process.env.DRIFTWARD_HERMES_PROFILE);
+      process.env.FACTORY_HERMES_PROFILE = flag ? 'factory-native-executor' : 'factory-executor';
+      assert.equal(hermesProfileArguments()[1], process.env.FACTORY_HERMES_PROFILE);
     }
-    delete process.env.DRIFTWARD_HERMES_PROFILE;
+    delete process.env.FACTORY_HERMES_PROFILE;
     assert.throws(hermesProfileArguments, /reserved profile/);
   } finally {
     keys.forEach((key, i) => { if (before[i] === undefined) delete process.env[key]; else process.env[key] = before[i]; });
@@ -21,34 +22,42 @@ test('legacy and native routes cannot select each others reserved profile', () =
 });
 
 test('executor profile selects native command and metadata runtime consistently', () => {
-  const previous = process.env.DRIFTWARD_HERMES_PROFILE;
+  const previousNamespace = process.env.FACTORY_HERMES_SKILL_NAMESPACE;
+  const previous = process.env.FACTORY_HERMES_PROFILE;
   try {
-    delete process.env.DRIFTWARD_HERMES_PROFILE;
+    delete process.env.FACTORY_HERMES_PROFILE;
     assert.deepEqual(hermesProfileArguments(), []);
-    process.env.DRIFTWARD_HERMES_PROFILE = 'factory-executor';
+    process.env.FACTORY_HERMES_PROFILE = 'factory-executor';
+    delete process.env.FACTORY_HERMES_SKILL_NAMESPACE;
+    assert.throws(hermesProfileArguments, /explicit skill namespace/);
+    process.env.FACTORY_HERMES_SKILL_NAMESPACE = '../invalid';
+    assert.throws(hermesProfileArguments, /explicit skill namespace/);
+    process.env.FACTORY_HERMES_SKILL_NAMESPACE = 'external-engineering';
     assert.deepEqual(hermesProfileArguments(), ['--profile', 'factory-executor', '--skills',
-      'driftward-engineering:implement-change,driftward-engineering:verify-app,driftward-engineering:prepare-pr']);
-    const previousUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
-    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '1000:1000';
+      'external-engineering:implement-change,external-engineering:verify-app,external-engineering:prepare-pr']);
+    const previousUser = process.env.FACTORY_HERMES_RUNTIME_USER;
+    process.env.FACTORY_HERMES_RUNTIME_USER = '1000:1000';
     try {
       assert.deepEqual(hermesRuntimeDockerArgs(['python3', '-c', 'pass']).slice(-5),
         ['env', 'HERMES_HOME=/opt/data/profiles/factory-executor', 'python3', '-c', 'pass']);
     } finally {
-      if (previousUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER;
-      else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousUser;
+      if (previousUser === undefined) delete process.env.FACTORY_HERMES_RUNTIME_USER;
+      else process.env.FACTORY_HERMES_RUNTIME_USER = previousUser;
     }
-    process.env.DRIFTWARD_HERMES_PROFILE = '../default';
+    process.env.FACTORY_HERMES_PROFILE = '../default';
     assert.throws(hermesProfileArguments, /factory-executor/);
   } finally {
-    if (previous === undefined) delete process.env.DRIFTWARD_HERMES_PROFILE;
-    else process.env.DRIFTWARD_HERMES_PROFILE = previous;
+    if (previousNamespace === undefined) delete process.env.FACTORY_HERMES_SKILL_NAMESPACE;
+    else process.env.FACTORY_HERMES_SKILL_NAMESPACE = previousNamespace;
+    if (previous === undefined) delete process.env.FACTORY_HERMES_PROFILE;
+    else process.env.FACTORY_HERMES_PROFILE = previous;
   }
 });
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { BridgeClient, BridgeJob } from '@driftward/hatchet-worker-shared';
+import type { BridgeClient, BridgeJob } from '@factory/hatchet-worker-shared';
 import {
   buildPrompt,
   hermesProfileArguments,
@@ -84,21 +93,22 @@ import {
 import { prepareReceiptRunnerInvocation } from './receipt-runner-setup';
 import { InvocationJournal } from './invocation-journal';
 
-process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
-process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'verifier-policy.json');
+process.env.FACTORY_ORGANIZATION_CONFIG = path.resolve(__dirname, '../../../test-fixtures/organization.json');
+process.env.FACTORY_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
+process.env.HATCHET_VERIFIER_POLICY_PATH = path.resolve(process.cwd(), '..', 'test-fixtures/verifier-policy.json');
 
 test('disabled native route retains typed gates, runtime profile, reservation and result normalization', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-native-route-'));
-  const keys = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_PROFILE', 'DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER',
-    'DRIFTWARD_HERMES_ALLOWED_REPOS', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL', 'NATIVE_TEST_MODE', 'NATIVE_TEST_DIRECTORY', 'DRIFTWARD_HERMES_NATIVE_IMAGE', 'DRIFTWARD_HERMES_NATIVE_SEED'];
+  const keys = ['FACTORY_HERMES_SKILL_NAMESPACE', 'PATH', 'FACTORY_HERMES_RUNTIME_USER', 'FACTORY_HERMES_PROFILE', 'FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER',
+    'FACTORY_HERMES_ALLOWED_REPOS', 'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL', 'NATIVE_TEST_MODE', 'NATIVE_TEST_DIRECTORY', 'FACTORY_HERMES_NATIVE_IMAGE', 'FACTORY_HERMES_NATIVE_SEED'];
   const previous = keys.map((key) => process.env[key]);
   try {
     process.env.PATH = directory + path.delimiter + process.env.PATH;
-    Object.assign(process.env, { DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', DRIFTWARD_HERMES_PROFILE: 'factory-native-executor',
-      DRIFTWARD_HERMES_EXPERIMENTAL_NATIVE_OWNER: '1', DRIFTWARD_HERMES_NATIVE_IMAGE: 'sha256:' + 'a'.repeat(64),
-      DRIFTWARD_HERMES_NATIVE_SEED: 'factory-native-executor-seed-' + 'a'.repeat(32), DRIFTWARD_HERMES_ALLOWED_REPOS: 'Driftward-LLC/capykit',
-      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
-      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '12345+factory-hermes[bot]@users.noreply.github.com', NATIVE_TEST_DIRECTORY: directory });
+    Object.assign(process.env, { FACTORY_HERMES_SKILL_NAMESPACE: 'external-engineering', FACTORY_HERMES_RUNTIME_USER: '10000:10000', FACTORY_HERMES_PROFILE: 'factory-native-executor',
+      FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER: '1', FACTORY_HERMES_NATIVE_IMAGE: 'sha256:' + 'a'.repeat(64),
+      FACTORY_HERMES_NATIVE_SEED: 'factory-native-executor-seed-' + 'a'.repeat(32), FACTORY_HERMES_ALLOWED_REPOS: 'example/widgets',
+      FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
+      FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '12345+factory-hermes[bot]@users.noreply.github.com', NATIVE_TEST_DIRECTORY: directory });
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
 const args=process.argv.slice(2), root=process.env.NATIVE_TEST_DIRECTORY, mode=process.env.NATIVE_TEST_MODE;
@@ -107,14 +117,14 @@ const statePath=path.join(root,'container.json');
 const save=v=>fs.writeFileSync(statePath,JSON.stringify(v));
 const read=()=>JSON.parse(fs.readFileSync(statePath));
 fs.appendFileSync(path.join(root,'calls'),JSON.stringify(args)+'\\n');
-if(args[0]==='volume')emit([{Name:process.env.DRIFTWARD_HERMES_NATIVE_SEED,Driver:'local',Labels:{'com.driftward.factory.role':'native-executor-seed','com.driftward.factory.fresh-credentials':'true'}}]);
-else if(args[0]==='image')emit([{Id:process.env.DRIFTWARD_HERMES_NATIVE_IMAGE,Config:{}}]);
+if(args[0]==='volume')emit([{Name:process.env.FACTORY_HERMES_NATIVE_SEED,Driver:'local',Labels:{'com.factory.role':'native-executor-seed','com.factory.fresh-credentials':'true'}}]);
+else if(args[0]==='image')emit([{Id:process.env.FACTORY_HERMES_NATIVE_IMAGE,Config:{}}]);
 else if(args[0]==='create'){
  const nonce=args[args.indexOf('--label')+1].split('=')[1];
  const id=require('node:crypto').createHash('sha256').update(nonce).digest('hex');
- save({Id:id,Image:process.env.DRIFTWARD_HERMES_NATIVE_IMAGE,Config:{User:'10000:10000',Labels:{'com.driftward.factory.native-owner':nonce}},
+ save({Id:id,Image:process.env.FACTORY_HERMES_NATIVE_IMAGE,Config:{User:'10000:10000',Labels:{'com.factory.native-owner':nonce}},
  HostConfig:{PidMode:'',Privileged:false,ReadonlyRootfs:true,RestartPolicy:{Name:'no'},CapDrop:['ALL'],SecurityOpt:['no-new-privileges:true']},
- Mounts:[{Type:'volume',Name:process.env.DRIFTWARD_HERMES_NATIVE_SEED,Destination:'/run/factory-native-seed',RW:false},{Type:'volume',Name:'private',Destination:'/tmp',RW:true}],
+ Mounts:[{Type:'volume',Name:process.env.FACTORY_HERMES_NATIVE_SEED,Destination:'/run/factory-native-seed',RW:false},{Type:'volume',Name:'private',Destination:'/tmp',RW:true}],
  State:{Running:false,Status:'created',ExitCode:0}});process.stdout.write(id);
 }else if(args[0]==='inspect'){const row=read();if(args.includes('{{json .Id}} {{json .Image}}'))process.stdout.write(JSON.stringify(row.Id)+' '+JSON.stringify(row.Image));else emit([row]);}
 else if(args[0]==='start'){const row=read();row.State={Running:true,Status:'running',ExitCode:0};save(row);}
@@ -124,7 +134,7 @@ else if(args[0]==='exec' && args.at(-1)==='true'){}
 else if(args.includes('user.name')){fs.writeFileSync(path.join(root,'preflight'),'started');setTimeout(()=>process.stdout.write('factory-hermes[bot]'),mode==='pre-cancel'?120:0);}
 else if(args.includes('user.email'))process.stdout.write('12345+factory-hermes[bot]@users.noreply.github.com');
 else if(args.includes('graphql'))process.stdout.write(mode==='wrong-actor'?'unapproved-human':'factory-hermes[bot]');
-else if(args.includes('gh'))process.stdout.write('Driftward-LLC/capykit');
+else if(args.includes('gh'))process.stdout.write('example/widgets');
 else if(args.includes('python3'))process.stdout.write(JSON.stringify({model_source:'executor_config',selected_model:'gpt-6.1-sol',selected_provider:mode==='unsupported-provider'?'openai-codex':'openai'}));
 else if(args[0]==='attach'){
  if(args.at(-1)!==read().Id)process.exit(2);
@@ -133,7 +143,7 @@ else if(args[0]==='attach'){
  readline.createInterface({input:process.stdin}).on('line',line=>{const v=JSON.parse(line);
   if(!launch){launch=v;fs.writeFileSync(path.join(root,'binding.json'),JSON.stringify(v.binding));
    emit({event:'registered',ownership:{...v.binding,pid:process.pid,runtime_incarnation:'00000000-0000-4000-8000-000000000099'}});}
-  else if(v.start){started=true;fs.writeFileSync(path.join(root,'started'),'yes');emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/Driftward-LLC/capykit/pull/61',branch:mode==='invalid-result'?'codex/forged':launch.receipt_policy.branch,commit_sha:'a'.repeat(40),validation:null}});}
+  else if(v.start){started=true;fs.writeFileSync(path.join(root,'started'),'yes');emit({event:'result',candidate:{status:'created',pr_url:'https://github.com/example/widgets/pull/61',branch:mode==='invalid-result'?'codex/forged':launch.receipt_policy.branch,commit_sha:'a'.repeat(40),validation:null}});}
   else if(v.cancel){fs.writeFileSync(path.join(root,'cancelled'),JSON.stringify({started}));emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});}
  }).on('close',()=>{const row=read();row.State={Running:false,Status:'exited',ExitCode:0};save(row);if(launch){emit({event:'stop',receipt:{...launch.binding,state:'unknown',dispatch_quiesced:true}});emit({event:'owner_exiting',binding:launch.binding,worker_exited:true,dispatch_quiesced:true,errors:[]});emit({event:'owner_reaped',receipt:{schema:1,...launch.binding,owner_exit_code:0,descendants_drained:true,errors:[],completion:'not_established',profile_reusable:false}});}});
 }else process.exit(4);
@@ -157,7 +167,7 @@ else if(args[0]==='attach'){
         await journal.cancel(job, lease);
       }
       if (rejected) await rejected;
-      else assert.equal((await pending).prUrl, 'https://github.com/Driftward-LLC/capykit/pull/61');
+      else assert.equal((await pending).prUrl, 'https://github.com/example/widgets/pull/61');
       if (['invalid-job', 'enrolled'].includes(mode)) assert.equal(existsSync(path.join(directory, 'preflight')), false);
       else {
         const intent = JSON.parse(readFileSync(path.join(directory, mode, job.job_id, 'intent.json'), 'utf8'));
@@ -196,37 +206,37 @@ test('review repair prompt carries bounded review data without inventing verifie
 test('credential-bearing invocation rejects a reviewed head that drifted after worker preflight', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-review-drift-'));
   const previousPath = process.env.PATH;
-  const previousRuntimeUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+  const previousRuntimeUser = process.env.FACTORY_HERMES_RUNTIME_USER;
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(JSON.stringify({
-      number: 77, url: 'https://github.com/Driftward-LLC/capykit/pull/77', state: 'OPEN', mergedAt: null,
+      number: 77, url: 'https://github.com/example/widgets/pull/77', state: 'OPEN', mergedAt: null,
       isDraft: true, headRefName: 'codex/existing', headRefOid: 'b'.repeat(40), baseRefName: 'main',
     }))});\n`, { mode: 0o700 });
     process.env.PATH = `${directory}${path.delimiter}${previousPath || ''}`;
-    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
+    process.env.FACTORY_HERMES_RUNTIME_USER = '10000:10000';
     await assert.rejects(runHermesCreateDraftPrViaCommand(reviewRepairJob(), path.join(directory, 'never-invoke'), 1000),
       (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'artifact_fence_changed');
   } finally {
     if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
-    if (previousRuntimeUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER; else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousRuntimeUser;
+    if (previousRuntimeUser === undefined) delete process.env.FACTORY_HERMES_RUNTIME_USER; else process.env.FACTORY_HERMES_RUNTIME_USER = previousRuntimeUser;
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
 function reviewRepairJob(): BridgeJob {
   const job = greenJob();
-  const prUrl = 'https://github.com/Driftward-LLC/capykit/pull/77';
+  const prUrl = 'https://github.com/example/widgets/pull/77';
   job.requested_action = 'repair_draft_pr';
   job.branch = 'codex/existing';
   Object.assign(job.payload, {
     expected_head_sha: 'a'.repeat(40), expected_base: 'main',
-    factory_artifact_fence: { kind: 'operator_review_repair_v1', repository: 'Driftward-LLC/capykit',
+    factory_artifact_fence: { kind: 'operator_review_repair_v1', repository: 'example/widgets',
       prior_attempt_id: 'source-attempt', prior_job_id: 'source-job', prior_pr_url: prUrl,
       head_branch: job.branch, head_sha: 'a'.repeat(40), base_ref: 'main' },
     factory_repair: { source_attempt_id: 'source-attempt', source_job_id: 'source-job', source_generation: 1,
       reason_code: 'operator_review_feedback', error: 'review', verification_attempt_id: null,
       pr_url: prUrl, branch: job.branch, commit_sha: 'a'.repeat(40) },
-    factory_review_repair: { source_attempt_id: 'source-attempt', repository: 'Driftward-LLC/capykit',
+    factory_review_repair: { source_attempt_id: 'source-attempt', repository: 'example/widgets',
       pr_url: prUrl, branch: job.branch, reviewed_head_sha: 'a'.repeat(40), feedback: 'Fix stale observations', automatic_repairs_allowed: false },
   });
   return job;
@@ -234,8 +244,8 @@ function reviewRepairJob(): BridgeJob {
 
 test('executor uses its runtime model snapshot, preserves correlation, and tolerates missing telemetry', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-runtime-model-'));
-  const names = ['PATH', 'DRIFTWARD_HERMES_RUNTIME_USER', 'DRIFTWARD_HERMES_ALLOWED_REPOS',
-    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
+  const names = ['PATH', 'FACTORY_HERMES_RUNTIME_USER', 'FACTORY_HERMES_ALLOWED_REPOS',
+    'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME', 'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
     'FACTORY_MODEL_FIXTURE', 'FACTORY_MODEL_ARGS'] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const selection = { model_source: 'executor_config', selected_model: 'gpt-6.1-sol', selected_provider: 'openai-codex' };
@@ -248,7 +258,7 @@ const args = process.argv.slice(2);
 if (args.includes('python3')) process.stdout.write(process.env.FACTORY_MODEL_FIXTURE);
 else if (args.includes('user.name')) process.stdout.write('factory-hermes[bot]');
 else if (args.includes('user.email')) process.stdout.write('123+factory-hermes[bot]@users.noreply.github.com');
-else if (args.includes('gh')) process.stdout.write('Driftward-LLC/capykit');
+else if (args.includes('gh')) process.stdout.write('example/widgets');
 else process.exit(1);
 `, { mode: 0o700 });
     const command = path.join(directory, 'hermes');
@@ -258,9 +268,9 @@ process.stdout.write(${JSON.stringify(JSON.stringify({ status: 'created', pr_url
   branch: greenResult().branch, commit_sha: greenResult().commitSha, validation: greenResult().validation }))});
 `, { mode: 0o700 });
     Object.assign(process.env, { PATH: `${directory}${path.delimiter}${previous.PATH || ''}`,
-      DRIFTWARD_HERMES_RUNTIME_USER: '10000:10000', DRIFTWARD_HERMES_ALLOWED_REPOS: 'Driftward-LLC/capykit',
-      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
-      DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '123+factory-hermes[bot]@users.noreply.github.com',
+      FACTORY_HERMES_RUNTIME_USER: '10000:10000', FACTORY_HERMES_ALLOWED_REPOS: 'example/widgets',
+      FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME: 'factory-hermes[bot]',
+      FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL: '123+factory-hermes[bot]@users.noreply.github.com',
       FACTORY_MODEL_ARGS: path.join(directory, 'args.json') });
     for (const fixture of [JSON.stringify(selection), 'not json', JSON.stringify({ ...selection, selected_model: 'sk-proj-FAKE_SECRET' })]) {
       process.env.FACTORY_MODEL_FIXTURE = fixture;
@@ -300,24 +310,24 @@ process.stdout.write(${JSON.stringify(JSON.stringify({ status: 'created', pr_url
 test('PR inspection accepts a large bounded diff and classifies overflow without leaking output', async () => {
   const commandDirectory = mkdtempSync(path.join(tmpdir(), 'factory-pr-inspection-'));
   const previousPath = process.env.PATH;
-  const previousRuntimeUser = process.env.DRIFTWARD_HERMES_RUNTIME_USER;
+  const previousRuntimeUser = process.env.FACTORY_HERMES_RUNTIME_USER;
   const diffBytes = 1536 * 1024;
   try {
     writeFileSync(path.join(commandDirectory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
 if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 1, headRefOid: 'a'.repeat(40) })))});
-else if (args.includes('repos/Driftward-LLC/capykit/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
+else if (args.includes('repos/example/widgets/pulls/77')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
 else if (args.some(a => a.includes('/compare/'))) process.stdout.write('diff --git a/tests/cli.test.ts b/tests/cli.test.ts\\nPRIVATE_DIFF_CONTENT'.padEnd(${diffBytes}, '+'));
 else if (args.includes('api')) process.stdout.write(JSON.stringify({path:'tests/cli.test.ts'}) + '\\n');
 else process.exit(1);
 `, { mode: 0o700 });
     process.env.PATH = `${commandDirectory}${path.delimiter}${previousPath || ''}`;
-    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
-    const observation = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 77, 5000);
+    process.env.FACTORY_HERMES_RUNTIME_USER = '10000:10000';
+    const observation = await inspectDraftPullRequestViaCommand('example/widgets', 77, 5000);
     assert.equal(Buffer.byteLength(observation.diffText), diffBytes);
     assert.ok(diffBytes < DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES);
     await assert.rejects(
-      inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 77, 5000, 1024 * 1024),
+      inspectDraftPullRequestViaCommand('example/widgets', 77, 5000, 1024 * 1024),
       (error: unknown) => {
         assert.ok(error instanceof NonRetryableBridgeExecutionError);
         assert.equal(error.reasonCode, 'hermes_process_output_limit_exceeded');
@@ -329,20 +339,20 @@ else process.exit(1);
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
-    if (previousRuntimeUser === undefined) delete process.env.DRIFTWARD_HERMES_RUNTIME_USER;
-    else process.env.DRIFTWARD_HERMES_RUNTIME_USER = previousRuntimeUser;
+    if (previousRuntimeUser === undefined) delete process.env.FACTORY_HERMES_RUNTIME_USER;
+    else process.env.FACTORY_HERMES_RUNTIME_USER = previousRuntimeUser;
     rmSync(commandDirectory, { recursive: true, force: true });
   }
 });
 
 test('PR inspection includes paths beyond file 100 and rejects incomplete or duplicate file evidence', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'factory-pr-files-'));
-  const previous = { path: process.env.PATH, user: process.env.DRIFTWARD_HERMES_RUNTIME_USER, mode: process.env.TEST_FILE_MODE };
+  const previous = { path: process.env.PATH, user: process.env.FACTORY_HERMES_RUNTIME_USER, mode: process.env.TEST_FILE_MODE };
   try {
     writeFileSync(path.join(directory, 'docker'), `#!${process.execPath}
 const args = process.argv.slice(2);
 if (args.includes('view')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ changedFiles: 101, headRefOid: 'a'.repeat(40) })))});
-else if (args.includes('repos/Driftward-LLC/capykit/pulls/61')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
+else if (args.includes('repos/example/widgets/pulls/61')) process.stdout.write(${JSON.stringify(JSON.stringify(greenView({ baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40) })))});
 else if (args.some(a => a.includes('/compare/'))) process.stdout.write('diff --git a/README.md b/README.md\\n'.repeat(101));
 else if (args.includes('api')) {
   const files = Array.from({length:100}, (_,i)=>({path:'src/file-'+i+'.ts'}));
@@ -351,19 +361,19 @@ else if (args.includes('api')) {
 } else process.exit(1);
 `, { mode: 0o700 });
     process.env.PATH = `${directory}${path.delimiter}${previous.path || ''}`;
-    process.env.DRIFTWARD_HERMES_RUNTIME_USER = '10000:10000';
+    process.env.FACTORY_HERMES_RUNTIME_USER = '10000:10000';
     process.env.TEST_FILE_MODE = 'complete';
-    const observation = await inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 61, 5000);
+    const observation = await inspectDraftPullRequestViaCommand('example/widgets', 61, 5000);
     assert.equal(observation.files?.length, 101);
     assertFailure(() => verifyDraftPrEvidence(greenJob(), greenResult(), observation), 'verification_changed_file_forbidden');
     for (const mode of ['incomplete', 'duplicate']) {
       process.env.TEST_FILE_MODE = mode;
-      await assert.rejects(inspectDraftPullRequestViaCommand('Driftward-LLC/capykit', 61, 5000),
+      await assert.rejects(inspectDraftPullRequestViaCommand('example/widgets', 61, 5000),
         (error: unknown) => error instanceof NonRetryableBridgeExecutionError
           && error.reasonCode === (mode === 'incomplete' ? 'verification_evidence_unavailable' : 'verification_changed_file_scope_invalid'));
     }
   } finally {
-    for (const [name, value] of [['PATH', previous.path], ['DRIFTWARD_HERMES_RUNTIME_USER', previous.user], ['TEST_FILE_MODE', previous.mode]]) {
+    for (const [name, value] of [['PATH', previous.path], ['FACTORY_HERMES_RUNTIME_USER', previous.user], ['TEST_FILE_MODE', previous.mode]]) {
       if (value === undefined) delete process.env[name!];
       else process.env[name!] = value;
     }
@@ -397,14 +407,14 @@ test('Hermes observability uses bounded sealed lineage, not issue content or amb
 
 test('execution analytics identity reports configured backend boundary without inferring auth', () => {
   const previous = {
-    target: process.env.DRIFTWARD_HERMES_GRPC_TARGET,
-    auth: process.env.DRIFTWARD_HERMES_AUTH_MODE,
-    version: process.env.DRIFTWARD_HERMES_VERSION,
+    target: process.env.FACTORY_HERMES_GRPC_TARGET,
+    auth: process.env.FACTORY_HERMES_AUTH_MODE,
+    version: process.env.FACTORY_HERMES_VERSION,
   };
   try {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = 'unix:///run/driftward-hermes-factory/hermes.sock';
-    process.env.DRIFTWARD_HERMES_AUTH_MODE = 'chatgpt_codex_oauth';
-    process.env.DRIFTWARD_HERMES_VERSION = '1.2.3';
+    process.env.FACTORY_HERMES_GRPC_TARGET = 'unix:///run/factory-hermes-factory/hermes.sock';
+    process.env.FACTORY_HERMES_AUTH_MODE = 'chatgpt_codex_oauth';
+    process.env.FACTORY_HERMES_VERSION = '1.2.3';
     assert.deepEqual(factoryExecutionAnalyticsIdentity('dispatch-1'), {
       analytics_schema_version: 1,
       invocation_id: 'dispatch-1',
@@ -416,23 +426,23 @@ test('execution analytics identity reports configured backend boundary without i
     const receiptEnvironment = Object.fromEntries(selectedReceiptEnvironment(greenJob(), {
       lease_id: 'lease-1', owner: 'worker-1', epoch: 1, fence_token: 'fence-1'
     }, 'dispatch-1'));
-    assert.equal(receiptEnvironment.DRIFTWARD_HERMES_AUTH_MODE, 'chatgpt_codex_oauth');
-    assert.equal(receiptEnvironment.DRIFTWARD_HERMES_VERSION, '1.2.3');
-    process.env.DRIFTWARD_HERMES_AUTH_MODE = 'untrusted-value';
+    assert.equal(receiptEnvironment.FACTORY_HERMES_AUTH_MODE, 'chatgpt_codex_oauth');
+    assert.equal(receiptEnvironment.FACTORY_HERMES_VERSION, '1.2.3');
+    process.env.FACTORY_HERMES_AUTH_MODE = 'untrusted-value';
     assert.equal(factoryExecutionAnalyticsIdentity('dispatch-2').configured_auth_mode, 'unknown');
-    delete process.env.DRIFTWARD_HERMES_GRPC_TARGET;
+    delete process.env.FACTORY_HERMES_GRPC_TARGET;
     assert.equal(factoryExecutionAnalyticsIdentity('dispatch-3').execution_transport, 'local_command');
   } finally {
-    if (previous.target === undefined) delete process.env.DRIFTWARD_HERMES_GRPC_TARGET; else process.env.DRIFTWARD_HERMES_GRPC_TARGET = previous.target;
-    if (previous.auth === undefined) delete process.env.DRIFTWARD_HERMES_AUTH_MODE; else process.env.DRIFTWARD_HERMES_AUTH_MODE = previous.auth;
-    if (previous.version === undefined) delete process.env.DRIFTWARD_HERMES_VERSION; else process.env.DRIFTWARD_HERMES_VERSION = previous.version;
+    if (previous.target === undefined) delete process.env.FACTORY_HERMES_GRPC_TARGET; else process.env.FACTORY_HERMES_GRPC_TARGET = previous.target;
+    if (previous.auth === undefined) delete process.env.FACTORY_HERMES_AUTH_MODE; else process.env.FACTORY_HERMES_AUTH_MODE = previous.auth;
+    if (previous.version === undefined) delete process.env.FACTORY_HERMES_VERSION; else process.env.FACTORY_HERMES_VERSION = previous.version;
   }
 });
 
 test('systemd receipt dispatch keeps credential values out of argv and the unit Environment property', () => {
   const secret = 'sk-proj-FAKE_SECRET_FOR_TEST';
   const fence = 'fence-FAKE_SECRET_FOR_TEST';
-  const environmentFile = '/run/driftward-factory-receipt-test/environment';
+  const environmentFile = '/run/factory-receipt-test/environment';
   const environment = systemdReceiptEnvironment([
     ['HATCHET_CLIENT_TOKEN', secret],
     ['HATCHET_FACTORY_EXECUTION_LEASE', JSON.stringify({ fence_token: fence })],
@@ -510,27 +520,27 @@ test('receipt analytics-construction failures use bounded fallback identity and 
 
 test('execution route selection ignores stale model/provider labels without credential introspection', () => {
   const names = [
-    'DRIFTWARD_HERMES_GRPC_TARGET',
-    'DRIFTWARD_HERMES_AUTH_MODE',
-    'DRIFTWARD_HERMES_PROVIDER',
-    'DRIFTWARD_HERMES_MODEL',
-    'DRIFTWARD_HERMES_VERSION',
-    'DRIFTWARD_FACTORY_EXECUTION_EXPERIMENT_ID',
-    'DRIFTWARD_FACTORY_EXECUTION_VARIANT',
-    'DRIFTWARD_FACTORY_EXECUTION_ASSIGNMENT_METHOD',
+    'FACTORY_HERMES_GRPC_TARGET',
+    'FACTORY_HERMES_AUTH_MODE',
+    'FACTORY_HERMES_PROVIDER',
+    'FACTORY_HERMES_MODEL',
+    'FACTORY_HERMES_VERSION',
+    'FACTORY_EXECUTION_EXPERIMENT_ID',
+    'FACTORY_EXECUTION_VARIANT',
+    'FACTORY_EXECUTION_ASSIGNMENT_METHOD',
     'FACTORY_RELEASE_COMMIT',
     'FACTORY_RELEASE_VERSION',
   ] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = 'unix:///run/driftward-hermes-factory/hermes.sock';
-    process.env.DRIFTWARD_HERMES_AUTH_MODE = 'chatgpt_codex_oauth';
-    process.env.DRIFTWARD_HERMES_PROVIDER = 'openai_codex';
-    process.env.DRIFTWARD_HERMES_MODEL = 'gpt-5.5';
-    process.env.DRIFTWARD_HERMES_VERSION = '0.17.0';
-    process.env.DRIFTWARD_FACTORY_EXECUTION_EXPERIMENT_ID = 'misleading-experiment';
-    process.env.DRIFTWARD_FACTORY_EXECUTION_VARIANT = 'codex-direct';
-    process.env.DRIFTWARD_FACTORY_EXECUTION_ASSIGNMENT_METHOD = 'deterministic_hash';
+    process.env.FACTORY_HERMES_GRPC_TARGET = 'unix:///run/factory-hermes-factory/hermes.sock';
+    process.env.FACTORY_HERMES_AUTH_MODE = 'chatgpt_codex_oauth';
+    process.env.FACTORY_HERMES_PROVIDER = 'openai_codex';
+    process.env.FACTORY_HERMES_MODEL = 'gpt-5.5';
+    process.env.FACTORY_HERMES_VERSION = '0.17.0';
+    process.env.FACTORY_EXECUTION_EXPERIMENT_ID = 'misleading-experiment';
+    process.env.FACTORY_EXECUTION_VARIANT = 'codex-direct';
+    process.env.FACTORY_EXECUTION_ASSIGNMENT_METHOD = 'deterministic_hash';
     process.env.FACTORY_RELEASE_COMMIT = 'a'.repeat(40);
     process.env.FACTORY_RELEASE_VERSION = '2026.09.13';
     const baseJob = greenJob();
@@ -557,9 +567,9 @@ test('execution route selection ignores stale model/provider labels without cred
       verifier_policy_digest: policy.digest,
       fallback_allowed: false,
     });
-    process.env.DRIFTWARD_HERMES_PROVIDER = 'bad/provider';
-    process.env.DRIFTWARD_HERMES_MODEL = '';
-    process.env.DRIFTWARD_HERMES_VERSION = 'bad/version';
+    process.env.FACTORY_HERMES_PROVIDER = 'bad/provider';
+    process.env.FACTORY_HERMES_MODEL = '';
+    process.env.FACTORY_HERMES_VERSION = 'bad/version';
     process.env.FACTORY_RELEASE_COMMIT = 'development-unversioned';
     const unknown = factoryExecutionRouteSelection({ payload: {} } as BridgeJob, { attempt_id: 'attempt-2' });
     assert.equal(unknown.configured_provider, 'unknown');
@@ -570,9 +580,9 @@ test('execution route selection ignores stale model/provider labels without cred
     assert.equal(unknown.routing_registry_version, null);
     assert.equal(unknown.verifier_policy_digest, null);
 
-    process.env.DRIFTWARD_HERMES_PROVIDER = 'sk-proj-fake_test_value';
-    process.env.DRIFTWARD_HERMES_MODEL = 'gsk_fake_test_value';
-    process.env.DRIFTWARD_HERMES_VERSION = 'v1+github_pat_FAKE_TEST_VALUE';
+    process.env.FACTORY_HERMES_PROVIDER = 'sk-proj-fake_test_value';
+    process.env.FACTORY_HERMES_MODEL = 'gsk_fake_test_value';
+    process.env.FACTORY_HERMES_VERSION = 'v1+github_pat_FAKE_TEST_VALUE';
     process.env.FACTORY_RELEASE_VERSION = 'sk-ant-FAKE_TEST_VALUE';
     const secretShaped = factoryExecutionRouteSelection(job, { attempt_id: 'attempt-3' });
     assert.equal(secretShaped.configured_provider, 'unknown');
@@ -581,14 +591,14 @@ test('execution route selection ignores stale model/provider labels without cred
     assert.equal(secretShaped.factory_release_version, null);
     assert.equal(factoryExecutionAnalyticsIdentity('dispatch-secret-version').backend_version, null);
 
-    process.env.DRIFTWARD_HERMES_VERSION = 'eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE';
+    process.env.FACTORY_HERMES_VERSION = 'eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE';
     process.env.FACTORY_RELEASE_VERSION = 'v1+eyJhbGciOiJSUzI1NiJ9.eyJsubIjoiFAKE.OAUTH_TOKEN_VALUE';
     const jwtShaped = factoryExecutionRouteSelection(job, { attempt_id: 'attempt-4' });
     assert.equal(jwtShaped.backend_version, null);
     assert.equal(jwtShaped.factory_release_version, null);
     assert.equal(factoryExecutionAnalyticsIdentity('dispatch-jwt-version').backend_version, null);
 
-    process.env.DRIFTWARD_HERMES_VERSION = 'v1_sk-proj-FAKESECRET';
+    process.env.FACTORY_HERMES_VERSION = 'v1_sk-proj-FAKESECRET';
     assert.equal(factoryExecutionAnalyticsIdentity('dispatch-embedded-secret-version').backend_version, null);
   } finally {
     for (const name of names) {
@@ -600,23 +610,23 @@ test('execution route selection ignores stale model/provider labels without cred
 
 test('route telemetry observes invalid TCP intent before policy enforcement', async () => {
   const names = [
-    'DRIFTWARD_HERMES_GRPC_TARGET',
-    'DRIFTWARD_HERMES_GRPC_ALLOW_TCP',
-    'DRIFTWARD_HERMES_GRPC_AUTH_TOKEN',
-    'DRIFTWARD_HERMES_ALLOWED_REPOS',
-    'DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN',
-    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME',
-    'DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
+    'FACTORY_HERMES_GRPC_TARGET',
+    'FACTORY_HERMES_GRPC_ALLOW_TCP',
+    'FACTORY_HERMES_GRPC_AUTH_TOKEN',
+    'FACTORY_HERMES_ALLOWED_REPOS',
+    'FACTORY_HERMES_EXPECTED_GITHUB_LOGIN',
+    'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME',
+    'FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL',
   ] as const;
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   try {
-    process.env.DRIFTWARD_HERMES_GRPC_TARGET = 'dns:///hermes.invalid:50051';
-    delete process.env.DRIFTWARD_HERMES_GRPC_ALLOW_TCP;
-    delete process.env.DRIFTWARD_HERMES_GRPC_AUTH_TOKEN;
-    process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = 'Driftward-LLC/capykit';
-    process.env.DRIFTWARD_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
-    process.env.DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_NAME = 'factory-hermes[bot]';
-    process.env.DRIFTWARD_HERMES_EXPECTED_GIT_AUTHOR_EMAIL = '4491454+factory-hermes[bot]@users.noreply.github.com';
+    process.env.FACTORY_HERMES_GRPC_TARGET = 'dns:///hermes.invalid:50051';
+    delete process.env.FACTORY_HERMES_GRPC_ALLOW_TCP;
+    delete process.env.FACTORY_HERMES_GRPC_AUTH_TOKEN;
+    process.env.FACTORY_HERMES_ALLOWED_REPOS = 'example/widgets';
+    process.env.FACTORY_HERMES_EXPECTED_GITHUB_LOGIN = 'factory-hermes[bot]';
+    process.env.FACTORY_HERMES_EXPECTED_GIT_AUTHOR_NAME = 'factory-hermes[bot]';
+    process.env.FACTORY_HERMES_EXPECTED_GIT_AUTHOR_EMAIL = '12345+factory-hermes[bot]@users.noreply.github.com';
 
     assert.equal(
       factoryExecutionRouteSelection(greenJob(), { attempt_id: 'attempt-invalid-tcp' }).intended_transport,
@@ -757,7 +767,7 @@ test('commit read-after-write accepts only the exact durable Hermes receipt', ()
   assert.equal(jobMatchesHermesDraftPrReceipt(greenJob(), greenResult()), true);
   assert.equal(jobMatchesHermesDraftPrReceipt({ ...greenJob(), state: 'running' }, greenResult()), false);
   assert.equal(jobMatchesHermesDraftPrReceipt({ ...greenJob(), commit_sha: 'other' }, greenResult()), false);
-  assert.equal(jobMatchesHermesDraftPrReceipt({ ...greenJob(), pr_url: 'https://github.com/Driftward-LLC/capykit/pull/62' }, greenResult()), false);
+  assert.equal(jobMatchesHermesDraftPrReceipt({ ...greenJob(), pr_url: 'https://github.com/example/widgets/pull/62' }, greenResult()), false);
 });
 
 test('findAddedTempFileReference detects temp-file placeholder content', () => {
@@ -867,27 +877,27 @@ test('ENG-12 repair fixture accepts successful local validation superset', () =>
   const required = policy().required_local_commands;
   const extra = [
     'npx --yes markdownlint-cli2@0.23.2 README.md "docs/**/*.md"',
-    'gh pr checks 26 --repo Driftward-LLC/capykit --watch --interval 10'
+    'gh pr checks 26 --repo example/widgets --watch --interval 10'
   ];
   const job = {
     ...greenJob(),
     payload: { ...greenJob().payload, linear_issue: 'ENG-12' },
     branch: 'codex/eng-12-registry-source-commands',
     commit_sha: '0b30dc9cf740100c11cc45015dc2a378e46a7933',
-    pr_url: 'https://github.com/Driftward-LLC/capykit/pull/26'
+    pr_url: 'https://github.com/example/widgets/pull/26'
   };
   const verification = verifyDraftPrEvidence(
     job,
     {
       ...greenResult(),
-      prUrl: 'https://github.com/Driftward-LLC/capykit/pull/26',
+      prUrl: 'https://github.com/example/widgets/pull/26',
       prNumber: 26,
       branch: 'codex/eng-12-registry-source-commands',
       commitSha: '0b30dc9cf740100c11cc45015dc2a378e46a7933',
       validation: validation([...required, ...extra])
     },
     greenView({
-      url: 'https://github.com/Driftward-LLC/capykit/pull/26',
+      url: 'https://github.com/example/widgets/pull/26',
       headRefName: 'codex/eng-12-registry-source-commands',
       headRefOid: '0b30dc9cf740100c11cc45015dc2a378e46a7933',
       body: 'Refs Linear ENG-12'
@@ -932,7 +942,7 @@ test('empty rollup times out without a slow test', async () => {
 test('restart resumes the original PR and durable validation context', () => {
   const resumed = resumeHermesDraftPrResult(greenJob());
   assert.equal(resumed.status, 'reused');
-  assert.equal(resumed.prUrl, 'https://github.com/Driftward-LLC/capykit/pull/61');
+  assert.equal(resumed.prUrl, 'https://github.com/example/widgets/pull/61');
   assert.deepEqual(resumed.validation, validation(policy().required_local_commands));
   assert.equal(resumed.hermesSessionId, null);
   assert.equal(resumed.summary, 'draft_pr_reused');
@@ -969,9 +979,9 @@ test('Hermes prompt delimits Linear text as untrusted data', () => {
 
 test('Hermes repair prompt targets the existing draft PR', () => {
   const prompt = buildPrompt(repairJob());
-  assert.match(prompt, /repair the existing draft GitHub pull request https:\/\/github.com\/Driftward-LLC\/capykit\/pull\/61/);
+  assert.match(prompt, /repair the existing draft GitHub pull request https:\/\/github.com\/example\/widgets\/pull\/61/);
   assert.match(prompt, /Do not create a new pull request/);
-  assert.match(prompt, /Return the same PR URL https:\/\/github.com\/Driftward-LLC\/capykit\/pull\/61 with status "reused"/);
+  assert.match(prompt, /Return the same PR URL https:\/\/github.com\/example\/widgets\/pull\/61 with status "reused"/);
   assert.match(prompt, /verification_github_check_failed/);
   assert.match(prompt, /factory_repair/);
 });
@@ -983,39 +993,40 @@ test('Hermes receipt wait is scoped to the exact bridge job', () => {
 });
 
 test('Hermes receipt wait duration is configurable', () => {
-  const previous = process.env.DRIFTWARD_HERMES_RECEIPT_WAIT_DURATION;
-  delete process.env.DRIFTWARD_HERMES_RECEIPT_WAIT_DURATION;
+  const previous = process.env.FACTORY_HERMES_RECEIPT_WAIT_DURATION;
+  delete process.env.FACTORY_HERMES_RECEIPT_WAIT_DURATION;
   assert.equal(hermesReceiptWaitDuration(), '4h');
-  process.env.DRIFTWARD_HERMES_RECEIPT_WAIT_DURATION = '30m';
+  process.env.FACTORY_HERMES_RECEIPT_WAIT_DURATION = '30m';
   assert.equal(hermesReceiptWaitDuration(), '30m');
-  if (previous === undefined) delete process.env.DRIFTWARD_HERMES_RECEIPT_WAIT_DURATION; else process.env.DRIFTWARD_HERMES_RECEIPT_WAIT_DURATION = previous;
+  if (previous === undefined) delete process.env.FACTORY_HERMES_RECEIPT_WAIT_DURATION; else process.env.FACTORY_HERMES_RECEIPT_WAIT_DURATION = previous;
 });
 
 test('direct real dispatch must match the checked-in repository policy', () => {
-  const previous = process.env.DRIFTWARD_HERMES_ALLOWED_REPOS;
-  process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = 'Driftward-LLC/capykit,Driftward-LLC/driftward-host';
+  const previous = process.env.FACTORY_HERMES_ALLOWED_REPOS;
+  process.env.FACTORY_HERMES_ALLOWED_REPOS = 'example/widgets,example/platform';
   try {
     validateRealCreateDraftPrJob({ ...greenJob(), payload: { ...greenJob().payload, implementation_prompt: 'test' } });
     assertFailure(() => validateRealCreateDraftPrJob({ ...greenJob(), payload: { ...greenJob().payload, verification_policy: { id: 'forged' }, implementation_prompt: 'test' } }), 'verification_policy_invalid');
     const { verification_policy: _ignored, ...withoutPolicy } = greenJob().payload;
     assertFailure(() => validateRealCreateDraftPrJob({ ...greenJob(), payload: { ...withoutPolicy, implementation_prompt: 'test' } }), 'verification_policy_missing');
-  } finally { if (previous === undefined) delete process.env.DRIFTWARD_HERMES_ALLOWED_REPOS; else process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = previous; }
+  } finally { if (previous === undefined) delete process.env.FACTORY_HERMES_ALLOWED_REPOS; else process.env.FACTORY_HERMES_ALLOWED_REPOS = previous; }
 });
 
 test('Docker real dispatch rejects host verifier policy paths', () => {
   const job = { ...greenJob(), payload: { ...greenJob().payload, implementation_prompt: 'test' } };
   const previousRuntime = process.env.HATCHET_FACTORY_RUNTIME;
   const previousPolicy = process.env.HATCHET_VERIFIER_POLICY_PATH;
-  const previousAllowed = process.env.DRIFTWARD_HERMES_ALLOWED_REPOS;
+  const previousAllowed = process.env.FACTORY_HERMES_ALLOWED_REPOS;
   try {
     process.env.HATCHET_FACTORY_RUNTIME = 'docker';
-    process.env.HATCHET_VERIFIER_POLICY_PATH = '/etc/driftward/hatchet-verifier-policy.json';
-    process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = 'Driftward-LLC/capykit';
-    assertFailure(() => validateRealCreateDraftPrJob(job), 'verification_policy_unavailable');
+    process.env.HATCHET_VERIFIER_POLICY_PATH = '/etc/factory/hatchet-verifier-policy.json';
+    process.env.FACTORY_HERMES_ALLOWED_REPOS = 'example/widgets';
+    assert.throws(() => validateRealCreateDraftPrJob(job), (error: unknown) => error instanceof NonRetryableBridgeExecutionError
+      && error.reasonCode === 'verification_policy_unavailable' && error.message.includes('/etc/factory/config/verifier-policy.json'));
   } finally {
     if (previousRuntime === undefined) delete process.env.HATCHET_FACTORY_RUNTIME; else process.env.HATCHET_FACTORY_RUNTIME = previousRuntime;
     if (previousPolicy === undefined) delete process.env.HATCHET_VERIFIER_POLICY_PATH; else process.env.HATCHET_VERIFIER_POLICY_PATH = previousPolicy;
-    if (previousAllowed === undefined) delete process.env.DRIFTWARD_HERMES_ALLOWED_REPOS; else process.env.DRIFTWARD_HERMES_ALLOWED_REPOS = previousAllowed;
+    if (previousAllowed === undefined) delete process.env.FACTORY_HERMES_ALLOWED_REPOS; else process.env.FACTORY_HERMES_ALLOWED_REPOS = previousAllowed;
   }
 });
 
@@ -1032,7 +1043,7 @@ function assertFailure(fn: () => unknown, reasonCode: string): void {
 
 function policy() {
   const catalog = JSON.parse(readFileSync(process.env.HATCHET_VERIFIER_POLICY_PATH!, 'utf8')) as { version: number; policies: Array<Record<string, unknown>> };
-  const entry = catalog.policies.find((item) => item.repo === 'Driftward-LLC/capykit')!;
+  const entry = catalog.policies.find((item) => item.repo === 'example/widgets')!;
   return { ...entry, catalog_version: catalog.version, digest: createHash('sha256').update(JSON.stringify(sort(entry))).digest('hex') } as { id: string; repo: string; expected_base: string; allowed_changed_paths: string[]; forbidden_changed_paths: string[]; required_local_commands: string[]; secret_check_command: string; catalog_version: number; digest: string };
 }
 
@@ -1051,8 +1062,8 @@ function greenJob(): BridgeJob {
   const verifierPolicy = policy();
   return {
     job_id: 'job-61', idempotency_key: 'hatchet:work-item:linear:ENG-61:create_draft_pr:real:active', state: 'verification_pending', requested_action: 'create_draft_pr',
-    payload: { repo: 'Driftward-LLC/capykit', linear_issue: 'ENG-61', expected_base: 'main', allowed_changed_paths: verifierPolicy.allowed_changed_paths, forbidden_changed_paths: verifierPolicy.forbidden_changed_paths, required_local_commands: verifierPolicy.required_local_commands, secret_check_command: verifierPolicy.secret_check_command, verification_policy: verifierPolicy, dry_run: false },
-    payload_hash: 'hash', branch: 'codex/eng-61-draft-pr-verification-gate', commit_sha: 'abc1234', pr_url: 'https://github.com/Driftward-LLC/capykit/pull/61', hermes_session_id: 'session-61', hatchet_workflow_run_id: 'run-61', hatchet_step_run_id: 'step-61', verification_context: validation(policy().required_local_commands), verification_observed_context: null, verification_receipt: null, verification_digest: null, reason_code: null, error: null, created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T00:00:00Z'
+    payload: { organization_binding: { workspace_id: '11111111-1111-4111-8111-111111111111', team_id: '22222222-2222-4222-8222-222222222222', team_key: 'ENG' }, repo: 'example/widgets', linear_issue: 'ENG-61', expected_base: 'main', allowed_changed_paths: verifierPolicy.allowed_changed_paths, forbidden_changed_paths: verifierPolicy.forbidden_changed_paths, required_local_commands: verifierPolicy.required_local_commands, secret_check_command: verifierPolicy.secret_check_command, verification_policy: verifierPolicy, dry_run: false },
+    payload_hash: 'hash', branch: 'codex/eng-61-draft-pr-verification-gate', commit_sha: 'abc1234', pr_url: 'https://github.com/example/widgets/pull/61', hermes_session_id: 'session-61', hatchet_workflow_run_id: 'run-61', hatchet_step_run_id: 'step-61', verification_context: validation(policy().required_local_commands), verification_observed_context: null, verification_receipt: null, verification_digest: null, reason_code: null, error: null, created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T00:00:00Z'
   };
 }
 
@@ -1081,11 +1092,11 @@ function repairJob(): BridgeJob {
 }
 
 function greenResult(): HermesDraftPrResult {
-  return { status: 'created', prUrl: 'https://github.com/Driftward-LLC/capykit/pull/61', prNumber: 61, commitSha: 'abc1234', branch: 'codex/eng-61-draft-pr-verification-gate', hermesSessionId: null, summary: 'draft_pr_created', validation: validation(policy().required_local_commands) };
+  return { status: 'created', prUrl: 'https://github.com/example/widgets/pull/61', prNumber: 61, commitSha: 'abc1234', branch: 'codex/eng-61-draft-pr-verification-gate', hermesSessionId: null, summary: 'draft_pr_created', validation: validation(policy().required_local_commands) };
 }
 
 function greenView(overrides: Record<string, unknown> = {}) {
-  return { url: 'https://github.com/Driftward-LLC/capykit/pull/61', headRefName: 'codex/eng-61-draft-pr-verification-gate', headRefOid: 'abc1234', baseRefName: 'main', isDraft: true, author: { login: 'factory-hermes[bot]' }, body: 'Refs Linear ENG-61', labels: [{ name: 'codex-authored' }, { name: 'bug' }], files: [{ path: 'tests/cli.test.ts' }], statusCheckRollup: githubChecks(['quality (ubuntu-latest)', 'factory-verification']), ...overrides };
+  return { url: 'https://github.com/example/widgets/pull/61', headRefName: 'codex/eng-61-draft-pr-verification-gate', headRefOid: 'abc1234', baseRefName: 'main', isDraft: true, author: { login: 'factory-hermes[bot]' }, body: 'Refs Linear ENG-61', labels: [{ name: 'codex-authored' }, { name: 'bug' }], files: [{ path: 'tests/cli.test.ts' }], statusCheckRollup: githubChecks(['quality (ubuntu-latest)', 'factory-verification']), ...overrides };
 }
 
 function githubChecks(names: string[]) {
@@ -1095,3 +1106,59 @@ function githubChecks(names: string[]) {
 function greenVerification(): DraftPrVerification {
   return verifyDraftPrEvidence(greenJob(), greenResult(), greenView());
 }
+
+test('real execution requires organization configuration and explicit repository enrollment', () => {
+  const names = ['FACTORY_ORGANIZATION_CONFIG', 'FACTORY_HERMES_ALLOWED_REPOS'];
+  const previous = names.map((key) => process.env[key]);
+  try {
+    process.env.FACTORY_HERMES_ALLOWED_REPOS = 'example/widgets';
+    delete process.env.FACTORY_ORGANIZATION_CONFIG;
+    assertFailure(() => validateRealCreateDraftPrJob(greenJob()), 'organization_not_configured');
+    process.env.FACTORY_ORGANIZATION_CONFIG = previous[0];
+    const job = greenJob();
+    assertFailure(() => validateRealCreateDraftPrJob({ ...job, payload: { ...job.payload, linear_issue: 'ACME-42' } }), 'organization_not_configured');
+    delete process.env.FACTORY_HERMES_ALLOWED_REPOS;
+    assertFailure(() => validateRealCreateDraftPrJob(job), 'repo_not_allowlisted');
+  } finally {
+    names.forEach((key, i) => { if (previous[i] === undefined) delete process.env[key]; else process.env[key] = previous[i]; });
+  }
+});
+
+test('disabled GitHub rejects credentialed inspections before invoking any command', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-github-disabled-'));
+  const previous = process.env.FACTORY_ORGANIZATION_CONFIG;
+  try {
+    const configuration = path.join(directory, 'organization.json');
+    writeFileSync(configuration, JSON.stringify({ schema: 'factory-organization-v1', linear: null, github: { enabled: false } }));
+    process.env.FACTORY_ORGANIZATION_CONFIG = configuration;
+    await assert.rejects(inspectDraftPullRequestViaCommand('example/widgets', 1, 1000),
+      (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error.reasonCode === 'organization_not_configured');
+  } finally {
+    if (previous === undefined) delete process.env.FACTORY_ORGANIZATION_CONFIG; else process.env.FACTORY_ORGANIZATION_CONFIG = previous;
+    rmSync(directory, { recursive: true });
+  }
+});
+
+test('real execution rejects old unbound jobs and same-prefix workspace reconfiguration', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-job-organization-'));
+  const previous = process.env.FACTORY_ORGANIZATION_CONFIG;
+  const previousAllowed = process.env.FACTORY_HERMES_ALLOWED_REPOS;
+  const admitted = greenJob();
+  try {
+    process.env.FACTORY_HERMES_ALLOWED_REPOS = 'example/widgets';
+    const { organization_binding: _binding, ...oldPayload } = admitted.payload;
+    assertFailure(() => validateRealCreateDraftPrJob({ ...admitted, payload: oldPayload }), 'organization_binding_mismatch');
+    const configuration = JSON.parse(readFileSync(previous!, 'utf8'));
+    configuration.linear.workspace_id = '44444444-4444-4444-8444-444444444444';
+    configuration.linear.team_id = '55555555-5555-4555-8555-555555555555';
+    assert.equal(configuration.linear.team_key, 'ENG');
+    const filename = path.join(directory, 'organization.json');
+    writeFileSync(filename, JSON.stringify(configuration));
+    process.env.FACTORY_ORGANIZATION_CONFIG = filename;
+    assertFailure(() => validateRealCreateDraftPrJob(admitted), 'organization_binding_mismatch');
+  } finally {
+    if (previous === undefined) delete process.env.FACTORY_ORGANIZATION_CONFIG; else process.env.FACTORY_ORGANIZATION_CONFIG = previous;
+    if (previousAllowed === undefined) delete process.env.FACTORY_HERMES_ALLOWED_REPOS; else process.env.FACTORY_HERMES_ALLOWED_REPOS = previousAllowed;
+    rmSync(directory, { recursive: true });
+  }
+});

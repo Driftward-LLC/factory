@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { executionRuntimeBinding, sameExecutionRuntime, type ExecutionRuntimeBinding, type BridgeJob } from '@driftward/hatchet-worker-shared';
+import { executionRuntimeBinding, sameExecutionRuntime, type ExecutionRuntimeBinding, type BridgeJob } from '@factory/hatchet-worker-shared';
 import { boundedHermesDraftPrReceipt, type BoundedHermesDraftPrReceipt } from './bounded-evidence';
 import { NonRetryableBridgeExecutionError } from './errors';
 
@@ -103,6 +103,12 @@ export class InvocationJournal {
     if (!path.isAbsolute(directory)) throw invalid('Invocation journal requires an absolute directory');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.privateDirectory(directory);
+    const generation = path.join(directory, 'naming-generation');
+    if (!existsSync(generation)) {
+      if (readdirSync(directory).length !== 0) throw invalid('Prior naming generation; retain original release pending reviewed offline migration');
+      writeFileSync(generation, 'factory-neutral-v1\n', { flag: 'wx', mode: 0o600 });
+    }
+    if (readFileSync(generation, 'utf8') !== 'factory-neutral-v1\n') throw invalid('Unknown naming generation');
     this.syncDirectory(path.dirname(directory));
   }
 

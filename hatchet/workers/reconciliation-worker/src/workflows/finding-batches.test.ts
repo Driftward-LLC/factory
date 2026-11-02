@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ReconciliationFindingRequest } from '@driftward/hatchet-worker-shared';
+import type { ReconciliationFindingRequest } from '@factory/hatchet-worker-shared';
 import { recordFindingBatches } from './finding-batches';
 
 function findings(count: number): ReconciliationFindingRequest[] {

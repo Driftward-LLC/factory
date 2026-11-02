@@ -1,0 +1,7 @@
+{
+  "schema": "factory-organization-v1",
+  "linear": null,
+  "github": {
+    "enabled": false
+  }
+}

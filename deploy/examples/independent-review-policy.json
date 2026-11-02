@@ -1,0 +1,7 @@
+{
+  "schema": "factory-independent-review-policy-v1",
+  "enabled": false,
+  "automatic_repairs_allowed": false,
+  "max_passes": 2,
+  "repositories": []
+}

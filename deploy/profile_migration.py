@@ -174,7 +174,7 @@ def preview(args):
             and manifest.get("factory_image") == values["FACTORY_IMAGE"]
             and set(manifest.get("volumes", [])) == set(state.VOLUMES)
             and len(manifest["volumes"]) == len(state.VOLUMES), "backup identity or volume inventory differs")
-    files = state.CONFIG_FILES | {state.PROVENANCE}
+    files = state.config_files(state.PRODUCTION, metadata)
     if metadata.get("telemetry"):
         files |= {telemetry.ENV_FILE}
     expected = {"config/" + n for n in files} | {"volumes/" + n + ".tar" for n in state.VOLUMES}
@@ -208,9 +208,14 @@ def preview(args):
         hashes = [state._docker(["run", "--rm", "--network", "none", "--read-only", "--entrypoint", "sha256sum", img, binary])
                   for img in (images["hatchet-lite"], args.image)]
         require(hashes[0] == hashes[1], "Hatchet binaries changed; a separate schema migration is required")
+    configured = getattr(args, "configuration", None)
+    if metadata.get("organization_config") != 1:
+        require(configured is not None, "pre-configuration backups require --configuration with reviewed organization and policy files")
+    supplied = bootstrap.configuration(configured) if configured is not None else bootstrap.configuration(args.source / "config")
     hermes = hermes_source(args.hermes_container)
     require(hermes["volume"] not in {metadata["project"] + "-" + suffix for suffix in state.PROJECT_VOLUMES}, "Hermes data overlaps control-plane state")
     plan = {"format_version": 1, "layout": state.UNIFIED, "source": str(args.source), "source_bundle": str(args.source_bundle),
+            "configuration_sha256": {name: hashlib.sha256(content.encode()).hexdigest() for name, content in supplied.items()},
             "source_bundle_sha256": bundle_hashes(args.source_bundle), "target_bundle_sha256": bundle_hashes(HERE),
             "previous_project": metadata["project"], "previous_installation_id": metadata["installation_id"],
             "previous_images": images, "destination": str(args.destination), "project": args.project,
@@ -270,19 +275,26 @@ def apply(args, plan, metadata, values, previous, files):
     hermes_stopped(plan["hermes"])
     for name in files:
         require(bootstrap._read_private(args.snapshot / "config" / name) == bootstrap._read_private(args.source / name), "source configuration changed during migration")
-    for folder in ("env", "keys", "keys/hatchet", "run", "run/operator"):
+    for folder in ("env", "config", "keys", "keys/hatchet", "run", "run/operator"):
         (args.destination / folder).mkdir(mode=0o700)
-    for name in files - {".env", bootstrap.MARKER, state.PROVENANCE}:
+    supplied = bootstrap.configuration(getattr(args, "configuration", None) or args.source / "config")
+    require({name: hashlib.sha256(content.encode()).hexdigest() for name, content in supplied.items()} == plan["configuration_sha256"],
+            "supplied organization configuration changed during migration")
+    for name, content in supplied.items():
+        bootstrap._create_private(args.destination / "config" / name, content)
+    for name in files - {".env", bootstrap.MARKER, state.PROVENANCE, *("config/" + name for name in bootstrap.ORGANIZATION_DEFAULTS)}:
         bootstrap._create_private(args.destination / name, bootstrap._read_private(args.snapshot / "config" / name))
     updated = {**values, "FACTORY_PROJECT_NAME": args.project, "COMPOSE_PROJECT_NAME": args.project,
                "FACTORY_INSTALL_DIR": str(args.destination), "FACTORY_ENV_DIR": str(args.destination / "env"),
+               "FACTORY_CONFIG_DIR": str(args.destination / "config"),
                "FACTORY_OPERATOR_RUN_DIR": str(args.destination / "run/operator"),
                "FACTORY_IMAGE": args.image, "FACTORY_POSTGRES_IMAGE": args.image, "FACTORY_HATCHET_IMAGE": args.image}
-    marker = {**metadata, "project": args.project, "installation_id": identity, "image": args.image, "layout": state.UNIFIED}
+    marker = {**metadata, "project": args.project, "installation_id": identity, "image": args.image, "layout": state.UNIFIED, "organization_config": 1}
     if marker.get("telemetry"):
         marker["telemetry"] = {**marker["telemetry"], "image": args.image,
                                "deployment_sha256": {n: state._hash(HERE / n) for n in telemetry.FILES}}
     receipt = {"format_version": 1, "layout": state.UNIFIED, "preview_sha256": digest(plan),
+               "configuration_sha256": plan["configuration_sha256"],
                "previous_project": metadata["project"], "previous_installation_id": metadata["installation_id"],
                "previous_images": plan["previous_images"], "previous_profile_sha256": previous["profile_sha256"],
                "previous_deployment_sha256": previous["deployment_sha256"], "snapshot_sha256": plan["snapshot_sha256"],
@@ -313,6 +325,7 @@ def main():
     parser.add_argument("--project", required=True)
     parser.add_argument("--image", required=True, help="verified exact local unified Factory image ID")
     parser.add_argument("--hermes-container", required=True, help="operator-reviewed dedicated Factory Hermes container; never a shared or personal runtime")
+    parser.add_argument("--configuration", type=Path, help="reviewed four-file configuration; required for pre-configuration backups")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--approve-digest", help="exact reviewed preview digest; apply only")
     args = parser.parse_args()

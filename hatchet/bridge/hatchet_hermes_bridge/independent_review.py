@@ -1,7 +1,10 @@
 """Policy-controlled review decisions; evidence never grants merge/deploy authority."""
 from __future__ import annotations
 
+import factory_organization as organization
+
 import json
+import os
 import hashlib
 import re
 import uuid
@@ -42,11 +45,12 @@ def _generator_identity_valid(review: dict[str, Any]) -> bool:
 
 def policy() -> dict[str, Any]:
     try:
-        if not POLICY_PATH.exists():
+        policy_path = Path(os.environ.get("HATCHET_INDEPENDENT_REVIEW_POLICY_PATH", str(POLICY_PATH)))
+        if not policy_path.exists() and not os.environ.get("HATCHET_INDEPENDENT_REVIEW_POLICY_PATH"):
             value = {"schema": "factory-independent-review-policy-v1", "enabled": False,
                      "automatic_repairs_allowed": False, "max_passes": 2, "repositories": []}
             return {**value, "digest": store.payload_hash(value)}
-        value = json.loads(POLICY_PATH.read_text())
+        value = json.loads(policy_path.read_text())
         if (set(value) != {"schema", "enabled", "automatic_repairs_allowed", "max_passes", "repositories"}
                 or value["schema"] != "factory-independent-review-policy-v1"
                 or type(value["enabled"]) is not bool or type(value["automatic_repairs_allowed"]) is not bool
@@ -60,7 +64,7 @@ def policy() -> dict[str, Any]:
 
 
 def validate_request(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict) or set(payload) != {"repo", "review", "review_capability", "dry_run"}:
+    if not isinstance(payload, dict) or set(payload) != {"repo", "review", "review_capability", "dry_run", "organization_binding"}:
         raise store.BridgeValidationError("review request is malformed")
     review = payload["review"]
     if (payload["dry_run"] is not False or not isinstance(review, dict) or set(review) - GENERATOR_FIELDS != REQUEST_FIELDS
@@ -189,7 +193,7 @@ def reserve(conn, source_job_id: str) -> dict[str, Any] | None:
                    "requirements": requirements, "requirements_digest": requirements_digest(requirements)}
         review_job, _ = store.submit_job(conn, {"idempotency_key": f"factory:independent-review:{lineage}:{number}",
             "requested_action": "read_only_review", "payload": {"repo": request["repository"], "review": request,
-                "review_capability": capability, "dry_run": False}}, internal_review=True)
+                "review_capability": capability, "dry_run": False, "organization_binding": job["payload"].get("organization_binding")}}, internal_review=True)
         conn.execute("INSERT INTO factory_independent_reviews (review_id,lineage_key,pass_number,source_attempt_id,source_job_id,job_id,repository,pr_url,head_sha,policy_digest,capability,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)",
             (review_id, lineage, number, attempt["attempt_id"], source_job_id, review_job["job_id"], request["repository"], request["pr_url"], request["head_sha"], current["digest"], capability, now, now))
         conn.execute("INSERT INTO factory_inspection_outbox (outbox_key,request_key,job_id,payload_json,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
@@ -215,14 +219,15 @@ def _row(conn, job_id: str, capability: str):
 def authorization(conn, job_id: str, capability: str) -> dict[str, Any]:
     """Native gateway checks a real reservation; this endpoint never grants a pass."""
     row = _row(conn, job_id, capability)
-    request = store.get_job(conn, job_id)["payload"]["review"]
-    allowed = completion_allowed = row["state"] == "running"
+    review_job = store.get_job(conn, job_id)
+    request = review_job["payload"]["review"]
+    allowed = completion_allowed = row["state"] == "running" and organization.matches_binding(review_job["payload"].get("organization_binding"))
     if allowed:
         try:
             current = policy()
             source = store.get_job(conn, row["source_job_id"])
             attempt, _, _ = review_repair._source(conn, store.get_factory_attempt(conn, row["source_attempt_id"])["work_item_key"], row["source_attempt_id"])
-            completion_allowed = current["enabled"] and current["digest"] == row["policy_digest"] and row["repository"] in current["repositories"]
+            completion_allowed = organization.load()["github"]["enabled"] and current["enabled"] and current["digest"] == row["policy_digest"] and row["repository"] in current["repositories"]
             # The bridge still obtains a fresh final inspection before any pass.
             _fresh_artifact(conn, attempt, source, require_fresh=False)
             allowed = completion_allowed
@@ -241,11 +246,15 @@ def claim(conn, job_id: str, capability: str) -> bool:
         row = _row(conn, job_id, capability)
         if row["state"] != "pending":
             return False
-        if not store.get_job(conn, job_id)["payload"]["review"]["requirements"]["description"]:
+        review_job = store.get_job(conn, job_id)
+        if not organization.matches_binding(review_job["payload"].get("organization_binding")):
+            _stop(conn, row, "review_policy_changed")
+            return False
+        if not review_job["payload"]["review"]["requirements"]["description"]:
             _stop(conn, row, "review_inconclusive")
             return False
         current = policy()
-        if not current["enabled"] or current["digest"] != row["policy_digest"]:
+        if not organization.load()["github"]["enabled"] or not current["enabled"] or current["digest"] != row["policy_digest"]:
             _stop(conn, row, "review_policy_changed")
             return False
         try:
@@ -350,7 +359,7 @@ def _settle_receipt(conn, review_id: str) -> bool:
         state, reason = receipt["verdict"], receipt["reason"]
         if state == "inconclusive":
             state, reason = "needs_operator", reason if reason != "ok" else "review_inconclusive"
-        if not current["enabled"] or current["digest"] != row["policy_digest"]:
+        if not organization.load()["github"]["enabled"] or not current["enabled"] or current["digest"] != row["policy_digest"]:
             state, reason = "needs_operator", "review_policy_changed"
         try:
             source = store.get_job(conn, row["source_job_id"])

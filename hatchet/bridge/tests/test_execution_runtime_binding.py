@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import os
 import tempfile
 import unittest
@@ -16,18 +19,18 @@ class ExecutionRuntimeBindingTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.conn = connect_migrate(str(Path(tmp.name) / 'bridge.db'))
         self.addCleanup(self.conn.close)
-        env = patch.dict(os.environ, {'HATCHET_VERIFIER_POLICY_PATH': str(Path(__file__).resolve().parents[2] / 'workers/verifier-policy.json')})
+        env = patch.dict(os.environ, {'HATCHET_VERIFIER_POLICY_PATH': str(Path(__file__).resolve().parents[2] / 'workers/test-fixtures/verifier-policy.json')})
         env.start()
         self.addCleanup(env.stop)
         self.attempt, self.job, _ = store.reserve_factory_retry(
             self.conn, work_item_key='ENG-601', mode='real', request_id='runtime-binding-test', reason='test', actor='test',
-            payload=verifier_payload('Driftward-LLC/capykit'))
+            payload=verifier_payload('example/widgets'))
         store.transition_job(self.conn, self.job['job_id'], state='running')
         self.lease = store.claim_factory_execution(self.conn, self.job['job_id'], owner='test-executor')['lease']
         store.authorize_factory_effect(self.conn, self.job['job_id'], self.lease)
         self.runtime = {'schema': 1, 'backend': 'hermes', 'kind': 'docker', 'instance_id': 'a' * 64,
                         'image_digest': 'sha256:' + 'b' * 64, 'incarnation': 'sha256:' + 'c' * 64}
-        self.receipt = {'pr_url': 'https://github.com/Driftward-LLC/capykit/pull/601',
+        self.receipt = {'pr_url': 'https://github.com/example/widgets/pull/601',
                         'branch': self.job['branch'], 'commit_sha': 'd' * 40}
 
     def bind(self, runtime=None, lease=None):

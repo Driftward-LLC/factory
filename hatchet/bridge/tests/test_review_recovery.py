@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import json
 import os
 import shutil
@@ -44,6 +47,22 @@ class ReviewRecoveryTests(unittest.TestCase):
 
     def confirm(self, digest, request_id="recovery-1", **changes):
         return recovery.confirm(**self.paths, **(self.intent | changes), request_id=request_id, snapshot_digest=digest)
+
+    def test_unbound_source_cannot_be_rebound_by_review_recovery(self):
+        payload = dict(self.job["payload"]); payload.pop("organization_binding")
+        with self.conn:
+            self.conn.execute("UPDATE bridge_jobs SET payload_json=?,payload_hash=? WHERE job_id=?", (store.canonical_json(payload), store.payload_hash(payload), self.job["job_id"]))
+        with self.assertRaises(store.BridgeConflict): self.preview()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_independent_review_deliveries").fetchone()[0], 0)
+
+    def test_changed_workspace_same_issue_prefix_cannot_recover_old_review(self):
+        from pathlib import Path
+        value = json.loads(Path(os.environ["FACTORY_ORGANIZATION_CONFIG"]).read_text())
+        value["linear"]["workspace_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        changed = self.root / "changed-organization.json"; changed.write_text(json.dumps(value))
+        with patch.dict(os.environ, {"FACTORY_ORGANIZATION_CONFIG": str(changed)}):
+            with self.assertRaises(store.BridgeConflict): self.preview()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_independent_review_deliveries").fetchone()[0], 0)
 
     def test_delivery_preserves_original_evidence_and_uses_same_pass_through_completion(self):
         before = self.conn.total_changes

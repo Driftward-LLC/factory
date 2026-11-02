@@ -1,8 +1,9 @@
+import { matchesOrganizationBinding, requireGithubOrganization } from '@factory/hatchet-worker-shared';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { BridgeJob, JsonObject } from '@driftward/hatchet-worker-shared';
+import type { BridgeJob, JsonObject } from '@factory/hatchet-worker-shared';
 import { isSecretShaped } from './bounded-evidence';
 
 export const REVIEW_REASONS = ['ok', 'review_backend_unavailable', 'review_isolation_unavailable', 'review_inconclusive',
@@ -172,9 +173,9 @@ export function readableReviewSnapshot(directory: string): void {
 /** mkdir reservation survives process crashes; an ambiguous outcome never starts a second model call. */
 export class IndependentReviewer {
   private active = new Map<string, Promise<JsonObject>>();
-  constructor(private readonly directory = '/var/lib/driftward-hermes-factory/reviews',
-    private readonly configPath = '/etc/driftward/factory-reviewer.json', private readonly command = reviewerCommand,
-    private readonly roots = { provisioning: '/etc/driftward/factory-reviewer', repositories: '/var/lib/driftward-factory-reviewer/repositories' },
+  constructor(private readonly directory = '/var/lib/factory-hermes-factory/reviews',
+    private readonly configPath = '/etc/factory/factory-reviewer.json', private readonly command = reviewerCommand,
+    private readonly roots = { provisioning: '/etc/factory/factory-reviewer', repositories: '/var/lib/factory-reviewer/repositories' },
     private readonly authorize = authorizeIndependentReview) {}
 
   async run(job: BridgeJob): Promise<JsonObject> {
@@ -209,7 +210,9 @@ export class IndependentReviewer {
   }
 
   private async execute(job: BridgeJob, r: ReviewIntent, location: string): Promise<JsonObject> {
-    if (process.env.DRIFTWARD_FACTORY_REVIEWER_ENABLED !== '1') return inconclusiveReview(r, 'review_isolation_unavailable');
+    try { requireGithubOrganization(); } catch { return inconclusiveReview(r, 'review_isolation_unavailable'); }
+    if (!matchesOrganizationBinding(job.payload.organization_binding)) return inconclusiveReview(r, 'review_policy_changed');
+    if (process.env.FACTORY_REVIEWER_ENABLED !== '1') return inconclusiveReview(r, 'review_isolation_unavailable');
     if (!r.requirements.description) return inconclusiveReview(r, 'review_inconclusive');
     if (!await this.authorize(job, r)) return inconclusiveReview(r, 'review_policy_changed');
     let config: Provisioning;
@@ -280,11 +283,11 @@ export class IndependentReviewer {
       chmodSync(requestPath, 0o444);
       writeFileSync(tokenPath, token, { mode: 0o444, flag: 'wx' });
       chmodSync(tokenPath, 0o444);
-      const hermes = JSON.parse(await runCommand('/usr/bin/docker', ['inspect', 'hermes-driftward-hermes-1'], 15000));
+      const hermes = JSON.parse(await runCommand('/usr/bin/docker', ['inspect', 'hermes-factory-hermes-1'], 15000));
       if (!Array.isArray(hermes) || hermes.length !== 1 || hermes[0].Image !== config.hermes_image
         || hermes[0].State?.Running !== true) return fail('review_isolation_unavailable');
       const image = JSON.parse(await runCommand('/usr/bin/docker', ['image', 'inspect', config.image], 15000))[0];
-      if (image?.Config?.Volumes || image?.Config?.Labels?.['io.driftward.factory.independent-reviewer'] !== '1') return fail('review_isolation_unavailable');
+      if (image?.Config?.Volumes || image?.Config?.Labels?.['io.factory.independent-reviewer'] !== '1') return fail('review_isolation_unavailable');
       await runCommand('/usr/bin/docker', ['network', 'create', '--internal', '--opt',
         'com.docker.network.bridge.gateway_mode_ipv4=isolated', sourceNetwork], 15000);
       const common = ['--pull', 'never', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
@@ -298,10 +301,10 @@ export class IndependentReviewer {
         '--env', 'HOME=/workspace/home', '--entrypoint', 'python3', config.image,
         '/opt/factory-reviewer/source_server.py', r.head_sha, base], 15000);
       if (!await this.authorize(job, r, 'launch')) return fail('review_policy_changed');
-      const assets = '/usr/local/share/driftward-factory/independent-reviewer/deploy/independent-reviewer';
+      const assets = '/usr/local/share/factory/independent-reviewer/deploy/independent-reviewer';
       const raw = await runIndependentReviewRelay([path.join(assets, 'runner.py'), requestPath,
         path.join(this.roots.provisioning, 'review-code.md'), path.join(this.roots.provisioning, 'verify-app.md'),
-        source, 'hermes-driftward-hermes-1', session, config.auth_root || '/opt/data/factory-reviewer-auth'], 660000, runCommand, this.command);
+        source, 'hermes-factory-hermes-1', session, config.auth_root || '/opt/data/factory-reviewer-auth'], 660000, runCommand, this.command);
       const result = JSON.parse(raw);
       if (!result || Object.keys(result).sort().join(',') !== 'findings,head_sha,reason,verdict' || result.head_sha !== r.head_sha) return fail('review_malformed');
       const receipt = { ...fail('review_inconclusive'), verdict: result.verdict, findings: result.findings, reason: result.reason };

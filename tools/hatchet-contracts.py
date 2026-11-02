@@ -17,7 +17,7 @@ PYTHON_OUTPUT = ROOT / "hatchet/event-ingress/hatchet_event_ingress/contracts.py
 TYPESCRIPT_OUTPUT = ROOT / "hatchet/workers/shared/src/contracts.ts"
 
 ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
-WIRE_RE = re.compile(r"^driftward\.[a-z0-9_.]+$")
+WIRE_RE = re.compile(r"^factory\.[a-z0-9_.]+$")
 
 
 class ContractError(Exception):
@@ -91,7 +91,7 @@ def validate_contract(contract: dict[str, Any], catalog: dict[str, Any]) -> None
     for event_id, event in events.items():
         wire_name = event.get("wire_name")
         if not isinstance(wire_name, str) or not WIRE_RE.match(wire_name):
-            raise ContractError(f"events.{event_id}.wire_name must be a driftward.* string")
+            raise ContractError(f"events.{event_id}.wire_name must be a factory.* string")
         if wire_name in wire_names:
             raise ContractError(f"duplicate wire_name {wire_name!r} for {wire_names[wire_name]} and {event_id}")
         wire_names[wire_name] = event_id

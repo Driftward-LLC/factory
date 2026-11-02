@@ -108,7 +108,7 @@ class PortableStateTests(unittest.TestCase):
             key: {"image": self.installation.values[key]}
             for key in ("FACTORY_IMAGE", "FACTORY_POSTGRES_IMAGE", "FACTORY_HATCHET_IMAGE")
         }})
-        provenance = {"source_project": "driftward-factory", "destination_project": "factory-source",
+        provenance = {"source_project": "factory", "destination_project": "factory-source",
                       "factory_image": marker["image"],
                       "snapshot_sha256": "previous-snapshot", "activation_approved": True,
                       "profile_sha256": state._hash(ROOT / "deploy/compose.production.yml"),
@@ -147,6 +147,18 @@ class PortableStateTests(unittest.TestCase):
             state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
         self.assertFalse(self.restored.exists())
 
+    def test_restore_rejects_unmarked_state_before_docker_or_writes(self) -> None:
+        self.backup()
+        path = self.snapshot / "config" / bootstrap.MARKER
+        metadata = json.loads(path.read_text())
+        metadata.pop("naming_generation")
+        path.write_text(json.dumps(metadata))
+        destination = self.snapshot.parent / "unmarked-restore"
+        with patch.object(state, "_docker") as docker, self.assertRaisesRegex(ValueError, "naming generation"):
+            state.restore(self.snapshot, destination, "factory-restored", apply=True)
+        docker.assert_not_called()
+        self.assertFalse(destination.exists())
+
     def test_preview_does_not_stop_or_write(self) -> None:
         state.backup(self.installation, self.snapshot)
         self.assertFalse(self.snapshot.exists())
@@ -165,14 +177,36 @@ class PortableStateTests(unittest.TestCase):
         self.assertEqual(values["HATCHET_POSTGRES_PASSWORD"], self.installation.values["HATCHET_POSTGRES_PASSWORD"])
         self.assertEqual(values["FACTORY_CONSOLE_PORT"], str(bootstrap.PORTS["FACTORY_CONSOLE_PORT"] + 100))
         self.assertEqual(values["FACTORY_INSTALL_DIR"], str(self.restored))
-        for name in state.CONFIG_FILES - {".env", bootstrap.MARKER}:
+        for name in state.config_files("portable-dry-run", original) - {".env", bootstrap.MARKER}:
             self.assertEqual((self.source / name).read_bytes(), (self.restored / name).read_bytes())
+        self.assertEqual(values["FACTORY_CONFIG_DIR"], str(self.restored / "config"))
         for suffix in state.PORTABLE_VOLUMES:
             volume = self.docker.volumes[f"factory-restored-{suffix}"]
             self.assertEqual(volume["data"], self.docker.volumes[f"factory-source-{suffix}"]["data"])
             self.assertEqual(volume["Labels"][state.IDENTITY_LABEL], metadata["installation_id"])
         self.assertFalse(any("operator-socket" in name for name in self.docker.volumes))
         self.assertTrue(any(args[0] == "pull" for args in self.docker.calls))
+
+    def test_crlf_organization_files_keep_exact_snapshot_hashes_and_restored_bytes(self) -> None:
+        organization = json.loads((ROOT / "deploy/examples/organization.configured.example.json").read_text())
+        organization["linear"]["delegate_name"] = "Usine équipe"
+        (self.source / "config/organization.json").write_bytes(json.dumps(organization, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
+        original = {}
+        for name in bootstrap.ORGANIZATION_DEFAULTS:
+            path = self.source / "config" / name
+            original[name] = path.read_bytes().replace(b"\n", b"\r\n")
+            path.write_bytes(original[name])
+        self.assertEqual({name: text.encode("utf-8") for name, text in bootstrap.configuration(self.source / "config").items()}, original)
+        self.backup()
+        manifest = json.loads((self.snapshot / "manifest.json").read_text())
+        for name, content in original.items():
+            relative = "config/config/" + name
+            self.assertEqual((self.snapshot / relative).read_bytes(), content)
+            self.assertEqual(manifest["sha256"][relative], hashlib.sha256(content).hexdigest())
+        state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
+        for name, content in original.items():
+            self.assertEqual((self.restored / "config" / name).read_bytes(), content)
+        bootstrap.validate_directory(self.restored)
 
     def test_backup_refuses_writers_foreign_volumes_and_existing_destination(self) -> None:
         self.docker.running = True
@@ -285,8 +319,9 @@ class PortableStateTests(unittest.TestCase):
                     "HATCHET_SERVER_AUTH_COOKIE_SECRETS", "FACTORY_IMAGE", "FACTORY_POSTGRES_IMAGE", "FACTORY_HATCHET_IMAGE"):
             self.assertEqual(values[key], self.installation.values[key])
         self.assertEqual(values["FACTORY_CONSOLE_PORT"], str(bootstrap.PORTS["FACTORY_CONSOLE_PORT"] + 100))
-        for name in state.CONFIG_FILES - {".env", bootstrap.MARKER}:
+        for name in state.config_files(state.PRODUCTION, metadata) - {".env", bootstrap.MARKER, state.PROVENANCE}:
             self.assertEqual((self.source / name).read_bytes(), (self.restored / name).read_bytes())
+        self.assertEqual(values["FACTORY_CONFIG_DIR"], str(self.restored / "config"))
         for suffix in state.VOLUMES:
             volume = self.docker.volumes[f"factory-restored-{suffix}"]
             self.assertEqual(volume["data"], self.docker.volumes[f"factory-source-{suffix}"]["data"])

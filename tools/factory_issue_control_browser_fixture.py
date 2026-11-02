@@ -32,7 +32,7 @@ def main() -> None:
                 assert conn.execute("SELECT COUNT(*) FROM factory_attempt_outbox").fetchone()[0] == 1
                 attempt = store.list_factory_attempts(conn, "ENG-8")[0]
                 job = store.get_job(conn, attempt["job_id"])
-                assert job["payload"]["repo"] == "Driftward-LLC/capykit"
+                assert job["payload"]["repo"] == "example/widgets"
                 assert "actor" not in job["payload"]
             print(json.dumps({"verified": True, "attempts": 1, "outbox": 1, "history": 2}), flush=True)
     finally:

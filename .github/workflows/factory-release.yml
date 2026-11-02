@@ -148,7 +148,7 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: driftward/factory:ci
+          tags: factory/factory:ci
           build-args: |
             FACTORY_RELEASE_COMMIT=${{ github.sha }}
             FACTORY_RELEASE_VERSION=${{ inputs.release_tag }}
@@ -157,10 +157,10 @@ jobs:
 
       - name: Prove disposable portable installation and restore
         run: |
-          python3 tools/check_factory_portable.py --image driftward/factory:ci --telemetry
+          python3 tools/check_factory_portable.py --image factory/factory:ci --telemetry
 
-      - name: Rehearse stopped production-state relocation
-        run: python3 tools/check_factory_cutover.py --image driftward/factory:ci
+      - name: Verify historical cutover naming refusal
+        run: python3 tools/check_factory_cutover.py
 
       - name: Check changed-file whitespace
         run: git diff --check HEAD
@@ -187,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           # A local image ID is not a registry manifest digest. Never publish this preview.
-          local_image_id="$(docker image inspect driftward/factory:ci --format '{{.Id}}')"
+          local_image_id="$(docker image inspect factory/factory:ci --format '{{.Id}}')"
           bash deploy/package-release.sh --version "$RELEASE_TAG" \
             --image "$IMAGE_REPOSITORY@$local_image_id" \
             --source-commit "$(git rev-parse HEAD)" \
@@ -206,14 +206,14 @@ jobs:
             echo "image tag already exists; refusing to overwrite: $image_tag" >&2
             exit 64
           fi
-          docker tag driftward/factory:ci "$image_tag"
+          docker tag factory/factory:ci "$image_tag"
           docker push --platform linux/amd64 "$image_tag"
           # A platform-only push can leave the unpublished parent index in local RepoDigests.
           image_digest="$(docker manifest inspect --verbose "$image_tag" | jq -er '.Descriptor.digest')"
           image_ref="$IMAGE_REPOSITORY@$image_digest"
           [[ "$image_ref" =~ ^ghcr\.io/driftward-llc/factory@sha256:[a-f0-9]{64}$ ]]
           python3 deploy/auto_deploy_artifact.py --release "$RUNNER_TEMP/factory-release" \
-            driftward/factory:ci "$RELEASE_TAG" "$image_ref"
+            factory/factory:ci "$RELEASE_TAG" "$image_ref"
           echo "reference=$image_ref" >> "$GITHUB_OUTPUT"
 
       - name: Package digest-pinned portable release

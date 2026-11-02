@@ -22,10 +22,59 @@ def issued():
     return {'token': 'synthetic-read-credential-0123456789', 'expires_at':
         (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
         'permissions': {'contents': 'read', 'metadata': 'read'}, 'repository_selection': 'selected',
-        'repositories': [{'full_name': name} for name in broker.REPOSITORIES]}
+        'repositories': [{'full_name': name} for name in ('ExampleOrg/widget', 'ExampleOrg/api')]}
 
 
 class ReviewerSourceTokenTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.policy_path = Path(self.temporary.name) / 'review-policy.json'
+        self.policy = {'schema': 'factory-independent-review-policy-v1', 'enabled': True,
+                       'automatic_repairs_allowed': False, 'max_passes': 2,
+                       'repositories': ['ExampleOrg/widget', 'ExampleOrg/api']}
+        self.policy_path.write_text(json.dumps(self.policy))
+        self.organization_path = Path(self.temporary.name) / 'organization.json'
+        self.organization = {'schema': 'factory-organization-v1', 'linear': None, 'github': {'enabled': True}}
+        self.organization_path.write_text(json.dumps(self.organization))
+        environment = patch.dict(os.environ, HATCHET_INDEPENDENT_REVIEW_POLICY_PATH=str(self.policy_path),
+                                 FACTORY_ORGANIZATION_CONFIG=str(self.organization_path))
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_disabled_github_refuses_mint_validation_and_cached_reuse(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            renewal.renew(directory, issued)
+            self.organization['github']['enabled'] = False
+            self.organization_path.write_text(json.dumps(self.organization))
+            with patch.object(broker, 'mint_jwt') as mint_jwt:
+                with self.assertRaises(ValueError):
+                    broker.mint()
+                mint_jwt.assert_not_called()
+            with self.assertRaises(ValueError):
+                broker.validate_response(issued())
+            with self.assertRaises(ValueError):
+                renewal.renew(directory, issued)
+        with patch.dict(os.environ, {}, clear=True), self.assertRaises(ValueError):
+            broker.load_organization()
+
+    def test_repository_policy_must_be_explicit_enabled_nonempty_and_valid(self):
+        self.assertEqual(broker.load_repositories(), ('ExampleOrg/widget', 'ExampleOrg/api'))
+        for changes in [{'enabled': False}, {'repositories': []}, {'repositories': ['bad']},
+                        {'repositories': ['ExampleOrg/widget', 'exampleorg/WIDGET']},
+                        {'repositories': ['ExampleOrg/widget', 'OtherOrg/api']}, {'schema': 'old'}]:
+            self.policy_path.write_text(json.dumps({**self.policy, **changes}))
+            with patch.object(broker, 'mint_jwt') as mint_jwt:
+                with self.assertRaises(ValueError):
+                    broker.mint()
+                mint_jwt.assert_not_called()
+        self.policy_path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            broker.load_repositories()
+        with patch.dict(os.environ, {}, clear=True), self.assertRaises(ValueError):
+            broker.load_repositories()
+
     def test_exact_downscope_and_private_ipc_response_validation(self):
         captured = []
         value = issued()
@@ -43,12 +92,12 @@ class ReviewerSourceTokenTests(unittest.TestCase):
             self.assertEqual(broker.mint(), value)
         request, timeout = captured[0]
         self.assertEqual(request.full_url, 'https://api.github.com/app/installations/123/access_tokens')
-        self.assertEqual(json.loads(request.data), {'repositories': ['factory', 'capykit'], 'permissions': {'contents': 'read'}})
+        self.assertEqual(json.loads(request.data), {'repositories': ['widget', 'api'], 'permissions': {'contents': 'read'}})
         self.assertEqual(timeout, 20)
         self.assertIsNone(broker.NoRedirect().redirect_request(None, None))
         for changes in [{'permissions': {'contents': 'write'}}, {'permissions': {'contents': 'read', 'issues': 'read'}},
                         {'permissions': {'contents': 'read', 'metadata': 'write'}}, {'repositories': []},
-                        {'repositories': [{'full_name': 'Driftward-LLC/factory'}] * 2},
+                        {'repositories': [{'full_name': 'ExampleOrg/widget'}] * 2},
                         {'repository_selection': 'all'}, {'token': 'synthetic\ninvalid'},
                         {'expires_at': (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()},
                         {'expires_at': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}]:
@@ -101,6 +150,27 @@ class ReviewerSourceTokenTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in directory.iterdir()),
                              ['source-token', 'source-token-metadata.json', 'source-token.lock'])
 
+    def test_cached_source_token_is_not_reused_after_policy_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.assertEqual(renewal.renew(directory, issued)['status'], 'renewed')
+            before = (directory / 'source-token').read_bytes()
+            self.policy['repositories'] = ['ExampleOrg/widget']
+            self.policy_path.write_text(json.dumps(self.policy))
+            with self.assertRaises(ValueError):
+                renewal.renew(directory, issued)
+            self.assertEqual((directory / 'source-token').read_bytes(), before)
+            reduced = {**issued(), 'repositories': [{'full_name': 'ExampleOrg/widget'}]}
+            self.assertEqual(renewal.renew(directory, lambda: reduced)['status'], 'renewed')
+            metadata = json.loads((directory / 'source-token-metadata.json').read_text())
+            self.assertEqual(metadata['repositories'], ['ExampleOrg/widget'])
+            self.policy['enabled'] = False
+            self.policy_path.write_text(json.dumps(self.policy))
+            with patch.object(renewal, 'broker') as issue, self.assertRaises(ValueError):
+                renewal.renew(directory, issue)
+            issue.assert_not_called()
+            self.assertEqual((directory / 'source-token').read_bytes(), before)
+
     def test_permissions_and_links_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -134,7 +204,7 @@ class ReviewerSourceTokenTests(unittest.TestCase):
             self.assertEqual(renewal.broker(), response)
         args = run.call_args.args[0]
         self.assertEqual(args[:6], ['/usr/bin/docker', '--host', 'unix:///var/run/docker.sock', 'exec', '--workdir', '/opt/hermes'])
-        self.assertEqual(args[6], 'hermes-driftward-hermes-1')
+        self.assertEqual(args[6], 'hermes-factory-hermes-1')
         self.assertNotIn(response['token'], ' '.join(args))
         self.assertNotIn('token-cache', args[-1])
         self.assertEqual(run.call_args.kwargs['stdout'], subprocess.PIPE)
@@ -143,18 +213,18 @@ class ReviewerSourceTokenTests(unittest.TestCase):
 
     def test_activation_policy_and_service_boundaries(self):
         policy = json.loads((ROOT / 'hatchet/workers/independent-review-policy.json').read_text())
-        self.assertTrue(policy['enabled'])
+        self.assertFalse(policy['enabled'])
         self.assertFalse(policy['automatic_repairs_allowed'])
         self.assertEqual(policy['max_passes'], 2)
-        self.assertEqual(set(policy['repositories']), set(broker.REPOSITORIES))
-        gateway = (ROOT / 'deploy/systemd/driftward-hermes-factory-gateway.service').read_text()
-        self.assertIn('/var/lib/driftward-factory-reviewer', gateway.split('ReadWritePaths=')[1].splitlines()[0])
-        service = (ROOT / 'deploy/systemd/driftward-factory-reviewer-source-token.service').read_text()
+        self.assertEqual(policy['repositories'], [])
+        gateway = (ROOT / 'deploy/systemd/factory-hermes-factory-gateway.service').read_text()
+        self.assertIn('/var/lib/factory-reviewer', gateway.split('ReadWritePaths=')[1].splitlines()[0])
+        service = (ROOT / 'deploy/systemd/factory-reviewer-source-token.service').read_text()
         self.assertIn('Type=oneshot', service)
         self.assertIn('RestrictAddressFamilies=AF_UNIX', service)
         self.assertNotIn('Restart=', service)
         self.assertNotIn('private-key.pem', service)
-        self.assertIn('OnUnitActiveSec=20min', (ROOT / 'deploy/systemd/driftward-factory-reviewer-source-token.timer').read_text())
+        self.assertIn('OnUnitActiveSec=20min', (ROOT / 'deploy/systemd/factory-reviewer-source-token.timer').read_text())
 
 
 if __name__ == '__main__':

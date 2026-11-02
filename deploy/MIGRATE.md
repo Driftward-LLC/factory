@@ -29,7 +29,12 @@ into a Factory service.
    image and data volume explicitly. It requires service `hermes` in a `factory`
    or `factory-*` Compose project, with a volume named for that project; personal
    and shared legacy Hermes projects are refused.
-4. Preview using the new bundle. Paths below are installation-specific examples:
+4. Prepare exactly four private reviewed organization/policy JSON files using
+   [ORGANIZATION.md](ORGANIZATION.md). For backups made before deployment-owned
+   configuration existed, `--configuration` is required; no identity or execution
+   permission is inferred from old source defaults. Existing configured source
+   files are preserved unless an explicit replacement directory is supplied.
+   Preview using the new bundle. Paths below are installation-specific examples:
 
    ```bash
    python3 /srv/factory-bundles/NEW/deploy/profile_migration.py \
@@ -39,11 +44,12 @@ into a Factory service.
      --destination /srv/factory-unified \
      --project factory-unified \
      --image sha256:EXACT_LOCAL_IMAGE_ID \
+     --configuration /srv/factory-reviewed-config \
      --hermes-container factory-hermes
    ```
 
 Review the preview's source identity, image pins, target, ports, bundle hashes,
-backup digest and dedicated Hermes source. Preview checks all backup hashes and
+backup digest, supplied configuration hashes and dedicated Hermes source. Preview checks all backup hashes and
 SQLite integrity/quiescence; it runs only disposable, unmounted, network-disabled
 containers to compare Hatchet binaries. It does not start any service.
 
@@ -69,10 +75,15 @@ NULL timestamp partition defaults are normalized for comparison. No Factory
 worker or Hermes process is started by the migration.
 
 Original source-container fencing and image history are preserved. A migration
-receipt records old and new pins, bundle hashes, backup and preview digests, the
+receipt records old and new pins, bundle hashes, supplied configuration hashes, backup and preview digests, the
 Hermes archive digest and PostgreSQL verification. Private SQL dumps and evidence
 remain under `DESTINATION/migration-evidence/`; these contain credentials and
 production data and must never be committed or published.
+
+The obsolete systemd helper `hatchet/factory-hatchet-smoke` now exits without
+checking or changing services. Use the Factory-owned `factory-docker-smoke` for
+its supported production Compose layout and the portable acceptance harness for
+a fresh portable profile. Smoke checks read the configured team identity.
 
 ## Validate and switch
 

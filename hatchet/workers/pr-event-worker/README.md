@@ -7,18 +7,18 @@ worker does not mutate GitHub, Linear, bridge jobs, or repository files.
 
 - Workflow: `pr-event-observer`
 - Events:
-  - `driftward.github.pr.created`
-  - `driftward.github.pr.synchronized`
-  - `driftward.github.pr.reopened`
-  - `driftward.github.pr.closed_unmerged`
-  - `driftward.github.pr.closed_merged`
-  - `driftward.github.checks.completed`
-  - `driftward.github.review.submitted`
+  - `factory.github.pr.created`
+  - `factory.github.pr.synchronized`
+  - `factory.github.pr.reopened`
+  - `factory.github.pr.closed_unmerged`
+  - `factory.github.pr.closed_merged`
+  - `factory.github.checks.completed`
+  - `factory.github.review.submitted`
 - Task: `normalize-pr-event`
 
 PR events are observation-only and set `dispatchEligible=false`; they must not
-dispatch Hermes. `driftward.github.pr.synchronized` and
-`driftward.github.pr.reopened` set `requiresFreshVerification` so later workers
+dispatch Hermes. `factory.github.pr.synchronized` and
+`factory.github.pr.reopened` set `requiresFreshVerification` so later workers
 can decide whether existing evidence is stale.
 
 The worker also performs a read-only bridge lookup for reconciliation context.

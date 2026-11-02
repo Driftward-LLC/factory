@@ -3,141 +3,141 @@
   "events": {
     "hermes_job_accepted": {
       "label": "Hermes job accepted",
-      "wire_name": "driftward.hermes.job.accepted"
+      "wire_name": "factory.hermes.job.accepted"
     },
     "hermes_job_effect_committed": {
       "label": "Hermes job effect committed",
-      "wire_name": "driftward.hermes.job.effect_committed"
+      "wire_name": "factory.hermes.job.effect_committed"
     },
     "hermes_job_verification_pending": {
       "label": "Hermes draft PR verification pending",
-      "wire_name": "driftward.hermes.job.verification_pending"
+      "wire_name": "factory.hermes.job.verification_pending"
     },
     "hermes_job_verification_failed": {
       "label": "Hermes draft PR verification failed",
-      "wire_name": "driftward.hermes.job.verification_failed"
+      "wire_name": "factory.hermes.job.verification_failed"
     },
     "hermes_job_ready_for_human_review": {
       "label": "Hermes draft PR ready for human review",
-      "wire_name": "driftward.hermes.job.ready_for_human_review"
+      "wire_name": "factory.hermes.job.ready_for_human_review"
     },
     "hermes_job_completed": {
       "label": "Hermes job completed",
-      "wire_name": "driftward.hermes.job.completed"
+      "wire_name": "factory.hermes.job.completed"
     },
     "hermes_job_failed": {
       "label": "Hermes job failed",
-      "wire_name": "driftward.hermes.job.failed"
+      "wire_name": "factory.hermes.job.failed"
     },
     "github_pr_creation_simulated": {
       "label": "GitHub PR creation simulated",
-      "wire_name": "driftward.github.pr.creation_simulated"
+      "wire_name": "factory.github.pr.creation_simulated"
     },
     "github_pr_created": {
       "label": "GitHub PR created",
-      "wire_name": "driftward.github.pr.created",
+      "wire_name": "factory.github.pr.created",
       "event_key_suffix": "created",
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_pr_created"
     },
     "github_pr_synchronized": {
       "label": "GitHub PR synchronized",
-      "wire_name": "driftward.github.pr.synchronized",
+      "wire_name": "factory.github.pr.synchronized",
       "event_key_suffix": "synchronized",
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_pr_synchronized"
     },
     "github_pr_reopened": {
       "label": "GitHub PR reopened",
-      "wire_name": "driftward.github.pr.reopened",
+      "wire_name": "factory.github.pr.reopened",
       "event_key_suffix": "reopened",
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_pr_reopened"
     },
     "github_pr_closed_unmerged": {
       "label": "GitHub PR closed unmerged",
-      "wire_name": "driftward.github.pr.closed_unmerged",
+      "wire_name": "factory.github.pr.closed_unmerged",
       "event_key_suffix": "closed_unmerged",
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_pr_closed_unmerged"
     },
     "github_pr_closed_merged": {
       "label": "GitHub PR closed merged",
-      "wire_name": "driftward.github.pr.closed_merged",
+      "wire_name": "factory.github.pr.closed_merged",
       "event_key_suffix": "closed_merged",
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_pr_closed_merged"
     },
     "github_checks_completed": {
       "label": "GitHub checks completed",
-      "wire_name": "driftward.github.checks.completed",
+      "wire_name": "factory.github.checks.completed",
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_checks_completed"
     },
     "github_review_submitted": {
       "label": "GitHub review submitted",
-      "wire_name": "driftward.github.review.submitted",
+      "wire_name": "factory.github.review.submitted",
       "default_decision_id": "observe_only",
       "default_reason_code_id": "github_review_submitted"
     },
     "linear_issue_observed": {
       "label": "Linear issue observed",
-      "wire_name": "driftward.linear.issue.observed",
+      "wire_name": "factory.linear.issue.observed",
       "default_decision_id": "observe_only"
     },
     "linear_issue_ready_for_implementation": {
       "label": "Linear issue ready for implementation",
-      "wire_name": "driftward.linear.issue.ready_for_implementation",
+      "wire_name": "factory.linear.issue.ready_for_implementation",
       "default_decision_id": "ready_for_implementation",
       "default_reason_code_id": "linear_issue_ready_for_implementation"
     },
     "work_item_intake_received": {
       "label": "Work item intake received",
-      "wire_name": "driftward.work_item.intake.received"
+      "wire_name": "factory.work_item.intake.received"
     },
     "factory_retry_requested": {
       "label": "Factory fresh retry requested",
-      "wire_name": "driftward.factory.retry.requested"
+      "wire_name": "factory.retry.requested"
     },
     "factory_attempt_started": {
       "label": "Factory generationed attempt started",
-      "wire_name": "driftward.factory.attempt.started"
+      "wire_name": "factory.attempt.started"
     },
     "factory_attempt_failed": {
       "label": "Factory generationed attempt failed",
-      "wire_name": "driftward.factory.attempt.failed"
+      "wire_name": "factory.attempt.failed"
     },
     "factory_attempt_verified_ready": {
       "label": "Factory generationed attempt verified ready",
-      "wire_name": "driftward.factory.attempt.verified_ready"
+      "wire_name": "factory.attempt.verified_ready"
     },
     "factory_attempt_superseded": {
       "label": "Factory generationed attempt superseded",
-      "wire_name": "driftward.factory.attempt.superseded"
+      "wire_name": "factory.attempt.superseded"
     },
     "reconciliation_detected": {
       "label": "Reconciliation detected",
-      "wire_name": "driftward.reconciliation.detected"
+      "wire_name": "factory.reconciliation.detected"
     },
     "work_item_triaged": {
       "label": "Work item triaged",
-      "wire_name": "driftward.work_item.triaged"
+      "wire_name": "factory.work_item.triaged"
     },
     "work_item_specified": {
       "label": "Work item specified",
-      "wire_name": "driftward.work_item.specified"
+      "wire_name": "factory.work_item.specified"
     },
     "verification_completed": {
       "label": "Verification completed",
-      "wire_name": "driftward.verification.completed"
+      "wire_name": "factory.verification.completed"
     },
     "review_completed": {
       "label": "Review completed",
-      "wire_name": "driftward.review.completed"
+      "wire_name": "factory.review.completed"
     },
     "repair_dispatched": {
       "label": "Repair dispatched",
-      "wire_name": "driftward.repair.dispatched"
+      "wire_name": "factory.repair.dispatched"
     }
   },
   "decisions": {
@@ -252,7 +252,7 @@
       "label": "Linear issue was removed"
     },
     "linear_issue_wrong_team": {
-      "label": "Linear issue is not on the Engineering team"
+      "label": "Linear issue does not match the configured workspace and team"
     },
     "linear_issue_status_not_ready": {
       "label": "Linear issue is not Ready"

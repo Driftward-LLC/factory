@@ -230,7 +230,10 @@ def executor_probe():
         assert not registered, 'GitHub tool leaked to another profile'
     set_hermes_home_override(root/'profiles'/ROLES['executor'])
     from agent.skill_commands import build_preloaded_skills_prompt
-    names=['driftward-engineering:'+name for name in ('implement-change','verify-app','prepare-pr')]
+    from hermes_cli.config import read_user_config_raw
+    namespace = read_user_config_raw(root/'profiles'/ROLES['executor']/'config.yaml').get('factory_skill_namespace')
+    assert isinstance(namespace, str) and re.fullmatch(r'[a-z][a-z0-9-]{0,99}', namespace), 'invalid configured skill namespace'
+    names=[namespace+':'+name for name in ('implement-change','verify-app','prepare-pr')]
     prompt,loaded,missing=build_preloaded_skills_prompt(names)
     assert not missing and len(loaded)==3 and len(prompt)>1000, missing
     return {'uid':os.geteuid(),'native_constructor':True,'preloaded_skills':loaded,

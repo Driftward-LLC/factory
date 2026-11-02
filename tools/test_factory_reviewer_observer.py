@@ -15,7 +15,7 @@ import native_agent
 import review_observer as telemetry
 
 METADATA = {"role": "reviewer", "review_id": "review-1", "head_sha": "a" * 40,
-            "pass_number": 1, "repository": "Driftward-LLC/factory"}
+            "pass_number": 1, "repository": "ExampleOrg/widget"}
 SESSION = "factory-reviewer:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 TOOLS = {"factory_source_read_file"}
 
@@ -43,7 +43,7 @@ class ReviewerObserverTests(unittest.TestCase):
         self.assertEqual(trace, telemetry.trace_id(dict(reversed(list(METADATA.items())))))
         for field, value in [("pass_number", 2), ("head_sha", "b" * 40), ("review_id", "review-2")]:
             self.assertNotEqual(trace, telemetry.trace_id({**METADATA, field: value}))
-        generator = uuid.uuid5(uuid.NAMESPACE_URL, "driftward-hermes:trace:attempt:" + SESSION)
+        generator = uuid.uuid5(uuid.NAMESPACE_URL, "factory-hermes:trace:attempt:" + SESSION)
         self.assertNotEqual(trace, str(generator))
         self.assertEqual(telemetry.review_metadata({**METADATA, "generator_session_id": "private"}), {})
         frame = native_agent.request_frame(SESSION, "only the prompt", METADATA)

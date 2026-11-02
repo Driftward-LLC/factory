@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import base64
 from dataclasses import replace
 import os
@@ -23,6 +26,7 @@ def release_tree(root: Path) -> None:
     (root / "worker-triggers").mkdir()
     (root / "README.md").write_text("runtime release\n")
     (root / "predeploy-check.py").write_text("print('ok')\n")
+    (root / "factory_organization.py").write_text("# organization config validator\n")
     (root / "verifier-policy.json").write_text("{}\n")
     (root / "independent-review-policy.json").write_text("{}\n")
     (root / "hatchet_hermes_bridge" / "__init__.py").write_text("")
@@ -95,7 +99,7 @@ class ReleaseHygieneTests(unittest.TestCase):
     def test_nonsecret_configuration_value_from_a_protected_env_is_not_compared(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "tree"; root.mkdir()
-            value = "/etc/driftward/hatchet-verifier-policy.json"
+            value = "/etc/factory/hatchet-verifier-policy.json"
             env_file = self.protected_env(directory, "hatchet-workers.env")
             env_file.write_text(f"HATCHET_VERIFIER_POLICY_PATH={value}\n")
             (root / "README.md").write_text(value)
@@ -368,7 +372,7 @@ class ReleaseHygieneTests(unittest.TestCase):
             result = subprocess.run(
                 ["bash", str(copy / "hatchet" / "bridge" / "publish-release.sh"), "--stage-only"],
                 cwd=copy,
-                env={**os.environ, "HATCHET_BRIDGE_STAGE_ROOT": str(stage), "DRIFTWARD_BRIDGE_RELEASE_VERSION": commit},
+                env={**os.environ, "HATCHET_BRIDGE_STAGE_ROOT": str(stage), "FACTORY_BRIDGE_RELEASE_VERSION": commit},
                 text=True,
                 capture_output=True,
             )

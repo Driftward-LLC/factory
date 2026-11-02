@@ -1,5 +1,5 @@
 {
-  "name": "@driftward/hatchet-workers",
+  "name": "@factory/hatchet-workers",
   "version": "0.1.0",
   "private": true,
   "workspaces": [
@@ -11,7 +11,7 @@
     "reconciliation-worker"
   ],
   "scripts": {
-    "build": "npm run build -w @driftward/hatchet-worker-shared && npm run build -w @driftward/hatchet-intake-worker && npm run build -w @driftward/hatchet-execution-dispatch-worker && npm run build -w @driftward/hatchet-bridge-executor-worker && npm run build -w @driftward/hatchet-pr-event-worker && npm run build -w @driftward/hatchet-reconciliation-worker",
+    "build": "npm run build -w @factory/hatchet-worker-shared && npm run build -w @factory/hatchet-intake-worker && npm run build -w @factory/hatchet-execution-dispatch-worker && npm run build -w @factory/hatchet-bridge-executor-worker && npm run build -w @factory/hatchet-pr-event-worker && npm run build -w @factory/hatchet-reconciliation-worker",
     "typecheck": "npm run build"
   },
   "devDependencies": {

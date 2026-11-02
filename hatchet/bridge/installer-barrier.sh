@@ -4,17 +4,17 @@
 
 if [[ "${BRIDGE_TEST_MODE:-}" == 1 ]]; then
   python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_capability.py" assert
-  maintenance_root="$BRIDGE_TEST_ROOT/run/driftward-hatchet-bridge"
+  maintenance_root="$BRIDGE_TEST_ROOT/run/factory-hatchet-bridge"
   systemd_dropin_root="$BRIDGE_TEST_ROOT/run/systemd/system"
   maintenance_owner="$BRIDGE_TEST_UID:$BRIDGE_TEST_GID"
 else
-  maintenance_root=/run/driftward-hatchet-bridge
+  maintenance_root=/run/factory-hatchet-bridge
   systemd_dropin_root=/run/systemd/system
   maintenance_owner=0:0
 fi
 maintenance_lock="$maintenance_root/maintenance.lock"
 maintenance_active="$maintenance_root/maintenance.active"
-maintenance_dropin_name=90-driftward-bridge-maintenance.conf
+maintenance_dropin_name=90-factory-bridge-maintenance.conf
 barrier_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 barrier_dropin_path() { printf '%s/%s.d/%s\n' "$systemd_dropin_root" "$1" "$maintenance_dropin_name"; }
@@ -153,7 +153,7 @@ verify_existing_maintenance_barrier_readonly() {
     dropins="$(systemctl show "$unit" -p DropInPaths --value 2>/dev/null || printf '')"
     [[ "$dropins" == *"$path"* ]] || { echo "maintenance drop-in not loaded: $unit" >&2; failures=1; }
   done
-  for unit in driftward-hatchet-bridge-reconciler.service driftward-hatchet-bridge-reconciler.timer; do
+  for unit in factory-hatchet-bridge-reconciler.service factory-hatchet-bridge-reconciler.timer; do
     [[ "$(systemctl show "$unit" -p ActiveState --value 2>/dev/null || printf unknown)" == inactive ]] || { echo "reconciler remains active: $unit" >&2; failures=1; }
   done
   command -v lsof >/dev/null || { echo "lsof is required for safe-down supersession" >&2; return 1; }

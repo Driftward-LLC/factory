@@ -1,7 +1,7 @@
 {
   "schema": "factory-independent-review-policy-v1",
-  "enabled": true,
+  "enabled": false,
   "automatic_repairs_allowed": false,
   "max_passes": 2,
-  "repositories": ["Driftward-LLC/factory", "Driftward-LLC/capykit"]
+  "repositories": []
 }

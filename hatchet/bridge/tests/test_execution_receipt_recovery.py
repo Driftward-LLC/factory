@@ -1,3 +1,6 @@
+
+from organization_fixtures import configure
+setUpModule, tearDownModule = configure()
 import tempfile
 import unittest
 import os
@@ -16,12 +19,12 @@ class ExecutionReceiptRecoveryTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.conn = connect_migrate(str(Path(self.tmp.name) / "bridge.db"))
         self.addCleanup(self.conn.close)
-        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/verifier-policy.json")})
+        env = patch.dict(os.environ, {"HATCHET_VERIFIER_POLICY_PATH": str(Path(__file__).resolve().parents[2] / "workers/test-fixtures/verifier-policy.json")})
         env.start()
         self.addCleanup(env.stop)
         self.attempt, self.job, _ = store.reserve_factory_retry(
             self.conn, work_item_key="ENG-600", mode="real", request_id="receipt-test", reason="test", actor="uid:0",
-            payload=verifier_payload("Driftward-LLC/capykit"),
+            payload=verifier_payload("example/widgets"),
         )
         store.transition_job(self.conn, self.job["job_id"], state="running")
         self.lease = store.claim_factory_execution(self.conn, self.job["job_id"], owner="original-executor")["lease"]
@@ -50,7 +53,7 @@ class ExecutionReceiptRecoveryTests(unittest.TestCase):
         control = store.get_factory_issue_control(self.conn, "ENG-600")
         self.assertEqual(control["mode"], "handoff_pending", "observation alone cannot settle execution")
         self.assertEqual(control["blockers"][0]["recovery"]["state"], "completed")
-        details = {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/600", "branch": self.job["branch"], "commit_sha": "a" * 40}
+        details = {"pr_url": "https://github.com/example/widgets/pull/600", "branch": self.job["branch"], "commit_sha": "a" * 40}
         with self.assertRaises(store.BridgeConflict):
             store.commit_factory_execution(self.conn, self.job["job_id"], {**self.lease, "fence_token": "wrong"}, details)
         store.commit_factory_execution(self.conn, self.job["job_id"], self.lease, details)
@@ -89,7 +92,7 @@ class ExecutionReceiptRecoveryTests(unittest.TestCase):
         self.assertIsNone(self.conn.execute("SELECT released_at FROM factory_execution_leases").fetchone()[0])
 
     def test_receipt_commit_persists_validation_atomically_and_rolls_back_invalid_context(self):
-        details = {"pr_url": "https://github.com/Driftward-LLC/capykit/pull/600", "branch": self.job["branch"], "commit_sha": "a" * 40}
+        details = {"pr_url": "https://github.com/example/widgets/pull/600", "branch": self.job["branch"], "commit_sha": "a" * 40}
         with self.assertRaises(store.BridgeValidationError):
             store.commit_factory_execution(self.conn, self.job["job_id"], self.lease, {**details, "verification_context": {"raw": "invalid"}})
         self.assertEqual(store.get_job(self.conn, self.job["job_id"])["state"], "running")

@@ -1,0 +1,31 @@
+[Unit]
+Description=Factory Linear lifecycle writer
+After=network-online.target factory-hatchet-bridge.service factory-hatchet-event-ingress.service
+Wants=network-online.target
+Documentation=file:__REPO_ROOT__/hatchet/factory-lifecycle-writer/README.md
+
+[Service]
+Type=simple
+User=factory-writer
+Group=factory-writer
+WorkingDirectory=__INSTALL_ROOT__
+LoadCredential=factory-lifecycle.env:/etc/factory/factory-lifecycle-writer.env
+ExecStart=__INSTALL_ROOT__/factory-lifecycle-service serve --interval 30
+Restart=always
+RestartSec=5
+UMask=0077
+CPUQuota=10%
+MemoryMax=128M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/factory-lifecycle-writer
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
