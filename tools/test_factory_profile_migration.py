@@ -298,7 +298,8 @@ class MigrationTests(unittest.TestCase):
         import check_factory_naming_migration as fixture
         install = self.unified()
         install.provenance["profile_migration"]["naming_migration"] = {
-            "mapping": fixture.configuration(), "gateway_policy": "unbound"}
+            "mapping": fixture.configuration(), "gateway_policy": "unbound",
+            "source_predecessors": copy.deepcopy(install.provenance["predecessors"])}
         return install
 
     def test_naming_migration_full_start_is_unbound_even_in_preview(self):
@@ -352,6 +353,51 @@ class MigrationTests(unittest.TestCase):
             prior["Config"]["Labels"][old_label] = "foreign"
             with self.assertRaisesRegex(ValueError, "predecessor"):
                 install.assert_source_fenced()
+
+
+    def test_inherited_legacy_predecessor_fencing_survives_a_new_restore(self):
+        install = self.naming_install()
+        receipt = install.provenance["profile_migration"]
+        receipt["hermes_source"] = {}
+        ancestor = {"project": "factory-older-restored", "installation_id": "11111111-2222-4333-8444-555555555555"}
+        install.provenance["predecessors"].insert(0, ancestor)
+        receipt["naming_migration"]["source_predecessors"].insert(0, copy.deepcopy(ancestor))
+        old_label = receipt["naming_migration"]["mapping"]["source_identity_label"]
+        source_rows = [{"Id": container, "Image": install.provenance["source_images"][service],
+                        "Config": {"Labels": {"com.docker.compose.project": install.provenance["source_project"],
+                                              "com.docker.compose.service": service}},
+                        "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+                       for container, service in zip(install.provenance["source_container_ids"], production.SERVICES)]
+        predecessors = {}
+        for identity in install.provenance["predecessors"]:
+            predecessors[identity["project"]] = {"Config": {"Labels": {"com.docker.compose.project": identity["project"],
+                "com.docker.compose.service": "bridge", old_label: identity["installation_id"]}},
+                "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        def docker(command, env=None):
+            if command[:2] == ["container", "inspect"]:
+                return json.dumps([predecessors[command[2]]] if command[2] in predecessors else source_rows)
+            project = command[-1].rsplit("=", 1)[-1]
+            return project if project in predecessors else "\n".join(install.provenance["source_container_ids"])
+        def check():
+            with patch.object(production.state, "_docker", side_effect=docker), patch.object(production.state, "_no_writers"), \
+                    patch.object(migration, "hermes_stopped"), patch.object(install, "assert_tenant_fenced"):
+                install.assert_source_fenced()
+        check()
+        # A subsequent new-generation restore appends this migration's project;
+        # it must use the new label while every recorded old identity stays old.
+        current = {"project": install.project, "installation_id": install.metadata["installation_id"]}
+        install.provenance["predecessors"].append(current)
+        predecessors[current["project"]] = {"Config": {"Labels": {"com.docker.compose.project": current["project"],
+            "com.docker.compose.service": "bridge", production.state.IDENTITY_LABEL: current["installation_id"]}},
+            "State": {"Status": "exited"}, "HostConfig": {"RestartPolicy": {"Name": "no"}}}
+        install.project = "factory-restored-neutral"
+        check()
+        for state, restart in (("running", "no"), ("exited", "unless-stopped")):
+            with self.subTest(state=state, restart=restart):
+                predecessors[ancestor["project"]]["State"]["Status"] = state
+                predecessors[ancestor["project"]]["HostConfig"]["RestartPolicy"]["Name"] = restart
+                with self.assertRaisesRegex(ValueError, "predecessor"):
+                    check()
 
 
 if __name__ == "__main__":

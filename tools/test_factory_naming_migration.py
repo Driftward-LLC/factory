@@ -85,6 +85,7 @@ class NamingMappingTests(unittest.TestCase):
         with patch.object(naming.pg, "psql", return_value="0") as query:
             self.assertEqual(set(naming.postgres_quiescent("synthetic")), {row[0] for row in naming.POSTGRES_PENDING})
             self.assertEqual(query.call_count, len(naming.POSTGRES_PENDING))
+            self.assertFalse(any('"v1_step_slot_request"' in call.args[1] for call in query.call_args_list))
         def pending(container, sql):
             return "1" if '"WorkflowTriggerCronRef"' in sql else "0"
         with patch.object(naming.pg, "psql", side_effect=pending), self.assertRaisesRegex(naming.pg.MigrationRefusal, 'WorkflowTriggerCronRef.*1'):

@@ -54,6 +54,13 @@ def validate_receipt(install):
                 and transition.get("gateway_policy") == "unbound"
                 and re.fullmatch(HEX, str(transition.get("mapping_sha256", "")))
                 and isinstance(transition.get("mapping"), dict), "invalid naming migration receipt")
+        legacy = transition.get("source_predecessors")
+        require(isinstance(legacy, list) and legacy
+                and all(isinstance(row, dict) and set(row) == {"project", "installation_id"}
+                        and row in install.provenance.get("predecessors", []) for row in legacy)
+                and len({row["project"] for row in legacy}) == len(legacy)
+                and {"project": value.get("previous_project"), "installation_id": value.get("previous_installation_id")} in legacy,
+                "naming migration must retain every legacy predecessor identity")
         naming.validate_mapping(transition["mapping"], {
             "identity_label": transition["mapping"].get("source_identity_label"),
             "tenant_label": transition["mapping"].get("source_tenant_label")})
@@ -216,6 +223,11 @@ def preview(args):
                       for volume in naming.SQLITE} if naming_plan else check_sqlite(args.snapshot))
     previous = json.loads(bootstrap._read_private(args.source / state.PROVENANCE))
     require(not previous.get("profile_migration"), "source already has a profile migration")
+    if naming_plan:
+        # Every predecessor inherited from a markerless source uses that source's
+        # ownership namespace. Keep the identities fixed across later restores.
+        naming_plan["source_predecessors"] = [*previous.get("predecessors", []),
+            {"project": metadata["project"], "installation_id": metadata["installation_id"]}]
     source_files = [*state.DEPLOYMENT_FILES, "compose.production.yml"]
     if metadata.get("telemetry"):
         source_files.extend(telemetry.FILES)

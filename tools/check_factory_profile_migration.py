@@ -77,6 +77,15 @@ def seed_naming_postgres(container):
             sql += f' INSERT INTO public."{table}" VALUES {values};'
             inserted += 1
         pg.psql(container, sql)
+    # Per-step resource requirements persist as configuration; unlike runtime
+    # slots they are not queued work and must survive the logical restore.
+    pg.psql(container, """CREATE TABLE public.v1_step_slot_request (
+        tenant_id uuid, step_id uuid, slot_type text, units integer, created_at timestamp, updated_at timestamp,
+        PRIMARY KEY(tenant_id, step_id, slot_type));
+        INSERT INTO public.v1_step_slot_request VALUES (
+        '11111111-2222-4333-8444-555555555555','22222222-3333-4444-8555-666666666666',
+        'synthetic',1,'2026-01-01','2026-01-01');""")
+    inserted += 1
     assert set(migration.naming.postgres_quiescent(container).values()) == {0}
     return inserted
 
@@ -172,6 +181,13 @@ def main():
                       "source_images": images, "factory_image": args.source_image, "tenant_id": tenant, "activation_approved": False,
                       "profile_sha256": state._hash(bundle / "compose.production.yml"),
                       "deployment_sha256": {n: state._hash(bundle / n) for n in state.deployment_files(state.PRODUCTION)}}
+        if args.naming:
+            ancestor, ancestor_id = project + "-ancestor", str(uuid.uuid4())
+            provenance["predecessors"] = [{"project": ancestor, "installation_id": ancestor_id}]
+            containers.append(state._docker(["create", "--name", ancestor + "-bridge", "--label", LABEL + "=" + tag,
+                "--network", "none", "--restart", "no", "--entrypoint", "true",
+                "--label", "com.docker.compose.project=" + ancestor, "--label", "com.docker.compose.service=bridge",
+                "--label", identity_label + "=" + ancestor_id, "--label", tenant_label + "=" + tenant, args.source_image]))
         bootstrap._create_private(source / state.PROVENANCE, json.dumps(provenance))
         for suffix in state.VOLUMES:
             volume = source_volume(project, source_id, suffix, identity_label) if args.naming else migration.create_volume(project, source_id, suffix)
@@ -283,6 +299,7 @@ def main():
         if args.naming:
             transition = candidate.provenance["profile_migration"]["naming_migration"]
             assert transition["gateway_policy"] == "unbound"
+            assert {"project": ancestor, "installation_id": ancestor_id} in transition["source_predecessors"]
             assert transition["journal_archive"]["intents_without_results"] == 1
             assert (destination / "migration-evidence/gateway-journal.tar").read_bytes() == journal.read_bytes()
             target_gate = bootstrap.read_env(destination / "env/hatchet-worker-bridge-executor.env")
@@ -308,7 +325,11 @@ def main():
         restored = root / "restored"
         restore_project = target + "-restore"
         state.restore(second, restored, restore_project, apply=True, production=True, port_offset=10000)
-        fixtures.production.Production(restored).preflight()
+        restored_install = fixtures.production.Production(restored)
+        restored_install.preflight()
+        if args.naming:
+            assert (restored_install.provenance["profile_migration"]["naming_migration"]["source_predecessors"]
+                    == candidate.provenance["profile_migration"]["naming_migration"]["source_predecessors"])
         assert naming_fixture.hashes(source) == original_source
         assert naming_fixture.hashes(snapshot) == original_snapshot
         if args.source_bundle:

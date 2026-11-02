@@ -188,7 +188,7 @@ POSTGRES_PENDING = (
     ('v1_queue_item', 'TRUE'), ('v1_retry_queue_item', 'TRUE'),
     ('v1_task_runtime', 'TRUE'), ('v1_task_runtime_slot', 'TRUE'),
     ('v1_batched_queue_item', 'TRUE'), ('v1_rate_limited_queue_items', 'TRUE'),
-    ('v1_step_slot_request', 'TRUE'), ('v1_workflow_concurrency_slot', 'TRUE'),
+    ('v1_workflow_concurrency_slot', 'TRUE'),
     ('v1_concurrency_slot', '"is_filled" IS DISTINCT FROM FALSE'), ('v1_durable_sleep', 'TRUE'),
     ('v1_durable_event_log_entry', '"is_satisfied" IS DISTINCT FROM TRUE'),
     ('v1_match', '"is_satisfied" IS DISTINCT FROM TRUE'), ('v1_match_condition', '"is_satisfied" IS DISTINCT FROM TRUE'),

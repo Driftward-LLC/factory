@@ -145,8 +145,12 @@ than modifying pending work or enabled cron/scheduled triggers. A remaining
 lifecycle dead letter likewise requires the audited original-release archive
 procedure, never a direct database edit by this migration.
 
-The migration receipt retains original ownership/tenant labels and all later
-production fencing scans use both recorded source and current label namespaces.
+The migration receipt retains original ownership/tenant labels and every
+predecessor identity inherited from the markerless source, including earlier
+restores. Later restores keep that recorded set unchanged and append new
+identities separately, so production fencing chooses the original label for
+every old identity and the current label for new ones. Tenant scans use both
+recorded source and current label namespaces.
 Do not relabel source containers or volumes. Keep source restarts and the
 original gateway disabled throughout target validation.
 

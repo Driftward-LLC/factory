@@ -177,7 +177,7 @@ class Production(portable.Installation):
             project, identity = predecessor["project"], predecessor["installation_id"]
             naming = self.provenance.get("profile_migration", {}).get("naming_migration")
             identity_label = (naming["mapping"]["source_identity_label"] if naming
-                              and project == self.provenance["profile_migration"]["previous_project"] else state.IDENTITY_LABEL)
+                              and predecessor in naming["source_predecessors"] else state.IDENTITY_LABEL)
             if not isinstance(project, str) or not re.fullmatch(bootstrap.PROJECT_PATTERN, project) or project in seen or not isinstance(identity, str) or str(uuid.UUID(identity)) != identity:
                 raise ProductionRefusal("invalid or duplicate predecessor fencing identity")
             seen.add(project)
