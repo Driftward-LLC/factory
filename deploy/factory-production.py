@@ -255,7 +255,7 @@ class Production(portable.Installation):
                     raise ProductionRefusal("organization configuration boundary differs")
             if name == "factory-hermes":
                 expected.add(("volume", "factory-hermes-data", "/opt/data", False))
-                if (service.get("command") != ["sleep", "infinity"]
+                if (service.get("command") != ["/opt/hermes/.venv/bin/python", "/app/deploy/hermes-default-profiles.py", "sleep", "infinity"]
                         or service.get("entrypoint") != ["/opt/hermes/docker/entrypoint-dispatch.sh"]
                         or service.get("environment", {}).get("HERMES_DASHBOARD") != "0"):
                     raise ProductionRefusal("bundled Hermes must remain idle")

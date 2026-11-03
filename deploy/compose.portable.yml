@@ -103,7 +103,7 @@ services:
     # Started explicitly by the portable wrapper; legacy production stays unchanged.
     profiles: [hermes]
     entrypoint: [/opt/hermes/docker/entrypoint-dispatch.sh]
-    command: [sleep, infinity]
+    command: [/opt/hermes/.venv/bin/python, /app/deploy/hermes-default-profiles.py, sleep, infinity]
     working_dir: /opt/data
     environment:
       HOME: /opt/data

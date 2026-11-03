@@ -57,10 +57,12 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: hatchet/bridge/requirements.txt
+          cache-dependency-path: |
+            hatchet/bridge/requirements.txt
+            tools/requirements.txt
 
-      - name: Install bridge dependencies
-        run: python3 -m pip install --requirement hatchet/bridge/requirements.txt
+      - name: Install Python check dependencies
+        run: python3 -m pip install --requirement tools/requirements.txt
 
       - name: Require successful quality checks for the exact release commit
         run: python3 deploy/auto_deploy_artifact.py --check-release-quality

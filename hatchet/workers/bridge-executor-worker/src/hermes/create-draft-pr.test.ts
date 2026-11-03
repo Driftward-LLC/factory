@@ -54,7 +54,7 @@ test('executor profile selects native command and metadata runtime consistently'
   }
 });
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import os, { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { BridgeClient, BridgeJob } from '@factory/hatchet-worker-shared';
@@ -74,6 +74,7 @@ import {
   hermesReceiptWaitDuration,
   jobMatchesHermesDraftPrReceipt,
   inspectDraftPullRequestViaCommand,
+  assertHermesIdentityViaCommand,
   NonRetryableBridgeExecutionError,
   preflightHermesCreateDraftPr,
   resumeHermesDraftPrResult,
@@ -1161,4 +1162,48 @@ test('real execution rejects old unbound jobs and same-prefix workspace reconfig
     if (previousAllowed === undefined) delete process.env.FACTORY_HERMES_ALLOWED_REPOS; else process.env.FACTORY_HERMES_ALLOWED_REPOS = previousAllowed;
     rmSync(directory, { recursive: true });
   }
+});
+
+
+test('local Composio transport preserves exact checks and configured actor without gh or App auth', async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'factory-composio-inspection-'));
+  const previous = { ...process.env };
+  t.after(() => { process.env = previous; rmSync(directory, { recursive: true, force: true }); });
+  t.mock.method(os, 'hostname', () => 'a'.repeat(12));
+  const incarnation = 'sha256:' + 'c'.repeat(64);
+  const installation = '00000000-0000-4000-8000-000000000001';
+  process.env.FACTORY_INSTALLATION_ID = installation;
+  process.env.FACTORY_HERMES_RUNTIME_MODE = 'local-executor';
+  process.env.FACTORY_HERMES_GITHUB_TRANSPORT = 'composio';
+  process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH = path.join(directory, 'binding.json');
+  process.env.PATH = directory + path.delimiter + previous.PATH;
+  writeFileSync(process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH, JSON.stringify({ installation_id: installation,
+    runtime: { schema: 1, backend: 'hermes', kind: 'docker', instance_id: 'a'.repeat(64), image_digest: 'sha256:' + 'b'.repeat(64), incarnation } }));
+  const view = greenView({ changedFiles: 1, headRefOid: 'a'.repeat(40), baseRefOid: 'b'.repeat(40) });
+  const identity = { githubLogin: 'dedicated-user', gitAuthorName: 'Factory', gitAuthorEmail: 'factory@example.com', accessibleRepo: 'example/widgets' };
+  const log = path.join(directory, 'calls');
+  writeFileSync(path.join(directory, 'python3'), `#!${process.execPath}
+const fs=require('node:fs'),args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
+if(args[2]==='observe')process.stdout.write('${incarnation}');
+else {
+ if(!args.includes('HERMES_HOME=/opt/data/profiles/factory-executor'))process.exit(1);
+ const at=args.indexOf('/app/deploy/composio-github-read.py');
+ if(at>=0){
+  const op=args[at+1],view=${JSON.stringify(view)};
+  if(op==='identity')process.stdout.write(${JSON.stringify(JSON.stringify(identity))});
+  else if(op==='pr-metadata'){delete view.statusCheckRollup;delete view.files;process.stdout.write(JSON.stringify(view));}
+  else process.stdout.write(JSON.stringify(view));
+ }else process.stdout.write(JSON.stringify({files:${JSON.stringify(view.files)},diffText:'diff --git a/tests/cli.test.ts b/tests/cli.test.ts\\n+example'}));
+}
+`, { mode: 0o700 });
+  const observed = await inspectDraftPullRequestViaCommand('example/widgets', 77, 5000);
+  assert.deepEqual(observed.statusCheckRollup, view.statusCheckRollup);
+  assert.deepEqual(observed.files, view.files);
+  assert.equal((await assertHermesIdentityViaCommand('example/widgets', { expectedGithubLogin: identity.githubLogin,
+    expectedGitAuthorName: identity.gitAuthorName, expectedGitAuthorEmail: identity.gitAuthorEmail,
+    forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeout: 5000 })).githubLogin, identity.githubLogin);
+  await assert.rejects(assertHermesIdentityViaCommand('example/widgets', { expectedGithubLogin: 'wrong-user',
+    expectedGitAuthorName: identity.gitAuthorName, expectedGitAuthorEmail: identity.gitAuthorEmail,
+    forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeout: 5000 }));
+  assert.equal(readFileSync(log, 'utf8').includes('"gh"'), false);
 });

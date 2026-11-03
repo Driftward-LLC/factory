@@ -182,3 +182,24 @@ resumable remote execution. Keep those as explicit subsequent acceptance gates.
 TCP gateway authentication is hardened now, but real remote execution still
 needs durable invocation/result lookup and a documented execution envelope.
 Do not enable real execution by removing the dry-run guard.
+
+### Native Hermes role profiles
+
+New installation startup creates `factory-executor` and
+`factory-independent-reviewer` inside this installation's Hermes data volume,
+using native `hermes profile create --no-alias`. Existing profiles and the active
+profile remain unchanged. Native bundled skills remain available. Hermes may
+seed a fresh profile from the installation's configured model/provider settings;
+Factory does not assign a model or import another installation's configuration.
+Inline credentials in that native model seed cause bootstrap to refuse creation,
+matching the existing Factory profile-creation guard.
+
+Both profiles use Hermes's native profile-first, installation-root authentication
+fallback. Bootstrap does not copy authentication stores, log in, or enable
+execution. A missing profile-local `auth.json` does not mean authentication is
+unavailable. Configure authentication through native Hermes inside this
+installation; personal Hermes and host agent credentials remain separate.
+
+Creating the reviewer profile alone does not satisfy Factory's existing
+independent-review adapter, whose dedicated authentication and restricted-tool
+checks still apply. See [the maintained runtime contract](../docs/hermes-runtime-contract.md).

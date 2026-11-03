@@ -188,7 +188,7 @@ class Installation:
             if state != "running" or health not in ("", "healthy"):
                 failed.append(service)
         print("Linear delivery: disabled in the portable dry-run profile")
-        print("Real execution: disabled by bootstrap; no Hermes credentials installed")
+        print("Real execution: portable wrapper enforces dry-run; Hermes authentication readiness not inspected")
         if failed:
             raise RuntimeError("unhealthy services: " + ", ".join(failed))
 

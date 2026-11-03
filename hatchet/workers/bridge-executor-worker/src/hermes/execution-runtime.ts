@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { executionRuntimeBinding, type ExecutionRuntimeBinding } from '@factory/hatchet-worker-shared';
 import type { InvocationExecutionContext } from './invocation-journal';
 import { NonRetryableBridgeExecutionError } from './errors';
@@ -58,4 +60,39 @@ export async function resolveComposeRuntime(composePrefix: string[]): Promise<st
     if (!/^[a-f0-9]{64}$/.test(id)) throw refused();
     return id;
   } catch { throw refused(); }
+}
+
+/** Operator-observed metadata is mounted read-only; no Docker access enters Hermes. */
+export function localExecutorEnabled(): boolean {
+  return process.env.FACTORY_HERMES_RUNTIME_MODE === 'local-executor';
+}
+
+export async function localExecutionRuntime(): Promise<ExecutionRuntimeBinding> {
+  try {
+    const manifest = process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH;
+    if (!manifest) throw refused();
+    const metadata = JSON.parse(readFileSync(manifest, 'utf8'));
+    const installation = process.env.FACTORY_INSTALLATION_ID;
+    if (!installation || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(installation)
+        || metadata.installation_id !== installation || Object.keys(metadata).sort().join(',') !== 'installation_id,runtime') throw refused();
+    const runtime = executionRuntimeBinding(metadata.runtime);
+    if (hostname() !== runtime.instance_id.slice(0, 12)) throw refused();
+    const observed = await exec('python3', ['-c', RUNTIME_GUARD, 'observe'], { timeout: 5000, maxBuffer: 4096 });
+    if (runtime.incarnation !== observed.stdout.trim()) throw refused();
+    return runtime;
+  } catch { throw refused(); }
+}
+
+export async function withLocalRuntime<T>(context: InvocationExecutionContext, run: () => Promise<T>): Promise<T> {
+  if (!context.bindRuntime) throw refused();
+  const runtime = await localExecutionRuntime();
+  await context.bindRuntime(runtime);
+  return scope.run(runtime, run);
+}
+
+export async function localRuntimeArguments(args: string[]): Promise<string[]> {
+  const runtime = await localExecutionRuntime();
+  const pinned = pinnedRuntime();
+  if (pinned && JSON.stringify(pinned) !== JSON.stringify(runtime)) throw refused();
+  return ['-c', RUNTIME_GUARD, runtime.incarnation, ...args];
 }

@@ -260,11 +260,32 @@ def emit_assessment(request, channel_in, channel_out, telemetry_config) -> None:
     channel_out.flush()
 
 
+def observer_config(auth_root: Path) -> dict:
+    """Read only observer ingestion settings from the dedicated profile, without env injection."""
+    keys = ("POSTHOG_API_KEY", "POSTHOG_HOST")
+    values = {name: os.environ[name] for name in keys if name in os.environ}
+    path = validated_auth_root(str(auth_root)) / ".env"
+    if path.is_symlink():
+        raise ValueError("symlinked reviewer observer environment")
+    if path.exists():
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size > 1024 * 1024:
+            raise ValueError("reviewer observer environment is not private")
+        from dotenv import dotenv_values
+        loaded = dotenv_values(path, interpolate=False)
+        values.update({name: loaded[name] for name in keys if loaded.get(name) is not None})
+    return values
+
+
 def main() -> None:
+    if sys.argv[1] == "--review-source":
+        for name in list(PROPERTIES):
+            if name not in {"inspect_source", "read_file", "diff", "validate_findings"}:
+                del PROPERTIES[name]
     # Preserve HOME, but use a separate native auth root; no generator/CLI login adoption.
     home = os.environ.get("HOME", "/root")
-    telemetry_config = {name: os.environ[name] for name in ("POSTHOG_API_KEY", "POSTHOG_HOST") if name in os.environ}
     auth_root = validated_auth_root(sys.argv[2] if len(sys.argv) == 4 else str(AUTH_ROOT))
+    telemetry_config = observer_config(auth_root)
     os.environ.clear()
     os.environ.update({"HOME": home, "HERMES_HOME": str(auth_root),
                        "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"})

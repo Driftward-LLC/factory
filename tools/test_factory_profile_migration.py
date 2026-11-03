@@ -67,7 +67,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual({v["image"] for v in config["services"].values()}, {self.values["FACTORY_IMAGE"]})
         for role in ("postgres", "hatchet-lite"):
             self.assertEqual(config["services"][role]["entrypoint"][0], "/usr/bin/tini")
-        self.assertEqual(config["services"]["factory-hermes"]["command"], ["sleep", "infinity"])
+        self.assertEqual(config["services"]["factory-hermes"]["command"], ["/opt/hermes/.venv/bin/python", "/app/deploy/hermes-default-profiles.py", "sleep", "infinity"])
         config["services"]["factory-hermes"]["command"] = ["hermes", "gateway"]
         with patch.object(install, "compose", return_value=json.dumps(config)), self.assertRaisesRegex(ValueError, "idle"):
             install.assert_config()

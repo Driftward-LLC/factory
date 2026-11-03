@@ -455,3 +455,45 @@ test('prior naming generation journal is refused without rewriting its receipts'
     assert.equal(existsSync(path.join(directory, 'naming-generation')), false);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('admission completion callback runs only after a valid durable receipt exists', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-local-completion-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const journal = new InvocationJournal(directory);
+  let completed = false;
+  await journal.execute(job, lease, async context => {
+    context.registerCompletion!(() => {
+      assert.equal(journal.status(job).state, 'completed');
+      completed = true;
+    });
+    return receipt;
+  });
+  assert.equal(completed, true);
+  const invalidJob = { ...job, job_id: '00000000-0000-4000-8000-000000000099' };
+  completed = false;
+  await assert.rejects(journal.execute(invalidJob, lease, async context => {
+    context.registerCompletion!(() => { completed = true; });
+    return { not: 'a receipt' };
+  }));
+  assert.equal(completed, false);
+  assert.equal(journal.status(invalidJob).state, 'outcome_unknown');
+});
+
+test('journal write failure never releases the local admission callback', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-local-completion-fault-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const journal = new InvocationJournal(directory);
+  const writer = journal as unknown as { persist: (file: string, value: unknown) => void };
+  const persist = writer.persist.bind(journal);
+  writer.persist = (file, value) => {
+    if (file.endsWith('/result.json')) throw new Error('synthetic receipt write failure');
+    persist(file, value);
+  };
+  let completed = false;
+  await assert.rejects(journal.execute(job, lease, async context => {
+    context.registerCompletion!(() => { completed = true; });
+    return receipt;
+  }), /synthetic receipt write/);
+  assert.equal(completed, false);
+  assert.equal(journal.status(job).state, 'outcome_unknown');
+});
