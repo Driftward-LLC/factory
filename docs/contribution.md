@@ -49,6 +49,7 @@ Run commands from the repository root. Install only the dependencies needed for
 the area you touch, using checked-in lockfiles:
 
 ```bash
+python3 -m pip install --requirement tools/requirements.txt
 npm ci --prefix hatchet/workers
 npm ci --prefix factory/console
 ```

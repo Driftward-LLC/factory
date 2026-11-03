@@ -220,11 +220,26 @@ class QualityWorkflowTests(unittest.TestCase):
             for path in lockfiles:
                 self.assertIn(path, node)
             self.assertIn('          cache: pip\n', python)
-            self.assertIn('          cache-dependency-path: hatchet/bridge/requirements.txt\n', python)
+            self.assertIn('hatchet/bridge/requirements.txt', python)
+            if name == 'validate':
+                self.assertIn('tools/requirements.txt', python)
             for path in [*lockfiles, 'hatchet/bridge/requirements.txt']:
                 self.assertTrue((ROOT / path).is_file(), path)
             self.assertIn('npm ci --prefix factory/console', job)
-            self.assertIn('pip install --requirement hatchet/bridge/requirements.txt', job)
+            requirements = 'tools/requirements.txt' if name == 'validate' else 'hatchet/bridge/requirements.txt'
+            self.assertIn('pip install --requirement ' + requirements, job)
+            self.assertTrue((ROOT / requirements).is_file())
+
+    def test_tool_suite_dependencies_are_installed_and_cached_for_quality_and_release(self):
+        requirements = (ROOT / 'tools/requirements.txt').read_text().splitlines()
+        self.assertIn('-r ../hatchet/bridge/requirements.txt', requirements)
+        self.assertIn('PyYAML==6.0.1', requirements)
+        release = (ROOT / '.github/workflows/factory-release.yml').read_text()
+        for job in (self.jobs['validate'], release):
+            python = job.split('uses: actions/setup-python@v5\n', 1)[1].split('      - ', 1)[0]
+            self.assertIn('hatchet/bridge/requirements.txt', python)
+            self.assertIn('tools/requirements.txt', python)
+            self.assertIn('pip install --requirement tools/requirements.txt', job)
 
     def test_routine_evidence_keeps_seven_days_and_screenshots_on_failure(self):
         catalog = self.step('console-browser', 'Upload shared component catalog')
