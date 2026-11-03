@@ -4,7 +4,10 @@ import { execFile } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { BridgeJob, JsonObject } from '@factory/hatchet-worker-shared';
+import { localExecutionRuntime } from './execution-runtime';
 import { isSecretShaped } from './bounded-evidence';
+
+export const SOURCE_REVIEW_SCOPE = { source_only: true, checks_executed: false, browser_exercised: false };
 
 export const REVIEW_REASONS = ['ok', 'review_backend_unavailable', 'review_isolation_unavailable', 'review_inconclusive',
   'review_malformed', 'review_head_changed', 'review_timeout', 'review_budget_exhausted', 'review_policy_changed'] as const;
@@ -58,7 +61,8 @@ export function inconclusiveReview(r: ReviewIntent, reason: ReviewReason, sessio
 export function boundedIndependentReview(r: ReviewIntent, value: unknown): JsonObject | null {
   if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(value).length > 20000) return null;
   const v = value as JsonObject;
-  if (Object.keys(v).sort().join(',') !== 'backend,findings,head_sha,isolation,pr_url,reason,repository,review_id,reviewer_model,reviewer_session_id,schema,verdict'
+  if (Object.keys(v).filter(key => key !== 'scope').sort().join(',') !== 'backend,findings,head_sha,isolation,pr_url,reason,repository,review_id,reviewer_model,reviewer_session_id,schema,verdict'
+    || v.scope !== undefined && canonical(v.scope) !== canonical(SOURCE_REVIEW_SCOPE)
     || v.schema !== 'factory-independent-review-v1' || v.review_id !== r.review_id || v.repository !== r.repository
     || v.pr_url !== r.pr_url || v.head_sha !== r.head_sha || v.reviewer_model !== 'gpt-6-astra'
     || !['isolated_codex', 'isolated_hermes'].includes(String(v.backend))
@@ -174,8 +178,8 @@ export function readableReviewSnapshot(directory: string): void {
 export class IndependentReviewer {
   private active = new Map<string, Promise<JsonObject>>();
   constructor(private readonly directory = '/var/lib/factory-hermes-factory/reviews',
-    private readonly configPath = '/etc/factory/factory-reviewer.json', private readonly command = reviewerCommand,
-    private readonly roots = { provisioning: '/etc/factory/factory-reviewer', repositories: '/var/lib/factory-reviewer/repositories' },
+    private readonly configPath = process.env.FACTORY_REVIEWER_CONFIG_PATH || '/etc/factory/factory-reviewer.json', private readonly command = reviewerCommand,
+    private readonly roots = { provisioning: process.env.FACTORY_REVIEWER_PROVISIONING_DIRECTORY || '/etc/factory/factory-reviewer', repositories: '/var/lib/factory-reviewer/repositories' },
     private readonly authorize = authorizeIndependentReview) {}
 
   async run(job: BridgeJob): Promise<JsonObject> {
@@ -209,12 +213,55 @@ export class IndependentReviewer {
     try { return await pending; } finally { this.active.delete(r.review_id); }
   }
 
+  private async executeSourceReview(job: BridgeJob, r: ReviewIntent, location: string): Promise<JsonObject> {
+    const session = `factory-reviewer:${randomUUID()}`;
+    const fail = (reason: ReviewReason) => ({ ...inconclusiveReview(r, reason, session), scope: SOURCE_REVIEW_SCOPE });
+    try {
+      await localExecutionRuntime();
+      privatePath(this.configPath, false);
+      const config = JSON.parse(readFileSync(this.configPath, 'utf8'));
+      if (config.schema !== 'factory-hermes-source-reviewer-v1'
+          || config.auth_root !== '/opt/data/profiles/factory-independent-reviewer'
+          || config.repositories?.[r.repository]?.base_ref !== r.expected_base
+          || config.policy_digest !== r.policy_digest) return fail('review_policy_changed');
+      const instructions: string[] = [];
+      for (const [name, digest] of [['review-code', config.review_skill_digest], ['verify-app', config.verify_skill_digest]]) {
+        const file = path.join(this.roots.provisioning, `${name}.md`);
+        privatePath(file, false);
+        const content = readFileSync(file, 'utf8');
+        if (!/^[a-f0-9]{64}$/.test(digest) || createHash('sha256').update(content).digest('hex') !== digest) return fail('review_isolation_unavailable');
+        instructions.push(content);
+      }
+      if (!await this.authorize(job, r, 'launch')) return fail('review_policy_changed');
+      const requestPath = path.join(location, 'source-request.json');
+      persist(requestPath, { intent: r, session, instructions: instructions.join('\n\n') });
+      const candidates = ['/app/deploy/independent-reviewer/local_source_review.py',
+        path.resolve(__dirname, '../../../../../deploy/independent-reviewer/local_source_review.py')];
+      const script = candidates.find(file => existsSync(file));
+      if (!script) return fail('review_backend_unavailable');
+      let raw: string;
+      try { raw = await this.command('/opt/hermes/.venv/bin/python', [script, requestPath], 660000); }
+      catch {
+        try { await this.command('/opt/hermes/.venv/bin/python', [script, '--stop', requestPath], 30000); }
+        catch { return fail('review_isolation_unavailable'); }
+        return fail('review_backend_unavailable');
+      }
+      const result = JSON.parse(raw);
+      if (!result || Object.keys(result).sort().join(',') !== 'findings,head_sha,reason,verdict' || result.head_sha !== r.head_sha) return fail('review_malformed');
+      const receipt = boundedIndependentReview(r, { ...fail('review_inconclusive'), ...result });
+      if (!receipt) return fail('review_malformed');
+      if (!await this.authorize(job, r, 'complete')) return fail('review_policy_changed');
+      return receipt;
+    } catch { return fail('review_backend_unavailable'); }
+  }
+
   private async execute(job: BridgeJob, r: ReviewIntent, location: string): Promise<JsonObject> {
     try { requireGithubOrganization(); } catch { return inconclusiveReview(r, 'review_isolation_unavailable'); }
     if (!matchesOrganizationBinding(job.payload.organization_binding)) return inconclusiveReview(r, 'review_policy_changed');
     if (process.env.FACTORY_REVIEWER_ENABLED !== '1') return inconclusiveReview(r, 'review_isolation_unavailable');
     if (!r.requirements.description) return inconclusiveReview(r, 'review_inconclusive');
     if (!await this.authorize(job, r)) return inconclusiveReview(r, 'review_policy_changed');
+    if (process.env.FACTORY_HERMES_RUNTIME_MODE === 'local-executor') return this.executeSourceReview(job, r, location);
     let config: Provisioning;
     try {
       privatePath(this.configPath, false);

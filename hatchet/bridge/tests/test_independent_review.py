@@ -36,6 +36,17 @@ class IndependentReviewTests(unittest.TestCase):
             fixtures.ReviewRepairTests.setUp(self)
         self.inspect()
 
+    def test_source_only_scope_is_retained_and_cannot_claim_executed_validation(self):
+        row = self.reserve()
+        request = store.get_job(self.conn, row["job_id"])["payload"]["review"]
+        scope = {"source_only": True, "checks_executed": False, "browser_exercised": False}
+        receipt = {**self.receipt(row), "scope": scope}
+        self.assertEqual(reviews._receipt(receipt, request)["scope"], scope)
+        for bad in ({**scope, "checks_executed": True}, {**scope, "browser_exercised": True},
+                    {**scope, "source_only": 1}, {**scope, "shell": True}):
+            with self.subTest(scope=bad), self.assertRaises(store.BridgeValidationError):
+                reviews._receipt({**receipt, "scope": bad}, request)
+
     def reserve(self):
         return reviews.reserve(self.conn, self.intent["source_attempt_id"] and self.job["job_id"])
 

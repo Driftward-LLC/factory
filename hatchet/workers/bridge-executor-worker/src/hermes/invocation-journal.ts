@@ -25,7 +25,8 @@ export function boundedNativeOwnerRecovery(value: unknown): value is NativeOwner
 export type NativeOwnerStop = {
   binding: NativeOwnerBinding; state: 'unknown'; ownerRegistered: boolean; ownerExitObserved: boolean;
   recovery?: NativeOwnerRecovery;
-  dispatchQuiesced: boolean | null; reason: 'native_cleanup_observed' | 'owner_unavailable' | 'owner_timeout' | 'owner_crashed' | 'native_protocol_invalid';
+  interruption?: { scope: 'gateway_child'; signal: 'SIGTERM'; sent: boolean; childExitObserved: boolean };
+  dispatchQuiesced: boolean | null; reason: 'native_cleanup_observed' | 'owner_unavailable' | 'owner_timeout' | 'owner_crashed' | 'native_protocol_invalid' | 'native_interrupt_requested';
 };
 export type NativeContainerRecord = {
   schema: 1; binding: NativeOwnerBinding; image: string; nonce: string;
@@ -47,12 +48,13 @@ export type InvocationExecutionContext = {
   bindRuntime?: (runtime: ExecutionRuntimeBinding) => Promise<void>;
   registerCancel: (cancel: () => Promise<NativeOwnerStop>) => void;
   persistStop: (stop: NativeOwnerStop) => void;
+  registerCompletion?: (complete: () => void) => void;
   persistContainer?: (record: NativeContainerRecord) => void;
 };
 export function boundedNativeOwnerStop(value: unknown, binding?: NativeOwnerBinding): NativeOwnerStop | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const v = value as NativeOwnerStop;
-  if (Object.keys(v).filter((key) => key !== 'recovery').sort().join(',') !== 'binding,dispatchQuiesced,ownerExitObserved,ownerRegistered,reason,state'
+  if (Object.keys(v).filter((key) => !['recovery', 'interruption'].includes(key)).sort().join(',') !== 'binding,dispatchQuiesced,ownerExitObserved,ownerRegistered,reason,state'
       || ('recovery' in v && !boundedNativeOwnerRecovery(v.recovery))
       || !v.binding || Object.keys(v.binding).sort().join(',') !== 'epoch,fingerprint,invocation_id'
       || !/^[0-9a-f-]{36}:[0-9a-f-]{36}:[1-9][0-9]*$/.test(v.binding.invocation_id)
@@ -60,8 +62,15 @@ export function boundedNativeOwnerStop(value: unknown, binding?: NativeOwnerBind
       || !/^[a-f0-9]{64}$/.test(v.binding.fingerprint) || v.state !== 'unknown'
       || typeof v.ownerRegistered !== 'boolean' || typeof v.ownerExitObserved !== 'boolean'
       || (v.dispatchQuiesced !== null && typeof v.dispatchQuiesced !== 'boolean')
-      || !['native_cleanup_observed', 'owner_unavailable', 'owner_timeout', 'owner_crashed', 'native_protocol_invalid'].includes(v.reason)
+      || !['native_cleanup_observed', 'owner_unavailable', 'owner_timeout', 'owner_crashed', 'native_protocol_invalid', 'native_interrupt_requested'].includes(v.reason)
       || binding && canonical(v.binding) !== canonical(binding)) return undefined;
+  if (v.reason === 'native_interrupt_requested') {
+    const interrupt = v.interruption;
+    if (!interrupt || Object.keys(interrupt).sort().join(',') !== 'childExitObserved,scope,sent,signal'
+        || interrupt.scope !== 'gateway_child' || interrupt.signal !== 'SIGTERM'
+        || typeof interrupt.sent !== 'boolean' || typeof interrupt.childExitObserved !== 'boolean'
+        || v.ownerRegistered !== false || v.ownerExitObserved !== false || v.dispatchQuiesced !== null || v.recovery) return undefined;
+  } else if ('interruption' in v) return undefined;
   return v;
 }
 export type InvocationStatus = {
@@ -98,7 +107,7 @@ function canonical(value: unknown): string {
 export class InvocationJournal {
   private active = new Map<string, Promise<BoundedHermesDraftPrReceipt>>();
   private prepared = new Map<string, { start: () => void; result: Promise<BoundedHermesDraftPrReceipt> }>();
-  private nativeOwners = new Map<string, { binding: NativeOwnerBinding; cancel?: () => Promise<NativeOwnerStop> }>();
+  private nativeOwners = new Map<string, { binding: NativeOwnerBinding; cancel?: () => Promise<NativeOwnerStop>; complete?: () => void }>();
   constructor(private readonly directory: string) {
     if (!path.isAbsolute(directory)) throw invalid('Invocation journal requires an absolute directory');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -246,7 +255,7 @@ export class InvocationJournal {
     this.persist(path.join(directory, 'intent.json'), { fingerprint_version: 2, fingerprint: this.fingerprint(job, 2), lease });
     const binding = Object.freeze({ invocation_id: `${job.job_id.toLowerCase()}:${lease.lease_id.toLowerCase()}:${lease.epoch}`,
       epoch: lease.epoch, fingerprint: this.fingerprint(job, 2) });
-    const owner: { binding: NativeOwnerBinding; cancel?: () => Promise<NativeOwnerStop> } = { binding };
+    const owner: { binding: NativeOwnerBinding; cancel?: () => Promise<NativeOwnerStop>; complete?: () => void } = { binding };
     this.nativeOwners.set(job.job_id, owner);
     const context: InvocationExecutionContext = {
       binding,
@@ -254,6 +263,10 @@ export class InvocationJournal {
         if (this.nativeOwners.get(job.job_id) !== owner || owner.cancel) throw invalid('Native owner context is no longer available');
         owner.cancel = cancel;
         if (existsSync(path.join(directory, 'cancel'))) void cancel().catch(() => undefined);
+      },
+      registerCompletion: (complete) => {
+        if (this.nativeOwners.get(job.job_id) !== owner || owner.complete) throw invalid('Completion context is no longer available');
+        owner.complete = complete;
       },
       persistContainer: (record) => {
         if (!boundedNativeContainer(record, binding)) throw invalid('Invalid native container record');
@@ -275,6 +288,7 @@ export class InvocationJournal {
       const receipt = value && typeof value === 'object' && !Array.isArray(value) ? boundedHermesDraftPrReceipt(job, value) : null;
       if (!receipt) throw invalid('Executor did not return a bounded invocation receipt');
       this.persist(path.join(directory, 'result.json'), receipt);
+      owner.complete?.();
       return receipt;
     });
     this.active.set(job.job_id, pending);

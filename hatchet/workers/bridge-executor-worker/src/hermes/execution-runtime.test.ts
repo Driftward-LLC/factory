@@ -55,3 +55,38 @@ test('runtime binding rejects coerced fields and extra private data', () => {
   }
   assert.throws(() => executionRuntimeBinding({ ...runtime, credential: 'private' }));
 });
+
+test('local runtime binds before launch and refuses stale or substituted metadata', async (t) => {
+  const { localExecutionRuntime, withLocalRuntime, localRuntimeArguments } = await import('./execution-runtime');
+  t.mock.method(os, 'hostname', () => 'a'.repeat(12));
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-local-runtime-'));
+  const previous = process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH;
+  const priorInstallation = process.env.FACTORY_INSTALLATION_ID;
+  process.env.FACTORY_INSTALLATION_ID = '00000000-0000-4000-8000-000000000001';
+  t.after(() => {
+    if (priorInstallation === undefined) delete process.env.FACTORY_INSTALLATION_ID;
+    else process.env.FACTORY_INSTALLATION_ID = priorInstallation;
+    if (previous === undefined) delete process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH;
+    else process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH = previous;
+    rmSync(directory, { recursive: true, force: true });
+  });
+  process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH = path.join(directory, 'runtime.json');
+  const incarnation = execFileSync('python3', ['-c', RUNTIME_GUARD, 'observe'], { encoding: 'utf8' }).trim();
+  const runtime = { schema: 1, backend: 'hermes', kind: 'docker', instance_id: os.hostname().padEnd(64, 'a'),
+    image_digest: 'sha256:' + 'b'.repeat(64), incarnation };
+  const manifest = (runtime: unknown) => JSON.stringify({ installation_id: process.env.FACTORY_INSTALLATION_ID, runtime });
+  writeFileSync(process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH, manifest(runtime));
+  let bound = false;
+  const context = { bindRuntime: async (value) => { assert.deepEqual(value, runtime); bound = true; } } as InvocationExecutionContext;
+  await withLocalRuntime(context, async () => {
+    assert.equal(bound, true);
+    const args = await localRuntimeArguments(['printf', 'allowed']);
+    assert.equal(execFileSync('python3', args, { encoding: 'utf8' }), 'allowed');
+    writeFileSync(process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH!, manifest({ ...runtime, instance_id: 'f'.repeat(64) }));
+    await assert.rejects(localRuntimeArguments(['true']));
+  });
+  writeFileSync(process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH, manifest({ ...runtime, incarnation: 'sha256:' + '0'.repeat(64) }));
+  await assert.rejects(localExecutionRuntime());
+  writeFileSync(process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH, manifest({ ...runtime, secret: 'must-reject' }));
+  await assert.rejects(localExecutionRuntime());
+});

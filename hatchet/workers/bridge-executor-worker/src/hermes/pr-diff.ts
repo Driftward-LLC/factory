@@ -51,8 +51,10 @@ try:
         git = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
                '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'fetch.unpackLimit=1',
                '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never',
-               '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
-               '--git-dir=' + directory + '/source.git']
+               '-c', 'credential.helper=']
+        if os.environ.get('FACTORY_HERMES_GITHUB_TRANSPORT') != 'composio':
+            git += ['-c', 'credential.helper=!gh auth git-credential']
+        git += ['--git-dir=' + directory + '/source.git']
 
         def run(arguments, limit=output_limit):
             process = subprocess.Popen(git + arguments, env=environment, stdin=subprocess.DEVNULL,

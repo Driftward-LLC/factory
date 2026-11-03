@@ -292,3 +292,49 @@ test('independent reviewer rejects unbound and stale same-prefix organization jo
     rmSync(directory, { recursive: true });
   }
 });
+
+test('source-only receipt records its exact limitations and rejects expanded capability claims', () => {
+  const scope = { source_only: true, checks_executed: false, browser_exercised: false };
+  const receipt = { ...inconclusiveReview(intent, 'review_inconclusive'), scope };
+  assert.deepEqual(boundedIndependentReview(intent, receipt), receipt);
+  for (const changed of [{ ...scope, checks_executed: true }, { ...scope, browser_exercised: true },
+    { ...scope, source_only: false }, { ...scope, shell: true }]) {
+    assert.equal(boundedIndependentReview(intent, { ...receipt, scope: changed }), null);
+  }
+});
+
+test('local source review keeps capability authorizations and exact scope without Docker', async (t) => {
+  const { execFileSync } = await import('node:child_process');
+  const { RUNTIME_GUARD } = await import('./execution-runtime');
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-local-review-'));
+  const previous = { ...process.env };
+  t.after(() => { process.env = previous; rmSync(directory, { recursive: true, force: true }); });
+  t.mock.method(os, 'hostname', () => 'a'.repeat(12));
+  const installation = '00000000-0000-4000-8000-000000000001';
+  process.env.FACTORY_INSTALLATION_ID = installation;
+  process.env.FACTORY_HERMES_RUNTIME_MODE = 'local-executor';
+  process.env.FACTORY_REVIEWER_ENABLED = '1';
+  process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH = path.join(directory, 'runtime.json');
+  const incarnation = execFileSync('python3', ['-c', RUNTIME_GUARD, 'observe'], { encoding: 'utf8' }).trim();
+  writeFileSync(process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH, JSON.stringify({ installation_id: installation,
+    runtime: { schema: 1, backend: 'hermes', kind: 'docker', instance_id: 'a'.repeat(64), image_digest: 'sha256:' + 'b'.repeat(64), incarnation } }));
+  for (const name of ['review-code', 'verify-app']) writeFileSync(path.join(directory, name + '.md'), name, { mode: 0o600 });
+  const config = path.join(directory, 'provisioning.json');
+  writeFileSync(config, JSON.stringify({ schema: 'factory-hermes-source-reviewer-v1',
+    auth_root: '/opt/data/profiles/factory-independent-reviewer', policy_digest: intent.policy_digest,
+    review_skill_digest: digest('review-code'), verify_skill_digest: digest('verify-app'),
+    repositories: { [intent.repository]: { base_ref: 'main' } } }), { mode: 0o600 });
+  const calls: string[] = [], authorizations: string[] = [];
+  const reviewer = new IndependentReviewer(path.join(directory, 'journal'), config, async (file, args) => {
+    calls.push(file); assert.equal(file, '/opt/hermes/.venv/bin/python');
+    assert.match(args[0], /local_source_review\.py$/);
+    return JSON.stringify({ head_sha: intent.head_sha, verdict: 'passed', findings: [], reason: 'ok' });
+  }, { provisioning: directory, repositories: directory }, async (_job, _intent, purpose = 'launch') => {
+    authorizations.push(purpose); return true;
+  });
+  const receipt = await reviewer.run(job());
+  assert.equal(receipt.verdict, 'passed');
+  assert.deepEqual(receipt.scope, { source_only: true, checks_executed: false, browser_exercised: false });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(authorizations, ['launch', 'launch', 'complete']);
+});

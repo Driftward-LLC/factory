@@ -53,7 +53,7 @@ class PortableTests(unittest.TestCase):
                                             "config", "--format", "json", private=True))
         self.assertEqual({service["image"] for service in config["services"].values()}, {"factory:test"})
         hermes = config["services"]["factory-hermes"]
-        self.assertEqual(hermes["command"], ["sleep", "infinity"])
+        self.assertEqual(hermes["command"], ["/opt/hermes/.venv/bin/python", "/app/deploy/hermes-default-profiles.py", "sleep", "infinity"])
         self.assertNotIn("ports", hermes)
         self.assertEqual(hermes["volumes"][0]["source"], "factory-hermes-data")
         for name, service in config["services"].items():

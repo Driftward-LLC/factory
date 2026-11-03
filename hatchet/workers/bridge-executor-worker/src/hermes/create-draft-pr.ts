@@ -12,13 +12,14 @@ import {
   redactSecretShapes,
   type BoundedHermesDraftPrReceipt,
 } from './bounded-evidence';
+import { runLocalCli } from './local-cli';
 import { NonRetryableBridgeExecutionError } from './errors';
 import { isGitHubDiffSizeLimit, PINNED_PR_DIFF_QUERY } from './pr-diff';
 import { boundedModelSelection, HERMES_MODEL_SELECTION_QUERY, reportModelSelection, type ModelSelectionObserver } from './model-selection';
 import type { InvocationExecutionContext } from './invocation-journal';
 import { runNativeOwner } from './native-owner';
 import { execNativeRead, nativeContainerScope, withNativeContainer } from './native-container';
-import { pinnedRuntime, pinnedRuntimeArgs, resolveComposeRuntime, withPinnedRuntime } from './execution-runtime';
+import { pinnedRuntime, pinnedRuntimeArgs, resolveComposeRuntime, withPinnedRuntime, localExecutorEnabled, withLocalRuntime, localRuntimeArguments } from './execution-runtime';
 import {
   checkHermesIdentityViaGrpc,
   hermesGrpcGatewayEnabled,
@@ -483,6 +484,7 @@ export function selectedReceiptEnvironment(job: BridgeJob, lease: FactoryExecuti
     'FACTORY_HERMES_GRPC_ALLOW_INSECURE_TCP',
     'FACTORY_HERMES_IDENTITY_CHECK_TIMEOUT_MS',
     'FACTORY_HERMES_AUTH_MODE',
+    'FACTORY_HERMES_GITHUB_TRANSPORT',
     'FACTORY_HERMES_VERSION',
     'FACTORY_HERMES_COMMAND',
     'FACTORY_HERMES_ROOT',
@@ -634,6 +636,8 @@ export async function runHermesCreateDraftPrViaCommand(
       onModelSelected, nativeContainerScope()!.context), hermesObservabilityEnvironment(job));
   }
   if (invocation?.bindRuntime && !pinnedRuntime()) {
+    if (localExecutorEnabled()) return withLocalRuntime(invocation, () =>
+      runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer, onModelSelected, invocation));
     const args = hermesRuntimeDockerArgs([]);
     const id = await resolveComposeRuntime(args.slice(0, args.indexOf('exec')));
     return withPinnedRuntime(invocation, id, () => runHermesCreateDraftPrViaCommand(job, command, timeout, maxBuffer, onModelSelected, invocation));
@@ -685,6 +689,12 @@ export async function runHermesCreateDraftPrViaCommand(
       }, { arguments: ['attach', '--sig-proxy=false', container.id],
         environment: process.env, timeout, maxBuffer });
       result = { stdout, stderr: '' };
+    } else if (localExecutorEnabled()) {
+      if (!invocation) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Local CLI requires its durable invocation');
+      result = await runLocalCli(invocation, ['env',
+        ...Object.entries(hermesObservabilityEnvironment(job)).map(([key, value]) => `${key}=${value}`),
+        '/opt/hermes/.venv/bin/python', '-m', 'hermes_cli.main', ...hermesProfileArguments(), ...modelArgs,
+        '--accept-hooks', '--pass-session-id', '-z', prompt], timeout, maxBuffer);
     } else if (pinnedRuntime()) {
       result = await execFileAsync('docker', pinnedRuntimeArgs(['env',
         ...Object.entries(hermesObservabilityEnvironment(job)).map(([key, value]) => `${key}=${value}`),
@@ -840,6 +850,15 @@ async function inspectDraftPullRequest(repo: string, prNumber: number, timeout: 
     : inspectDraftPullRequestViaCommand(repo, prNumber, timeout, maxBuffer);
 }
 
+function composioGithubEnabled(): boolean { return process.env.FACTORY_HERMES_GITHUB_TRANSPORT === 'composio'; }
+
+async function composioGithubRead<T>(operation: string, repository: string, argument: string | undefined,
+  timeout: number, maxBuffer: number): Promise<T> {
+  if (!localExecutorEnabled()) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Composio reads require the local credential-bearing gateway');
+  return execHermesRuntimeJson<T>(['python3', '/app/deploy/composio-github-read.py', operation,
+    repository, ...(argument === undefined ? [] : [argument])], timeout, maxBuffer);
+}
+
 export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: number, timeout: number, maxBuffer = DEFAULT_DRAFT_PR_INSPECTION_MAX_BUFFER_BYTES): Promise<GithubPrView & { diffText: string }> {
   assertGitHubIntegration();
   assertSafeGitHubRepo(repo);
@@ -854,7 +873,13 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
       { failureDomain: 'verification', failureStage: 'verification_checks', timedOut: true });
     return milliseconds;
   };
+  let firstView = true;
   const readView = async () => {
+    if (composioGithubEnabled()) {
+      const operation = firstView ? 'pr-view' : 'pr-metadata';
+      firstView = false;
+      return composioGithubRead<GithubPrView & { changedFiles?: number }>(operation, repo, String(prNumber), remaining(), maxBuffer);
+    }
     const view = await execHermesRuntimeJson<GithubPrView & { changedFiles?: number }>(
       ['gh', 'pr', 'view', String(prNumber), '--repo', repo, '--json', 'headRefName,headRefOid,baseRefName,isDraft,url,author,body,changedFiles,statusCheckRollup'],
       remaining(), maxBuffer);
@@ -873,7 +898,7 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
   if (!/^[a-f0-9]{40}$/.test(view.headRefOid || '') || !/^[a-f0-9]{40}$/.test(view.baseRefOid || '')) {
     throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR inspection did not return exact base and head revisions');
   }
-  const fileResponse = await execHermesRuntimeCommand(
+  const fileResponse = composioGithubEnabled() ? { stdout: (view.files || []).map(file => JSON.stringify(file)).join('\n') } : await execHermesRuntimeCommand(
     ['gh', 'api', `repos/${repo}/pulls/${prNumber}/files?per_page=100`, '--paginate', '--jq', '.[] | {path:.filename} | tojson'],
     remaining(),
     maxBuffer,
@@ -890,11 +915,20 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
   const paths = changedFileNames(files).sort();
   let diffText: string;
   try {
-    // A PR-number diff can race a push; the immutable comparison has the same merge-base semantics.
-    const diff = await execHermesRuntimeCommandRaw(
-      ['gh', 'api', `repos/${repo}/compare/${view.baseRefOid}...${view.headRefOid}`, '-H', 'Accept: application/vnd.github.diff'],
-      remaining(), maxBuffer);
-    diffText = diff.stdout;
+    if (composioGithubEnabled()) {
+      const fallback = await execHermesRuntimeJson<GithubPrView & { diffText?: string }>(
+        ['python3', '-c', PINNED_PR_DIFF_QUERY, repo, view.baseRefOid!, view.headRefOid!, String(maxBuffer), String(Math.max(1, remaining() - 1000))],
+        remaining(), maxBuffer);
+      if (!sameStrings(changedFileNames(fallback.files).sort(), paths) || typeof fallback.diffText !== 'string')
+        throw new Error('Pinned public Git diff does not match GitHub files');
+      diffText = fallback.diffText;
+    } else {
+      // A PR-number diff can race a push; the immutable comparison has the same merge-base semantics.
+      const diff = await execHermesRuntimeCommandRaw(
+        ['gh', 'api', `repos/${repo}/compare/${view.baseRefOid}...${view.headRefOid}`, '-H', 'Accept: application/vnd.github.diff'],
+        remaining(), maxBuffer);
+      diffText = diff.stdout;
+    }
   } catch (error) {
     if (!isGitHubDiffSizeLimit(error)) throw runtimeCommandFailure(error);
     const budget = remaining() - 1000;
@@ -919,7 +953,7 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
   if (observed.author?.login !== view.author?.login) {
     throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'PR author changed during inspection');
   }
-  return { ...observed, files, diffText };
+  return { ...view, ...observed, files, diffText };
 }
 
 /** A fixed, read-only Hermes action used only for retry artifact fencing. */
@@ -950,7 +984,10 @@ export async function inspectDraftPrStateViaCommand(
   parsed: { number: number; url: string }
 ): Promise<DraftPrStateInspection> {
   assertGitHubIntegration();
-  const view = await execHermesRuntimeJson<{ number?: number; url?: string; state?: string; mergedAt?: string | null; isDraft?: boolean; headRefName?: string; headRefOid?: string; baseRefName?: string }>(
+  const view = composioGithubEnabled()
+    ? await composioGithubRead<{ number?: number; url?: string; state?: string; mergedAt?: string | null; isDraft?: boolean; headRefName?: string; headRefOid?: string; baseRefName?: string }>(
+      'pr-metadata', repository, String(parsed.number), parsePositiveInt(process.env.FACTORY_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000), 128 * 1024)
+    : await execHermesRuntimeJson<{ number?: number; url?: string; state?: string; mergedAt?: string | null; isDraft?: boolean; headRefName?: string; headRefOid?: string; baseRefName?: string }>(
     ['gh', 'pr', 'view', String(parsed.number), '--repo', repository, '--json', 'number,url,state,mergedAt,isDraft,headRefName,headRefOid,baseRefName'],
     parsePositiveInt(process.env.FACTORY_HERMES_PR_INSPECT_TIMEOUT_MS, 15_000), 128 * 1024
   );
@@ -983,6 +1020,10 @@ export async function inspectGitHubHeadViaCommand(
   assertGitHubIntegration();
   assertSafeGitHubRepo(repository);
   assertSafeGitHubBranch(headBranch);
+  if (composioGithubEnabled()) {
+    const raw = await composioGithubRead<GitHubHeadInspectionCommandResponse>('head', repository, headBranch, timeout, 256 * 1024);
+    return normalizeGitHubHeadInspection(repository, headBranch, raw);
+  }
   const raw = await execHermesRuntimeJson<GitHubHeadInspectionCommandResponse>([
     'sh',
     '-c',
@@ -1150,7 +1191,12 @@ function hermesIdentityExpectation(repo: string): HermesIdentityExpectation {
   const forbiddenGitAuthorEmails = parseCsv(process.env.FACTORY_HERMES_FORBIDDEN_GIT_AUTHOR_EMAILS || '');
   const timeout = parsePositiveInt(process.env.FACTORY_HERMES_IDENTITY_CHECK_TIMEOUT_MS, 10_000);
 
-  assertExpectedGithubAppBotIdentity(expectedGithubLogin, expectedGitAuthorName, expectedGitAuthorEmail);
+  if (composioGithubEnabled()) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(expectedGithubLogin) || !expectedGitAuthorName
+        || expectedGitAuthorName.length > 200 || /[\r\n]/.test(expectedGitAuthorName)
+        || expectedGitAuthorEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(expectedGitAuthorEmail))
+      throw new NonRetryableBridgeExecutionError('hermes_github_identity_not_configured', 'Explicit Composio actor and Git author identity required');
+  } else assertExpectedGithubAppBotIdentity(expectedGithubLogin, expectedGitAuthorName, expectedGitAuthorEmail);
   assertSafeGitHubRepo(repo);
 
   if (forbiddenGithubLogins.includes(expectedGithubLogin)) {
@@ -1174,6 +1220,12 @@ export async function assertHermesIdentityViaCommand(
   expectation: HermesIdentityExpectation = hermesIdentityExpectation(repo)
 ): Promise<HermesIdentityCheck> {
   assertGitHubIntegration();
+  if (composioGithubEnabled()) {
+    const observed = await composioGithubRead<HermesIdentityCheck>('identity', repo, undefined, expectation.timeout, 128 * 1024);
+    if (observed.githubLogin !== expectation.expectedGithubLogin) throw new NonRetryableBridgeExecutionError('hermes_git_author_forbidden', 'Composio GitHub actor differs from configured principal');
+    validateObservedHermesIdentity(repo, observed, expectation);
+    return observed;
+  }
   if (process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') {
     const actor = (await execHermesRuntimeCommand(['gh', 'api', 'graphql', '-f',
       'query=query { viewer { login } }', '--jq', '.data.viewer.login'], expectation.timeout, 4096,
@@ -1226,6 +1278,8 @@ export async function assertHermesIdentityViaCommand(
 }
 
 function validateObservedHermesIdentity(repo: string, observed: HermesIdentityCheck, expectation: HermesIdentityExpectation): void {
+  if (composioGithubEnabled() && observed.githubLogin !== expectation.expectedGithubLogin)
+    throw new NonRetryableBridgeExecutionError('hermes_git_author_forbidden', 'Composio GitHub actor differs from configured principal');
   if (observed.gitAuthorName !== expectation.expectedGitAuthorName) {
     throw new NonRetryableBridgeExecutionError(
       'hermes_git_author_name_mismatch',
@@ -1270,7 +1324,8 @@ async function execHermesRuntimeJson<T>(args: string[], timeout: number, maxBuff
   }
 }
 
-function execHermesRuntimeCommandRaw(args: string[], timeout: number, maxBuffer: number): Promise<ExecResult> {
+async function execHermesRuntimeCommandRaw(args: string[], timeout: number, maxBuffer: number): Promise<ExecResult> {
+  if (localExecutorEnabled()) return execFileAsync('python3', await localRuntimeArguments(['env', 'HERMES_HOME=/opt/data/profiles/factory-executor', ...args]), { timeout, maxBuffer, env: process.env });
   if (process.env.FACTORY_HERMES_EXPERIMENTAL_NATIVE_OWNER === '1') return execNativeRead(args, timeout, maxBuffer);
   return execFileAsync('docker', hermesRuntimeDockerArgs(args), { timeout, maxBuffer, env: process.env });
 }

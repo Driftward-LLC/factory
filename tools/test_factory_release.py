@@ -12,6 +12,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "LICENSE",
+    "deploy/compose.local-executor.yml",
+    "deploy/local-runtime-binding.py",
+    "deploy/LOCAL-GATEWAY.md",
     "deploy/docker-compose.yml",
     "deploy/compose.portable.yml",
     "deploy/compose.production.yml",

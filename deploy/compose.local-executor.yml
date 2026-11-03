@@ -1,0 +1,50 @@
+# Opt-in gateway wiring only. This does not promote portable installations or enable jobs.
+# Prepare gateway/ (uid 10000, mode 0700) and runtime/ in FACTORY_INSTALL_DIR.
+services:
+  factory-hermes:
+    command: [/opt/hermes/.venv/bin/python, /app/deploy/hermes-default-profiles.py, /usr/local/bin/node, /app/hatchet/workers/bridge-executor-worker/dist/hermes/hermes-gateway-server.js]
+    env_file:
+      - path: ${FACTORY_INSTALL_DIR:?}/factory-hermes-execution.env
+        required: true
+    environment:
+      FACTORY_INSTALLATION_ID: ${FACTORY_INSTALLATION_ID:?}
+      FACTORY_HERMES_GITHUB_TRANSPORT: composio
+      FACTORY_HERMES_RUNTIME_MODE: local-executor
+      FACTORY_HERMES_RUNTIME_BINDING_PATH: /run/factory-runtime/runtime-binding.json
+      FACTORY_REVIEW_DIRECTORY: /opt/data/factory-reviews
+      FACTORY_REVIEWER_CONFIG_PATH: /etc/factory/config/reviewer-provisioning.json
+      FACTORY_REVIEWER_PROVISIONING_DIRECTORY: /etc/factory/config/reviewer
+      FACTORY_HERMES_PROFILE: factory-executor
+      FACTORY_HERMES_GRPC_TARGET: unix:///run/factory-gateway/hermes.sock
+      FACTORY_ORGANIZATION_CONFIG: /etc/factory/config/organization.json
+      HATCHET_VERIFIER_POLICY_PATH: /etc/factory/config/verifier-policy.json
+      HATCHET_INDEPENDENT_REVIEW_POLICY_PATH: /etc/factory/config/independent-review-policy.json
+    volumes:
+      - type: bind
+        source: ${FACTORY_INSTALL_DIR:?}/gateway
+        target: /run/factory-gateway
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${FACTORY_INSTALL_DIR:?}/runtime
+        target: /run/factory-runtime
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${FACTORY_CONFIG_DIR:?}
+        target: /etc/factory/config
+        read_only: true
+        bind:
+          create_host_path: false
+  bridge-executor-worker:
+    environment:
+      FACTORY_HERMES_GITHUB_TRANSPORT: composio
+      FACTORY_HERMES_GRPC_TARGET: unix:///run/factory-gateway/hermes.sock
+    volumes:
+      - type: bind
+        source: ${FACTORY_INSTALL_DIR:?}/gateway
+        target: /run/factory-gateway
+        read_only: true
+        bind:
+          create_host_path: false

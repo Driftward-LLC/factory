@@ -153,6 +153,19 @@ is useful background for separate homes, gateways and shared OAuth fallback,
 but changes independently of the reviewed implementation. Pinned source supports
 implementation claims; a matching installation audit establishes deployment scope.
 
+## Installation role-profile bootstrap
+
+Factory startup ensures native `factory-executor` and
+`factory-independent-reviewer` profiles exist inside the installation Hermes
+root. It leaves the active profile and existing profile configuration unchanged,
+keeps native bundled skills, and relies on native installation-root authentication
+fallback without copying auth stores. Native profile creation can inherit the
+installation's model settings; Factory assigns no new model or authentication.
+The bootstrap rejects inline credentials in that model seed, as the existing
+Factory profile-creation path does. This creates role profiles only: it does not
+enable execution or satisfy the independent-review adapter's separate dedicated
+authentication and tool restrictions.
+
 ## What Hermes actually does when work stops
 
 ### Foreground terminal work
@@ -287,3 +300,145 @@ scope and explicit operational authority.
   Corrected the assumption that profile co-location implies a required shared
   shutdown, and distinguished Hermes's native cleanup from Factory's marker-only
   cancellation integration. Historical containment requires separate evidence.
+
+## Opt-in installation-local gateway
+
+`deploy/compose.local-executor.yml` wires the existing Factory gateway inside
+its installation's Hermes container. It launches native `hermes --profile
+factory-executor` through the same protocol-v2 prepare/bind/start journal;
+provider credentials remain in Hermes. Only the private gateway socket directory
+is shared with the executor worker. This overlay does not enable execution,
+promote a portable installation, or change cancellation semantics.
+
+The operator prepares `gateway/` owned by uid 10000 with mode 0700 and a root-owned
+`runtime/` directory under the installation directory, plus a private
+`factory-hermes-execution.env`. After the gateway container starts, the
+read-only observation helper generates its binding:
+
+```bash
+python3 deploy/local-runtime-binding.py --container <running-hermes-container> \
+  --installation-id <installation-uuid> \
+  --output <installation-directory>/runtime/runtime-binding.json
+```
+
+The helper checks Docker installation/service labels and observes the full
+container ID, image digest and PID1 incarnation using that exact ID. Hermes
+checks the installation UUID, its default Docker hostname and incarnation before
+binding and every local command; each command repeats the incarnation guard
+inside the process that executes it. Replacements and restarts fail closed until
+the operator observes them again. The entire metadata directory is mounted
+read-only so atomic replacement remains visible without granting agent writes.
+The Docker operator and metadata directory owner are trusted to supply the image
+digest; the container cannot independently inspect its Docker image. Custom
+container hostnames are unsupported.
+
+Gateway wiring alone is insufficient for a real canary: deterministic GitHub
+receipt/source access, explicit execution configuration, independent review and
+scoped native cancellation still require separate validation. The existing
+portable wrapper remains dry-run only and production cutover checks remain
+unchanged. No live execution was used to validate this source addition.
+
+### Native source-only independent review
+
+For the first native PostHog observer setup on already authenticated role
+profiles, stop the installation's Hermes container and retain a private backup
+of its data. Run `deploy/provision-native-observer.py --runtime-dir
+<hermes-data-directory> --credentials <private-collector-env>` as the operator.
+It previews hashes only, derives the native ingestion host from the approved US
+or EU PostHog traces endpoint, and does not create a Collector. Review that
+preview, then repeat with `--apply-preview <snapshot_digest>`. A changed profile,
+auth file, plugin or credential produces a different digest and refuses apply.
+The operation adds the executor observer and two private profile dotenv entries;
+models, MCP, unrelated settings and credentials are retained. The independent
+reviewer reads only those two entries and keeps generic plugins disabled. Existing
+telemetry entries or conflicting observer code require a separate rotation or
+upgrade operation. Start Hermes only after reviewing the resulting preserved
+hashes; ingestion still requires exact session/trace readback.
+
+The opt-in local gateway can use the existing native reviewer SDK adapter with
+its dedicated `factory-independent-reviewer` authentication domain. This mode
+narrows its tools to immutable Git source inspection, file reads, diffs and
+finding-location validation. It launches no source container, executable
+checkout, shell, browser, test command or source preview. The reviewer model
+cannot access general filesystem, terminal, network or executor MCP tools.
+Existing native capability guards, SDK fingerprint, fresh session identity,
+watchdog, shutdown and exact-session stop remain required.
+
+A local provisioning file uses schema `factory-hermes-source-reviewer-v1`, the
+named `auth_root` `/opt/data/profiles/factory-independent-reviewer`, a canonical
+`policy_digest`, `review_skill_digest`, `verify_skill_digest`, and a
+`repositories` map with each enrolled repository's `base_ref`. Provisioning and
+skill files must pass the existing private-path ownership checks. The Compose
+overlay points to `config/reviewer-provisioning.json` and `config/reviewer/`.
+This configuration alone does not enable the reviewer or execution policy.
+
+Source-only receipts carry the exact scope:
+`{"source_only":true,"checks_executed":false,"browser_exercised":false}`.
+This is independent source review, without independent execution of validation
+or browser checks. Existing review intents provide acceptance criteria and the
+exact head, not generator runtime validation evidence. The reviewer must return
+inconclusive when absent evidence is material; enabling this adapter does not
+relax repository validation or mandatory-review policy. Public repository source
+is fetched without GitHub credentials, bound to the requested PR head before and
+after review. Private repositories remain unsupported in this local mode.
+
+### Deterministic Composio GitHub reads
+
+The local gateway's `FACTORY_HERMES_GITHUB_TRANSPORT=composio` route reads GitHub
+identity, PR metadata, complete file lists, check runs, status contexts and retry
+branch/PR fences through fixed Composio tool calls. The reader resolves the
+existing executor profile's `factory-composio` native MCP session URL and the
+referenced profile-local API key. It follows no redirects and emits only bounded
+GitHub evidence. Workers receive that evidence through the private gateway; they
+receive no Composio credentials. No `gh` executable, GitHub App credential or
+agent-authored tool result is used for these deterministic reads.
+
+This route requires an explicit configured GitHub principal and Git author name
+and email. It checks the authenticated Composio principal and exact accessible
+repository, retains the existing prohibited-identity checks, and compares PR
+authorship to that principal. Legacy execution routes retain their GitHub App
+bot requirements. A dedicated Composio connection may still authenticate a human
+GitHub principal; its organizational location does not change that identity.
+
+PR checks/statuses must match the exact observed head and pagination totals.
+Diffs use the existing bounded immutable Git reader, with credential helpers
+disabled, against public source; file paths must agree with GitHub and revisions
+are reread afterward. Private source remains unsupported. A missing branch is
+accepted only from the reference tool's machine-readable HTTP 404 after the same
+session has proved repository access; other failures remain unknown. The route
+is opt-in and does not enable execution, configure intake or change cancellation.
+
+### Scoped local CLI interruption
+
+The local adapter retains the exact child it launched through the incarnation
+guard. It executes `/opt/hermes/.venv/bin/python -m hermes_cli.main` directly,
+with the native named profile; no shell or Docker client stands between the
+held child and Hermes. A matching journal cancellation sends this current child
+SIGTERM once. A cancellation already recorded before launch prevents spawning.
+Lost handles after gateway restart are never recovered from a PID or process
+name. Legacy profile cancellation retains its existing marker-only behavior.
+
+The bounded `nativeStop.interruption` observation identifies the
+`gateway_child` scope, SIGTERM dispatch result and whether that child exited.
+It retains `state: unknown`, null dispatch-quiescence and false native-owner
+proof fields. It does not establish descendant cleanup, external-effect
+settlement or completion. Cancellation acknowledgement still requires the
+existing completed receipt; this addition does not weaken that protocol.
+
+Only one local invocation may hold admission for a runtime incarnation. Its
+private directory is released only after the journal has validated and durably
+stored a normal receipt. Cancellation, command/parse/receipt-write failures and
+gateway crashes retain the hold, blocking other jobs in the same incarnation.
+A real container restart changes the verified incarnation and permits a fresh
+admission only after the operator observes its new binding. That restart does
+not resolve the original job's uncertain external effects or authorize replay.
+No automatic restart or recovery override is introduced.
+
+Source verified against Hermes `818c13be`: one-shot CLI signal handlers request
+native hard interruption and graceful cleanup; cleanup suppresses individual
+errors, the exit watchdog can force exit, and lifecycle sweeps may retain
+explicitly persistent background work. Consequently, a SIGTERM or child exit
+is useful scoped evidence and cannot become a blanket cleanup attestation.
+Disposable process tests exercise signal delivery, foreground termination and
+an unrelated live control. They do not establish live provider/MCP settlement
+or a real installation restart/cancellation canary.

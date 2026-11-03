@@ -289,8 +289,11 @@ def repair_authorized(conn, job: dict[str, Any], attempt_id: str) -> bool:
 
 def _receipt(value: Any, request: dict[str, Any]) -> dict[str, Any]:
     if (not _generator_identity_valid(request) or not isinstance(value, dict)
-            or set(value) != RECEIPT_FIELDS or len(store.canonical_json(value)) > 20000):
+            or set(value) - {"scope"} != RECEIPT_FIELDS or len(store.canonical_json(value)) > 20000):
         raise store.BridgeValidationError("review receipt is malformed")
+    if "scope" in value and (value["scope"] != {"source_only": True, "checks_executed": False, "browser_exercised": False}
+            or any(type(v) is not bool for v in value["scope"].values())):
+        raise store.BridgeValidationError("review scope is malformed")
     if (value["schema"] != "factory-independent-review-v1" or any(value[k] != request[k] for k in ("review_id", "repository", "pr_url", "head_sha"))
             or value["verdict"] not in {"passed", "changes_requested", "inconclusive"} or value["reason"] not in REASONS
             or value["reviewer_model"] != "gpt-6-astra" or value["backend"] not in {"isolated_codex", "isolated_hermes"}
