@@ -123,6 +123,16 @@ class PortableStateTests(unittest.TestCase):
             }
         return provenance
 
+    def test_backup_and_restore_pass_exact_image_to_hermes_validation(self):
+        with patch.object(state, "_archive_check", wraps=state._archive_check) as check:
+            self.backup()
+            state.restore(self.snapshot, self.restored, "factory-restored", apply=True)
+        calls = [call for call in check.call_args_list if call.kwargs.get("hermes")]
+        self.assertEqual(len(calls), 2)
+        image = "sha256:" + hashlib.sha256(b"factory:test").hexdigest()
+        self.assertEqual([call.kwargs["image"] for call in calls], [image, image])
+        self.assertEqual(calls[0].kwargs["env"], self.installation.env)
+
     def test_hermes_volume_is_preserved_on_cold_restore(self) -> None:
         metadata, _ = bootstrap.validate_directory(self.source)
         self.docker.volumes["factory-source-hermes-data"] = {
@@ -526,6 +536,96 @@ class PortableStateTests(unittest.TestCase):
             self.assertFalse(any(volume.startswith("factory-restored-") for volume in self.docker.volumes))
             self.assertFalse(any(args[0] in ("pull", "run") or args[:2] == ["volume", "create"]
                                  for args in self.docker.calls))
+
+
+class HermesArchiveTests(unittest.TestCase):
+    IMAGE = "sha256:" + "a" * 64
+    INTERPRETER = "/opt/hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3"
+    PYTHON = "installs/abc123/environments/def456/venv/bin/python"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.archive = Path(self.temp.name) / "state.tar"
+
+    def make(self, entries):
+        with tarfile.open(self.archive, "w") as archive:
+            for name, kind, target in entries:
+                item = tarfile.TarInfo(name)
+                item.type, item.linkname = kind, target
+                archive.addfile(item)
+
+    def check(self, entries, **kwargs):
+        self.make(entries)
+        state._archive_check(self.archive, hermes=True, **kwargs)
+
+    def test_native_cache_relative_chains_and_hardlinks(self):
+        self.check([
+            ("installs/content", tarfile.REGTYPE, ""),
+            ("cache/archive/content", tarfile.LNKTYPE, "./installs/content"),
+            ("cache/wheels/pypi/package/version", tarfile.SYMTYPE, "../../../archive"),
+            ("alias", tarfile.SYMTYPE, "cache/wheels/pypi/package/version/content"),
+        ])
+        with self.assertRaises(ValueError):
+            state._archive_check(self.archive)
+
+    def test_managed_interpreter_requires_verified_exact_image(self):
+        entries = [(self.PYTHON, tarfile.SYMTYPE, self.INTERPRETER),
+                   (self.PYTHON + "3", tarfile.SYMTYPE, "python")]
+        with patch.object(state, "_image_interpreter") as verify:
+            self.check(entries, image=self.IMAGE)
+            verify.assert_called_once_with(self.IMAGE, self.INTERPRETER, None)
+        with self.assertRaises(ValueError):
+            self.check(entries)
+        with patch.object(state, "_image_interpreter", side_effect=RuntimeError("wrong runtime")):
+            with self.assertRaises(RuntimeError):
+                self.check(entries, image=self.IMAGE)
+        with patch.object(state, "_docker") as docker:
+            with self.assertRaises(ValueError):
+                state._image_interpreter("mutable:tag", self.INTERPRETER)
+            docker.assert_not_called()
+
+    def test_interpreter_verification_is_mountless_unprivileged_and_offline(self):
+        with patch.object(state, "_docker") as docker:
+            state._image_interpreter(self.IMAGE, self.INTERPRETER)
+        command = docker.call_args.args[0]
+        self.assertIn(self.IMAGE, command)
+        self.assertEqual(command[command.index("--pull") + 1], "never")
+        self.assertIn("10000:10000", command)
+        self.assertIn("none", command)
+        self.assertIn("--read-only", command)
+        self.assertNotIn("--mount", command)
+        self.assertIn("os.path.samefile(p,sys.executable)", command[-2])
+
+    def test_unsafe_archive_graphs_are_refused(self):
+        symlink = tarfile.SYMTYPE
+        regular = tarfile.REGTYPE
+        hardlink = tarfile.LNKTYPE
+        cases = [
+            [("../escape", regular, "")], [("/absolute", regular, "")],
+            [(".", symlink, "/etc")], [(".", regular, "")],
+            [("same", regular, ""), ("./same", regular, "")],
+            [("fifo", tarfile.FIFOTYPE, "")], [("device", tarfile.CHRTYPE, "")],
+            [("link", symlink, "")], [("link", symlink, "/etc/shadow")],
+            [("link", symlink, "../escape")],
+            [("link", symlink, "/opt/data/../../escape")],
+            [("a", symlink, "."), ("b", symlink, "a/../escape")],
+            [("a", symlink, "b"), ("b", symlink, "a")],
+            [("link", symlink, "target"), ("link/child", regular, "")],
+            [("link/child", regular, ""), ("link", symlink, "target")],
+            [("file", regular, ""), ("file/child", regular, "")],
+            [("link", hardlink, "later"), ("later", regular, "")],
+            [("file", regular, ""), ("link", hardlink, "../file")],
+            [("link", hardlink, "/etc/shadow")],
+            [("a", symlink, "file"), ("b", hardlink, "a")],
+            [("file", regular, ""), ("a", hardlink, "file"), ("b", hardlink, "a")],
+            [("link", symlink, self.INTERPRETER)],
+            [(self.PYTHON, symlink, "/opt/hermes/tools/arbitrary/bin/python3")],
+            [(self.PYTHON, symlink, self.INTERPRETER), ("alias", symlink, self.PYTHON + "/../escape")],
+        ]
+        for entries in cases:
+            with self.subTest(entries=entries), self.assertRaises(ValueError):
+                self.check(entries, image=self.IMAGE)
 
 
 class ArchiveStreamTests(unittest.TestCase):

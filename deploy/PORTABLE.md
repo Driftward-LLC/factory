@@ -169,6 +169,23 @@ image identities; it is a same-version disaster-recovery mechanism, not an
 arbitrary database downgrade. Restore leaves services stopped. Never run a
 restored real-execution deployment alongside its original executor authority.
 
+The Hermes data volume belongs exclusively to this installation. Cold copies
+retain native profiles, plugin packages, admitted environments, package caches,
+authentication and execution journals together. Native cache symlinks may use
+contained relative parent traversal; validation resolves complete link chains
+before permitting them. Hardlinks must name an earlier regular archive member.
+Archive entries cannot write through symlink parents; duplicate paths, escapes,
+special files and external hardlinks are refused.
+
+The sole external symlink exception is a managed environment's Python link to
+the exact saved image's own interpreter. The checker verifies that identity in
+a networkless, unprivileged, read-only container with no state mounts. Retain the
+exact local image for backup verification and restore preview. A different image,
+missing interpreter or unrelated external path fails validation. A failed backup
+has no complete manifest and must not be treated as a recovery point. Restore
+keeps the original ownership and link relationships in a fresh volume; verify
+native dependency admission and skill readiness before considering it usable.
+
 ## Supported scope and validation
 
 The disposable acceptance check is `python3 tools/check_factory_portable.py
@@ -203,3 +220,11 @@ installation; personal Hermes and host agent credentials remain separate.
 Creating the reviewer profile alone does not satisfy Factory's existing
 independent-review adapter, whose dedicated authentication and restricted-tool
 checks still apply. See [the maintained runtime contract](../docs/hermes-runtime-contract.md).
+
+Executor activation also requires the configured profile's reviewed native
+engineering plugin and current native dependency admission. The image does not
+contain operator-supplied private plugins. Provision them through native Hermes
+in this installation, preserve their immutable source manifest, and verify skill
+and linked-template resolution without invoking a model. Existing initialized
+profiles require the same checks as fresh profiles. A successful container health
+check alone does not establish plugin or execution readiness.

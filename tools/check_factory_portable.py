@@ -80,6 +80,49 @@ assert factory_organization.load()['github']['enabled'] is False
 print('dry-run-only')
 """
 
+# Installed through Hermes's native admission path on an already initialized
+# profile. Contains no integrations, provider credentials, model or tool calls.
+NATIVE_PLUGIN_SETUP = r"""
+from pathlib import Path
+from hermes_cli.config import load_config
+from hermes_cli.plugins_cmd import cmd_enable
+home = Path('/opt/data/profiles/factory-executor')
+load_config()
+root = home / 'plugins/factory-backup-fixture'
+root.mkdir(parents=True)
+(root / 'plugin.yaml').write_text('name: factory-backup-fixture\nversion: 1.0.0\ndescription: Disposable backup regression\n')
+(root / '__init__.py').write_text("from pathlib import Path\ndef register(ctx):\n    ctx.register_skill('backup-check', Path(__file__).parent / 'skills/backup-check/SKILL.md')\n")
+skill = root / 'skills/backup-check'
+skill.mkdir(parents=True)
+(skill / 'SKILL.md').write_text('---\nname: backup-check\ndescription: Synthetic no-action backup check\n---\nRead the linked [fixture](assets/fixture.txt).\n')
+(skill / 'assets').mkdir()
+(skill / 'assets/fixture.txt').write_text('synthetic-backup-content\n')
+cmd_enable('factory-backup-fixture')
+"""
+
+NATIVE_PLUGIN_CHECK = r"""
+import json
+from pathlib import Path
+from pm.install import venv_is_current
+from tools.skills_tool import skill_view
+assert venv_is_current(), 'native admitted environment is stale'
+for file in (None, 'assets/fixture.txt'):
+    result = json.loads(skill_view('factory-backup-fixture:backup-check', **({'file_path': file} if file else {}), preprocess=False))
+    assert result.get('success'), 'native fixture skill or linked asset unavailable'
+assert not list(Path('/opt/data').rglob('auth.json')), 'synthetic fixture acquired native auth'
+print('native-plugin-backup-ready')
+"""
+
+
+def native_plugin_check(command, environment, *, setup=False):
+    return run([*command, 'exec', '-T', '--user', '10000:10000',
+                '-e', 'HOME=/opt/data', '-e', 'HERMES_HOME=/opt/data/profiles/factory-executor',
+                '-e', 'HERMES_RUNTIME_DIR=/opt/hermes/tools', '-e', 'PYTHONPATH=/opt/hermes',
+                'factory-hermes', '/opt/hermes/.venv/bin/python', '-'],
+               env=environment, source=NATIVE_PLUGIN_SETUP if setup else NATIVE_PLUGIN_CHECK,
+               label='native fixture admission' if setup else 'native fixture readiness', timeout=900)
+
+
 SIGNED_DELIVERY = """
 import hashlib, hmac, json, os, sys, time
 from datetime import datetime, timezone
@@ -247,6 +290,8 @@ def main() -> int:
                     run([*command, "exec", "-T", "factory-hermes", "/opt/hermes/.venv/bin/python", "-c",
                          "import hermes_cli; print('native Hermes import passed')"], env=environment, label="Hermes runtime import")
                 assert_shared_image(compose, env)
+                native_plugin_check(compose, env, setup=True)
+                native_plugin_check(compose, env)
                 run([*compose, "exec", "-T", "factory-hermes", "sh", "-c",
                      "printf preserved > /opt/data/factory-acceptance-marker"], env=env, label="Hermes volume marker")
                 def execute(service: str, source: str) -> str:
@@ -340,6 +385,7 @@ def main() -> int:
                     return run([*restored_compose, "exec", "-T", service, "python3", "-", issue],
                                env=restored_env, source=source, label=f"restored {service} assertion")
                 assert_shared_image(restored_compose, restored_env)
+                native_plugin_check(restored_compose, restored_env)
                 if run([*restored_compose, "exec", "-T", "factory-hermes", "cat", "/opt/data/factory-acceptance-marker"],
                        env=restored_env, label="Hermes state restored") != "preserved":
                     raise RuntimeError("restore changed Hermes state")
