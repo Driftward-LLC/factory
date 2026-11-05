@@ -37,7 +37,29 @@ def descriptors(conn, fingerprint_job=fingerprint):
         attempt = store.get_factory_attempt(conn, row['attempt_id'])
         job = store.get_job(conn, row['job_id'])
         lease = conn.execute('SELECT * FROM factory_execution_leases WHERE attempt_id=?', (row['attempt_id'],)).fetchone()
-        if (attempt['job_id'] != job['job_id'] or attempt['mode'] != 'real' or attempt['status'] != 'failed'
+        # A legitimate retry changes the summary status, not the root retirement evidence.
+        retired_status = attempt['status'] == 'failed'
+        if attempt['status'] == 'superseded':
+            successors = conn.execute("""SELECT successor.attempt_id FROM factory_attempt_events event
+                JOIN factory_attempts successor ON successor.attempt_id=json_extract(event.details_json,'$.by_attempt_id')
+                JOIN bridge_jobs successor_job ON successor_job.job_id=successor.job_id
+                WHERE event.attempt_id=? AND event.event_type='superseded'
+                AND successor.prior_attempt_id=? AND successor.work_item_key=?
+                AND successor.mode='real' AND successor.action=? AND successor.generation>?
+                AND successor_job.requested_action='create_draft_pr'
+                AND successor_job.branch=successor.branch AND successor_job.idempotency_key=successor.idempotency_key
+                AND json_extract(successor_job.payload_json,'$.repo')=?
+                AND json_extract(successor_job.payload_json,'$.factory_retry.attempt_id')=successor.attempt_id
+                AND json_extract(successor_job.payload_json,'$.factory_retry.generation')=successor.generation
+                AND json_extract(successor_job.payload_json,'$.factory_retry.prior_attempt_id')=?
+                AND EXISTS (SELECT 1 FROM factory_attempt_events accepted
+                    WHERE accepted.attempt_id=successor.attempt_id AND accepted.event_type='retry_requested'
+                    AND json_extract(accepted.details_json,'$.job_id')=successor.job_id
+                    AND json_extract(accepted.details_json,'$.generation')=successor.generation)""",
+                (attempt['attempt_id'],attempt['attempt_id'],attempt['work_item_key'],attempt['action'],
+                 attempt['generation'],job['payload'].get('repo'),attempt['attempt_id'])).fetchall()
+            retired_status = len(successors) == 1
+        if (attempt['job_id'] != job['job_id'] or attempt['mode'] != 'real' or not retired_status
                 or job['requested_action'] not in store.DRAFT_PR_EFFECT_ACTIONS or job['payload'].get('dry_run') is not False
                 or job['state'] != 'failed' or job['reason_code'] != 'operator_interrupted_outcome_unknown'
                 or not lease or not lease['released_at'] or not lease['effect_authorized_at'] or not lease['cancel_requested_at'] or lease['effect_observed_at']
