@@ -497,3 +497,16 @@ test('journal write failure never releases the local admission callback', async 
   assert.equal(completed, false);
   assert.equal(journal.status(job).state, 'outcome_unknown');
 });
+
+ test('reviewed executor plugin pin is retained in original intent before dispatch', async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'factory-plugin-journal-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const pin = { namespace: 'example-engineering', version: '1.0.0', source_commit: 'a'.repeat(40),
+    tree_sha256: 'b'.repeat(64), archive_sha256: 'c'.repeat(64) };
+  const journal = new InvocationJournal(directory, () => pin);
+  await journal.execute(job, lease, async () => {
+    const intent = JSON.parse(readFileSync(path.join(directory, job.job_id, 'intent.json'), 'utf8'));
+    assert.deepEqual(intent.executor_plugin, pin);
+    return receipt;
+  });
+ });

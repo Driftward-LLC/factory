@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 PROFILES = {
     'factory-executor': 'Factory implementation and fixes.',
@@ -54,6 +55,10 @@ def ensure_profiles():
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not set(PROFILES).issubset(list_profile_names()) or get_active_profile_name() != active:
             raise ValueError('native profile creation verification failed')
+        if os.environ.get("FACTORY_HERMES_ENGINEERING_MANIFEST"):
+            environment = {**os.environ, "HERMES_HOME": str(home/"profiles/factory-executor")}
+            subprocess.run([sys.executable, str(Path(__file__).with_name("executor-readiness.py"))],
+                           env=environment, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print('Factory native role profiles ready; authentication and execution gates unchanged.')
 
 

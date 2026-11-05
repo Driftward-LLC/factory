@@ -1175,6 +1175,22 @@ test('local Composio transport preserves exact checks and configured actor witho
   process.env.FACTORY_INSTALLATION_ID = installation;
   process.env.FACTORY_HERMES_RUNTIME_MODE = 'local-executor';
   process.env.FACTORY_HERMES_GITHUB_TRANSPORT = 'composio';
+  process.env.FACTORY_HERMES_PROFILE = 'factory-executor';
+  process.env.FACTORY_HERMES_SKILL_NAMESPACE = 'example-engineering';
+  const childProcess = require('node:child_process');
+  const originalExec = childProcess.execFile;
+  t.mock.method(childProcess, 'execFile', (...parameters: any[]) => {
+    if (parameters[0] === '/opt/hermes/.venv/bin/python') {
+      assert.equal(parameters[1][0], '/app/deploy/executor-readiness.py');
+      assert.deepEqual(JSON.parse(parameters[1][1]), hermesProfileArguments());
+      parameters[3](null, JSON.stringify({ profile: 'factory-executor', namespace: 'example-engineering',
+        cli_arguments_checked: true, native_dependencies_current: true, model_called: false, version: '1.0.0', source_commit: 'a'.repeat(40),
+        tree_sha256: 'b'.repeat(64), archive_sha256: 'c'.repeat(64),
+        skills: { 'implement-change': 'a'.repeat(64), 'verify-app': 'b'.repeat(64), 'prepare-pr': 'c'.repeat(64) } }), '');
+      return {};
+    }
+    return originalExec(...parameters);
+  });
   process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH = path.join(directory, 'binding.json');
   process.env.PATH = directory + path.delimiter + previous.PATH;
   writeFileSync(process.env.FACTORY_HERMES_RUNTIME_BINDING_PATH, JSON.stringify({ installation_id: installation,

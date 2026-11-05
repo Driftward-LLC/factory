@@ -12,6 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "LICENSE",
+    "deploy/examples/executor-plugin.json",
     "deploy/local_execution.py",
     "deploy/compose.local-execution.yml",
     "deploy/compose.local-executor.yml",

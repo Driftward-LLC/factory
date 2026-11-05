@@ -9,6 +9,8 @@ import type { BridgeJob } from '@factory/hatchet-worker-shared';
 import { gatewayReasonCode, processSignal, transportStatus } from './bounded-evidence';
 import {
   assertHermesIdentityViaCommand,
+  assertLocalExecutorReadiness,
+  type ExecutorPluginPin,
   inspectGitHubHeadViaCommand,
   inspectDraftPrStateViaCommand,
   inspectDraftPullRequestViaCommand,
@@ -79,10 +81,11 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
   const reviewer = new IndependentReviewer(process.env.FACTORY_REVIEW_DIRECTORY || '/var/lib/factory-hermes-factory/reviews');
   // Open lazily so read-only identity/inspection remains available during a storage fault.
   let journal: InvocationJournal | undefined;
+  let executorPlugin: ExecutorPluginPin | undefined;
   const invocations = () => journal ||= new InvocationJournal(process.env.FACTORY_HERMES_INVOCATION_DIRECTORY ||
     (process.env.FACTORY_HERMES_RUNTIME_MODE === 'local-executor'
       ? path.join(process.env.HERMES_HOME || '/opt/data', 'factory-invocations')
-      : '/var/lib/factory-hermes-factory/invocations'));
+      : '/var/lib/factory-hermes-factory/invocations'), () => executorPlugin);
   const selections = new Map<string, ModelSelectionObserver>();
   const inspectInvocation = async (request: CreateDraftPullRequestRequest, cancel: boolean) => {
     const job = parseBridgeJob(request);
@@ -115,6 +118,7 @@ export function createServer(target: string, runDraftPr = runHermesCreateDraftPr
       const job = parseBridgeJob(request);
       assertInvocationOrganization(job);
       const lease = invocationLease(JSON.parse(requiredString(request.executionLeaseJson, 'execution_lease_json')));
+      executorPlugin = await assertLocalExecutorReadiness();
       const runtime = await invocations().prepare(job, lease, (invocation) =>
         withExecutionSpan('factory.hermes.execute', () => runDraftPr(job, undefined, optionalPositiveInt(request.timeoutMs), undefined,
           (selection) => selections.get(job.job_id)?.(selection), invocation), { job, service: 'factory-executor' }));
@@ -212,6 +216,7 @@ function loadGatewayService(): GatewayService {
 
 async function main(): Promise<void> {
   loadFactoryOrganization();
+  await assertLocalExecutorReadiness();
   const target = parseTarget(process.argv.slice(2));
   validateServerTarget(target);
   const socketPath = unixSocketPathFromTarget(target);
