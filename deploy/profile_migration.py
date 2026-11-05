@@ -163,8 +163,8 @@ def check_sqlite(snapshot):
     return result
 
 
-def archive_contents(path, *, hermes=False):
-    state._archive_check(path, hermes=hermes)
+def archive_contents(path, *, hermes=False, image=None):
+    state._archive_check(path, hermes=hermes, image=image)
     with tarfile.open(path) as archive:
         return sorted((member.name, member.type.decode(), member.mode, member.uid, member.gid, member.size, member.linkname,
                        hashlib.sha256(archive.extractfile(member).read()).hexdigest() if member.isfile() else "")
@@ -318,7 +318,7 @@ def apply(args, plan, metadata, values, previous, files):
         require(state._hash(work / name) == state._hash(args.snapshot / "volumes" / name), "source data changed since cold backup")
         (work / name).unlink()
     state._tar(args.image, plan["hermes"]["volume"], work, "hermes-data.tar", restore=False)
-    state._archive_check(work / "hermes-data.tar", hermes=True)
+    state._archive_check(work / "hermes-data.tar", hermes=True, image=args.image)
     if naming_plan:
         require(state._hash(args.naming_map) == naming_plan["mapping_sha256"], "naming mapping changed after preview")
         transformed = work / "naming-volumes"
@@ -334,7 +334,7 @@ def apply(args, plan, metadata, values, previous, files):
             state._tar(args.image, name, source, suffix + ".tar", restore=True)
             check = "verify-" + suffix + ".tar"
             state._tar(args.image, name, work, check, restore=False)
-            require(archive_contents(work / check, hermes=suffix == "hermes-data") == archive_contents(source / (suffix + ".tar"), hermes=suffix == "hermes-data"), "copied volume content or ownership differs")
+            require(archive_contents(work / check, hermes=suffix == "hermes-data", image=args.image) == archive_contents(source / (suffix + ".tar"), hermes=suffix == "hermes-data", image=args.image), "copied volume content or ownership differs")
             (work / check).unlink()
     result = pg.migrate(args.snapshot, args.project + "-hatchet-postgres-data", plan["previous_images"]["postgres"],
                         args.image, args.project, identity, work, **({"naming_transition": True} if naming_plan else {}))

@@ -62,6 +62,32 @@ an image, investigate and use a new release version; do not overwrite an existin
 tag or attach a bundle for a different digest. A partially published image is not
 a completed release. Do not use a source-only release to bypass failed checks.
 
+## Runtime compatibility evidence before publication
+
+Run the existing disposable portable acceptance check against the exact candidate
+image before publication. It admits a credential-free synthetic native plugin on
+an initialized profile and verifies native environment currency plus skill and
+linked-asset resolution before and after cold backup/restore. The fixture uses
+public runtime APIs and contains no private plugin artifact or credentials.
+Archive regression tests separately cover link escapes, hardlink targets,
+symlink-parent writes, duplicates and special files.
+
+For an operator-supplied execution plugin, retain an additional isolated rehearsal
+with its reviewed immutable manifest: fresh and already initialized profile
+provisioning, native dependency admission followed by offline readiness
+verification, real activation approval and
+stale-approval refusal, stopped restart, cold backup/restore and native readiness
+on restored state. Record the exact source, image digest, deployment bundle and
+check outcomes before approving that runtime for the installation. Keep private
+packages and installation evidence outside public source and release assets.
+
+A source check, a synthetic image rehearsal, a released-image rehearsal and a live
+observation establish different facts. Label them explicitly. Reports should
+identify which phase failed and whether a complete snapshot manifest exists;
+never infer a successful restore from archive creation or file presence. Share
+sanitized classifications and bounded results publicly; retain configuration,
+authentication, profile inventories and detailed recovery paths privately.
+
 ## Install on a fresh host
 
 Download all three assets from one trusted release:

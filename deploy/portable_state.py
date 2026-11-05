@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import posixpath
 from pathlib import Path, PurePosixPath
 import re
 import stat
@@ -111,28 +110,79 @@ def _private_files(directory: Path) -> set[str]:
     return files
 
 
-def _archive_check(path: Path, *, hermes: bool = False) -> None:
-    links, names = set(), set()
+def _image_interpreter(image: str, target: str, env: dict | None = None) -> None:
+    # No state mounts: the exception is solely the pinned image's own Python.
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+        raise ValueError("Hermes interpreter links require an exact local image ID")
+    script = ("import os,sys; p=sys.argv[1]; "
+              "assert os.path.isfile(p) and os.access(p,os.X_OK); "
+              "assert os.path.realpath(p).startswith('/opt/hermes/tools/python-'); "
+              "assert os.path.samefile(p,sys.executable)")
+    _docker(["run", "--rm", "--pull", "never", "--network", "none", "--read-only", "--user", "10000:10000",
+             "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+             "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-I", "-c", script, target], env)
+
+
+def _archive_check(path: Path, *, hermes: bool = False, image: str | None = None,
+                   env: dict | None = None) -> None:
+    links, names = {}, {}
     with tarfile.open(path) as archive:
         for entry in archive:
             name = PurePosixPath(entry.name)
-            if name.is_absolute() or ".." in name.parts or name in names:
+            if (name.is_absolute() or ".." in name.parts or name in names
+                    or (not name.parts and not entry.isdir())):
                 raise ValueError("unsafe volume archive: invalid or duplicate path")
-            names.add(name)
+            if hermes and entry.islnk():
+                target = PurePosixPath(entry.linkname)
+                if (target.is_absolute() or ".." in target.parts
+                        or names.get(target) not in {tarfile.REGTYPE, tarfile.AREGTYPE}):
+                    raise ValueError("Hermes hardlink requires an earlier regular archive member")
+            names[name] = entry.type
             if hermes and entry.issym():
-                # Hermes owns /opt/data. Preserve only links inside that volume;
-                # tar must never restore another entry through a symlink parent.
-                # Reject parent traversal before normalization: a prior link can redirect it.
-                if ".." in PurePosixPath(entry.linkname).parts:
-                    raise ValueError("Hermes archive link cannot contain parent traversal")
-                target = posixpath.normpath(posixpath.join("/opt/data", str(name.parent), entry.linkname))
-                if not (target == "/opt/data" or target.startswith("/opt/data/")):
-                    raise ValueError("Hermes archive link escapes its dedicated data volume")
-                links.add(name)
-            elif not (entry.isfile() or entry.isdir()):
+                if not entry.linkname:
+                    raise ValueError("empty Hermes archive link")
+                links[name] = entry.linkname
+            elif not (entry.isfile() or entry.isdir() or (hermes and entry.islnk())):
                 raise ValueError("unsafe volume archive; links and special files are not supported")
-    if any(parent in links for name in names for parent in name.parents):
-        raise ValueError("archive entry would write through a symlink")
+    if any(parent in names and names[parent] != tarfile.DIRTYPE
+           for name in names for parent in name.parents):
+        raise ValueError("archive entry would write through a symlink or file")
+
+    verified = set()
+    for name in links:
+        pending, resolved, expansions = list(name.parts), [], 0
+        while pending:
+            part = pending.pop(0)
+            if part == "..":
+                if not resolved:
+                    raise ValueError("Hermes archive link escapes its dedicated data volume")
+                resolved.pop()
+                continue
+            if part == ".":
+                continue
+            resolved.append(part)
+            link = PurePosixPath(*resolved)
+            if link not in links:
+                continue
+            expansions += 1
+            if expansions > 256:
+                raise ValueError("Hermes archive link cycle or excessive chain")
+            target = links[link]
+            resolved.pop()
+            if target.startswith("/"):
+                if target == "/opt/data" or target.startswith("/opt/data/"):
+                    resolved = []
+                    target = target[len("/opt/data"):].lstrip("/")
+                elif (not pending and image
+                      and re.fullmatch(r"installs/[a-f0-9]+/environments/[a-f0-9]+/venv/bin/python(?:3(?:\.\d+)?)?", str(link))
+                      and re.fullmatch(r"/opt/hermes/tools/python-[A-Za-z0-9.+_-]+/bin/python3(?:\.\d+)?", target)):
+                    verified.add(target)
+                    break
+                else:
+                    raise ValueError("Hermes archive link escapes its dedicated data volume")
+            pending = list(PurePosixPath(target).parts) + pending
+    for target in sorted(verified):
+        _image_interpreter(image, target, env)
 
 
 def _available_volumes(env: dict | None = None) -> set[str]:
@@ -214,7 +264,8 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
         _tar(image_ids[values["FACTORY_IMAGE"]], f"{installation.project}-{suffix}", snapshot / "volumes", f"{suffix}.tar", restore=False, env=installation.env)
         archive = snapshot / "volumes" / f"{suffix}.tar"
         archive.chmod(0o600)
-        _archive_check(archive, hermes=suffix == "hermes-data")
+        _archive_check(archive, hermes=suffix == "hermes-data",
+                       image=image_ids[values["FACTORY_IMAGE"]], env=installation.env)
     hashes = {name: _hash(snapshot / name) for name in sorted(_private_files(snapshot))}
     bootstrap._create_private(snapshot / "manifest.json", json.dumps({
         "format_version": 1, "project": installation.project, "installation_id": metadata["installation_id"],
@@ -257,7 +308,8 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         if _hash(snapshot / name) != digest:
             raise ValueError("snapshot checksum mismatch")
     for suffix in volumes:
-        _archive_check(snapshot / "volumes" / f"{suffix}.tar", hermes=suffix == "hermes-data")
+        _archive_check(snapshot / "volumes" / f"{suffix}.tar", hermes=suffix == "hermes-data",
+                       image=manifest["images"].get(manifest["factory_image"]))
     values = bootstrap.read_env(snapshot / "config" / ".env")
     marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
     provenance = read_provenance(snapshot / "config" / PROVENANCE) if production else None

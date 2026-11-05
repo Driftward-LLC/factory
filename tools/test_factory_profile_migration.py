@@ -212,6 +212,14 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "differ"):
                 pg.compare(old, changed)
 
+    def test_archive_contents_propagates_exact_runtime_image(self):
+        archive = Path(self.temp.name) / "links.tar"
+        with tarfile.open(archive, "w") as handle:
+            handle.addfile(tarfile.TarInfo("file"))
+        with patch.object(migration.state, "_archive_check") as check:
+            migration.archive_contents(archive, hermes=True, image=self.image)
+        check.assert_called_once_with(archive, hermes=True, image=self.image)
+
     def test_hermes_links_are_scoped_and_cannot_be_written_through(self):
         archive = Path(self.temp.name) / "links.tar"
         def make(target, child=False):
@@ -221,14 +229,13 @@ class MigrationTests(unittest.TestCase):
                 handle.addfile(link)
                 if child:
                     handle.addfile(tarfile.TarInfo("./current/overwrite"))
-        for target in ("/opt/data/releases/current", "releases/current", "."):
+        for target in ("/opt/data/releases/current", "releases/current", ".", "/opt/data/releases/../current-target", "releases/../current-target"):
             make(target)
             production.state._archive_check(archive, hermes=True)
             with self.assertRaises(ValueError):
                 production.state._archive_check(archive)
         for target, child in (("/etc/shadow", False), ("../../etc/shadow", False),
-                              ("/opt/data/../../etc", False), ("/opt/data/releases/../current", False),
-                              ("releases/../current", False), ("/opt/data/releases", True)):
+                              ("/opt/data/../../etc", False), ("/opt/data/releases", True)):
             make(target, child)
             with self.subTest(target=target, child=child), self.assertRaises(ValueError):
                 production.state._archive_check(archive, hermes=True)
@@ -242,7 +249,7 @@ class MigrationTests(unittest.TestCase):
                         link = tarfile.TarInfo(name)
                         link.type, link.linkname = tarfile.SYMTYPE, linkname
                         handle.addfile(link)
-                with self.assertRaisesRegex(ValueError, "parent traversal"):
+                with self.assertRaisesRegex(ValueError, "escapes"):
                     production.state._archive_check(archive, hermes=True)
 
     def test_apply_rejects_changed_cold_data_before_creating_destination_volumes(self):

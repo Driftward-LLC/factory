@@ -97,7 +97,8 @@ def configure(installation, args) -> None:
         if bootstrap._read_private(snapshot / "config" / name) != bootstrap._read_private(installation.directory / name):
             raise ValueError("configuration changed since the telemetry backup")
     for name in volumes:
-        state._archive_check(snapshot / "volumes" / (name + ".tar"), hermes=name == "hermes-data")
+        state._archive_check(snapshot / "volumes" / (name + ".tar"), hermes=name == "hermes-data",
+                             image=manifest["images"].get(manifest["factory_image"]), env=installation.env)
     previous = validate(metadata)
     if previous and args.credentials:
         raise ValueError("Collector is already configured; credential rotation requires separate review")
