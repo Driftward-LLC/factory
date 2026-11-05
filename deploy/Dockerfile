@@ -82,6 +82,7 @@ RUN apt-get update \
 COPY hatchet/bridge/requirements.txt /tmp/factory-requirements.txt
 RUN /usr/bin/python3 -m venv /opt/factory \
   && /opt/factory/bin/pip install --no-cache-dir --requirement /tmp/factory-requirements.txt \
+  && /opt/factory/bin/python -c "import yaml; from dotenv import dotenv_values" \
   && rm /tmp/factory-requirements.txt
 
 # Reset upstream image defaults, including its VOLUME /opt/data. Only the

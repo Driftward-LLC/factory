@@ -107,3 +107,31 @@ class LocalSourceReviewTests(unittest.TestCase):
         with patch.object(MODULE, 'command', side_effect=[str(len(text)), text]):
             value = MODULE.source_tool('validate_findings', {'findings': [finding]}, ['git'], 'a'*40, 'b'*40)
         self.assertEqual(json.loads(value[0]['text']), {'status': 'valid'})
+
+    def test_private_review_uses_fixed_snapshot_and_checks_base_drift(self):
+        import io
+        from unittest.mock import MagicMock
+        sys.path.insert(0, str(DIRECTORY.parent))
+        import immutable_github_source as immutable
+        request = self.fixture_request()
+        view = {'headRefOid': 'a'*40, 'baseRefOid': 'b'*40, 'baseRefName': 'main'}
+        for changed in ['headRefOid', 'baseRefOid', None]:
+            observed = dict(view)
+            if changed: observed[changed] = 'c'*40
+            source = MagicMock(merge_base='b'*40)
+            process = MagicMock(stdin=io.BytesIO())
+            with self.subTest(changed=changed), patch.dict(MODULE.os.environ, {'FACTORY_HERMES_GITHUB_TRANSPORT': 'composio'}), patch.object(immutable.READ, 'GithubRead'), patch.object(immutable.READ, 'read', side_effect=[view, observed]), patch.object(immutable, 'Source', return_value=source) as snapshot, patch.object(MODULE, 'command', return_value='') as command, patch.object(MODULE.subprocess, 'Popen', return_value=process), patch.object(MODULE, 'relay_line', return_value=json.dumps({'assessment': {'verdict': 'passed', 'findings': []}}).encode()):
+                result = MODULE.run(request)
+            self.assertEqual(result['verdict'], 'passed' if changed is None else 'inconclusive')
+            self.assertEqual(snapshot.call_args.args[:3], ('example/demo', 'b'*40, 'a'*40))
+            self.assertFalse(any('fetch' in call.args[0] for call in command.call_args_list))
+
+    def test_private_source_tools_never_expose_credentials_or_follow_symlinks(self):
+        from unittest.mock import MagicMock
+        source = MagicMock()
+        source.read_file.return_value = 'committed source\n'
+        response = MODULE.source_tool('read_file', {'path': 'app.py'}, ['git'], 'a'*40, 'b'*40, source)
+        self.assertEqual(json.loads(response[0]['text']), 'committed source\n')
+        source.read_file.assert_called_once_with('app.py')
+        with self.assertRaises(ValueError):
+            MODULE.source_tool('read_file', {'path': 'app.py', 'credential': 'please'}, ['git'], 'a'*40, 'b'*40, source)

@@ -233,7 +233,9 @@ class QualityWorkflowTests(unittest.TestCase):
     def test_tool_suite_dependencies_are_installed_and_cached_for_quality_and_release(self):
         requirements = (ROOT / 'tools/requirements.txt').read_text().splitlines()
         self.assertIn('-r ../hatchet/bridge/requirements.txt', requirements)
-        self.assertIn('PyYAML==6.0.1', requirements)
+        bridge = (ROOT / 'hatchet/bridge/requirements.txt').read_text().splitlines()
+        self.assertTrue(any(re.fullmatch(r'PyYAML==[0-9]+\.[0-9]+\.[0-9]+', line) for line in bridge))
+        self.assertFalse(any(line.lower().startswith('pyyaml') for line in requirements))
         release = (ROOT / '.github/workflows/factory-release.yml').read_text()
         for job in (self.jobs['validate'], release):
             python = job.split('uses: actions/setup-python@v5\n', 1)[1].split('      - ', 1)[0]

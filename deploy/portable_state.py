@@ -43,6 +43,9 @@ def deployment_files(profile: str, metadata: dict | None = None) -> tuple[str, .
         import telemetry
         telemetry.validate(metadata)
         files = (*files, *telemetry.FILES)
+    if metadata and (metadata.get("local_execution") or metadata.get("local_execution_restored")):
+        import local_execution
+        files = (*files, *local_execution.FILES)
     return files
 
 
@@ -54,7 +57,18 @@ def config_files(profile: str, metadata: dict | None = None) -> set[str]:
     if metadata and metadata.get("telemetry") is not None:
         import telemetry
         files = files | {telemetry.ENV_FILE}
+    if metadata and (metadata.get("local_execution") or metadata.get("local_execution_restored")):
+        import local_execution
+        files = files | set(local_execution.CONFIG)
     return files
+
+
+
+def optional_config(manifest: dict) -> set[str]:
+    values = manifest.get("optional_config", [])
+    if not isinstance(values, list) or len(values) != len(set(values)) or any(name != "env/linear-webhook-secret.pending" for name in values):
+        raise ValueError("unsupported optional snapshot configuration")
+    return set(values)
 
 
 def read_provenance(path: Path) -> dict:
@@ -152,7 +166,8 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     snapshot = _path(snapshot)
     metadata, values = bootstrap.validate_directory(source)
     profile = metadata.get("profile", "portable-dry-run")
-    expected_config = config_files(profile, metadata)
+    optional = {"env/linear-webhook-secret.pending"} if (source / "env/linear-webhook-secret.pending").exists() else set()
+    expected_config = config_files(profile, metadata) | optional
     if profile == PRODUCTION:
         if read_provenance(source / PROVENANCE).get("destination_project") != metadata["project"]:
             raise ValueError("production provenance names a different installation")
@@ -164,6 +179,11 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
         files.add(PROVENANCE)
     for relative in (("env", "keys", "config") if metadata.get("organization_config") == 1 else ("env", "keys")):
         files.update(relative + "/" + name for name in _private_files(source / relative))
+    if metadata.get("local_execution") or metadata.get("local_execution_restored"):
+        import local_execution
+        files.update(local_execution.CONFIG)
+        for name in local_execution.CONFIG:
+            bootstrap._read_private(source / name)
     if files != expected_config:
         raise ValueError("backup requires complete keys/client credentials and only known configuration files")
     config = json.loads(installation.compose("config", "--format", "json", private=True))
@@ -188,6 +208,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     for name in ("config", "config/env", "config/config", "config/keys", "config/keys/hatchet", "volumes"):
         (snapshot / name).mkdir(mode=0o700)
     for relative in sorted(files):
+        (snapshot / "config" / relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         bootstrap._create_private(snapshot / "config" / relative, bootstrap._read_private(source / relative))
     for suffix in volumes:
         _tar(image_ids[values["FACTORY_IMAGE"]], f"{installation.project}-{suffix}", snapshot / "volumes", f"{suffix}.tar", restore=False, env=installation.env)
@@ -198,7 +219,7 @@ def backup(installation, snapshot: Path, *, apply: bool = False) -> None:
     bootstrap._create_private(snapshot / "manifest.json", json.dumps({
         "format_version": 1, "project": installation.project, "installation_id": metadata["installation_id"],
         "factory_image": values["FACTORY_IMAGE"], "images": image_ids, "volumes": volumes, "sha256": hashes,
-        "profile": profile,
+        "profile": profile, "optional_config": sorted(optional),
         "deployment_sha256": {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile, metadata)},
     }, sort_keys=True, indent=2) + "\n")
     print("Backup complete; installation remains stopped. Resume only through its matching operations wrapper after review.")
@@ -217,7 +238,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
         raise ValueError("snapshot profile requires its matching operations wrapper")
     marker = json.loads(bootstrap._read_private(snapshot / "config" / bootstrap.MARKER))
     bootstrap.validate_naming_generation(marker)
-    expected_config = config_files(profile, marker)
+    expected_config = config_files(profile, marker) | optional_config(manifest)
     if manifest.get("deployment_sha256") != {name: _hash(Path(__file__).parent / name) for name in deployment_files(profile, marker)}:
         raise ValueError("restore requires the same deployment bundle; cross-version restore is unsupported")
     if directory.exists() or snapshot == directory or snapshot in directory.parents:
@@ -289,6 +310,7 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     for relative in ("env", "config", "keys", "keys/hatchet", "run", "run/operator"):
         (directory / relative).mkdir(mode=0o700)
     for name in sorted(expected_config - {".env", bootstrap.MARKER, PROVENANCE}):
+        (directory / name).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         bootstrap._create_private(directory / name, bootstrap._read_private(snapshot / "config" / name))
     relocated = ["FACTORY_PROJECT_NAME", "COMPOSE_PROJECT_NAME", "FACTORY_INSTALL_DIR", "FACTORY_ENV_DIR", "FACTORY_CONFIG_DIR", "FACTORY_OPERATOR_RUN_DIR", *bootstrap.PORTS]
     # Production keeps its public URL; routing to the new loopback listener is
@@ -314,6 +336,11 @@ def restore(snapshot: Path, directory: Path, project: str, *, apply: bool = Fals
     if production:
         provenance.update(destination_project=project, snapshot_sha256=_hash(snapshot / "manifest.json"), activation_approved=False)
         bootstrap._create_private(directory / PROVENANCE, json.dumps(provenance, sort_keys=True, indent=2) + "\n")
+    previous_execution = marker.pop("local_execution", None)
+    if previous_execution:
+        # A new installation/runtime can never inherit admission approval.
+        marker["local_execution_restored"] = {"source_installation": marker["installation_id"],
+                                               "optional_services": previous_execution["optional_services"]}
     marker.update(project=project, installation_id=restored_id)
     bootstrap._create_private(directory / bootstrap.MARKER, json.dumps(marker, sort_keys=True) + "\n")
     bootstrap.validate_directory(directory)

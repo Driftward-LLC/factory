@@ -240,9 +240,9 @@ export class IndependentReviewer {
       const script = candidates.find(file => existsSync(file));
       if (!script) return fail('review_backend_unavailable');
       let raw: string;
-      try { raw = await this.command('/opt/hermes/.venv/bin/python', [script, requestPath], 660000); }
+      try { raw = await this.command('/opt/factory/bin/python', [script, requestPath], 660000); }
       catch {
-        try { await this.command('/opt/hermes/.venv/bin/python', [script, '--stop', requestPath], 30000); }
+        try { await this.command('/opt/factory/bin/python', [script, '--stop', requestPath], 30000); }
         catch { return fail('review_isolation_unavailable'); }
         return fail('review_backend_unavailable');
       }

@@ -1,0 +1,31 @@
+# Enabled only by the portable wrapper's reviewed execution receipt.
+services:
+  factory-hermes:
+    environment:
+      HATCHET_INTAKE_ROUTING_REGISTRY_PATH: /etc/factory/config/routing-registry.json
+      FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED: "1"
+      FACTORY_REVIEWER_ENABLED: "1"
+      FACTORY_REVIEWER_CONFIG_PATH: /etc/factory/reviewer/provisioning.json
+      FACTORY_REVIEWER_PROVISIONING_DIRECTORY: /etc/factory/reviewer
+    volumes:
+      - type: bind
+        source: ${FACTORY_INSTALL_DIR:?}/reviewer
+        target: /etc/factory/reviewer
+        read_only: true
+        bind:
+          create_host_path: false
+  intake-worker:
+    environment:
+      HATCHET_INTAKE_DRY_RUN: "false"
+      HATCHET_INTAKE_ALLOWED_REPOS: ${FACTORY_LOCAL_EXECUTION_REPOSITORY:?}
+  bridge-executor-worker:
+    env_file:
+      - path: ${FACTORY_INSTALL_DIR:?}/factory-hermes-execution.env
+        required: true
+    environment:
+      FACTORY_HERMES_CREATE_DRAFT_PR_ENABLED: "1"
+      FACTORY_HERMES_ALLOWED_REPOS: ${FACTORY_LOCAL_EXECUTION_REPOSITORY:?}
+  factory-operator:
+    environment:
+      HATCHET_INTAKE_DRY_RUN: "false"
+      HATCHET_INTAKE_ALLOWED_REPOS: ${FACTORY_LOCAL_EXECUTION_REPOSITORY:?}

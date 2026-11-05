@@ -379,8 +379,11 @@ or browser checks. Existing review intents provide acceptance criteria and the
 exact head, not generator runtime validation evidence. The reviewer must return
 inconclusive when absent evidence is material; enabling this adapter does not
 relax repository validation or mandatory-review policy. Public repository source
-is fetched without GitHub credentials, bound to the requested PR head before and
-after review. Private repositories remain unsupported in this local mode.
+can be fetched without GitHub credentials. With the Composio transport, private
+source uses the executor's existing native Composio session through fixed GitHub
+read tools. The reviewer model receives only source tools, never the session,
+key, URLs, or general MCP access. PR metadata binds the exact head and base
+before review and is checked again afterward.
 
 ### Deterministic Composio GitHub reads
 
@@ -401,9 +404,18 @@ bot requirements. A dedicated Composio connection may still authenticate a human
 GitHub principal; its organizational location does not change that identity.
 
 PR checks/statuses must match the exact observed head and pagination totals.
-Diffs use the existing bounded immutable Git reader, with credential helpers
-disabled, against public source; file paths must agree with GitHub and revisions
-are reread afterward. Private source remains unsupported. A missing branch is
+Private diffs and source review resolve the merge base through GitHub's fixed
+comparison tool using full base/head SHAs, then obtain the immutable commit trees
+and blobs through fixed Git API tools. Recursive trees must be complete, contain
+at most 20,000 entries, and reconstruct their Git tree SHA. Blobs are fetched
+lazily in batches of 16, checked against declared sizes and Git SHA-1, and stored
+in a temporary bare repository with a 256 MiB object budget. Symlinks and
+submodules remain Git objects and are never checked out or followed. File reads
+accept only regular files up to 64,000 bytes. Local Git diffs execute no hooks,
+text conversion, external diff, checkout or repository code; response and time
+limits still apply. File paths must agree with GitHub and revisions are reread
+afterward. No anonymous clone, ambient Git credential or additional login is
+required for private repositories accessible to that same native connection. A missing branch is
 accepted only from the reference tool's machine-readable HTTP 404 after the same
 session has proved repository access; other failures remain unknown. The route
 is opt-in and does not enable execution, configure intake or change cancellation.

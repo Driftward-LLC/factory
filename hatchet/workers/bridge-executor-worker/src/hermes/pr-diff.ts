@@ -90,6 +90,15 @@ try:
                 process.stdout.close()
                 process.stderr.close()
 
+        if os.environ.get('FACTORY_HERMES_GITHUB_TRANSPORT') == 'composio':
+            sys.path.insert(0, '/app/deploy')
+            from immutable_github_source import Source, READ
+            client = READ.GithubRead(budget=max(.001, deadline - time.monotonic()))
+            result = json.dumps(Source(repo, base, head, directory + '/source.git', client, output_limit).diff(), ensure_ascii=True)
+            if len(result.encode()) > output_limit:
+                raise OverflowError()
+            sys.stdout.write(result)
+            sys.exit(0)
         run(['init', '--bare', '--template='], 65536)
         run(['remote', 'add', 'origin', 'https://github.com/' + repo + '.git'], 65536)
         run(['config', 'remote.origin.promisor', 'true'], 65536)

@@ -16,6 +16,7 @@ import sys
 import bootstrap
 import portable_state
 import telemetry
+import local_execution
 
 HERE = Path(__file__).resolve().parent
 CONTROL_PLANE_SERVICES = (
@@ -107,6 +108,7 @@ class Installation:
                      "--project-directory", str(self.directory), "--env-file", str(self.directory / ".env"),
                      "-f", str(HERE / "docker-compose.yml"), "-f", str(HERE / "compose.portable.yml")]
         telemetry.attach(self, SERVICES)
+        local_execution.attach(self)
 
     def compose(self, *args: str, private: bool = False) -> str:
         return run([*self.args, *args], env=self.env, private=private)
@@ -131,7 +133,7 @@ class Installation:
         config = json.loads(self.compose("config", "--format", "json", private=True))
         for name, service in config["services"].items():
             mounts = [mount for mount in service.get("volumes", []) if mount.get("target") == "/etc/factory/config"]
-            if name in bootstrap.CONFIG_SERVICES:
+            if name in bootstrap.CONFIG_SERVICES or (name == "factory-hermes" and self.metadata.get("local_execution")):
                 if (len(mounts) != 1 or mounts[0].get("type") != "bind"
                         or mounts[0].get("source") != str(self.directory / "config").replace("$", "$$")
                         or not mounts[0].get("read_only") or mounts[0].get("bind", {}).get("create_host_path", False)
@@ -141,6 +143,9 @@ class Installation:
                 raise ValueError("organization configuration mounted into an unrelated role")
 
     def up(self) -> None:
+        if self.metadata.get("local_execution"):
+            local_execution.start(self)
+            return
         self.assert_owned_resources()
         workers = bootstrap.read_env(self.directory / "env" / "hatchet-workers.env")
         executor = bootstrap.read_env(self.directory / "env" / "hatchet-worker-bridge-executor.env")
@@ -187,8 +192,13 @@ class Installation:
             print(f"{service}: {state}" + (f" ({health})" if health else ""))
             if state != "running" or health not in ("", "healthy"):
                 failed.append(service)
-        print("Linear delivery: disabled in the portable dry-run profile")
-        print("Real execution: portable wrapper enforces dry-run; Hermes authentication readiness not inspected")
+        if self.metadata.get("local_execution"):
+            local_execution.validate(self)
+            print("Real execution: reviewed installation-local path; cancellation uncertainty retains admission holds")
+            print("Linear lifecycle delivery: disabled; source review does not execute tests or browser checks")
+        else:
+            print("Linear delivery: disabled in the portable dry-run profile")
+            print("Real execution: portable wrapper enforces dry-run; Hermes authentication readiness not inspected")
         if failed:
             raise RuntimeError("unhealthy services: " + ", ".join(failed))
 
@@ -198,6 +208,8 @@ def main() -> int:
     parser.add_argument("--directory", required=True, type=Path, help="private installation directory (not the source checkout)")
     sub = parser.add_subparsers(dest="command", required=True)
     telemetry.add_command(sub)
+    execution = sub.add_parser("execution", help="preview or activate reviewed installation-local execution")
+    execution.add_argument("--approve-preview", help="apply exactly this preview SHA256; otherwise read-only")
     init = sub.add_parser("init", help="preview a fresh installation; --apply writes new private configuration")
     init.add_argument("--image", help="explicit release digest or local development image")
     init.add_argument("--project", required=True, help="unique factory or factory-NAME Compose namespace")
@@ -221,7 +233,7 @@ def main() -> int:
     try:
         # Read-only status/logs and preview-only init/restore do not create a
         # lock file. All state-changing paths take the same host-local lock.
-        mutating = args.command in {"up", "stop", "pull"} or getattr(args, "apply", False)
+        mutating = args.command in {"up", "stop", "pull"} or getattr(args, "apply", False) or bool(getattr(args, "approve_preview", None))
         if mutating:
             with installation_lock(args.directory):
                 return dispatch(args)
@@ -240,7 +252,9 @@ def dispatch(args: argparse.Namespace) -> int:
         portable_state.restore(args.snapshot, args.directory, args.project, apply=args.apply, port_offset=args.port_offset)
         return 0
     install = Installation(args.directory)
-    if args.command == "up":
+    if args.command == "execution":
+        local_execution.activate(install, args.approve_preview)
+    elif args.command == "up":
         install.up()
     elif args.command == "status":
         install.status()
