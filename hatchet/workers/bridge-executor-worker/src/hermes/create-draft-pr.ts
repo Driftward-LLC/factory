@@ -855,7 +855,7 @@ function composioGithubEnabled(): boolean { return process.env.FACTORY_HERMES_GI
 async function composioGithubRead<T>(operation: string, repository: string, argument: string | undefined,
   timeout: number, maxBuffer: number): Promise<T> {
   if (!localExecutorEnabled()) throw new NonRetryableBridgeExecutionError('hermes_invocation_conflict', 'Composio reads require the local credential-bearing gateway');
-  return execHermesRuntimeJson<T>(['python3', '/app/deploy/composio-github-read.py', operation,
+  return execHermesRuntimeJson<T>(['/opt/factory/bin/python', '/app/deploy/composio-github-read.py', operation,
     repository, ...(argument === undefined ? [] : [argument])], timeout, maxBuffer);
 }
 
@@ -917,7 +917,7 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
   try {
     if (composioGithubEnabled()) {
       const fallback = await execHermesRuntimeJson<GithubPrView & { diffText?: string }>(
-        ['python3', '-c', PINNED_PR_DIFF_QUERY, repo, view.baseRefOid!, view.headRefOid!, String(maxBuffer), String(Math.max(1, remaining() - 1000))],
+        [composioGithubEnabled() ? '/opt/factory/bin/python' : 'python3', '-c', PINNED_PR_DIFF_QUERY, repo, view.baseRefOid!, view.headRefOid!, String(maxBuffer), String(Math.max(1, remaining() - 1000))],
         remaining(), maxBuffer);
       if (!sameStrings(changedFileNames(fallback.files).sort(), paths) || typeof fallback.diffText !== 'string')
         throw new Error('Pinned immutable Git diff does not match GitHub files');
@@ -934,7 +934,7 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
     const budget = remaining() - 1000;
     if (budget <= 0) throw runtimeCommandFailure(error);
     const fallback = await execHermesRuntimeJson<GithubPrView & { diffText?: string }>(
-      ['python3', '-c', PINNED_PR_DIFF_QUERY, repo, view.baseRefOid!, view.headRefOid!, String(maxBuffer), String(budget)],
+      [composioGithubEnabled() ? '/opt/factory/bin/python' : 'python3', '-c', PINNED_PR_DIFF_QUERY, repo, view.baseRefOid!, view.headRefOid!, String(maxBuffer), String(budget)],
       remaining(), maxBuffer);
     if (!sameStrings(changedFileNames(fallback.files).sort(), paths) || typeof fallback.diffText !== 'string') {
       throw new NonRetryableBridgeExecutionError('verification_evidence_unavailable', 'Pinned Git diff and GitHub changed-file evidence did not agree');
@@ -1335,7 +1335,7 @@ async function execHermesRuntimeCommand(args: string[], timeout: number, maxBuff
   try {
     return await execHermesRuntimeCommandRaw(args, timeout, maxBuffer);
   } catch (error) {
-    throw runtimeCommandFailure(error, reasonCode, args[0] === 'python3' && args[1] === '-c' && args[2] === PINNED_PR_DIFF_QUERY);
+    throw runtimeCommandFailure(error, reasonCode, args[1] === '-c' && args[2] === PINNED_PR_DIFF_QUERY);
   }
 }
 

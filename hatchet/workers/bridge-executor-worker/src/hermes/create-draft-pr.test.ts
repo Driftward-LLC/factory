@@ -1187,7 +1187,9 @@ const fs=require('node:fs'),args=process.argv.slice(2);fs.appendFileSync(${JSON.
 if(args[2]==='observe')process.stdout.write('${incarnation}');
 else {
  if(!args.includes('HERMES_HOME=/opt/data/profiles/factory-executor'))process.exit(1);
+ if(args[args.indexOf('HERMES_HOME=/opt/data/profiles/factory-executor')+1]!=='/opt/factory/bin/python')process.exit(93);
  const at=args.indexOf('/app/deploy/composio-github-read.py');
+ if(at<0 && process.env.TEST_COMPOSIO_DIFF_EXIT)process.exit(Number(process.env.TEST_COMPOSIO_DIFF_EXIT));
  if(at>=0){
   const op=args[at+1],view=${JSON.stringify(view)};
   if(op==='identity')process.stdout.write(${JSON.stringify(JSON.stringify(identity))});
@@ -1206,4 +1208,9 @@ else {
     expectedGitAuthorName: identity.gitAuthorName, expectedGitAuthorEmail: identity.gitAuthorEmail,
     forbiddenGithubLogins: [], forbiddenGitAuthorEmails: [], timeout: 5000 }));
   assert.equal(readFileSync(log, 'utf8').includes('"gh"'), false);
+  for (const [code, field] of [[73, 'bufferExceeded'], [74, 'timedOut']] as const) {
+    process.env.TEST_COMPOSIO_DIFF_EXIT = String(code);
+    await assert.rejects(inspectDraftPullRequestViaCommand('example/widgets', 77, 5000),
+      (error: unknown) => error instanceof NonRetryableBridgeExecutionError && error[field] === true);
+  }
 });
