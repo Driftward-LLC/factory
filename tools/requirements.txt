@@ -1,2 +1,1 @@
 -r ../hatchet/bridge/requirements.txt
-PyYAML==6.0.1
