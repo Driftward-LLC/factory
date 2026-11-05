@@ -1,4 +1,4 @@
-"""Native source-only reviewer: public immutable Git objects, no repository execution."""
+"""Native source-only reviewer: immutable Git objects, no repository execution."""
 import json
 import os
 from pathlib import Path
@@ -31,12 +31,15 @@ def command(args, timeout=60):
         return output.read().decode('utf-8')
 
 
-def source_tool(name, args, git, head, base):
+def source_tool(name, args, git, head, base, source=None):
     if name not in TOOLS or not isinstance(args, dict) or set(args) != TOOLS[name]:
         raise ValueError('Unsupported source-only operation')
     if name == 'inspect_source':
         value = {'head_sha': head, 'base_sha': base, 'scope': 'immutable_source_only',
                  'checks_executed': False, 'browser_exercised': False}
+    elif name == 'read_file' and source is not None:
+        source.client.deadline = time.monotonic() + 120
+        value = source.read_file(args['path'])
     elif name == 'read_file':
         location = args['path']
         if (not isinstance(location, str) or len(location) > 300 or location.startswith('/')
@@ -47,12 +50,16 @@ def source_tool(name, args, git, head, base):
             raise ValueError('Source file exceeds budget')
         value = command([*git, 'show', f'{head}:{location}'])
     elif name == 'diff':
-        value = command([*git, 'diff', '--no-ext-diff', '--no-textconv', f'{base}...{head}'])
+        if source is not None:
+            source.client.deadline = time.monotonic() + 120
+            value = source.diff()['diffText']
+        else:
+            value = command([*git, 'diff', '--no-ext-diff', '--no-textconv', f'{base}...{head}'])
     else:
         findings = args['findings']
         model_result({'verdict': 'changes_requested' if findings else 'passed', 'findings': findings})
         for finding in findings:
-            text = source_tool('read_file', {'path': finding['file']}, git, head, base)[0]['text']
+            text = source_tool('read_file', {'path': finding['file']}, git, head, base, source)[0]['text']
             if finding['line'] > len(json.loads(text).splitlines()):
                 raise ValueError('Finding line does not exist')
         value = {'status': 'valid'}
@@ -72,20 +79,38 @@ def run(request):
     if not re.fullmatch('[1-9][0-9]*', pull):
         raise ValueError('Invalid pull request')
     with tempfile.TemporaryDirectory(prefix='factory-source-review-') as directory:
+        source = None
+        private = os.environ.get('FACTORY_HERMES_GITHUB_TRANSPORT') == 'composio'
         command(['/usr/bin/git', 'init', '--bare', '--quiet', directory])
         git = ['/usr/bin/git', '--no-replace-objects', '-c', 'core.hooksPath=/dev/null',
                '-c', 'core.fsmonitor=false', '--git-dir', directory]
         ref = f'refs/pull/{pull}/head'
         def refresh():
+            if private:
+                from immutable_github_source import READ
+                view = READ.read(READ.GithubRead(), 'pr-metadata', repository, pull)
+                if view['baseRefName'] != base_ref:
+                    raise ValueError('Review base branch changed')
+                return view
             command([*git, 'fetch', '--quiet', '--no-tags', '--no-recurse-submodules',
                      f'https://github.com/{repository}.git', f'+{ref}:refs/review/head',
                      f'+refs/heads/{base_ref}:refs/review/base'])
             if sum(file.stat().st_size for file in Path(directory).rglob('*') if file.is_file()) > 256 * 1024 * 1024:
                 raise ValueError('Source snapshot exceeds budget')
-        refresh()
-        if command([*git, 'rev-parse', 'refs/review/head^{commit}']).strip() != head:
+        if private:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from immutable_github_source import Source
+            view = refresh()
+            if view['headRefOid'] != head:
+                return {**result, 'reason': 'review_head_changed'}
+            source = Source(repository, view['baseRefOid'], head, directory, output_limit=64000)
+            base = source.merge_base
+        else:
+            refresh()
+        if not private and command([*git, 'rev-parse', 'refs/review/head^{commit}']).strip() != head:
             return {**result, 'reason': 'review_head_changed'}
-        base = command([*git, 'rev-parse', 'refs/review/base^{commit}']).strip()
+        if not private:
+            base = command([*git, 'rev-parse', 'refs/review/base^{commit}']).strip()
         if not re.fullmatch('[a-f0-9]{40}', base):
             return result
         prompt = request['instructions'] + f'''
@@ -116,12 +141,12 @@ Return only JSON with verdict (passed, changes_requested, inconclusive) and find
                 event = json.loads(relay_line(process.stdout, pending, deadline))
                 if set(event) == {'assessment'}:
                     assessment = model_result(event['assessment'])
-                    source_tool('validate_findings', {'findings': assessment['findings']}, git, head, base)
+                    source_tool('validate_findings', {'findings': assessment['findings']}, git, head, base, source)
                     break
                 if set(event) != {'tool', 'arguments'}:
                     raise ValueError('Invalid native source operation')
                 try:
-                    response = {'content': source_tool(event['tool'], event['arguments'], git, head, base)}
+                    response = {'content': source_tool(event['tool'], event['arguments'], git, head, base, source)}
                 except Exception:
                     response = {'isError': True}
                 process.stdin.write((json.dumps(response) + '\n').encode())
@@ -135,8 +160,12 @@ Return only JSON with verdict (passed, changes_requested, inconclusive) and find
                 process.communicate(timeout=10)
         if not stopped or assessment is None:
             return result
-        refresh()
-        if command([*git, 'rev-parse', 'refs/review/head^{commit}']).strip() != head:
+        observed = refresh()
+        if private and observed['headRefOid'] != head:
+            return {**result, 'reason': 'review_head_changed'}
+        if private and observed['baseRefOid'] != view['baseRefOid']:
+            return result
+        if not private and command([*git, 'rev-parse', 'refs/review/head^{commit}']).strip() != head:
             return {**result, 'reason': 'review_head_changed'}
         return {**result, **assessment, 'reason': 'review_inconclusive' if assessment['verdict'] == 'inconclusive' else 'ok'}
 

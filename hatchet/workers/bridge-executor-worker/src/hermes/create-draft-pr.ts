@@ -920,7 +920,7 @@ export async function inspectDraftPullRequestViaCommand(repo: string, prNumber: 
         ['python3', '-c', PINNED_PR_DIFF_QUERY, repo, view.baseRefOid!, view.headRefOid!, String(maxBuffer), String(Math.max(1, remaining() - 1000))],
         remaining(), maxBuffer);
       if (!sameStrings(changedFileNames(fallback.files).sort(), paths) || typeof fallback.diffText !== 'string')
-        throw new Error('Pinned public Git diff does not match GitHub files');
+        throw new Error('Pinned immutable Git diff does not match GitHub files');
       diffText = fallback.diffText;
     } else {
       // A PR-number diff can race a push; the immutable comparison has the same merge-base semantics.

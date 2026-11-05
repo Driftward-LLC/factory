@@ -326,7 +326,7 @@ test('local source review keeps capability authorizations and exact scope withou
     repositories: { [intent.repository]: { base_ref: 'main' } } }), { mode: 0o600 });
   const calls: string[] = [], authorizations: string[] = [];
   const reviewer = new IndependentReviewer(path.join(directory, 'journal'), config, async (file, args) => {
-    calls.push(file); assert.equal(file, '/opt/hermes/.venv/bin/python');
+    calls.push(file); assert.equal(file, '/opt/factory/bin/python');
     assert.match(args[0], /local_source_review\.py$/);
     return JSON.stringify({ head_sha: intent.head_sha, verdict: 'passed', findings: [], reason: 'ok' });
   }, { provisioning: directory, repositories: directory }, async (_job, _intent, purpose = 'launch') => {

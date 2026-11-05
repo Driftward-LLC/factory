@@ -77,7 +77,7 @@ def configure(installation, args) -> None:
     manifest = json.loads(bootstrap._read_private(snapshot / "manifest.json"))
     metadata = installation.metadata
     profile = metadata.get("profile", "portable-dry-run")
-    config = state.config_files(profile, metadata)
+    config = state.config_files(profile, metadata) | state.optional_config(manifest)
     volumes = manifest.get("volumes", [])
     expected = {"config/" + name for name in config} | {"volumes/" + name + ".tar" for name in volumes}
     if (manifest.get("format_version") != 1 or manifest.get("profile") != profile
