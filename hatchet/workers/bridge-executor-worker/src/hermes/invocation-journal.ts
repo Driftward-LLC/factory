@@ -103,12 +103,22 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export function invocationFingerprint(job: BridgeJob, version: 1 | 2): string {
+  const payload = version === 1 ? job.payload : Object.fromEntries(
+    Object.entries(job.payload).filter(([key]) => !CORRELATION_PAYLOAD_KEYS.has(key)));
+  const intent = { job_id: job.job_id, idempotency_key: job.idempotency_key,
+    requested_action: job.requested_action, branch: job.branch, payload };
+  // Bind the hash format too, so old code cannot mistake new records for legacy ones.
+  return createHash('sha256').update(canonical(version === 1 ? intent : { fingerprint_version: 2, ...intent })).digest('hex');
+}
+
+
 /** Executor-private receipts only. Prompts, output and session material are never stored. */
 export class InvocationJournal {
   private active = new Map<string, Promise<BoundedHermesDraftPrReceipt>>();
   private prepared = new Map<string, { start: () => void; result: Promise<BoundedHermesDraftPrReceipt> }>();
   private nativeOwners = new Map<string, { binding: NativeOwnerBinding; cancel?: () => Promise<NativeOwnerStop>; complete?: () => void }>();
-  constructor(private readonly directory: string) {
+  constructor(private readonly directory: string, private readonly executionMetadata?: () => unknown) {
     if (!path.isAbsolute(directory)) throw invalid('Invocation journal requires an absolute directory');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.privateDirectory(directory);
@@ -145,12 +155,7 @@ export class InvocationJournal {
   }
 
   private fingerprint(job: BridgeJob, version: 1 | 2): string {
-    const payload = version === 1 ? job.payload : Object.fromEntries(
-      Object.entries(job.payload).filter(([key]) => !CORRELATION_PAYLOAD_KEYS.has(key)));
-    const intent = { job_id: job.job_id, idempotency_key: job.idempotency_key,
-      requested_action: job.requested_action, branch: job.branch, payload };
-    // Bind the hash format too, so old code cannot mistake new records for legacy ones.
-    return createHash('sha256').update(canonical(version === 1 ? intent : { fingerprint_version: 2, ...intent })).digest('hex');
+    return invocationFingerprint(job, version);
   }
 
   status(job: BridgeJob, cancel = false): InvocationStatus {
@@ -252,7 +257,8 @@ export class InvocationJournal {
     // mkdir is the cross-process reservation; even incomplete reservations survive crashes.
     mkdirSync(directory, { mode: 0o700 });
     this.syncDirectory(this.directory);
-    this.persist(path.join(directory, 'intent.json'), { fingerprint_version: 2, fingerprint: this.fingerprint(job, 2), lease });
+    this.persist(path.join(directory, 'intent.json'), { fingerprint_version: 2, fingerprint: this.fingerprint(job, 2), lease,
+      ...(this.executionMetadata ? { executor_plugin: this.executionMetadata() } : {}) });
     const binding = Object.freeze({ invocation_id: `${job.job_id.toLowerCase()}:${lease.lease_id.toLowerCase()}:${lease.epoch}`,
       epoch: lease.epoch, fingerprint: this.fingerprint(job, 2) });
     const owner: { binding: NativeOwnerBinding; cancel?: () => Promise<NativeOwnerStop>; complete?: () => void } = { binding };

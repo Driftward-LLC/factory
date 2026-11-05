@@ -1,0 +1,9 @@
+{
+  "schema": "factory-executor-plugin-v1",
+  "namespace": "example-engineering",
+  "version": "1.0.0",
+  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "archive_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tree_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "repository": "https://github.com/example/engineering-plugin"
+}

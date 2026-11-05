@@ -48,6 +48,7 @@ class LocalExecutionTests(unittest.TestCase):
         identity['FACTORY_HERMES_ALLOWED_REPOS'] = self.route['repo']
         bootstrap._create_private(self.root / 'factory-hermes-execution.env', bootstrap.env_text(identity))
         bootstrap._create_private(self.root / 'env/hatchet-client.env', bootstrap.env_text({'HATCHET_CLIENT_TOKEN': 'fixture'}))
+        self.write('executor-plugin.json',{'schema':'factory-executor-plugin-v1','namespace':'example-engineering','version':'1.0.0','source_commit':'a'*40,'archive_sha256':'b'*64,'tree_sha256':'c'*64,'repository':'https://example.com/plugin'})
         self.install = portable.Installation(self.root)
 
     def write(self, name, value):
@@ -72,7 +73,7 @@ class LocalExecutionTests(unittest.TestCase):
                 if change == 'route':
                     self.write('config/routing-registry.json', {'version': 2, 'routes': [self.route, {**self.route, 'repo': 'example/other', 'project_id': '55555555-5555-4555-8555-555555555555'}]})
                 elif change == 'identity':
-                    with (self.root / execution.CONFIG[0]).open('a') as stream:
+                    with (self.root / 'factory-hermes-execution.env').open('a') as stream:
                         stream.write("PROVIDER_KEY='must-never-be-shared'\n")
                 else:
                     self.write('reviewer/provisioning.json', {})
@@ -82,7 +83,7 @@ class LocalExecutionTests(unittest.TestCase):
                 if change == 'route':
                     self.write('config/routing-registry.json', {'version': 2, 'routes': [self.route]})
                 elif change == 'identity':
-                    path = self.root / execution.CONFIG[0]
+                    path = self.root / 'factory-hermes-execution.env'
                     path.write_text('\n'.join(line for line in path.read_text().splitlines() if not line.startswith('PROVIDER_KEY')) + '\n')
 
     def test_receipt_required_and_changes_refuse_start_but_allow_stop(self):
@@ -122,7 +123,7 @@ class LocalExecutionTests(unittest.TestCase):
 
     def test_preview_binds_runtime_configuration_and_deployment(self):
         with patch.object(self.install, 'assert_owned_resources'), patch.object(self.install, 'assert_config'), \
-                patch.object(self.install, 'compose', return_value='[]'), patch.object(execution, 'assert_idle'), patch.object(execution, 'runtime', return_value={'runtime': 'first'}):
+                patch.object(self.install, 'compose', return_value='[]'), patch.object(execution, 'assert_executor_ready', return_value={'profile':'factory-executor','namespace':'example-engineering','model_called':False,'cli_arguments_checked':True,'source_commit':'a'*40}), patch.object(execution, 'assert_idle'), patch.object(execution, 'runtime', return_value={'runtime': 'first'}):
             first = execution.preview(self.install)
             with patch.object(execution, 'runtime', return_value={'runtime': 'second'}):
                 second = execution.preview(self.install)
@@ -143,7 +144,7 @@ class LocalExecutionTests(unittest.TestCase):
         root.mkdir()
         script = execution.NATIVE_IDLE.replace('/opt/data/factory-invocations', str(root))
         def result():
-            return subprocess.run([sys.executable, '-c', script], capture_output=True).returncode
+            return subprocess.run([sys.executable, '-c', script], input='[]', text=True, capture_output=True).returncode
         self.assertEqual(result(), 0)
         hold = root / 'local-admission'
         hold.mkdir()
@@ -155,6 +156,34 @@ class LocalExecutionTests(unittest.TestCase):
         self.assertEqual(result(), 73)
         (job / 'result.json').write_text('{}')
         self.assertEqual(result(), 0)
+
+    def test_retired_journal_requires_exact_evidence_and_preserves_bytes(self):
+        root=Path(self.tmp.name)/'retired-invocations';root.mkdir()
+        job='11111111-1111-4111-8111-111111111111';directory=root/job;directory.mkdir()
+        runtime={'schema':1,'backend':'hermes','kind':'docker','instance_id':'d'*64,'image_digest':'sha256:'+'e'*64,'incarnation':'sha256:'+'f'*64}
+        lease={'lease_id':'22222222-2222-4222-8222-222222222222','epoch':1,'owner':'worker','fence_token':'original-fence'}
+        intent={'fingerprint_version':2,'fingerprint':'a'*64,'lease':lease}
+        (directory/'intent.json').write_text(json.dumps(intent));(directory/'runtime.json').write_text(json.dumps(runtime))
+        evidence={'job_id':job,'runtime':runtime,'fingerprint_version':2,'fingerprint':'a'*64,'lease_id':lease['lease_id'],'owner':lease['owner'],'epoch':1,'fence_sha256':hashlib.sha256(b'original-fence').hexdigest()}
+        script=execution.NATIVE_IDLE.replace('/opt/data/factory-invocations',str(root))
+        before={p.name:p.read_bytes() for p in directory.iterdir()}
+        def result(value):return subprocess.run([sys.executable,'-c',script],input=json.dumps(value),text=True,capture_output=True).returncode
+        self.assertNotEqual(result([]),0);self.assertEqual(result([evidence]),0)
+        for key,value in [('fingerprint','b'*64),('owner','another'),('epoch',2),('fence_sha256','b'*64),('runtime',{**runtime,'instance_id':'b'*64})]:
+            self.assertNotEqual(result([{**evidence,key:value}]),0,key)
+        holds=root/'local-admission';holds.mkdir();(holds/'original').mkdir()
+        self.assertNotEqual(result([evidence]),0)
+        self.assertEqual({p.name:p.read_bytes() for p in directory.iterdir()},before)
+        self.assertFalse((directory/'result.json').exists())
+
+    def test_root_retirement_inventory_requires_exact_old_object_removed(self):
+        evidence=[{'runtime':{'instance_id':'d'*64}}]
+        with patch.object(self.install,'compose',return_value=json.dumps(evidence)),patch.object(portable_state,'_docker',return_value='d'*64):
+            with self.assertRaisesRegex(ValueError,'not permanently removed'):execution.retirement_descriptors(self.install)
+        with patch.object(self.install,'compose',return_value=json.dumps(evidence)),patch.object(portable_state,'_docker',side_effect=RuntimeError('inventory failure')):
+            with self.assertRaises(RuntimeError):execution.retirement_descriptors(self.install)
+        with patch.object(self.install,'compose',return_value=json.dumps(evidence)),patch.object(portable_state,'_docker',return_value='c'*64):
+            self.assertEqual(execution.retirement_descriptors(self.install),evidence)
 
     def test_backup_knows_activation_assets_and_restore_never_inherits_approval(self):
         metadata = {**self.install.metadata, 'local_execution': self.receipt()}

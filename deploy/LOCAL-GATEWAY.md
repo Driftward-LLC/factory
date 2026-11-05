@@ -57,6 +57,39 @@ Keep directories mode 0700 and files 0600. Activation gives only these public
 configuration and reviewer files to UID 10000 so the gateway can read them;
 contents and private modes are preserved. Provider credentials are not touched.
 
+## Native engineering plugin readiness
+
+Provision the executor's already maintained native engineering plugin separately
+from the public Factory image. Use its operator-reviewed immutable archive and
+existing native adapter, not another set of skill copies. Private package source
+or download credentials must not be embedded in this repository or public image.
+Extract only into the dedicated executor profile's `plugins/NAMESPACE/` directory,
+refuse conflicting existing files, and enable that package with the native Hermes
+plugin command scoped to `HERMES_HOME=/opt/data/profiles/factory-executor`. Preserve
+provider auth, model settings and all other plugin settings.
+
+Install private-mode public metadata `executor-plugin.json` in the installation
+root, readable by UID 10000. See `examples/executor-plugin.json` for its schema.
+The source commit/version and archive SHA identify the reviewed artifact;
+`tree_sha256` is SHA256 of sorted compact JSON mapping every archive-relative
+regular file path to its SHA256. The package must contain no links or special
+files. Store the same metadata as `.factory-source.json` at the installed plugin
+root, excluding only that root receipt from the tree digest. No other files,
+including stale bytecode, are silently excluded. The native loader registers the
+maintained package; Factory explicitly preloads only `implement-change`,
+`verify-app` and `prepare-pr`, including the linked PR template.
+
+The wrapper derives the explicit `FACTORY_HERMES_SKILL_NAMESPACE` from this public
+pin. Its activation preview and gateway startup run the actual compiled profile
+argument builder, native profile resolver, CLI argparse and native plugin/skill
+preload without invoking a command handler, model, inline skill preprocessing or
+tool. All selected skills and the PR template must resolve from the exact enabled
+pinned native package. Missing, disabled, shadowed or changed instructions refuse
+readiness before effect admission. Recheck also occurs during authenticated
+executor identity preflight, so a later configuration change cannot rely on a
+stale startup check. The bounded readiness receipt identifies source commit and
+version; it is not proof of model execution or task completion.
+
 ## Review and apply
 
 Use the same image-pinned release bundle that owns this installation. The
@@ -104,3 +137,32 @@ The experimental native owner is a separate inactive prototype and is not part
 of this activation path. Host deployment or external-service registration is an
 operator action; a worker task may prepare a draft PR without obtaining host
 root or Docker privileges.
+
+After an existing root-attested interrupted-execution resolution, startup may
+recognize the retained unfinished native journal only when its exact version-2
+intent fingerprint, lease ID/owner/epoch/fence hash and complete runtime binding
+match the committed resolution and audit digests. The root wrapper also proves
+the exact old Docker object has been removed through a successful full inventory.
+A stopped object, ordinary failed state, revoked write authority alone, missing
+process or uncommitted attestation is insufficient. This read-only recognition
+neither deletes the old journal nor writes a result, reopens old fences or clears
+an admission hold. Nonempty native admission holds still require separate review.
+
+The preflight permits the reviewed engineering plugin and the existing native
+PostHog observer, whose complete package must match the image bundled observer.
+Other enabled adapters are a conflict requiring operator review, so readiness
+cannot execute unrelated plugin registration code. It uses native safe YAML,
+forces bytecode writes off and checks the complete pinned tree. At reservation,
+the existing invocation intent retains the successful preflight's namespace,
+package version, source commit and archive/tree hashes before model dispatch.
+Historical unknown intents are never backfilled from the current installation.
+The independent reviewer consumes its existing verified instruction snapshots
+and suppresses native plugin discovery; it does not install this executor plugin.
+
+The existing portable executor binds the native packaged tool store through
+`HERMES_RUNTIME_DIR=/opt/hermes/tools`. Operator plugin admission must use that
+same binding and complete Hermes' locked dependency transaction in dedicated
+executor state before activation. A cold profile may need public dependency
+downloads or a reviewed native cache; copying an enabled setting does not admit
+the plugin. Readiness uses Hermes' read-only `venv_is_current()` probe and refuses
+a cold or stale dependency selection before registering any plugin.

@@ -15,11 +15,19 @@ services:
       FACTORY_REVIEWER_CONFIG_PATH: /etc/factory/config/reviewer-provisioning.json
       FACTORY_REVIEWER_PROVISIONING_DIRECTORY: /etc/factory/config/reviewer
       FACTORY_HERMES_PROFILE: factory-executor
+      FACTORY_HERMES_SKILL_NAMESPACE: ${FACTORY_EXECUTOR_SKILL_NAMESPACE:?Provision a reviewed native engineering plugin}
+      FACTORY_HERMES_ENGINEERING_MANIFEST: /etc/factory/executor-plugin.json
       FACTORY_HERMES_GRPC_TARGET: unix:///run/factory-gateway/hermes.sock
       FACTORY_ORGANIZATION_CONFIG: /etc/factory/config/organization.json
       HATCHET_VERIFIER_POLICY_PATH: /etc/factory/config/verifier-policy.json
       HATCHET_INDEPENDENT_REVIEW_POLICY_PATH: /etc/factory/config/independent-review-policy.json
     volumes:
+      - type: bind
+        source: ${FACTORY_INSTALL_DIR:?}/executor-plugin.json
+        target: /etc/factory/executor-plugin.json
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ${FACTORY_INSTALL_DIR:?}/gateway
         target: /run/factory-gateway

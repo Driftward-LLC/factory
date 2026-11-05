@@ -287,6 +287,7 @@ function execFileAsync(
     timeout: number;
     maxBuffer: number;
     env: NodeJS.ProcessEnv;
+    cwd?: string;
   }
 ): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
@@ -1220,6 +1221,7 @@ export async function assertHermesIdentityViaCommand(
   expectation: HermesIdentityExpectation = hermesIdentityExpectation(repo)
 ): Promise<HermesIdentityCheck> {
   assertGitHubIntegration();
+  await assertLocalExecutorReadiness();
   if (composioGithubEnabled()) {
     const observed = await composioGithubRead<HermesIdentityCheck>('identity', repo, undefined, expectation.timeout, 128 * 1024);
     if (observed.githubLogin !== expectation.expectedGithubLogin) throw new NonRetryableBridgeExecutionError('hermes_git_author_forbidden', 'Composio GitHub actor differs from configured principal');
@@ -1362,6 +1364,29 @@ function runtimeCommandFailure(error: unknown,
       bufferExceeded,
     },
   );
+}
+
+/** Pure argument validation plus native read-only resolution, before effect admission. */
+export type ExecutorPluginPin = { namespace: string; version: string; source_commit: string; tree_sha256: string; archive_sha256: string };
+export async function assertLocalExecutorReadiness(): Promise<ExecutorPluginPin | undefined> {
+  if (!localExecutorEnabled()) return;
+  const args = hermesProfileArguments();
+  try {
+    const result = await execFileAsync('/opt/hermes/.venv/bin/python',
+      ['/app/deploy/executor-readiness.py', JSON.stringify(args)], {
+        timeout: 30_000, maxBuffer: 8192, cwd: '/opt/data',
+        env: { ...process.env, HERMES_HOME: '/opt/data/profiles/factory-executor' },
+      });
+    const value = JSON.parse(result.stdout);
+    if (value.profile !== 'factory-executor' || value.namespace !== process.env.FACTORY_HERMES_SKILL_NAMESPACE
+      || value.model_called !== false || value.cli_arguments_checked !== true || value.native_dependencies_current !== true || Object.keys(value.skills || {}).sort().join(',') !== 'implement-change,prepare-pr,verify-app'
+      || !/^[a-f0-9]{40}$/.test(value.source_commit) || !/^[a-f0-9]{64}$/.test(value.tree_sha256)
+      || !/^[a-f0-9]{64}$/.test(value.archive_sha256) || typeof value.version !== 'string') throw new Error();
+    return { namespace: value.namespace, version: value.version, source_commit: value.source_commit,
+      tree_sha256: value.tree_sha256, archive_sha256: value.archive_sha256 };
+  } catch {
+    throw new NonRetryableBridgeExecutionError('hermes_skill_namespace_invalid', 'Factory executor native skill preflight failed');
+  }
 }
 
 export function hermesProfileArguments(): string[] {

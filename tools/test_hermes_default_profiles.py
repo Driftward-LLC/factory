@@ -42,6 +42,16 @@ class ProfilesTest(unittest.TestCase):
         self.assertEqual((home / 'auth.json').read_text(), 'synthetic-root-credential')
         self.assertEqual((home / 'config.yaml').read_text(), 'unchanged root configuration')
 
+    def test_existing_native_plugin_probe_scopes_profile_and_preserves_auth(self):
+        home, _, modules, _ = self.exercise(existing=['factory-executor','factory-independent-reviewer'])
+        with patch.dict(sys.modules,modules),patch.dict(MODULE.os.environ,{'FACTORY_HERMES_ENGINEERING_MANIFEST':'/public/pin.json'}),patch.object(MODULE.subprocess,'run') as probe:
+            MODULE.ensure_profiles()
+        probe.assert_called_once()
+        self.assertTrue(probe.call_args.args[0][1].endswith('/executor-readiness.py'))
+        self.assertEqual(probe.call_args.kwargs['env']['HERMES_HOME'],str(home/'profiles/factory-executor'))
+        self.assertEqual((home/'auth.json').read_text(),'synthetic-root-credential')
+        self.assertEqual((home/'config.yaml').read_text(),'unchanged root configuration')
+
     def test_no_inline_credential_copy(self):
         _, _, modules, _ = self.exercise(seed={'model': {'api_key': 'synthetic-secret'}})
         with patch.dict(sys.modules, modules), patch.object(MODULE.subprocess, 'run') as command:
