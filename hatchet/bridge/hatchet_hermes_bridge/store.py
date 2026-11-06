@@ -27,7 +27,7 @@ from . import work_evidence
 
 DEFAULT_DB_PATH = "/var/lib/factory-hatchet-bridge/bridge.db"
 DOCKER_VERIFIER_POLICY_PATH = "/etc/factory/config/verifier-policy.json"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 RESOLVER_SEMANTIC_VERSION = "legacy-conflict-attestation-v1"
 # The contract gives names to immutable attestation fields.  The attestation
 # identity also binds the transitive source closure that implements these
@@ -293,6 +293,7 @@ def _require_runtime_schema(conn: sqlite3.Connection) -> None:
         "factory_issue_controls", "factory_issue_control_commands",
         "factory_independent_reviews",
         "factory_independent_review_deliveries",
+        "factory_review_enrollments",
     }
     found = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not required <= found:
@@ -557,6 +558,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(source_attempt_id) REFERENCES factory_attempts(attempt_id),
             FOREIGN KEY(job_id) REFERENCES bridge_jobs(job_id)
         );
+        CREATE TABLE IF NOT EXISTS factory_review_enrollments (
+            source_job_id TEXT PRIMARY KEY, source_attempt_id TEXT NOT NULL UNIQUE,
+            request_id TEXT NOT NULL UNIQUE, policy_digest TEXT NOT NULL,
+            approval_json TEXT NOT NULL, evidence_json TEXT NOT NULL,
+            actor TEXT NOT NULL, created_at TEXT NOT NULL,
+            FOREIGN KEY(source_job_id) REFERENCES bridge_jobs(job_id),
+            FOREIGN KEY(source_attempt_id) REFERENCES factory_attempts(attempt_id)
+        );
         CREATE TABLE IF NOT EXISTS factory_independent_review_deliveries (
             review_id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE,
             request_id TEXT NOT NULL UNIQUE, approval_json TEXT NOT NULL,
@@ -627,6 +636,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_factory_import_conflict_attestations_delete BEFORE DELETE ON factory_import_conflict_attestations FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'factory import conflict attestations are append-only'); END")
         for operation in ("UPDATE", "DELETE"):
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_factory_issue_control_commands_{operation.lower()} BEFORE {operation} ON factory_issue_control_commands BEGIN SELECT RAISE(ABORT, 'issue control history is append-only'); END")
+        for operation in ("UPDATE", "DELETE"):
+            conn.execute(f"CREATE TRIGGER IF NOT EXISTS protect_review_enrollment_{operation.lower()} BEFORE {operation} ON factory_review_enrollments BEGIN SELECT RAISE(ABORT, 'review enrollment is append-only'); END")
+        conn.execute("CREATE TRIGGER IF NOT EXISTS protect_review_enrollment_replace BEFORE INSERT ON factory_review_enrollments WHEN EXISTS (SELECT 1 FROM factory_review_enrollments WHERE source_job_id=NEW.source_job_id OR source_attempt_id=NEW.source_attempt_id OR request_id=NEW.request_id) BEGIN SELECT RAISE(ABORT, 'review enrollment is append-only'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_delete BEFORE DELETE ON factory_independent_reviews BEGIN SELECT RAISE(ABORT, 'review budget is durable'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_identity BEFORE UPDATE ON factory_independent_reviews WHEN NEW.review_id!=OLD.review_id OR NEW.lineage_key!=OLD.lineage_key OR NEW.pass_number!=OLD.pass_number OR NEW.source_attempt_id!=OLD.source_attempt_id OR NEW.source_job_id!=OLD.source_job_id OR NEW.job_id!=OLD.job_id OR NEW.repository!=OLD.repository OR NEW.pr_url!=OLD.pr_url OR NEW.head_sha!=OLD.head_sha OR NEW.policy_digest!=OLD.policy_digest OR NEW.capability!=OLD.capability OR (OLD.result_json IS NOT NULL AND (NEW.result_json IS NOT OLD.result_json OR NEW.result_digest IS NOT OLD.result_digest)) BEGIN SELECT RAISE(ABORT, 'review identity and receipt are immutable'); END")
         conn.execute("CREATE TRIGGER IF NOT EXISTS protect_independent_review_replace BEFORE INSERT ON factory_independent_reviews WHEN EXISTS (SELECT 1 FROM factory_independent_reviews WHERE review_id=NEW.review_id OR (lineage_key=NEW.lineage_key AND pass_number=NEW.pass_number) OR source_job_id=NEW.source_job_id) BEGIN SELECT RAISE(ABORT, 'review budget is durable'); END")
@@ -3244,7 +3256,8 @@ def reserve_factory_retry(
             "supersede_pr_url": supersede_pr_url,
             "superseded_bridge_job_id": supersede_job_id,
         }
-        sealed_payload = dict(payload)
+        from . import independent_review
+        sealed_payload = independent_review.seal_admission(payload, mode)
         if supersede_job_id:
             sealed_payload["superseded_bridge_job"] = get_supersedable_bridge_job(
                 conn, supersede_job_id, work_item_key=work_item_key, repository=sealed_payload.get("repo")
@@ -3372,7 +3385,8 @@ def reserve_factory_absence_retry(
             "actor": actor, "prior_attempt_id": prior_attempt_id,
             "supersede_pr_url": None, "superseded_bridge_job_id": None,
         }
-        sealed_payload = dict(payload)
+        from . import independent_review
+        sealed_payload = independent_review.seal_admission(payload, mode)
         sealed_payload["factory_retry"] = lineage
         sealed_payload["factory_absence_evidence"] = bound_evidence
         sealed_payload["work_item_id"] = work_item_key
@@ -3499,7 +3513,12 @@ def _reserve_factory_repair_locked(
         "supersede_pr_url": None,
         "repair_source_job_id": failed_job["job_id"],
     }
-    sealed_payload = dict(repair_payload)
+    from . import independent_review
+    inherited_review = dict(failed_job["payload"])
+    effective_enrollment = independent_review.enrollment(conn, failed_job)
+    if effective_enrollment:
+        inherited_review["independent_review_enrollment"] = effective_enrollment
+    sealed_payload = independent_review.seal_admission(repair_payload, factory_attempt["mode"], inherited=inherited_review)
     sealed_payload["factory_retry"] = lineage
     sealed_payload["work_item_id"] = factory_attempt["work_item_key"]
     sealed_payload["linear_issue"] = factory_attempt["work_item_key"]
@@ -3606,7 +3625,8 @@ def reserve_factory_intake(
         )
         if not created:
             raise BridgeConflict("factory intake reservation unexpectedly deduplicated")
-        sealed_payload = dict(payload)
+        from . import independent_review
+        sealed_payload = independent_review.seal_admission(payload, mode)
         sealed_payload["factory_retry"] = {
             "attempt_id": attempt["attempt_id"], "generation": attempt["generation"],
             "request_id": request_id, "reason": sanitize_detail(reason.strip(), 320),
@@ -3615,11 +3635,6 @@ def reserve_factory_intake(
         sealed_payload["work_item_id"] = work_item_key
         sealed_payload["linear_issue"] = work_item_key
         sealed_payload["dry_run"] = mode == "dry-run"
-        from . import independent_review
-        sealed_payload.pop("independent_review_enrollment", None)
-        review_policy = independent_review.policy()
-        if mode == "real" and review_policy["enabled"] and payload.get("repo") in review_policy["repositories"]:
-            sealed_payload["independent_review_enrollment"] = {"policy_digest": review_policy["digest"]}
         job, job_created = submit_job(conn, {
             "idempotency_key": attempt["idempotency_key"],
             "requested_action": "create_draft_pr",

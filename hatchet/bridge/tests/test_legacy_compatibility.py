@@ -13,6 +13,7 @@ from pathlib import Path
 from hatchet_hermes_bridge.legacy_artifacts import deterministic_branch, reconcile_legacy_active_row, routing_repositories
 from hatchet_hermes_bridge.operator import OperatorError, _load_route, preview_retry
 from test_support import connect_migrate as connect
+from hatchet_hermes_bridge import store
 from hatchet_hermes_bridge.store import init_db
 
 
@@ -115,7 +116,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM bridge_jobs").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_inspection_requests").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM factory_inspection_outbox").fetchone()[0], 0)
-        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], 10)
+        self.assertEqual(self.conn.execute("SELECT schema_version FROM bridge_schema_meta").fetchone()[0], store.SCHEMA_VERSION)
 
     def test_disabled_upgrade_preserves_existing_pending_inspection_without_claiming(self):
         from hatchet_hermes_bridge import store

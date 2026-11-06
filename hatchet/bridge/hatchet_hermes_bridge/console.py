@@ -217,6 +217,18 @@ def _review_work(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[s
                     current = _with_review(_factory_attempt_lifecycle_summary(conn, repair), conn)
                     if current["independent_review"]["status"] == "needs_operator":
                         records[repair["attempt_id"]] = current
+        gaps = conn.execute("""SELECT a.attempt_id FROM factory_attempts a JOIN bridge_jobs j ON j.job_id=a.job_id
+            WHERE a.mode='real' AND a.status='verified_ready'
+            AND NOT EXISTS (SELECT 1 FROM factory_independent_reviews r WHERE r.source_attempt_id=a.attempt_id)
+            AND (json_type(j.payload_json,'$.independent_review_enrollment')='object'
+                 OR EXISTS (SELECT 1 FROM factory_review_enrollments e WHERE e.source_job_id=a.job_id))
+            ORDER BY a.updated_at DESC LIMIT ?""", (limit + 1,)).fetchall()
+        scope["unfinished_truncated"] |= len(gaps) > limit
+        for gap in gaps[:limit]:
+            attempt = get_factory_attempt(conn, gap["attempt_id"])
+            record = _with_review(_factory_attempt_lifecycle_summary(conn, attempt), conn)
+            if record["independent_review"]["status"] in {"awaiting_review", "needs_operator", "unknown"}:
+                records[attempt["attempt_id"]] = record
         return list(records.values()), scope
     except (BridgeError, sqlite3.Error, KeyError, TypeError):
         return [], {**scope, "available": False}

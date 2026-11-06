@@ -55,7 +55,7 @@ function independentReview(item) {
   return { schema: 'factory-console-independent-review-v1', attempt_id: reviewState === 'wrong_attempt' ? 'other-attempt' : item.attempt.attempt_id,
     status: reviewState, reviewed_sha: reviewState === 'invalid_pass' ? null : 'a'.repeat(40), current_sha: (['stale', 'superseded'].includes(reviewState) ? 'b' : 'a').repeat(40),
     pass_count: reviewState === 'not_requested' ? 0 : reviewState === 'needs_operator' ? 2 : 1, max_passes: 2, reviewer_model: 'gpt-6-astra', reviewer_session_id: 'fictional-review-session',
-    recorded_at: new Date(now - 60000).toISOString(), reason_code: reviewState === 'not_requested' ? null : reviewState === 'needs_operator' ? 'review_budget_exhausted' : 'ok',
+    recorded_at: new Date(now - 60000).toISOString(), reason_code: reviewState === 'not_requested' ? null : ({ unknown: 'historical_enrollment_unknown', awaiting_review: 'review_not_scheduled', not_required: 'policy_disabled', needs_operator: 'review_budget_exhausted' })[reviewState] ?? 'ok',
     findings: ['changes_requested', 'needs_operator', 'superseded', 'inherited_stop'].includes(reviewState) ? [{ priority: 1, file: 'src/example.ts', line: 7, title: 'Fictional review finding', body: 'Bounded fictional finding <script>alert(1)</script>' }] : [] };
 }
 function withReview(item) {
@@ -300,19 +300,19 @@ async function main() {
     assert.equal(await page.locator('#hatchet-link').isVisible(), false);
     assert.equal(await page.locator('#active-attempts tr').count(), 3);
     assert.match(await page.locator('#active-attempts tr').first().textContent(), /ENG-104/);
-    for (const [state, reviewLabel] of Object.entries({ pending: 'Pending', running: 'Running', changes_requested: 'Changes requested', needs_operator: 'Needs operator', stale: 'Stale' })) {
+    for (const [state, reviewLabel] of Object.entries({ awaiting_review: 'Awaiting scheduling', pending: 'Pending', running: 'Running', changes_requested: 'Changes requested', needs_operator: 'Needs operator', stale: 'Stale' })) {
       reviewOnlyState = state;
       await page.locator('#refresh-button').click();
       await page.locator('#active-attempts tr').filter({ hasText: 'ENG-108' })
         .getByText('Independent review: ' + reviewLabel, { exact: true }).waitFor();
       assert.equal(await page.locator('#active-attempts tr').count(), 4, 'Review-only terminal attempt remains visible: ' + state);
       assert.match(await page.locator('#active-attempts').textContent(), /ENG-108/);
-      assert.equal(await page.locator('#queue-attention').textContent(), ['pending', 'running'].includes(state) ? '1' : '2');
+      assert.equal(await page.locator('#queue-attention').textContent(), ['awaiting_review', 'pending', 'running'].includes(state) ? '1' : '2');
       await page.locator('[data-work-link]').click();
       assert.equal(await page.locator('#work-attempts tr').count(), 4, 'Active work includes independent review without duplicate attempt');
       assert.match(await page.locator('#work-attempts').textContent(), /ENG-108/);
       await page.locator('#status-filter').selectOption('attention');
-      assert.equal(await page.locator('#work-attempts tr').count(), ['pending', 'running'].includes(state) ? 1 : 2);
+      assert.equal(await page.locator('#work-attempts tr').count(), ['awaiting_review', 'pending', 'running'].includes(state) ? 1 : 2);
       await page.locator('[data-nav="overview"]').click();
     }
     supersededHistory = true;
@@ -438,7 +438,7 @@ async function main() {
     for (const [state, expected] of [
       ['pending', 'Pending'], ['running', 'Running'], ['changes_requested', 'Changes requested'],
       ['passed', 'Passed (recorded)'], ['needs_operator', 'Needs operator'], ['unavailable', 'Unavailable'],
-      ['stale', 'Stale'], ['unknown', 'Unavailable'], ['wrong_attempt', 'Unavailable'], ['invalid_pass', 'Unavailable'],
+      ['stale', 'Stale'], ['unknown', 'Enrollment unknown'], ['not_required', 'Not required (recorded)'], ['awaiting_review', 'Awaiting scheduling'], ['wrong_attempt', 'Unavailable'], ['invalid_pass', 'Unavailable'],
       ['superseded', 'Superseded by repair'], ['inherited_stop', 'Needs operator'],
     ]) {
       reviewState = state;
@@ -447,6 +447,10 @@ async function main() {
       const reviewPanel = page.locator('.independent-review');
       assert.equal(await reviewPanel.locator('.pill.success').count(), state === 'passed' ? 1 : 0, state + ' review approval');
       assert.match(await reviewPanel.textContent(), /not live GitHub state or permission to merge or deploy/);
+      if (state === 'awaiting_review') {
+        assert.match(await page.locator('#next-step').textContent(), /Inspect review scheduling gap/);
+        assert.match(await reviewPanel.textContent(), /Enrolled review has not been scheduled/);
+      }
       if (['pending', 'running'].includes(state)) assert.match(await page.locator('#next-step').textContent(), /Wait for independent review/);
       if (state === 'changes_requested') {
         assert.match(await page.locator('#next-step').textContent(), /Inspect independent review findings/);

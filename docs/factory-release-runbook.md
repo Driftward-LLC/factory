@@ -88,6 +88,40 @@ never infer a successful restore from archive creation or file presence. Share
 sanitized classifications and bounded results publicly; retain configuration,
 authentication, profile inventories and detailed recovery paths privately.
 
+## Independent review release acceptance
+
+Before accepting independent-review behavior on a release, use the existing
+portable acceptance and console browser harnesses for disposable image/schema
+and UI checks. These credential-free fixtures prove bounded contracts only.
+They do not prove native provider execution or a completed independent review.
+
+A separately authorized isolated rehearsal must use the published immutable image,
+not a source checkout or a locally rebuilt substitute. Record the release version,
+image digest, image source commit, deployment bundle digest and exact configured
+review policy. Retain this linked evidence for the same attempt lineage:
+
+1. Root operator retry preview and approval, including its recorded enrollment
+   decision and unchanged policy digest at admission.
+2. Real execution reaching recorded verification with the exact PR URL and full
+   verified head SHA. Deterministic verification alone does not pass this gate.
+3. The Factory-owned native independent reviewer starting for that exact head,
+   with its bounded pass number, reviewer model and safe session reference.
+4. A real reviewer receipt persisted and validated against the request, review
+   ID, head and receipt digest. Synthetic receipts and mocked provider calls do
+   not satisfy this gate.
+5. Console evidence from the same published image showing the independent result
+   separately from execution verification, with the full reviewed SHA and recorded
+   receipt details. Exercise awaiting scheduling, policy-change operator stop and
+   historical unknown enrollment without showing a review pass.
+
+Link sanitized harness results and console captures to these identities; retain
+credentials and raw session material privately. A changed recorded PR head must
+invalidate the prior review. Missing, stalled, unavailable or mismatched evidence
+leaves this acceptance gate incomplete. Record which phase remains pending;
+source tests, catalog checks and image dry runs must never be reported as a live
+provider pass. This procedure itself grants no execution, retry, publication,
+migration or deployment approval.
+
 ## Install on a fresh host
 
 Download all three assets from one trusted release:
@@ -164,3 +198,17 @@ migration nor a background sweep performs that approval.
 Schema 9 binaries cannot open a schema-10 ledger. A rollback across this boundary
 requires a reviewed restore/migration plan and quiescence; preserve any work
 recorded after the backup. Do not point the old image at the upgraded ledger.
+
+## Bridge schema 11
+
+Schema 11 adds an append-only ledger for explicit enrollment of existing verified
+drafts. New admission decisions are recorded as versioned evidence in the admitted
+job payload. Historical attempts are not backfilled and retain unknown enrollment
+when no decision exists. A recorded exclusion is distinct from a review pass.
+
+Use the same quiesced, cold-backup and explicit installer migration gates described
+above, with all consumers on the schema-11 image. Read-only runtime connections
+perform no migration. Validate a disposable copy and historical-row preservation
+before starting consumers. Older binaries must not open the upgraded ledger;
+rollback requires a separately reviewed cold restore/migration plan preserving
+post-backup work. Source changes do not authorize a live migration or retry.

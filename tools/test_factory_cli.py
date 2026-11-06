@@ -220,6 +220,7 @@ class CanonicalCliTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         sys.path.insert(0, str(root / 'deploy'))
         received = []
+        bodies = []
         class Handler(socketserver.StreamRequestHandler):
             def handle(self):
                 request = []
@@ -229,6 +230,9 @@ class CanonicalCliTests(unittest.TestCase):
                         break
                     request.append(line.decode().strip())
                 received.extend(request)
+                length = next((int(line.split(':', 1)[1]) for line in request if line.lower().startswith('content-length:')), 0)
+                if length:
+                    bodies.append(json.loads(self.rfile.read(length)))
                 body = b'{"attempts":[]}'
                 self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
         with tempfile.TemporaryDirectory() as directory:
@@ -265,10 +269,18 @@ class CanonicalCliTests(unittest.TestCase):
                          patch.object(cli, 'cli_image', return_value='sha256:exact'), \
                          patch.object(cli.subprocess, 'run', side_effect=run):
                         self.assertEqual(cli.dispatch(config, ['attempts', 'list', 'ENG-162', '--json']), 0)
+                        self.assertEqual(cli.dispatch(config, ['review-enrollment', 'ENG-162', 'preview',
+                            '--source-attempt', 'attempt-id', '--repo', 'example/widgets',
+                            '--pr', 'https://github.com/example/widgets/pull/1', '--branch', 'candidate',
+                            '--reviewed-head', 'a' * 40, '--reason', 'review existing verified draft']), 0)
                 finally:
                     server.shutdown()
                     thread.join()
             self.assertIn('GET /v1/attempts/work-item/ENG-162 HTTP/1.1', received)
+            self.assertIn('POST /v1/review-enrollment/preview HTTP/1.1', received)
+            self.assertEqual(bodies, [{'issue': 'ENG-162', 'source_attempt_id': 'attempt-id',
+                'repository': 'example/widgets', 'pr_url': 'https://github.com/example/widgets/pull/1',
+                'branch': 'candidate', 'reviewed_head_sha': 'a' * 40, 'reason': 'review existing verified draft'}])
             self.assertIn('Authorization: Bearer ' + token, received)
             self.assertFalse(Path(calls[-1][1]['env']['FACTORY_OPERATOR_ENV']).exists())
             self.assertIn('--network', calls[0][0])

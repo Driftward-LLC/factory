@@ -172,7 +172,7 @@ export function nextAction(record) {
 }
 
 export function independentReviewAction(record) {
-  const actions = { pending: 'Wait for independent review', running: 'Wait for independent review',
+  const actions = { awaiting_review: 'Inspect review scheduling gap', unknown: 'Inspect missing review enrollment evidence', pending: 'Wait for independent review', running: 'Wait for independent review',
     changes_requested: 'Inspect independent review findings', needs_operator: 'Operator action required: inspect review stop reason',
     stale: 'Inspect the changed review head', superseded: 'Inspect the later repair attempt' };
   const status = independentReviewStatus(record);
@@ -187,5 +187,5 @@ function independentReviewStatus(record) {
 
 export function isActiveWork(record) {
   return activeStates.has(record.attempt?.status)
-    || ['pending', 'running', 'changes_requested', 'needs_operator', 'stale'].includes(independentReviewStatus(record));
+    || ['awaiting_review', 'pending', 'running', 'changes_requested', 'needs_operator', 'stale'].includes(independentReviewStatus(record));
 }

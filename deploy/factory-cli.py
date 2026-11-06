@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 CONFIG = Path('/etc/factory/factory-cli.json')
-OPERATOR_COMMANDS = {'analytics', 'retry', 'lifecycle', 'attempts', 'review-recovery', 'review-repair'}
+OPERATOR_COMMANDS = {'analytics', 'retry', 'lifecycle', 'attempts', 'review-recovery', 'review-repair', 'review-enrollment'}
 PROFILES = {
     'factory-executor': 'Factory executor; provisioned separately from execution routing.',
     'factory-independent-reviewer': 'Factory independent reviewer; provisioned separately from review routing.',
@@ -467,7 +467,7 @@ def dispatch_bound(config, args):
               'factory profiles diagnose-execution ATTEMPT-ID --invocation-id JOB-ID:LEASE-ID:EPOCH\n'
               'factory profiles recover-observer FAILED_REQUEST_UUID preview|apply|status [--restore-dispatcher] [approval arguments]\n'
               'factory profiles recover-inspection JOB preview|status|apply [--snapshot-digest DIGEST --reason REASON --request-id UUID --yes]\n'
-              'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair [arguments]\n'
+              'factory analytics | retry | lifecycle | attempts | review-recovery | review-repair | review-enrollment [arguments]\n'
               'Operator command arguments and approval gates are provided by the active image.\n'
               'Mode changes and doctor are unavailable for managed installations.')
     else:
@@ -483,7 +483,8 @@ def main():
             execution_parser(sys.argv[2:])
         if sys.argv[1:] in ([], ['help'], ['-h'], ['--help']):
             print('factory status | profiles | artifacts | deploy status|preview|approve|apply (factory deploy --help)\n'
-                  'factory execution status|preview|resume (factory execution --help)')
+                  'factory execution status|preview|resume (factory execution --help)\n'
+                  'factory review-enrollment ISSUE inspect|preview|confirm [artifact and approval arguments]')
             return 0
         if os.geteuid() != 0:
             raise ValueError('canonical Factory CLI requires root')

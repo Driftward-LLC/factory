@@ -3,6 +3,9 @@ import { label, time } from './model.js';
 
 const states = {
   not_requested: ['', 'Not requested'],
+  not_required: ['', 'Not required (recorded)'],
+  awaiting_review: ['warning', 'Awaiting scheduling'],
+  unknown: ['', 'Enrollment unknown'],
   pending: ['warning', 'Pending'],
   running: ['warning', 'Running'],
   changes_requested: ['warning', 'Changes requested'],
@@ -12,6 +15,10 @@ const states = {
   stale: ['warning', 'Stale'],
   superseded: ['', 'Superseded by repair'],
 };
+
+const reasons = { dry_run: 'Dry-run attempt', policy_disabled: 'Review policy was disabled at admission',
+  repository_excluded: 'Repository was excluded at admission', historical_enrollment_unknown: 'No recorded enrollment decision',
+  review_not_scheduled: 'Enrolled review has not been scheduled', review_policy_changed: 'Current policy differs from the recorded enrollment' };
 
 function projection(review, attemptId) {
   if (review?.schema !== 'factory-console-independent-review-v1' || review.attempt_id !== attemptId
@@ -39,11 +46,15 @@ export default function IndependentReview({ review, attemptId }) {
     <IndependentReviewBadge review={review} attemptId={attemptId} />
     <p className="muted">Separate from deterministic checks. These are stored review records, not live GitHub state or permission to merge or deploy.</p>
     {value.status === 'not_requested' && <p className="muted">This attempt was not enrolled in independent review. Historical verification labels do not establish independent approval.</p>}
+    {value.status === 'not_required' && <p className="muted">The recorded admission decision did not require independent review. This is not a review pass.</p>}
+    {value.status === 'awaiting_review' && <p className="muted">This attempt is enrolled, but no review has been scheduled. No independent approval is recorded.</p>}
+    {value.status === 'unknown' && <p className="muted">No enrollment decision was recorded for this historical attempt. Independent approval is unknown.</p>}
+    {value.reason_code === 'review_policy_changed' && <p className="muted">Current policy differs from the recorded enrollment. An operator must inspect the policy change before review can proceed.</p>}
     {value.status === 'unavailable' && <p className="muted">Missing or inconclusive review evidence does not establish approval.</p>}
     {value.status === 'stale' && <p className="muted">A changed recorded head invalidates the earlier review. Its result does not cover the new revision.</p>}
     {value.status === 'superseded' && <p className="muted">The reserved repair supersedes this review in work queues. Its historical result and findings remain recorded for the earlier SHA.</p>}
     {value.inherited_from_attempt_id && <p className="muted">This repair inherits an operator stop from the earlier review. No additional review pass was recorded for the unchanged head.</p>}
-    {value.reason_code && <p className="muted">Recorded reason: {value.reason_code}</p>}
+    {value.reason_code && <p className="muted">Recorded reason: {reasons[value.reason_code] || value.reason_code}</p>}
     {value.status !== 'not_requested' && <MetadataList columns="multi" className="evidence-facts">
       <MetadataListItem label="Reviewed SHA">{value.reviewed_sha || 'Unavailable'}</MetadataListItem>
       <MetadataListItem label="Recorded current head">{value.current_sha || 'Unavailable'}</MetadataListItem>

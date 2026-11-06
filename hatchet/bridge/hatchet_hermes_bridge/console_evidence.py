@@ -78,7 +78,10 @@ def project_review(conn: Any, record: dict[str, Any]) -> dict[str, Any]:
             ).fetchone()
             inherited = row is not None
         if not row:
-            return {**report, "status": "not_requested", "pass_count": 0}
+            if not job.get("job_id"):
+                return {**report, "status": "unknown", "pass_count": 0, "reason_code": "historical_enrollment_unknown"}
+            decision = independent_review.projection(conn, job["job_id"])
+            return {**report, "status": decision["state"], "pass_count": decision["passes_used"], "reason_code": decision["reason"]}
         sha = _reference(row["head_sha"], r"[0-9a-f]{40}")
         created = _time(row["created_at"])
         recorded = _time(row["updated_at"])

@@ -93,9 +93,11 @@ Compare the full verified SHA only against a later stored inspection for the
 same PR. Keep an older inspection, stale observation, changed head and missing
 evidence distinct. A matching head is not live verification or approval. Local
 checks are executor-reported. Independent review is a separate exact-head record:
-show not requested, pending, running, changes requested, passed (recorded), needs
-operator, unavailable and stale distinctly. Historical attempts without enrollment
-must not look pending or independently approved. Show the full reviewed SHA,
+show recorded exclusions, awaiting scheduling, pending, running, changes requested,
+passed (recorded), needs operator, unavailable, unknown enrollment and stale distinctly.
+An enrolled attempt without a scheduled review remains active work. A changed
+policy needs operator inspection. Historical attempts without a recorded enrollment
+decision must not look excluded, pending or independently approved. Show the full reviewed SHA,
 bounded pass count (at most two), safe reviewer model/session reference, recorded
 reason and bounded findings. A changed later recorded head invalidates earlier
 review; missing or inconclusive evidence cannot establish approval. Overview,
