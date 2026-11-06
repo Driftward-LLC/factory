@@ -148,7 +148,15 @@ bearer credential; workers gain no credential or new mount. A source checkout's
 operator CLI exposes the same command. Review receipts still require independent
 isolation and a fresh final exact-head inspection. These offline fixture tests
 do not prove a native reviewer was invoked; published-image credentialed canary
-acceptance remains a release gate.
+acceptance remains a release gate. Follow the
+[release canary procedure](factory-release-runbook.md#independent-review-release-acceptance)
+using either an isolated installation or an explicitly approved, contained
+maintenance canary in the existing installation. Existing supported authenticated
+executor/reviewer profiles may be reused with separate identities preserved;
+never clone tokens. The retry fix requires a genuine operator-approved retry
+through enrollment, verification, native review, a real receipt and exact-head
+console evidence. Explicit enrollment of an existing verified draft alone does
+not satisfy that retry acceptance gate.
 
 Schema 10 installations must stop writers, retain a verified cold backup and
 run the existing explicit bridge `init` migration before restarting schema 11

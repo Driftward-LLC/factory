@@ -95,10 +95,54 @@ portable acceptance and console browser harnesses for disposable image/schema
 and UI checks. These credential-free fixtures prove bounded contracts only.
 They do not prove native provider execution or a completed independent review.
 
-A separately authorized isolated rehearsal must use the published immutable image,
-not a source checkout or a locally rebuilt substitute. Record the release version,
-image digest, image source commit, deployment bundle digest and exact configured
-review policy. Retain this linked evidence for the same attempt lineage:
+A separately authorized live canary may use an isolated installation or an
+explicitly approved maintenance window in the existing installation. Both must
+use the published immutable image. Record the release version, image digest,
+image source commit, deployment bundle digest and exact configured review policy.
+Use supported authenticated executor and reviewer profiles with their separate
+identities preserved; follow the [native backend runbook](../deploy/INDEPENDENT-REVIEW.md).
+Existing valid profiles need no duplicate sign-in or token copies. Publication
+alone does not establish production acceptance.
+
+For an existing-installation canary, approve and record this bounded sequence:
+
+1. Inventory active jobs, effects, reviews and the Hatchet queue. Pause ordinary
+   admission through supported installation controls, drain active work and
+   settle outstanding deliveries/leases before stopping writers. Prove those
+   controls permit only the designated canary issue to execute, including queued
+   dispatch. Stopping the intake worker alone does not contain already queued
+   work. If supported controls cannot establish this boundary, use an isolated
+   installation instead. Preserve all preexisting holds and paused controls.
+2. With writers stopped, retain a verified cold backup of every durable volume,
+   configuration and native profile/state store, a validated complete snapshot
+   manifest, and the original immutable image and deployment bundle. Follow the
+   [backup/restore procedure](../deploy/PORTABLE.md) and validate a disposable
+   restore. Run the explicit schema-11 migration with writers stopped and its
+   disposable-copy and historical-row preservation checks described below.
+3. Deploy the compatible published image and typed gateway together. Keep
+   ordinary admission paused. Review only the policy/configuration needed for
+   the designated test; do not widen global execution or repository policy to
+   make it pass. Keep automatic repairs disabled for this bounded canary. Any
+   required configuration change must use the existing authentic preview and
+   activation approval flow; retain original and canary policy/configuration
+   digests for restoration.
+4. Run one minimal real task and a genuine operator-approved retry, retaining
+   the complete acceptance evidence below. Run negative tests in the disposable
+   harness: do not mutate shared production policy or PR heads for fault
+   injection. Keep the canary bounded to the designated issue.
+5. After successful verification, recheck active work and the Hatchet queue,
+   restore the prior policy/configuration through its supported approval flow,
+   and restore only controls this maintenance window changed. Preserve prior
+   holds. Resume ordinary admission only after these checks succeed.
+
+On failure, stop test dispatch and keep ordinary work paused. Preserve evidence,
+post-backup state and remote artifact IDs before any restore: restoring a backup
+does not undo GitHub or Linear effects. Rollback uses the matching old image and
+complete pre-upgrade backup through the reviewed restore procedure; never
+downgrade schema metadata or delete audit rows. Reconcile remote effects before
+any later resumption.
+
+Retain this linked evidence for the same retry attempt lineage:
 
 1. Root operator retry preview and approval, including its recorded enrollment
    decision and unchanged policy digest at admission.
@@ -111,13 +155,15 @@ review policy. Retain this linked evidence for the same attempt lineage:
    not satisfy this gate.
 5. Console evidence from the same published image showing the independent result
    separately from execution verification, with the full reviewed SHA and recorded
-   receipt details. Exercise awaiting scheduling, policy-change operator stop and
-   historical unknown enrollment without showing a review pass.
+   receipt details. Retain disposable-harness evidence for awaiting scheduling,
+   policy-change operator stop, historical unknown enrollment and changed-head
+   invalidation without showing a review pass.
 
 Link sanitized harness results and console captures to these identities; retain
-credentials and raw session material privately. A changed recorded PR head must
-invalidate the prior review. Missing, stalled, unavailable or mismatched evidence
-leaves this acceptance gate incomplete. Record which phase remains pending;
+credentials and raw session material privately. Direct review of a historically
+verified draft via explicit enrollment alone does not validate retry enrollment.
+A changed recorded PR head must invalidate the prior review. Missing, stalled,
+unavailable or mismatched evidence leaves this acceptance gate incomplete. Record which phase remains pending;
 source tests, catalog checks and image dry runs must never be reported as a live
 provider pass. This procedure itself grants no execution, retry, publication,
 migration or deployment approval.
