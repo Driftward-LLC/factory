@@ -201,13 +201,17 @@ const evidenceDir = process.env.FACTORY_CONSOLE_EVIDENCE_DIR || tmpdir();
     assert.match(await page.locator('.verification-evidence').textContent(), /No immutable checkpoints/);
     assert.equal(await page.locator('.verification-evidence .pill.success').count(), 0);
     for (const [story, status] of [['pending', 'pending'], ['running', 'running'], ['changes-requested', 'changes_requested'],
-      ['passed', 'passed'], ['needs-operator', 'needs_operator'], ['unavailable', 'unavailable'], ['unknown', 'unavailable'],
+      ['passed', 'passed'], ['needs-operator', 'needs_operator'], ['unavailable', 'unavailable'], ['unknown', 'unknown'], ['awaiting-scheduling', 'awaiting_review'], ['not-required', 'not_required'], ['policy-changed', 'needs_operator'],
       ['stale', 'stale'], ['invalid-pass', 'unavailable'], ['superseded', 'superseded'], ['inherited-stop', 'needs_operator']]) {
       await visit('factory-verificationevidence--independent-review-' + story);
       const review = page.locator('.independent-review');
       assert.equal(await review.getAttribute('data-review-status'), status);
       assert.equal(await review.locator('.pill.success').count(), status === 'passed' ? 1 : 0);
       assert.match(await review.textContent(), /Separate from deterministic checks/);
+      if (story === 'awaiting-scheduling') assert.match(await review.textContent(), /enrolled, but no review has been scheduled/);
+      if (story === 'policy-changed') assert.match(await review.textContent(), /Current policy differs from the recorded enrollment/);
+      if (story === 'not-required') assert.match(await review.textContent(), /Review policy was disabled at admission/);
+      if (story === 'unknown') assert.match(await review.textContent(), /No enrollment decision was recorded/);
       if (story === 'changes-requested') {
         await review.locator('summary').focus();
         await page.keyboard.press('Enter');

@@ -17,6 +17,7 @@ WRITABLE_CALLER_INVENTORY = {
     "hatchet_hermes_bridge.operator": "factory-operator.service",
     "hatchet_hermes_bridge.review_repair": "factory-operator.service",
     "hatchet_hermes_bridge.review_recovery": "factory-operator.service",
+    "hatchet_hermes_bridge.review_enrollment": "factory-operator.service",
     "hatchet_hermes_bridge.console_control": "factory-operator.service",
     "hatchet_hermes_bridge.cli": "operator-cli",
 }

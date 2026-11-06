@@ -29,6 +29,7 @@ from .store import BridgeConflict, BridgeError, BridgeNotFound, BridgeValidation
 from .store import get_factory_work_evidence
 from . import interrupted_resolution
 from . import review_repair
+from . import review_enrollment
 from . import review_recovery
 from .human_time import record_human_time
 
@@ -660,6 +661,23 @@ class OperatorHandler(BaseHTTPRequestHandler):
                     result = record_human_time(conn, human_time_path.group(1), actor=self._actor(), **body)
                 finally: conn.close()
                 self._reply(201 if result["created"] else 200, result)
+                return
+            enrollment_path = re.fullmatch(r"/v1/review-enrollment/(inspect|preview|confirm)", path)
+            if enrollment_path and not urlparse(self.path).query:
+                phase = enrollment_path.group(1)
+                fields = {"issue", "source_attempt_id"} if phase == "inspect" else set(review_enrollment.FIELDS)
+                if phase == "confirm": fields |= {"request_id", "snapshot_digest"}
+                if set(body) != fields:
+                    raise OperatorError("unsupported review enrollment fields")
+                if phase == "inspect":
+                    conn = connect_runtime(bridge_db)
+                    try: result = review_enrollment.inspect(conn, actor=self._actor(), **body)
+                    finally: conn.close()
+                else:
+                    operation = review_enrollment.preview if phase == "preview" else review_enrollment.confirm
+                    result = operation(bridge_db=bridge_db, ingress_db=ingress_db, registry_path=routes,
+                                       policy_path=policy, actor=self._actor(), **body)
+                self._reply(201 if result.get("created") else 200, result)
                 return
             recovery_path = re.fullmatch(r"/v1/review-recovery/(inspect|preview|confirm)", path)
             if recovery_path and not urlparse(self.path).query:

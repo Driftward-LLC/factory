@@ -8,6 +8,7 @@ import os
 import hashlib
 import re
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -90,13 +91,51 @@ def validate_request(payload: Any) -> dict[str, Any]:
     return review
 
 
+def seal_admission(payload: dict[str, Any], mode: str, *, inherited: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Only trusted admission paths decide enrollment, in their write transaction."""
+    sealed = dict(payload)
+    sealed.pop("independent_review_enrollment", None)
+    sealed.pop("independent_review_decision", None)
+    if inherited is not None:
+        # Repairs retain their original policy identity and PR-scoped durable budget.
+        for key in ("independent_review_enrollment", "independent_review_decision"):
+            if key in inherited:
+                sealed[key] = inherited[key]
+        return sealed
+    current = policy()
+    reason = ("dry_run" if mode != "real" else "policy_disabled" if not current["enabled"]
+              else "repository_excluded" if sealed.get("repo") not in current["repositories"] else "eligible")
+    sealed["independent_review_decision"] = {"schema": "factory-review-admission-v1",
+        "reason": reason, "policy_digest": current["digest"]}
+    if reason == "eligible":
+        sealed["independent_review_enrollment"] = {"policy_digest": current["digest"]}
+    return sealed
+
+
+def enrollment(conn, job: dict[str, Any]) -> dict[str, Any] | None:
+    recovered = conn.execute("SELECT policy_digest FROM factory_review_enrollments WHERE source_job_id=?", (job["job_id"],)).fetchone()
+    return {"policy_digest": recovered["policy_digest"]} if recovered else job["payload"].get("independent_review_enrollment")
+
+
 def projection(conn, source_job_id: str) -> dict[str, Any]:
     """Safe read-only status; callers retain legacy verified_ready semantics."""
     row = conn.execute("SELECT * FROM factory_independent_reviews WHERE source_job_id=?", (source_job_id,)).fetchone()
     if not row:
         row = conn.execute("SELECT r.* FROM factory_independent_reviews r JOIN factory_attempts a ON a.attempt_id=r.repair_attempt_id WHERE a.job_id=? AND r.state='needs_operator'", (source_job_id,)).fetchone()
     if not row:
-        return {"state": "checks_passed", "passes_used": 0, "max_passes": 2, "reason": None}
+        job = store.get_job(conn, source_job_id)
+        admitted = enrollment(conn, job)
+        decision = job["payload"].get("independent_review_decision", {})
+        state, reason = "unknown", "historical_enrollment_unknown"
+        if admitted:
+            current = policy()
+            if admitted != {"policy_digest": current["digest"]} or not current["enabled"] or job["payload"].get("repo") not in current["repositories"]:
+                state, reason = "needs_operator", "review_policy_changed"
+            else:
+                state, reason = "awaiting_review", "review_not_scheduled"
+        elif decision.get("schema") == "factory-review-admission-v1" and decision.get("reason") in {"dry_run", "policy_disabled", "repository_excluded"}:
+            state, reason = "not_required", decision["reason"]
+        return {"state": state, "passes_used": 0, "max_passes": 2, "reason": reason}
     used = conn.execute("SELECT COUNT(*) FROM factory_independent_reviews WHERE lineage_key=?", (row["lineage_key"],)).fetchone()[0]
     return {"state": {"pending": "review_pending", "running": "review_pending", "awaiting_inspection": "review_pending", "passed": "review_passed"}.get(row["state"], row["state"]),
             "passes_used": used, "max_passes": 2, "reviewed_head_sha": row["head_sha"],
@@ -119,15 +158,16 @@ def _fresh_artifact(conn, attempt, job, *, require_fresh: bool = True) -> dict[s
 
 def reserve(conn, source_job_id: str) -> dict[str, Any] | None:
     """Count a pass before dispatch, atomically with the existing accepted outbox."""
-    with conn:
-        conn.execute("BEGIN IMMEDIATE")
+    with nullcontext() if conn.in_transaction else conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute("SELECT * FROM factory_independent_reviews WHERE source_job_id=?", (source_job_id,)).fetchone()
         if existing:
             return dict(existing)
         job = store.get_job(conn, source_job_id)
         current = policy()
         if (not current["enabled"] or job["payload"].get("repo") not in current["repositories"]
-                or job["payload"].get("independent_review_enrollment") != {"policy_digest": current["digest"]}):
+                or enrollment(conn, job) != {"policy_digest": current["digest"]}):
             return None
         attempt = store.get_factory_attempt_for_job(conn, source_job_id)
         if (not attempt or attempt["mode"] != "real" or attempt["status"] != "verified_ready"
@@ -415,7 +455,7 @@ def sweep(conn, limit: int = 50) -> dict[str, int]:
         JOIN bridge_jobs j ON j.job_id=a.job_id
         WHERE a.mode='real' AND a.status='verified_ready'
         AND json_extract(j.payload_json,'$.repo') IN ({','.join('?' for _ in repositories)})
-        AND json_extract(j.payload_json,'$.independent_review_enrollment.policy_digest')=?
+        AND COALESCE((SELECT e.policy_digest FROM factory_review_enrollments e WHERE e.source_job_id=j.job_id),json_extract(j.payload_json,'$.independent_review_enrollment.policy_digest'))=?
         AND NOT EXISTS (SELECT 1 FROM factory_independent_reviews r WHERE r.source_job_id=a.job_id
             OR (r.repair_attempt_id=a.attempt_id AND r.state='needs_operator'))
         ORDER BY a.updated_at DESC LIMIT ?""", (*repositories, current["digest"], limit)).fetchall()
@@ -423,7 +463,7 @@ def sweep(conn, limit: int = 50) -> dict[str, int]:
         job = store.get_job(conn, row["job_id"])
         if job["payload"].get("repo") not in current["repositories"]:
             continue
-        if job["payload"].get("independent_review_enrollment") != {"policy_digest": current["digest"]}:
+        if enrollment(conn, job) != {"policy_digest": current["digest"]}:
             continue
         with conn:
             store._queue_pr_inspection(conn, row["work_item_key"], job["pr_url"], row["attempt_id"])

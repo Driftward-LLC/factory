@@ -165,8 +165,14 @@ console URL. `mode` reads the installation's configured intake mode; it does
 not claim to verify live worker state. Mode changes and `doctor` are explicitly
 unsupported by this launcher: they require a separately reviewed managed
 installation operation. Operator commands (`attempts`, `retry`, `lifecycle`,
-`analytics`, `review-repair`, `review-recovery`) retain the active image's
-arguments. `factory version` shows the installation, project and active image.
+`analytics`, `review-repair`, `review-recovery`, `review-enrollment`) retain the active image's
+arguments. `factory version` shows the installation, project and active image. The
+`review-enrollment ISSUE inspect|preview|confirm` command enrolls an existing
+verified draft for independent review without rerunning implementation. Use the
+exact artifact arguments and digest confirmation described in the
+[review enrollment procedure](../docs/bounded-independent-review.md#existing-verified-drafts).
+The managed launcher obtains the command from the active immutable image and
+uses the bound installation's existing operator authentication.
 
 `factory profiles source-audit` is a root-only, read-only command with no arguments.
 Through the bound Hermes wrapper it hashes a fixed allowlist of public Python

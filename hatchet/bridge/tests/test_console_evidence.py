@@ -72,7 +72,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["specification"]["result"], "recorded")
         self.assertEqual(evidence["verification"]["result"], "unavailable")
         self.assertEqual(evidence["head_comparison"], "unavailable")
-        self.assertEqual(evidence["independent_review"]["status"], "not_requested")
+        self.assertEqual(evidence["independent_review"]["status"], "not_required")
         self.assertIsNone(console.lifecycle(self.path, "ENG-999")["verification_evidence"])
 
     def test_matching_head_is_only_a_readonly_observation(self):
@@ -87,7 +87,7 @@ class ConsoleEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["head_comparison"], "same_head")
         self.assertEqual(evidence["verification"]["commit_sha"], "a" * 40)
         self.assertEqual(evidence["verification"]["local_evidence_source"], "executor_reported")
-        self.assertEqual(evidence["independent_review"]["status"], "not_requested")
+        self.assertEqual(evidence["independent_review"]["status"], "not_required")
         for private in ("private requirements", "private inspection details", "capability", "required_local_commands", "hermes_session_id", "route"):
             self.assertNotIn(private, json.dumps(evidence))
 

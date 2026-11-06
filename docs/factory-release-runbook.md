@@ -88,6 +88,86 @@ never infer a successful restore from archive creation or file presence. Share
 sanitized classifications and bounded results publicly; retain configuration,
 authentication, profile inventories and detailed recovery paths privately.
 
+## Independent review release acceptance
+
+Before accepting independent-review behavior on a release, use the existing
+portable acceptance and console browser harnesses for disposable image/schema
+and UI checks. These credential-free fixtures prove bounded contracts only.
+They do not prove native provider execution or a completed independent review.
+
+A separately authorized live canary may use an isolated installation or an
+explicitly approved maintenance window in the existing installation. Both must
+use the published immutable image. Record the release version, image digest,
+image source commit, deployment bundle digest and exact configured review policy.
+Use supported authenticated executor and reviewer profiles with their separate
+identities preserved; follow the [native backend runbook](../deploy/INDEPENDENT-REVIEW.md).
+Existing valid profiles need no duplicate sign-in or token copies. Publication
+alone does not establish production acceptance.
+
+For an existing-installation canary, approve and record this bounded sequence:
+
+1. Inventory active jobs, effects, reviews and the Hatchet queue. Pause ordinary
+   admission through supported installation controls, drain active work and
+   settle outstanding deliveries/leases before stopping writers. Prove those
+   controls permit only the designated canary issue to execute, including queued
+   dispatch. Stopping the intake worker alone does not contain already queued
+   work. If supported controls cannot establish this boundary, use an isolated
+   installation instead. Preserve all preexisting holds and paused controls.
+2. With writers stopped, retain a verified cold backup of every durable volume,
+   configuration and native profile/state store, a validated complete snapshot
+   manifest, and the original immutable image and deployment bundle. Follow the
+   [backup/restore procedure](../deploy/PORTABLE.md) and validate a disposable
+   restore. Run the explicit schema-11 migration with writers stopped and its
+   disposable-copy and historical-row preservation checks described below.
+3. Deploy the compatible published image and typed gateway together. Keep
+   ordinary admission paused. Review only the policy/configuration needed for
+   the designated test; do not widen global execution or repository policy to
+   make it pass. Keep automatic repairs disabled for this bounded canary. Any
+   required configuration change must use the existing authentic preview and
+   activation approval flow; retain original and canary policy/configuration
+   digests for restoration.
+4. Run one minimal real task and a genuine operator-approved retry, retaining
+   the complete acceptance evidence below. Run negative tests in the disposable
+   harness: do not mutate shared production policy or PR heads for fault
+   injection. Keep the canary bounded to the designated issue.
+5. After successful verification, recheck active work and the Hatchet queue,
+   restore the prior policy/configuration through its supported approval flow,
+   and restore only controls this maintenance window changed. Preserve prior
+   holds. Resume ordinary admission only after these checks succeed.
+
+On failure, stop test dispatch and keep ordinary work paused. Preserve evidence,
+post-backup state and remote artifact IDs before any restore: restoring a backup
+does not undo GitHub or Linear effects. Rollback uses the matching old image and
+complete pre-upgrade backup through the reviewed restore procedure; never
+downgrade schema metadata or delete audit rows. Reconcile remote effects before
+any later resumption.
+
+Retain this linked evidence for the same retry attempt lineage:
+
+1. Root operator retry preview and approval, including its recorded enrollment
+   decision and unchanged policy digest at admission.
+2. Real execution reaching recorded verification with the exact PR URL and full
+   verified head SHA. Deterministic verification alone does not pass this gate.
+3. The Factory-owned native independent reviewer starting for that exact head,
+   with its bounded pass number, reviewer model and safe session reference.
+4. A real reviewer receipt persisted and validated against the request, review
+   ID, head and receipt digest. Synthetic receipts and mocked provider calls do
+   not satisfy this gate.
+5. Console evidence from the same published image showing the independent result
+   separately from execution verification, with the full reviewed SHA and recorded
+   receipt details. Retain disposable-harness evidence for awaiting scheduling,
+   policy-change operator stop, historical unknown enrollment and changed-head
+   invalidation without showing a review pass.
+
+Link sanitized harness results and console captures to these identities; retain
+credentials and raw session material privately. Direct review of a historically
+verified draft via explicit enrollment alone does not validate retry enrollment.
+A changed recorded PR head must invalidate the prior review. Missing, stalled,
+unavailable or mismatched evidence leaves this acceptance gate incomplete. Record which phase remains pending;
+source tests, catalog checks and image dry runs must never be reported as a live
+provider pass. This procedure itself grants no execution, retry, publication,
+migration or deployment approval.
+
 ## Install on a fresh host
 
 Download all three assets from one trusted release:
@@ -164,3 +244,17 @@ migration nor a background sweep performs that approval.
 Schema 9 binaries cannot open a schema-10 ledger. A rollback across this boundary
 requires a reviewed restore/migration plan and quiescence; preserve any work
 recorded after the backup. Do not point the old image at the upgraded ledger.
+
+## Bridge schema 11
+
+Schema 11 adds an append-only ledger for explicit enrollment of existing verified
+drafts. New admission decisions are recorded as versioned evidence in the admitted
+job payload. Historical attempts are not backfilled and retain unknown enrollment
+when no decision exists. A recorded exclusion is distinct from a review pass.
+
+Use the same quiesced, cold-backup and explicit installer migration gates described
+above, with all consumers on the schema-11 image. Read-only runtime connections
+perform no migration. Validate a disposable copy and historical-row preservation
+before starting consumers. Older binaries must not open the upgraded ledger;
+rollback requires a separately reviewed cold restore/migration plan preserving
+post-backup work. Source changes do not authorize a live migration or retry.

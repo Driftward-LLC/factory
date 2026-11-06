@@ -35,8 +35,12 @@ export const IndependentReviewChangesRequested = { args: { evidence: { ...eviden
 export const IndependentReviewPassed = { args: { evidence: { ...evidence, independent_review: review } } };
 export const IndependentReviewNeedsOperator = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'needs_operator', pass_count: 2, reason_code: 'review_budget_exhausted', findings } } } };
 export const IndependentReviewUnavailable = { args: { evidence: { ...evidence, independent_review: undefined } } };
-export const IndependentReviewUnknown = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'unknown' } } } };
+export const IndependentReviewUnknown = { args: { evidence: { ...evidence, independent_review: { schema: review.schema, attempt_id: review.attempt_id, status: 'unknown', reason_code: 'historical_enrollment_unknown', max_passes: 2 } } } };
 export const IndependentReviewStale = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'stale', current_sha: 'b'.repeat(40) } } } };
 export const IndependentReviewInvalidPass = { args: { evidence: { ...evidence, independent_review: { ...review, reviewed_sha: null } } } };
 export const IndependentReviewSuperseded = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'superseded', historical_status: 'changes_requested', superseded_by_attempt_id: 'fictional-repair-attempt', current_sha: 'b'.repeat(40), findings } } } };
 export const IndependentReviewInheritedStop = { args: { evidence: { ...evidence, independent_review: { ...review, status: 'needs_operator', inherited_from_attempt_id: 'fictional-earlier-attempt', reason_code: 'review_operator_required', findings } } } };
+
+export const IndependentReviewAwaitingScheduling = { args: { evidence: { ...evidence, independent_review: { schema: review.schema, attempt_id: review.attempt_id, max_passes: 2, status: 'awaiting_review', reason_code: 'review_not_scheduled', pass_count: 0, reviewed_sha: null } } } };
+export const IndependentReviewNotRequired = { args: { evidence: { ...evidence, independent_review: { schema: review.schema, attempt_id: review.attempt_id, max_passes: 2, status: 'not_required', reason_code: 'policy_disabled', pass_count: 0, reviewed_sha: null } } } };
+export const IndependentReviewPolicyChanged = { args: { evidence: { ...evidence, independent_review: { schema: review.schema, attempt_id: review.attempt_id, max_passes: 2, status: 'needs_operator', reason_code: 'review_policy_changed', pass_count: 0, reviewed_sha: null } } } };

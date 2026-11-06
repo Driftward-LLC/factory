@@ -208,6 +208,8 @@ def main() -> int:
     parser.add_argument("--directory", required=True, type=Path, help="private installation directory (not the source checkout)")
     sub = parser.add_subparsers(dest="command", required=True)
     telemetry.add_command(sub)
+    enrollment = sub.add_parser("review-enrollment", help="inspect, preview or enroll an existing verified draft for review")
+    enrollment.add_argument("arguments", nargs=argparse.REMAINDER, help="ISSUE inspect|preview|confirm --source-attempt ID ...")
     execution = sub.add_parser("execution", help="preview or activate reviewed installation-local execution")
     execution.add_argument("--approve-preview", help="apply exactly this preview SHA256; otherwise read-only")
     init = sub.add_parser("init", help="preview a fresh installation; --apply writes new private configuration")
@@ -252,7 +254,12 @@ def dispatch(args: argparse.Namespace) -> int:
         portable_state.restore(args.snapshot, args.directory, args.project, apply=args.apply, port_offset=args.port_offset)
         return 0
     install = Installation(args.directory)
-    if args.command == "execution":
+    if args.command == "review-enrollment":
+        if os.geteuid() != 0:
+            raise RuntimeError("review enrollment requires the root installation operator")
+        install.compose("exec", "-T", "factory-operator", "python3", "-m",
+                        "hatchet_hermes_bridge.review_enrollment_client", *args.arguments)
+    elif args.command == "execution":
         local_execution.activate(install, args.approve_preview)
     elif args.command == "up":
         install.up()

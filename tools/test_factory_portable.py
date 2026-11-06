@@ -22,6 +22,18 @@ class PortableTests(unittest.TestCase):
         self.directory = Path(self.tmp.name) / "a space $literal"
         portable.bootstrap.init_directory(self.directory, "factory:test", "factory-unit-test", apply=True)
 
+    def test_review_enrollment_dispatches_only_to_authenticated_operator_role(self):
+        from argparse import Namespace
+        arguments = ["ENG-8", "preview", "--source-attempt", "attempt-id", "--reason", "literal $value"]
+        with patch.object(portable.os, "geteuid", return_value=0), patch.object(portable.Installation, "compose") as compose:
+            portable.dispatch(Namespace(command="review-enrollment", directory=self.directory, arguments=arguments))
+        compose.assert_called_once_with("exec", "-T", "factory-operator", "python3", "-m",
+                                        "hatchet_hermes_bridge.review_enrollment_client", *arguments)
+        with patch.object(portable.os, "geteuid", return_value=1000), patch.object(portable.Installation, "compose") as compose:
+            with self.assertRaisesRegex(RuntimeError, "root"):
+                portable.dispatch(Namespace(command="review-enrollment", directory=self.directory, arguments=arguments))
+        compose.assert_not_called()
+
     def test_naming_generation_is_required_before_docker(self):
         path = self.directory / portable.bootstrap.MARKER
         metadata = json.loads(path.read_text())

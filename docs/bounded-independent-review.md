@@ -15,7 +15,7 @@ The checked-in `hatchet/workers/independent-review-policy.json` selects
 and an immutable maximum of two review passes. Review that allowlist before
 configuring an installation; it is not an automatic grant to arbitrary repositories.
 Policy lives with the deployed source,
-not in model prompts or worker payloads. Only newly admitted real intake under
+not in model prompts or worker payloads. Normal intake, return-to-Factory retries, and absence retries share one trusted admission decision. Only newly admitted real work under
 an enabled repository policy receives a digest-bound enrollment. Existing
 verified jobs do not become enrolled when the gate is enabled. A later policy
 change does not silently adopt old work.
@@ -43,8 +43,7 @@ legacy requests; a Factory execution reference is not a substitute Hermes sessio
 This change applies only when reserving a new review. It does not rewrite source
 jobs, stored requests/results, or existing `needs_operator` reservations, including
 preflight failures caused by a missing legacy session ID. Those retain their
-original shared PR pass budget. There is no supported retry/rearm command for a
-stopped review; deployment alone does not recover one.
+original shared PR pass budget. The narrow `review-recovery` command can deliver an eligible legacy unstarted reservation without allocating another pass. Other stopped reviews require an operator; deployment alone does not recover them.
 
 The bridge transaction reserves the pass and its existing accepted-event
 outbox before dispatch. Budget identity is the canonical repository and PR
@@ -91,10 +90,9 @@ required budget reason. Manual operator decisions never reset this budget.
 
 Deploy the compatible typed gateway parser together with the Factory image before
 admitting the new request variant. An older host gateway rejects it; updating only
-the container is not a compatible rollout. No database migration or historical
-record backfill is part of this change.
+the container is not a compatible rollout. Schema 11 adds an append-only existing-artifact enrollment ledger; it does not backfill historical admissions.
 
-Before considering activation, approve a deployment of schema version 9 with
+Before considering activation, approve a deployment of schema version 11 with
 the existing quiesced migration/backup procedure. The new review table and
 existing accepted-event outboxes are durable application state and must be
 preserved by migration and rollback inventory.
@@ -116,3 +114,54 @@ digest; historical work is never backfilled. Automatic repair requires another
 reviewed source policy change. Enabling review alone does not enable repair. No UI,
 review receipt, PR check, or model can flip either policy flag. Console views
 are read-only projections and offer no repair, merge, or deploy approval.
+
+
+## Existing verified drafts
+
+Missing historical enrollment appears as **Unknown**, regardless of today's
+policy. New recorded exclusions appear as **Not required** with their reason.
+Enrolled work without a reservation appears as **Awaiting review**; a changed
+policy requires an operator. Verification alone never means review passed.
+
+An authenticated root operator can explicitly enroll a latest verified real
+attempt under the current enabled repository policy. This uses the original
+requirements and exact currently inspected open draft head, creates no new
+implementation attempt, and runs the existing independent reviewer. Any prior
+PR review budget, conflicting work, hold, stale inspection, changed policy or
+changed head blocks enrollment. Original payloads and admission evidence remain
+unchanged. The separate append-only record binds source attempt/job, artifact,
+policy, zero previously consumed passes, actor, reason and request. Apply and
+review reservation share one transaction; repeated identical requests reuse it.
+Repairs inherit effective enrollment and the same two-pass PR budget.
+
+For a portable image installation, the installed wrapper supports:
+
+```sh
+factory review-enrollment ENG-X inspect --source-attempt ATTEMPT-ID --yes
+factory review-enrollment ENG-X preview --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head FULL-SHA --reason 'review existing verified draft'
+factory review-enrollment ENG-X confirm --source-attempt ATTEMPT-ID --repo OWNER/REPO --pr URL --branch BRANCH --reviewed-head FULL-SHA --reason 'review existing verified draft' --request-id UNIQUE-ID --snapshot-digest PREVIEW-DIGEST --yes
+```
+
+Wait for the typed inspection requested by `inspect` before previewing. The
+wrapper invokes the operator role using its existing private Unix socket and
+bearer credential; workers gain no credential or new mount. A source checkout's
+operator CLI exposes the same command. Review receipts still require independent
+isolation and a fresh final exact-head inspection. These offline fixture tests
+do not prove a native reviewer was invoked; published-image credentialed canary
+acceptance remains a release gate. Follow the
+[release canary procedure](factory-release-runbook.md#independent-review-release-acceptance)
+using either an isolated installation or an explicitly approved, contained
+maintenance canary in the existing installation. Existing supported authenticated
+executor/reviewer profiles may be reused with separate identities preserved;
+never clone tokens. The retry fix requires a genuine operator-approved retry
+through enrollment, verification, native review, a real receipt and exact-head
+console evidence. Explicit enrollment of an existing verified draft alone does
+not satisfy that retry acceptance gate.
+
+Schema 10 installations must stop writers, retain a verified cold backup and
+run the existing explicit bridge `init` migration before restarting schema 11
+services. Repeated migration is idempotent and historical rows stay unchanged.
+An old image refuses schema 11; rollback requires restoring the pre-upgrade cold
+backup with its matching image, never downgrading metadata or deleting audit rows.
+The separate naming migration still requires its documented legacy schema 10
+source; it is followed by the target image's explicit schema upgrade.
